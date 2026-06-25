@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS  Download and silently run the FlaUI.Mcp installer.
-.EXAMPLE   irm https://raw.githubusercontent.com/<owner>/<repo>/master/dist/install.ps1 | iex
+.EXAMPLE   irm https://raw.githubusercontent.com/ckir/flauimcp/master/dist/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(
     [string] $Version = "latest",
-    [string] $Owner   = "OWNER_PLACEHOLDER",   # set to the GitHub owner once the repo is published
-    [string] $Repo    = "REPO_PLACEHOLDER"
+    [string] $Owner   = "ckir",
+    [string] $Repo    = "flauimcp"
 )
 $ErrorActionPreference = "Stop"
 

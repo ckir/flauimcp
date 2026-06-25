@@ -81,11 +81,9 @@ screenshots), element references, mouse/keyboard input synthesis, structured pat
 The installer drops `flaui-mcp.exe` into `%LOCALAPPDATA%\Programs\FlaUI.Mcp\` and configures
 every agent it can find. No manual config editing is required.
 
-> Replace `<owner>/<repo>` below with the published GitHub repository once it is available.
-
 ### Option A — Standalone installer (recommended)
 
-1. Download `flaui-mcp-setup.exe` from the [latest release](https://github.com/<owner>/<repo>/releases/latest).
+1. Download `flaui-mcp-setup.exe` from the [latest release](https://github.com/ckir/flauimcp/releases/latest).
 2. (Optional but recommended) verify its SHA-256 against `SHA256SUMS.txt` from the same release.
 3. Run it. SmartScreen will warn (unsigned) — choose **More info → Run anyway**.
 4. The installer configures Claude Code, Antigravity, and a generic MCP config automatically.
@@ -94,7 +92,7 @@ every agent it can find. No manual config editing is required.
 ### Option B — Silent one-liner (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/<owner>/<repo>/master/dist/install.ps1 | iex
+irm https://raw.githubusercontent.com/ckir/flauimcp/master/dist/install.ps1 | iex
 ```
 
 This downloads the latest `flaui-mcp-setup.exe` and runs it silently
