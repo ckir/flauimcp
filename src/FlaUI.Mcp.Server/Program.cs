@@ -19,6 +19,9 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddSingleton<AutomationDispatcher>();
 builder.Services.AddSingleton<WindowManager>();
 builder.Services.AddSingleton<WindowTools>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.RefRegistry>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.PerceptionManager>();
+builder.Services.AddSingleton<SnapshotTools>();
 
 builder.Services
     .AddMcpServer()
