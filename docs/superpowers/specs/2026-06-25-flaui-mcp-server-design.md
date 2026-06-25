@@ -29,8 +29,8 @@ action primitives.
 
 ## Architecture
 
-.NET 8, C#. Single solution, layered so the automation engine has **zero MCP
-dependencies** and is testable headless.
+.NET 10 (`net10.0-windows`), C#. Single solution, layered so the automation
+engine has **zero MCP dependencies** and is testable headless.
 
 ### Projects
 
