@@ -99,6 +99,9 @@ public sealed class WindowManager : IDisposable
         // Snapshot all existing PIDs before launch so we can detect newly spawned ones
         // (needed for apps like Win11 Notepad that delegate to a host process under a different PID).
         var preExistingPids = Process.GetProcesses().Select(p => p.Id).ToHashSet();
+        // The launched exe's base name (e.g. "notepad"), used to attach only to a window
+        // owned by the app we actually started — not the first unrelated window that opens.
+        var expectedProcessName = Path.GetFileNameWithoutExtension(path);
 
         Process proc;
         try
@@ -123,8 +126,10 @@ public sealed class WindowManager : IDisposable
             var handle = await TryOpenByPidQuiet(proc.Id);
             if (handle is { } h) return (h, proc.Id);
 
-            // Also scan new PIDs (e.g. Win11 Notepad host spawns a child under a different PID).
-            var result = await TryOpenByNewPidQuiet(preExistingPids, proc.Id);
+            // Also scan NEW pids whose process name matches the launched exe (e.g. Win11
+            // Notepad's host spawns the real editor under a different PID with the same name).
+            // Matching by name avoids grabbing an unrelated window that opened mid-launch.
+            var result = await TryOpenByMatchingNewPidQuiet(preExistingPids, expectedProcessName);
             if (result is { } r) return r;
 
             await Task.Delay(150);
@@ -144,16 +149,20 @@ public sealed class WindowManager : IDisposable
             return match is null ? (WindowHandle?)null : Register(match, pid);
         });
 
-    private Task<(WindowHandle handle, int pid)?> TryOpenByNewPidQuiet(HashSet<int> preExistingPids, int launchedPid) =>
+    private Task<(WindowHandle handle, int pid)?> TryOpenByMatchingNewPidQuiet(
+        HashSet<int> preExistingPids, string expectedProcessName) =>
         _dispatcher.RunQueryAsync<(WindowHandle, int)?>(() =>
         {
-            var match = _automation.GetDesktop().FindAllChildren()
-                .Select(c => c.AsWindow())
-                .Where(w => !string.IsNullOrEmpty(w.Title))
-                .Select(w => (window: w, pid: w.Properties.ProcessId.ValueOrDefault))
-                .FirstOrDefault(t => t.pid != launchedPid && !preExistingPids.Contains(t.pid));
-            if (match.window is null) return ((WindowHandle, int)?)null;
-            return (Register(match.window, match.pid), match.pid);
+            foreach (var child in _automation.GetDesktop().FindAllChildren())
+            {
+                var w = child.AsWindow();
+                if (string.IsNullOrEmpty(w.Title)) continue;
+                int pid = w.Properties.ProcessId.ValueOrDefault;
+                if (preExistingPids.Contains(pid)) continue;
+                if (!LaunchedWindowMatcher.IsExpectedApp(expectedProcessName, SafeProcessName(pid))) continue;
+                return (Register(w, pid), pid);
+            }
+            return ((WindowHandle, int)?)null;
         });
 
     public Task<WindowHandle> OpenByTitleAsync(string title) =>
