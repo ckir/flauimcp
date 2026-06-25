@@ -31,3 +31,6 @@ packages/
 
 # Tooling
 .serena/
+
+# BundleCodeBase.ps1 output (repo bundle for agy upload)
+aidesktop.txt
