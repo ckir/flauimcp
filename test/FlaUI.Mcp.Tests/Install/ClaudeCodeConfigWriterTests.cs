@@ -16,7 +16,7 @@ public class ClaudeCodeConfigWriterTests
         Assert.Equal(AgentChange.Created, r.Change);
         var (file, args) = Assert.Single(calls);
         Assert.Equal("claude", file);
-        Assert.Equal(new[] { "mcp", "add", "flaui-mcp", "--", @"C:\x\flaui-mcp.exe" }, args);
+        Assert.Equal(new[] { "mcp", "add", "--scope", "user", "flaui-mcp", "--", @"C:\x\flaui-mcp.exe" }, args);
     }
 
     [Fact]
@@ -25,7 +25,7 @@ public class ClaudeCodeConfigWriterTests
         var calls = new List<string[]>();
         var w = new ClaudeCodeConfigWriter((_, args) => { calls.Add(args); return 0; });
         w.Uninstall();
-        Assert.Equal(new[] { "mcp", "remove", "flaui-mcp" }, Assert.Single(calls));
+        Assert.Equal(new[] { "mcp", "remove", "--scope", "user", "flaui-mcp" }, Assert.Single(calls));
     }
 
     [Fact]
