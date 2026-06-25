@@ -36,6 +36,7 @@ perception helpers (`desktop_snapshot_diff`, `desktop_snapshot_stats`,
 | **GDI intent overlay** (`--overlay`: draw a red rect on the target element ~500ms before each action) | Trust/debugging nicety, not core capability; cheap to add. **Strong v1.5 fast-follow.** | Review 3 |
 | **OLE/COM file drop** (`desktop_drop_files` via synthesized `IDataObject`/`IDropTarget`) | Real need (upload files into apps) but complex/error-prone COM injection; reviewer rates YAGNI High. | Review 3 |
 | **System-tray pseudo-window** (`desktop_open_tray` walking `Shell_TrayWnd`/`NotifyIconOverflowWindow`) | Useful for machine management (Wi-Fi/Docker tray) but a special-case surface beyond core app control. **Prioritized v2.** | Review 3 |
+| **Code signing the distributed exe** (Authenticode / cert) | An unsigned self-extracting exe that synthesizes input is a strong AV/SmartScreen trigger; signing materially improves the install experience. v1 ships unsigned + checksum + "Run anyway" docs. **Top v2 distribution item.** | Distribution spec / agy review |
 
 ## Notes
 
