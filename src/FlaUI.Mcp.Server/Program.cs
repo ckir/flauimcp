@@ -1,8 +1,17 @@
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server.Install;
 using FlaUI.Mcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+
+// Installer verbs run and exit; anything else (including no args) runs the MCP stdio host.
+if (CliRouter.IsInstallerVerb(args))
+{
+    var exePath = Environment.ProcessPath
+        ?? System.Reflection.Assembly.GetExecutingAssembly().Location;
+    return CliRouter.Run(args, exePath, Console.Out);
+}
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -17,3 +26,4 @@ builder.Services
     .WithToolsFromAssembly();
 
 await builder.Build().RunAsync();
+return 0;
