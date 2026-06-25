@@ -35,20 +35,49 @@ dependencies** and is testable headless.
 ### Projects
 
 1. **`FlaUI.Mcp.Core`** — automation engine, no MCP awareness.
+   - **`AutomationDispatcher`** — owns a single **dedicated STA thread** with its
+     own dispatch queue. `FlaUI.UIA3` wraps COM; calling `AutomationElement` from
+     MTA threadpool threads (which both the async stdio loop and ASP.NET Core
+     use) throws `RPC_E_WRONG_THREAD` or deadlocks. **Every** UIA call —
+     discovery, snapshot, resolution, action — is marshaled onto this STA thread
+     and awaited via a `Task` boundary. This is the single automation context
+     for the whole server; all other Core components run their UIA work through
+     it.
+   - **`SessionManager`** — tracks per-connection state: open window handles,
+     the live snapshot/ref registry, and **server-owned spawned processes**
+     (from `desktop_launch_app`). Exposes a **connection-termination hook**: on
+     client disconnect/crash it always frees handles and snapshots; process
+     teardown follows the `killSpawnedOnDisconnect` policy (default **on** for
+     single-session stdio, **off** for shared HTTP — auto-killing a user's app
+     under a shared server is destructive). Prevents leaked handles, snapshots,
+     and orphaned processes littering the desktop.
    - **`WindowManager`** — discovers top-level windows; launches/attaches
      processes; owns the **window-handle registry** (`w1`, `w2`, …). Each
      handle wraps a FlaUI `Window` / `Application`.
    - **`SnapshotEngine`** — walks the UIA subtree of a window handle, emits the
      serialized accessibility snapshot, and registers element refs.
    - **`RefRegistry`** — the option-C engine. Maps `e23` →
-     `ElementDescriptor { RuntimeId, ControlType, AutomationId, Name, IndexPath }`.
-     `Resolve(ref)` tries the cached `AutomationElement`; on stale (COM
-     exception / RuntimeId mismatch) it re-locates via the descriptor walk.
-     Scoped per window handle.
+     `ElementDescriptor { RuntimeId, ControlType, AutomationId, Name, AncestorAutomationId, IndexPath }`.
+     **Resolution order** (re-resolution must not rely on rigid tree-walking,
+     which fails precisely when the tree mutates):
+     1. Cached `AutomationElement` if its `RuntimeId` still matches.
+     2. `AutomationId` (or `Name` + `ControlType`) searched **scoped under the
+        nearest stable ancestor** — the closest ancestor that itself carries an
+        `AutomationId` (`AncestorAutomationId`). `RuntimeId` is ephemeral across
+        UI rebuilds, so it is a fast-path check only, never the primary key.
+     3. `IndexPath` only as a last-resort fuzzy hint (a list item inserted above
+        the target shifts the index, so this is best-effort).
+     4. Otherwise `REF_STALE_UNRESOLVABLE`.
+     **Refs are per-snapshot scoped:** a new `desktop_snapshot(w1)` supersedes
+     and clears `w1`'s previous refs, so the registry stays bounded under long
+     agent loops; a stale held ref returns `REF_NOT_FOUND`.
    - **`Interactor`** — performs actions. Prefers UIA **control patterns**
      (Invoke, Value, Toggle, ExpandCollapse, Selection, ScrollItem); falls back
-     to **synthetic input** (FlaUI `Mouse`/`Keyboard`, window-relative
-     coordinates) for the vision path. Reports which path was used.
+     to **synthetic input** (FlaUI `Mouse`/`Keyboard`) for the vision path.
+     Reports which path was used. Synthetic typing (`desktop_type`) **always
+     calls UIA `Focus()` on the resolved ref first** (click-to-focus fallback if
+     `Focus()` is unsupported/fails), so keystrokes can't bleed into whatever
+     control currently holds OS focus.
    - **`VisionCapture`** — per-window and per-element screenshots (PNG);
      coordinate translation window ↔ screen.
    - **`Waiter`** — synchronization helpers (wait for element by descriptor,
@@ -80,26 +109,31 @@ Tools use a `desktop_*` prefix. Every action tool takes a `window` handle.
 
 ### Window / session management
 - `desktop_list_windows` → `[{handle?, title, processName, pid, bounds, isForeground}]`. `handle` is null until opened.
-- `desktop_open_window` `{by: title|pid|automationId, value}` → registers and returns a `w#` handle.
-- `desktop_launch_app` `{path, args?}` → starts a process, waits for main window, returns handle.
+- `desktop_open_window` `{by: title|pid|automationId, value}` → registers and returns a `w#` handle. Titles are rarely unique (e.g. several "Untitled - Notepad"): multiple matches return `AMBIGUOUS_MATCH` listing candidates (`pid`, `bounds`, `title`) so the agent re-selects `by:pid`. No silent first-match.
+- `desktop_launch_app` `{path, args?, timeoutMs?}` → starts a process, then handles splash-screen races: `WaitForInputIdle` + poll until a top-level window owned by the process with a non-empty title appears, then returns its handle. On timeout → `LAUNCH_TIMEOUT`. The process is registered as **server-owned** (see `SessionManager`).
 - `desktop_focus_window` `{window}` → bring to foreground.
 - `desktop_close_window` `{window}` → close + free handle.
 
 ### Perception (both paths, co-equal)
 - `desktop_snapshot` `{window, root?: ref, maxDepth?, interactiveOnly?}` → indented text tree; each line `[e23] Button "OK" {enabled, focusable}` plus available patterns. Refs registered in `RefRegistry`. Primary, token-efficient path. `interactiveOnly` (default true) prunes non-interactive container/decoration noise — large app trees otherwise blow the agent's context; like Playwright, only meaningful roles are surfaced. Refs are **namespaced per window handle** (`w1`'s `e23` is distinct from `w2`'s).
-- `desktop_screenshot` `{window | ref}` → PNG image content (vision path).
+- `desktop_screenshot` `{window | ref}` → PNG image content **plus** metadata: `{imageWidthPx, imageHeightPx, dpiScale, logicalBounds}`. The agent needs the exact pixel dimensions and scale because the model may receive a resized image and Windows may run at non-100% DPI; a blind 1:1 pixel assumption clicks the wrong spot.
 
 ### Interaction — ref path
 - `desktop_click` `{window, ref, button?, double?}`
-- `desktop_type` `{window, ref, text, clear?}`
+- `desktop_type` `{window, ref, text, clear?}` — calls UIA `Focus()` on the ref (click-to-focus fallback) before injecting keystrokes.
 - `desktop_set_value` `{window, ref, value}` (ValuePattern fast-path)
 - `desktop_toggle` / `desktop_expand` / `desktop_select` `{window, ref}`
 - `desktop_invoke` `{window, ref}` (raw InvokePattern)
 - `desktop_scroll_into_view` `{window, ref}`
 
 ### Interaction — vision / coordinate path
-- `desktop_click_at` `{window, x, y, button?, double?}` (window-relative)
-- `desktop_drag` `{window, fromX, fromY, toX, toY}`
+Coordinate contract: `x,y` are in the **pixel space of the most recent
+`desktop_screenshot` for that window** (server maps them to physical screen
+pixels via the captured `dpiScale`/`logicalBounds`). Alternatively pass
+`xPct,yPct` (0–1 fractions of the window) — resilient to DPI scaling and to the
+model resizing the image before emitting coordinates.
+- `desktop_click_at` `{window, x?, y? | xPct?, yPct?, button?, double?}`
+- `desktop_drag` `{window, from{...}, to{...}}` (same coordinate contract)
 - `desktop_key` `{window, keys}` (e.g. `"Ctrl+S"`)
 
 ### Synchronization
@@ -131,6 +165,12 @@ Structured, agent-recoverable envelopes — never raw stack traces:
   auto-falls-back to synthetic click and reports which path it used.
 - `ELEMENT_NOT_ACTIONABLE` — offscreen/disabled; hint to `desktop_scroll_into_view`
   or `desktop_wait_for`.
+- `AMBIGUOUS_MATCH` — `desktop_open_window` matched multiple windows; lists
+  candidates (`pid`, `bounds`, `title`) so the agent re-selects `by:pid`.
+- `LAUNCH_TIMEOUT` — `desktop_launch_app` saw no qualifying top-level window
+  before `timeoutMs` (splash-screen race or slow start).
+- `ACCESS_DENIED_INTEGRITY` — target window is at a higher integrity level than
+  the server (see Security & constraints).
 - `TIMEOUT` — from `Waiter`, naming what it waited on.
 
 COM/UIA exceptions are caught at the tool boundary and mapped. A single bad call
@@ -153,24 +193,29 @@ Called out explicitly, not solved away:
 - **No app allow/deny list** in v1 (general control is the goal); noted as a
   future guardrail.
 
-### Technical constraints to resolve in the plan
+### Resolved technical constraints (design decisions)
 
-- **DPI awareness** — per-monitor DPI scaling distorts window-relative
-  coordinates, synthetic input, and screenshots. The process must declare
-  Per-Monitor-V2 DPI awareness, and `VisionCapture` + the coordinate-path tools
-  (`desktop_click_at`, `desktop_drag`) must translate between physical and
-  logical pixels consistently. This is a known Windows footgun; the plan must
-  pin the coordinate contract (which space `x,y` are in) explicitly.
-- **COM/UIA threading** — UIA access is COM and apartment-sensitive. Under the
-  async HTTP transport, tool calls arrive on threadpool threads. The engine must
-  marshal all FlaUI/UIA calls onto a defined automation thread (dedicated STA /
-  single automation context) rather than touching COM from arbitrary threads.
-- **Concurrency on a shared desktop** — the desktop is a single shared resource;
-  concurrent actions (especially multiple HTTP clients) would interleave input
-  and corrupt state. v1 **serializes action execution** (single-flight queue per
-  server instance); read-only calls like `desktop_list_windows` may run
-  concurrently. Multi-client HTTP is allowed at the transport level but actions
-  are globally ordered.
+These are the Windows/UIA footguns that drove specific design choices; each is
+now pinned, not deferred:
+
+- **COM/UIA STA threading** — UIA is COM and apartment-sensitive; MTA threadpool
+  access (both transports) throws `RPC_E_WRONG_THREAD`/deadlocks. Resolved by
+  the **`AutomationDispatcher`** (single dedicated STA thread; all UIA work
+  marshaled onto it). See Architecture.
+- **DPI awareness** — process declares **Per-Monitor-V2** DPI awareness;
+  `desktop_screenshot` reports `dpiScale`/pixel dims and the coordinate-path
+  tools accept screenshot-pixel-space coords or `xPct/yPct`. See the coordinate
+  contract under the vision/coordinate tools.
+- **Concurrency on a shared desktop** — the desktop is one shared resource;
+  concurrent actions would interleave input. v1 **serializes action execution**
+  (single-flight queue, naturally enforced by the single STA dispatcher);
+  read-only calls like `desktop_list_windows` may run concurrently. Multi-client
+  HTTP is allowed at the transport level but actions are globally ordered.
+- **Session/connection lifecycle** — `SessionManager`'s connection-termination
+  hook frees handles and snapshots on disconnect/crash and applies the
+  `killSpawnedOnDisconnect` policy to server-owned processes; refs are
+  per-snapshot scoped so the registry can't grow unbounded under agent loops.
+  See Architecture.
 
 ## Testing strategy
 
@@ -180,10 +225,22 @@ Called out explicitly, not solved away:
   tests against Notepad/Calc.
 - **Ref-engine tests are first-class** — snapshot → mutate tree → assert a cached
   ref goes stale → assert descriptor re-resolution recovers it (the core
-  option-C guarantee); assert `REF_STALE_UNRESOLVABLE` when the element is
-  genuinely removed.
+  option-C guarantee); **insert a list item above the target and assert
+  re-resolution still finds it by `AutomationId` under its stable ancestor** (the
+  `IndexPath`-shift case); assert `REF_STALE_UNRESOLVABLE` when the element is
+  genuinely removed; assert a new snapshot invalidates prior refs
+  (`REF_NOT_FOUND`).
 - **Interactor tests** — pattern path and synthetic-fallback path both produce
-  the expected UI state change.
+  the expected UI state change; **`desktop_type` focuses the target first** —
+  shift OS focus to another control, type, and assert text lands in the target,
+  not the focused control.
+- **Threading test** — issue concurrent tool calls (HTTP path) and assert no
+  `RPC_E_WRONG_THREAD`; all UIA work observed on the single STA dispatcher thread.
+- **Lifecycle test** — simulate client disconnect and assert handles/snapshots
+  freed and `killSpawnedOnDisconnect` policy honored per transport.
+- **Window-resolution test** — two windows with identical titles → `AMBIGUOUS_MATCH`
+  with candidates; `desktop_launch_app` against a splash-screen app resolves to
+  the real main window, not the splash.
 - **Server layer** (thin) — a few stdio integration tests with an in-process MCP
   client verifying tool wiring and error-envelope shape.
 - **CI** — Windows GitHub runner; input-injection tests carry the
