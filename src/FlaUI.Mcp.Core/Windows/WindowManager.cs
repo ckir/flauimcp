@@ -94,6 +94,99 @@ public sealed class WindowManager : IDisposable
         try { return Process.GetProcessById(pid).ProcessName; } catch { return "unknown"; }
     }
 
+    public async Task<(WindowHandle handle, int pid)> LaunchAppAsync(string path, string? args, int timeoutMs)
+    {
+        // Snapshot all existing PIDs before launch so we can detect newly spawned ones
+        // (needed for apps like Win11 Notepad that delegate to a host process under a different PID).
+        var preExistingPids = Process.GetProcesses().Select(p => p.Id).ToHashSet();
+
+        Process proc;
+        try
+        {
+            var psi = new ProcessStartInfo(path) { UseShellExecute = true };
+            if (!string.IsNullOrEmpty(args)) psi.Arguments = args;
+            proc = Process.Start(psi)
+                   ?? throw new ToolException(ToolErrorCode.LaunchTimeout, $"Failed to start {path}.", "verify the path");
+        }
+        catch (ToolException) { throw; }
+        catch (Exception ex)
+        {
+            throw new ToolException(ToolErrorCode.LaunchTimeout, $"Could not launch {path}: {ex.Message}", "verify the path");
+        }
+
+        try { proc.WaitForInputIdle(Math.Min(timeoutMs, 5000)); } catch { /* console/no message loop */ }
+
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            // First try the exact launched PID.
+            var handle = await TryOpenByPidQuiet(proc.Id);
+            if (handle is { } h) return (h, proc.Id);
+
+            // Also scan new PIDs (e.g. Win11 Notepad host spawns a child under a different PID).
+            var result = await TryOpenByNewPidQuiet(preExistingPids, proc.Id);
+            if (result is { } r) return r;
+
+            await Task.Delay(150);
+        }
+        throw new ToolException(ToolErrorCode.LaunchTimeout,
+            $"{path} started but showed no titled window within {timeoutMs} ms.",
+            "increase timeoutMs or check for a splash screen");
+    }
+
+    private Task<WindowHandle?> TryOpenByPidQuiet(int pid) =>
+        _dispatcher.RunQueryAsync<WindowHandle?>(() =>
+        {
+            var match = _automation.GetDesktop().FindAllChildren()
+                .Select(c => c.AsWindow())
+                .FirstOrDefault(w => w.Properties.ProcessId.ValueOrDefault == pid
+                                     && !string.IsNullOrEmpty(w.Title));
+            return match is null ? (WindowHandle?)null : Register(match, pid);
+        });
+
+    private Task<(WindowHandle handle, int pid)?> TryOpenByNewPidQuiet(HashSet<int> preExistingPids, int launchedPid) =>
+        _dispatcher.RunQueryAsync<(WindowHandle, int)?>(() =>
+        {
+            var match = _automation.GetDesktop().FindAllChildren()
+                .Select(c => c.AsWindow())
+                .Where(w => !string.IsNullOrEmpty(w.Title))
+                .Select(w => (window: w, pid: w.Properties.ProcessId.ValueOrDefault))
+                .FirstOrDefault(t => t.pid != launchedPid && !preExistingPids.Contains(t.pid));
+            if (match.window is null) return ((WindowHandle, int)?)null;
+            return (Register(match.window, match.pid), match.pid);
+        });
+
+    public Task<WindowHandle> OpenByTitleAsync(string title) =>
+        _dispatcher.RunQueryAsync(() =>
+        {
+            var matches = _automation.GetDesktop().FindAllChildren()
+                .Select(c => c.AsWindow())
+                .Where(w => w.Title == title)
+                .ToList();
+            if (matches.Count == 0)
+                throw new ToolException(ToolErrorCode.WindowNotFound, $"No window titled '{title}'.", "re-list windows");
+            if (matches.Count > 1)
+            {
+                var candidates = string.Join("; ", matches.Select(m =>
+                    $"pid={m.Properties.ProcessId.ValueOrDefault} bounds={m.BoundingRectangle}"));
+                throw new ToolException(ToolErrorCode.AmbiguousMatch,
+                    $"{matches.Count} windows titled '{title}': {candidates}",
+                    "re-open by:pid using one of the listed pids");
+            }
+            var win = matches[0];
+            return Register(win, win.Properties.ProcessId.ValueOrDefault);
+        });
+
+    public Task FocusAsync(WindowHandle handle) =>
+        RunOnWindowAsync(handle, w => { w.Focus(); w.SetForeground(); return true; });
+
+    public async Task CloseAsync(WindowHandle handle)
+    {
+        try { await RunOnWindowAsync(handle, w => { w.Close(); return true; }); }
+        catch (ToolException) { /* already gone */ }
+        finally { Invalidate(handle); }
+    }
+
     public void Dispose()
     {
         foreach (var p in _watched.Values) try { p.Dispose(); } catch { }
