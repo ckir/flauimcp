@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj" />
+    <Project Path="src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/FlaUI.Mcp.TestApp/FlaUI.Mcp.TestApp.csproj" />
+    <Project Path="test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj" />
+  </Folder>
+</Solution>
