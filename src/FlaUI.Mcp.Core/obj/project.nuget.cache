@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "dgSpecHash": "bfgSIbAOSnU=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\user\\Development\\c#\\aidesktop\\src\\FlaUI.Mcp.Core\\FlaUI.Mcp.Core.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\user\\.nuget\\packages\\flaui.core\\5.0.0\\flaui.core.5.0.0.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\flaui.uia3\\5.0.0\\flaui.uia3.5.0.0.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\interop.uiautomationclient\\10.19041.0\\interop.uiautomationclient.10.19041.0.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\microsoft.win32.systemevents\\8.0.0\\microsoft.win32.systemevents.8.0.0.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.codedom\\8.0.0\\system.codedom.8.0.0.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.configuration.configurationmanager\\8.0.1\\system.configuration.configurationmanager.8.0.1.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.diagnostics.eventlog\\8.0.1\\system.diagnostics.eventlog.8.0.1.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.diagnostics.performancecounter\\8.0.1\\system.diagnostics.performancecounter.8.0.1.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.drawing.common\\8.0.10\\system.drawing.common.8.0.10.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.management\\8.0.0\\system.management.8.0.0.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.security.cryptography.protecteddata\\8.0.0\\system.security.cryptography.protecteddata.8.0.0.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.security.permissions\\8.0.0\\system.security.permissions.8.0.0.nupkg.sha512",
+    "C:\\Users\\user\\.nuget\\packages\\system.windows.extensions\\8.0.0\\system.windows.extensions.8.0.0.nupkg.sha512"
+  ],
+  "logs": []
+}

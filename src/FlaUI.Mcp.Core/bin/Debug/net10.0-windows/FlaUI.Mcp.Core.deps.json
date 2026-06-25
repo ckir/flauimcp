@@ -1,0 +1,101 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "FlaUI.Mcp.Core/1.0.0": {
+        "dependencies": {
+          "FlaUI.UIA3": "5.0.0"
+        },
+        "runtime": {
+          "FlaUI.Mcp.Core.dll": {}
+        }
+      },
+      "FlaUI.Core/5.0.0": {
+        "dependencies": {
+          "System.Management": "8.0.0"
+        },
+        "runtime": {
+          "lib/net8.0-windows7.0/FlaUI.Core.dll": {
+            "assemblyVersion": "5.0.0.0",
+            "fileVersion": "5.0.0.0"
+          }
+        }
+      },
+      "FlaUI.UIA3/5.0.0": {
+        "dependencies": {
+          "FlaUI.Core": "5.0.0",
+          "Interop.UIAutomationClient": "10.19041.0"
+        },
+        "runtime": {
+          "lib/net8.0-windows7.0/FlaUI.UIA3.dll": {
+            "assemblyVersion": "5.0.0.0",
+            "fileVersion": "5.0.0.0"
+          }
+        }
+      },
+      "Interop.UIAutomationClient/10.19041.0": {
+        "runtime": {
+          "lib/netcoreapp3.0/Interop.UIAutomationClient.dll": {
+            "assemblyVersion": "10.0.19041.0",
+            "fileVersion": "10.0.19041.0"
+          }
+        }
+      },
+      "System.Management/8.0.0": {
+        "runtime": {
+          "lib/net8.0/System.Management.dll": {
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.0.23.53103"
+          }
+        },
+        "runtimeTargets": {
+          "runtimes/win/lib/net8.0/System.Management.dll": {
+            "rid": "win",
+            "assetType": "runtime",
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.0.23.53103"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "FlaUI.Mcp.Core/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "FlaUI.Core/5.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-VWWYqwjsYkii2BrUsz5+bpXEp27NherKhLt19hTxHwJP4KrfyZoeo1FdBov4ZTh655wZAKDGIjR7NJLDesuzeg==",
+      "path": "flaui.core/5.0.0",
+      "hashPath": "flaui.core.5.0.0.nupkg.sha512"
+    },
+    "FlaUI.UIA3/5.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-s1Yy1RsRJ0OXvmtxQlNJd0cu4sfvN3PFFu6skBGK8VlwPl/b38E0V5kCbo2gvkuhRIu4Itfxjdo7DUMF7qJw4Q==",
+      "path": "flaui.uia3/5.0.0",
+      "hashPath": "flaui.uia3.5.0.0.nupkg.sha512"
+    },
+    "Interop.UIAutomationClient/10.19041.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Me5vKNZ1JSg6txTsPQXaWx7fVNh+fmcUPPwtDKJtqvbMM0N8aoa/l/QPolkJIRnasCabCNt4v2zG4p1Q9HU98A==",
+      "path": "interop.uiautomationclient/10.19041.0",
+      "hashPath": "interop.uiautomationclient.10.19041.0.nupkg.sha512"
+    },
+    "System.Management/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-jrK22i5LRzxZCfGb+tGmke2VH7oE0DvcDlJ1HAKYU8cPmD8XnpUT0bYn2Gy98GEhGjtfbR/sxKTVb+dE770pfA==",
+      "path": "system.management/8.0.0",
+      "hashPath": "system.management.8.0.0.nupkg.sha512"
+    }
+  }
+}
