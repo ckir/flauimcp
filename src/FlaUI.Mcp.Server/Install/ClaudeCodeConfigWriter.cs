@@ -15,7 +15,9 @@ public sealed class ClaudeCodeConfigWriter
 
     public AgentResult Install(string exePath)
     {
-        var code = _run("claude", new[] { "mcp", "add", McpServerEntry.ServerName, "--", exePath });
+        // --scope user: register globally for the user, NOT at the default "local" scope (which
+        // binds to the installer's working dir, making the server invisible in every other project).
+        var code = _run("claude", new[] { "mcp", "add", "--scope", "user", McpServerEntry.ServerName, "--", exePath });
         return code switch
         {
             0  => new AgentResult("claude", AgentChange.Created, "claude mcp add"),
@@ -26,7 +28,8 @@ public sealed class ClaudeCodeConfigWriter
 
     public AgentResult Uninstall()
     {
-        var code = _run("claude", new[] { "mcp", "remove", McpServerEntry.ServerName });
+        // Must match the install scope (--scope user), else the user-scope entry is left orphaned.
+        var code = _run("claude", new[] { "mcp", "remove", "--scope", "user", McpServerEntry.ServerName });
         return code == -1
             ? new AgentResult("claude", AgentChange.NotFound, "claude CLI not on PATH")
             : new AgentResult("claude", AgentChange.Removed, $"claude mcp remove exit {code}");
