@@ -1,0 +1,50 @@
+name: release
+on:
+  push:
+    tags: [ "v*" ]
+
+permissions:
+  contents: write   # create releases + upload assets
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Test (non-UIA only; runners are headless)
+        run: dotnet test -c Release --filter "Category!=Desktop"
+
+      - name: Publish self-contained single-file exe
+        run: >
+          dotnet publish src/FlaUI.Mcp.Server -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -o publish
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\flaui-mcp.iss'
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-FileHash dist\flaui-mcp-setup.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  flaui-mcp-setup.exe" } | Out-File -Encoding ascii dist\SHA256SUMS.txt
+          Get-FileHash publish\flaui-mcp.exe   -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  flaui-mcp.exe" }       | Out-File -Encoding ascii -Append dist\SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/flaui-mcp-setup.exe
+            publish/flaui-mcp.exe
+            dist/install.ps1
+            dist/SHA256SUMS.txt
