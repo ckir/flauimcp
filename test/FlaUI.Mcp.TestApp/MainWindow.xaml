@@ -8,5 +8,15 @@
         <Button x:Name="OkButton" Content="OK"
                 AutomationProperties.AutomationId="OkButton" Click="OkButton_Click"/>
         <TextBlock x:Name="Status" AutomationProperties.AutomationId="Status" Text="ready"/>
+        <ListBox x:Name="ItemList" AutomationProperties.AutomationId="ItemList" Height="120" Margin="0,8,0,0">
+            <ListBoxItem AutomationProperties.AutomationId="ItemA" Content="A"/>
+            <ListBoxItem AutomationProperties.AutomationId="ItemB" Content="B"/>
+            <ListBoxItem AutomationProperties.AutomationId="ItemC" Content="C"/>
+            <ListBoxItem Content="NamedOnly"/>
+        </ListBox>
+        <Button x:Name="RebuildItemsButton" Content="Rebuild Items"
+                AutomationProperties.AutomationId="RebuildItemsButton" Click="RebuildItemsButton_Click" Margin="0,8,0,0"/>
+        <Button x:Name="ClearItemsButton" Content="Clear Items"
+                AutomationProperties.AutomationId="ClearItemsButton" Click="ClearItemsButton_Click" Margin="0,4,0,0"/>
     </StackPanel>
 </Window>

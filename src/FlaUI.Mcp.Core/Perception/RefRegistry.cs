@@ -1,4 +1,5 @@
 using FlaUI.Core.AutomationElements;
+using FlaUI.Core.Conditions;
 using FlaUI.Mcp.Core.Errors;
 
 namespace FlaUI.Mcp.Core.Perception;
@@ -56,5 +57,96 @@ public sealed class RefRegistry
                 $"Ref '{@ref}' is not in the current snapshot of window '{windowId}'.",
                 "take a fresh desktop_snapshot and use a ref from it");
         }
+    }
+
+    /// <summary>Option-C resolution. Order: (1) cached element if its RuntimeId AND ControlType
+    /// still match (the ControlType check guards against UIA RuntimeId recycling under
+    /// virtualization); (2) AutomationId (or Name+ControlType) scoped under the nearest stable
+    /// ancestor; (3) IndexPath as a last-resort fuzzy hint; else REF_STALE_UNRESOLVABLE. The
+    /// caller supplies the search roots to walk IN ORDER — the window subtree first, then any
+    /// grafted popup subtrees (context menus / dropdowns live at the Desktop, not under the
+    /// window). Searching those small, process-correct subtrees — never the whole Desktop —
+    /// avoids cross-application false matches on a shared Name+ControlType. searchRoots[0] MUST be
+    /// the window root (IndexPath is window-relative). Throws REF_NOT_FOUND if the ref isn't live
+    /// for this window. Must be called on the query STA.</summary>
+    public AutomationElement Resolve(string windowId, string @ref, IReadOnlyList<AutomationElement> searchRoots)
+    {
+        var entry = Lookup(windowId, @ref); // REF_NOT_FOUND if absent
+        var d = entry.Descriptor;
+
+        // (1) cached fast-path — RuntimeId AND ControlType must still match, AND the element must
+        // be visible in the UIA tree (IsOffscreen=false). WPF keeps peer COM objects alive after
+        // Items.Clear() so RuntimeId still matches, but those peers correctly report IsOffscreen=true
+        // because the element is no longer in the visual tree. Checking IsOffscreen gates them out
+        // so the descriptor re-walk (step 2) can confirm the element is truly gone.
+        if (entry.Cached is { } cached)
+        {
+            try
+            {
+                var rid = cached.Properties.RuntimeId.ValueOrDefault;
+                if (rid != null && rid.AsEnumerable().SequenceEqual(d.RuntimeId) && cached.ControlType == d.ControlType
+                    && !cached.Properties.IsOffscreen.ValueOrDefault)
+                    return cached;
+            }
+            catch { /* element gone — fall through to search */ }
+        }
+
+        // (2) descriptor re-walk per search root: AutomationId then Name+ControlType, scoped under
+        // the nearest stable ancestor. Each root is small and process-correct (window subtree, then
+        // grafted popup subtrees) — never the whole Desktop, so no cross-app false positives.
+        foreach (var searchRoot in searchRoots)
+        {
+            if (searchRoot is null) continue;
+            var scope = searchRoot;
+            if (!string.IsNullOrEmpty(d.AncestorAutomationId))
+            {
+                var anc = TrySearch(searchRoot, cf => cf.ByAutomationId(d.AncestorAutomationId));
+                if (anc is not null) scope = anc;
+            }
+            if (!string.IsNullOrEmpty(d.AutomationId))
+            {
+                var byAid = TrySearch(scope, cf => cf.ByAutomationId(d.AutomationId));
+                if (byAid is not null) return byAid;
+            }
+            if (!string.IsNullOrEmpty(d.Name))
+            {
+                var byName = TrySearch(scope, cf => cf.ByName(d.Name).And(cf.ByControlType(d.ControlType)));
+                if (byName is not null) return byName;
+            }
+        }
+
+        // (3) IndexPath last-resort — window-relative only (searchRoots[0] is the window root;
+        // popup index paths are sentinel-negative and abort cleanly in TryIndexPath).
+        if (searchRoots.Count > 0)
+        {
+            var byPath = TryIndexPath(searchRoots[0], d.IndexPath);
+            if (byPath is not null) return byPath;
+        }
+
+        throw new ToolException(ToolErrorCode.RefStaleUnresolvable,
+            $"Ref '{@ref}' could not be re-resolved; the element appears to be gone.",
+            "take a fresh desktop_snapshot");
+    }
+
+    private static AutomationElement? TrySearch(AutomationElement root,
+        Func<ConditionFactory, ConditionBase> cond)
+    {
+        try { return root.FindFirstDescendant(cond); } catch { return null; }
+    }
+
+    private static AutomationElement? TryIndexPath(AutomationElement root, IReadOnlyList<int> path)
+    {
+        try
+        {
+            var cur = root;
+            foreach (var i in path)
+            {
+                var kids = cur.FindAllChildren();
+                if (i < 0 || i >= kids.Length) return null;
+                cur = kids[i];
+            }
+            return cur;
+        }
+        catch { return null; }
     }
 }
