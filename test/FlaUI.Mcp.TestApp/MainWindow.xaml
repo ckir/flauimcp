@@ -18,5 +18,18 @@
                 AutomationProperties.AutomationId="RebuildItemsButton" Click="RebuildItemsButton_Click" Margin="0,8,0,0"/>
         <Button x:Name="ClearItemsButton" Content="Clear Items"
                 AutomationProperties.AutomationId="ClearItemsButton" Click="ClearItemsButton_Click" Margin="0,4,0,0"/>
+        <Border Background="#FFE0E0E0" Height="36" Margin="0,8,0,0">
+            <TextBlock x:Name="MenuTarget"
+                       AutomationProperties.AutomationId="MenuTarget"
+                       Text="right-click me"
+                       HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Alpha" AutomationProperties.AutomationId="MenuAlpha"/>
+                        <MenuItem Header="Beta" AutomationProperties.AutomationId="MenuBeta"/>
+                    </ContextMenu>
+                </TextBlock.ContextMenu>
+            </TextBlock>
+        </Border>
     </StackPanel>
 </Window>
