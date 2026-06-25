@@ -12,7 +12,9 @@ DefaultDirName={localappdata}\Programs\FlaUI.Mcp
 DefaultGroupName=FlaUI.Mcp
 PrivilegesRequired=lowest
 OutputBaseFilename=flaui-mcp-setup
-OutputDir=dist
+; OutputDir is relative to THIS script's dir (installer/), so ..\dist = repo-root dist/
+; — where release.yml's Checksums + Create-Release steps expect flaui-mcp-setup.exe.
+OutputDir=..\dist
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
