@@ -29,11 +29,24 @@ public static class SnapshotEngine
     {
         var sb = new StringBuilder();
         int count = 0;
+
+        // Overlay roots (context menus / dropdowns) are rendered once under [Active Overlays].
+        // Some popups are WINDOW children (WPF/.NET 10 context menus surface as CT=Window cls=Popup
+        // children of the owner window), so the main walk would otherwise re-render them. Collect
+        // their RuntimeIds (small int[] list, no per-node string alloc) and prune them from the main
+        // traversal so each overlay element gets exactly one ref.
+        var popupRids = new List<int[]>();
+        foreach (var p in popupRoots)
+        {
+            var prid = Safe(() => p.Properties.RuntimeId.ValueOrDefault, (int[]?)null);
+            if (prid != null) popupRids.Add(prid);
+        }
+
         Visit(root, depth: 0, indexPath: Array.Empty<int>(), ancestorAid: null, indent: "");
 
         if (popupRoots.Count > 0)
         {
-            sb.AppendLine("[Popups]");
+            sb.AppendLine("[Active Overlays]");
             for (int i = 0; i < popupRoots.Count; i++)
                 Visit(popupRoots[i], depth: 0, indexPath: new[] { -1 - i }, ancestorAid: null, indent: "  ");
         }
@@ -41,6 +54,15 @@ public static class SnapshotEngine
 
         void Visit(AutomationElement el, int depth, int[] indexPath, string? ancestorAid, string indent)
         {
+            int[] rid = Safe(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? Array.Empty<int>();
+
+            // Dedup: a popup root reached via the MAIN walk (depth > 0) is skipped here — it is
+            // rendered once under [Active Overlays]. (depth == 0 is the [Active Overlays] graft
+            // entry point for the popup itself, which must NOT be skipped.)
+            if (depth > 0)
+                foreach (var prid in popupRids)
+                    if (RidEqual(rid, prid)) return;
+
             string aid = Safe(() => el.AutomationId, "");
             ControlType ct = Safe(() => el.ControlType, ControlType.Custom);
             string name = Safe(() => el.Name, "");
@@ -50,7 +72,7 @@ public static class SnapshotEngine
             if (include)
             {
                 var descriptor = new ElementDescriptor(
-                    RuntimeId: Safe(() => (IReadOnlyList<int>)(el.Properties.RuntimeId.ValueOrDefault ?? Array.Empty<int>()), Array.Empty<int>()),
+                    RuntimeId: rid,
                     ControlType: ct, AutomationId: aid, Name: name,
                     AncestorAutomationId: ancestorAid, IndexPath: indexPath);
                 var @ref = refs.Register(windowId, descriptor, el);
@@ -122,6 +144,15 @@ public static class SnapshotEngine
             ("Transform", () => p.Transform.IsSupported),
         };
         return checks.Where(c => Safe(c.Supported, false)).Select(c => c.Name).ToArray();
+    }
+
+    // Zero-allocation RuntimeId equality (UIA RuntimeIds are small int[]).
+    private static bool RidEqual(int[] a, int[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++)
+            if (a[i] != b[i]) return false;
+        return true;
     }
 
     private static T Safe<T>(Func<T> read, T fallback)

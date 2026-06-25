@@ -29,7 +29,11 @@ public class PopupGraftingTests : IClassFixture<TestAppFixture>
         await Task.Delay(400); // let the menu open as a desktop-level popup
 
         var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
-        Assert.Contains("[Popups]", snap.Tree);
+        Assert.Contains("[Active Overlays]", snap.Tree);
         Assert.Contains("aid=MenuAlpha", snap.Tree);
+        // Dedup: the menu item must appear EXACTLY once. The WPF context menu is a window-child
+        // (CT=Window cls=Popup), so without pruning it from the main walk it would appear both in
+        // the main tree and under [Active Overlays] — two refs for one element.
+        Assert.Equal(1, snap.Tree.Split('\n').Count(l => l.Contains("aid=MenuAlpha")));
     }
 }
