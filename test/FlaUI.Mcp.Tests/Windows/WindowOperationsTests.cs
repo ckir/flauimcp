@@ -17,7 +17,11 @@ public class WindowOperationsTests
     {
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var (handle, _) = await mgr.LaunchAppAsync("notepad.exe", args: null, timeoutMs: 8000);
+        // Deterministic, multi-instance target. notepad.exe is single-instance/tabbed on
+        // Win11: a second launch adds a tab to an existing Notepad rather than opening a
+        // new window, so it is unreliable as a repeatable gate (the Win11 reparenting path
+        // is documented as a known limitation instead).
+        var (handle, _) = await mgr.LaunchAppAsync(TestAppPath(), args: null, timeoutMs: 8000);
         try
         {
             var title = await mgr.RunOnWindowAsync(handle, w => w.Title);
