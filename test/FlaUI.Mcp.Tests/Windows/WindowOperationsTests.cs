@@ -5,6 +5,7 @@ using Xunit;
 
 namespace FlaUI.Mcp.Tests.Windows;
 
+[Trait("Category", "Desktop")]
 public class WindowOperationsTests
 {
     private static string TestAppPath() => Path.GetFullPath(Path.Combine(

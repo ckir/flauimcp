@@ -6,6 +6,7 @@ using Xunit;
 
 namespace FlaUI.Mcp.Tests.Server;
 
+[Trait("Category", "Desktop")]
 public class WindowToolsTests : IClassFixture<TestAppFixture>
 {
     private readonly TestAppFixture _app;
