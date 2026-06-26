@@ -1,3 +1,4 @@
+using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
@@ -40,6 +41,23 @@ public class InteractionToolsTests
             await tools.DesktopSetFocus(handle.Id, RefFor(snap.Tree, "FocusReveal"));
             var label = await p.RunOnRefAsync(handle, RefFor(snap.Tree, "RevealedLabel"), el => el.Name);
             Assert.Equal("revealed", label);
+        }
+    }
+
+    [Fact]
+    public async Task SetValue_toggle_expand_select_round_trip()
+    {
+        using var app = new TestAppFixture();
+        var tools = Make(app, out var handle, out var p, out var m, out var d); using (d) using (m)
+        {
+            var snap = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
+
+            Assert.DoesNotContain("error", await tools.DesktopSetValue(handle.Id, RefFor(snap.Tree, "Input"), "typed"));
+            Assert.Equal("typed", await p.RunOnRefAsync(handle, RefFor(snap.Tree, "Input"), el => el.AsTextBox().Text));
+
+            Assert.DoesNotContain("error", await tools.DesktopToggle(handle.Id, RefFor(snap.Tree, "Check")));
+            Assert.DoesNotContain("error", await tools.DesktopExpand(handle.Id, RefFor(snap.Tree, "Exp")));
+            Assert.DoesNotContain("error", await tools.DesktopSelect(handle.Id, RefFor(snap.Tree, "ItemB")));
         }
     }
 

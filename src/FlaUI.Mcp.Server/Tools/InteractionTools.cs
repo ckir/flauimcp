@@ -39,4 +39,30 @@ public sealed class InteractionTools
         [Description("Element ref from a snapshot, e.g. e23.")] string @ref,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, Interactor.SetFocus, timeoutMs);
+
+    [McpServerTool(Destructive = true), Description("Set an element's value by ref via UIA ValuePattern (fast text/value set; focuses first). ElementNotActionable if read-only, PatternUnsupported if no ValuePattern (no synthetic typing this phase).")]
+    public Task<string> DesktopSetValue(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Element ref, e.g. e23.")] string @ref,
+        [Description("The value to set.")] string value,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => Act(window, @ref, el => Interactor.SetValue(el, value), timeoutMs);
+
+    [McpServerTool(Destructive = true), Description("Toggle an element by ref via UIA TogglePattern (checkbox/switch).")]
+    public Task<string> DesktopToggle(
+        [Description("Window handle.")] string window, [Description("Element ref.")] string @ref,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => Act(window, @ref, Interactor.Toggle, timeoutMs);
+
+    [McpServerTool(Destructive = true), Description("Expand or collapse an element by ref via UIA ExpandCollapsePattern (tree node / expander / combo).")]
+    public Task<string> DesktopExpand(
+        [Description("Window handle.")] string window, [Description("Element ref.")] string @ref,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => Act(window, @ref, Interactor.Expand, timeoutMs);
+
+    [McpServerTool(Destructive = true), Description("Select an element by ref via UIA SelectionItemPattern (list item / radio / tab). Replaces the current selection (no multi-select this phase).")]
+    public Task<string> DesktopSelect(
+        [Description("Window handle.")] string window, [Description("Element ref.")] string @ref,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => Act(window, @ref, Interactor.Select, timeoutMs);
 }
