@@ -10,7 +10,7 @@
 
 **Release:** v0.4.0. Scope is **3b-1 only**. Branch: `phase-3b-perception` (spec committed `abe9ee0`).
 
-**Revision note (post agy review, plan commit ≥`9781456`):** 13 adversarial-review fixes folded in — single-walk Task-0 pin, ctor/DI front-loading (Task 4 scaffolding), off-STA capture, full-desktop denylist blackout, popup-inclusive password redaction, `Value` removed from the default walk, `list_windows` `includeStats` dropped, diff composite identity, chainable `get_focused_element`, `valueEquals` LegacyIAccessible fallback, `CaptureUnavailable` exception mapping, hard `maxWidth` ceiling 1920, `suggestedRecovery` on every envelope.
+**Revision note (post agy review):** Round-1 folded 13 adversarial-review fixes — single-walk Task-0 pin, ctor/DI front-loading (Task 4 scaffolding), off-STA capture, popup-inclusive password redaction, `Value` removed from the default walk, `list_windows` `includeStats` dropped, diff composite identity, `valueEquals` LegacyIAccessible fallback, `CaptureUnavailable` exception mapping, hard `maxWidth` ceiling 1920, `suggestedRecovery` audit. Round-2 folded 3 more + 2 user decisions — `get_focused_element` uses Win32 `GetAncestor(GA_ROOT)` (not a fragile UIA parent-walk); `valueEquals` evaluated atomically in one STA hop, offscreen-culled to match the model; redaction rects clipped to the captured region; **full-desktop capture is REFUSED if any denylisted credential window is visible** (race-free, replacing the spec's blackout); hard 1920 ceiling retained; diff-identity virtualization limit documented.
 
 ---
 
@@ -1042,34 +1042,35 @@ git commit -m "feat(perception): desktop_list_windows includeBounds/zOrder (Task
 
 Selector against a FRESH tree each poll (`PollOptions` = InteractiveOnly=false, IncludeOffscreen=false) using a throwaway `RefRegistry`. Timeout ⇒ `{satisfied:false}`. `valueEquals` re-reads the **one matched element live** through `ValuePattern → Name → LegacyIAccessiblePattern.Value` (spec fallback; bounded to one element/poll — no per-node cost).
 
-- [ ] **Step 1: Live value read on `PerceptionManager`** (full spec fallback chain, one element):
+- [ ] **Step 1: Atomic selector-value evaluation on `PerceptionManager`** — finds the first NON-offscreen match in document (pre-order) order AND reads its value in ONE STA hop (no build-then-separate-read gap; ordering aligned with the model's offscreen cull — round-2 review fix). Returns `(Found, Value)`:
 ```csharp
-public Task<string?> ReadSelectorValueAsync(WindowHandle handle, string by, string value) =>
-    _windows.RunWithWindowAndDesktopAsync<string?>(handle, (win, desktop) =>
+public Task<(bool Found, string? Value)> EvaluateSelectorValueAsync(WindowHandle handle, string by, string value) =>
+    _windows.RunWithWindowAndDesktopAsync<(bool, string?)>(handle, (win, desktop) =>
     {
+        bool NotOffscreen(AutomationElement e) { try { return !e.Properties.IsOffscreen.ValueOrDefault; } catch { return false; } }
         AutomationElement? Match()
         {
             try
             {
                 return by switch
                 {
-                    "automationId" => win.FindFirstDescendant(cf => cf.ByAutomationId(value)),
-                    "name" => win.FindFirstDescendant(cf => cf.ByName(value)),
-                    "controlType" => win.FindAllDescendants().FirstOrDefault(e => { try { return e.ControlType.ToString().Equals(value, System.StringComparison.OrdinalIgnoreCase); } catch { return false; } }),
+                    "automationId" => win.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
+                    "name" => win.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
+                    "controlType" => win.FindAllDescendants().FirstOrDefault(e => { try { return NotOffscreen(e) && e.ControlType.ToString().Equals(value, System.StringComparison.OrdinalIgnoreCase); } catch { return false; } }),
                     _ => null
                 };
             }
             catch { return null; }
         }
         var el = Match();
-        if (el is null) return null;
-        try { var vp = el.Patterns.Value.PatternOrDefault; if (vp is not null) return vp.Value.ValueOrDefault; } catch { }
-        try { var nm = el.Name; if (!string.IsNullOrEmpty(nm)) return nm; } catch { }
-        try { var la = el.Patterns.LegacyIAccessible.PatternOrDefault; if (la is not null) return la.Value.ValueOrDefault; } catch { }
-        return null;
+        if (el is null) return (false, null);
+        try { var vp = el.Patterns.Value.PatternOrDefault; if (vp is not null) return (true, vp.Value.ValueOrDefault); } catch { }
+        try { var nm = el.Name; if (!string.IsNullOrEmpty(nm)) return (true, nm); } catch { }
+        try { var la = el.Patterns.LegacyIAccessible.PatternOrDefault; if (la is not null) return (true, la.Value.ValueOrDefault); } catch { }
+        return (true, null);
     });
 ```
-(STATE-VERIFY FlaUI accessor `el.Patterns.LegacyIAccessible.PatternOrDefault.Value` — adjust to the FlaUI 5 name if different.)
+(STATE-VERIFY FlaUI accessors `el.Patterns.Value.PatternOrDefault.Value` and `el.Patterns.LegacyIAccessible.PatternOrDefault.Value` — adjust to FlaUI 5 names if different.)
 - [ ] **Step 2: `WaitCoordinator.WaitForAsync`**:
 ```csharp
 public async Task<WaitForResult> WaitForAsync(WindowHandle handle, string by, string value,
@@ -1080,18 +1081,22 @@ public async Task<WaitForResult> WaitForAsync(WindowHandle handle, string by, st
     var sw = System.Diagnostics.Stopwatch.StartNew();
     while (true)
     {
-        var (_, model) = await _perception.BuildModelAsync(handle, PollOptions, new RefRegistry());
-        var match = model.Nodes.FirstOrDefault(n => Matches(n, by, value));
         bool satisfied;
         if (until == "valueEquals")
         {
-            var live = match is null ? null : await _perception.ReadSelectorValueAsync(handle, by, value);
-            satisfied = match is not null && string.Equals(live, equals, System.StringComparison.Ordinal);
+            // Atomic — single STA hop finds the match AND reads its value (no separate read gap).
+            var (found, live) = await _perception.EvaluateSelectorValueAsync(handle, by, value);
+            satisfied = found && string.Equals(live, equals, System.StringComparison.Ordinal);
         }
-        else satisfied = until switch
+        else
         {
-            "exists" => match is not null, "gone" => match is null, "enabled" => match is { Enabled: true }, _ => match is not null
-        };
+            var (_, model) = await _perception.BuildModelAsync(handle, PollOptions, new RefRegistry());
+            var match = model.Nodes.FirstOrDefault(n => Matches(n, by, value));
+            satisfied = until switch
+            {
+                "exists" => match is not null, "gone" => match is null, "enabled" => match is { Enabled: true }, _ => match is not null
+            };
+        }
         if (satisfied)
         {
             var (snapId, real) = await _perception.SnapshotModelForWaitAsync(handle, PollOptions);
@@ -1321,19 +1326,22 @@ git commit -m "feat(perception): desktop_wait_for_stable (Task 10)"
 
 Returns the focused element's ref **scoped to its owning window's handle** so it is actionable (review §7). Resolves the owning top-level HWND, opens/registers it as a `WindowHandle`, snapshots that window, and returns the matching ref. `window.handle` is null only when the owning window genuinely can't be resolved (then ref is in a focus-only namespace — documented). `AccessDeniedIntegrity` on secure desktop; `NoFocusedElement` otherwise.
 
-- [ ] **Step 1: STATE-VERIFY** — FlaUI `UIA3Automation.FocusedElement()`; element→owning-window via `el.Properties.NativeWindowHandle` walking up, or `automation.FromHandle(rootHwnd)`. Confirm accessor names.
-- [ ] **Step 2: `WindowManager`** — focused element + its top-level HWND, registered as a handle:
+- [ ] **Step 1: STATE-VERIFY** — FlaUI `UIA3Automation.FocusedElement()`; `el.Properties.NativeWindowHandle.ValueOrDefault` type (likely `IntPtr`). The owning top-level window is resolved via **Win32 `GetAncestor(hwnd, GA_ROOT)`** (robust — the UIA parent-by-ControlType walk is unreliable because Panes are abused by app/splitter/modal structures, per the round-2 review). A focused element is by definition in the foreground window, so `GetForegroundWindow()` is the fallback when the element reports no own HWND.
+- [ ] **Step 2: `WindowManager`** — add the P/Invoke (next to the others, after L142) and the resolver:
 ```csharp
+[DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+private const uint GA_ROOT = 2;
+
 public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowAsync() =>
     _dispatcher.RunQueryAsync<(WindowHandle, string, int)?>(() =>
     {
         var focused = _automation.FocusedElement();
         if (focused is null) return null;
-        IntPtr hwnd;
-        try { hwnd = new IntPtr(focused.Properties.NativeWindowHandle.ValueOrDefault.ToInt64()); } catch { hwnd = IntPtr.Zero; }
-        // Walk to the top-level owner if the element itself has no hwnd.
-        if (hwnd == IntPtr.Zero)
-            try { var top = focused.Parent; while (top != null && top.Parent != null && top.Parent.ControlType != FlaUI.Core.Definitions.ControlType.Pane) top = top.Parent; hwnd = top is null ? IntPtr.Zero : new IntPtr(top.Properties.NativeWindowHandle.ValueOrDefault.ToInt64()); } catch { }
+        IntPtr hwnd = IntPtr.Zero;
+        try { hwnd = focused.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+        // True top-level window via Win32 GA_ROOT; fall back to the foreground window (a focused
+        // element is always in it) when the element exposes no own HWND.
+        hwnd = hwnd != IntPtr.Zero ? GetAncestor(hwnd, GA_ROOT) : GetForegroundWindow();
         int pid = -1; string title = "";
         try { pid = focused.Properties.ProcessId.ValueOrDefault; } catch { }
         try { title = focused.Properties.Name.ValueOrDefault ?? ""; } catch { }
@@ -1342,7 +1350,7 @@ public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowA
         return (handle, title, pid);
     });
 ```
-(STATE-VERIFY `NativeWindowHandle` value type — it may already be `IntPtr`; simplify the conversion accordingly.)
+(STATE-VERIFY `NativeWindowHandle.ValueOrDefault` is `IntPtr`; if it's a wrapped type, convert. `GetForegroundWindow` is already imported, L142.)
 - [ ] **Step 3: `PerceptionManager.GetFocusedElementAsync`** — snapshot the owning window, find the focused node:
 ```csharp
 public sealed record FocusedElementInfo(string Ref, string DescriptorLine, string Title, int Pid, string? WindowHandle);
@@ -1478,9 +1486,11 @@ public static class ScreenCapture
             using var black = new SolidBrush(Color.Black);
             foreach (var r in redactAbsolute)
             {
+                if (!r.IntersectsWith(captureBounds)) continue; // off-crop field — don't count/paint
+                var clip = Rectangle.Intersect(r, captureBounds);  // clip to the captured region
                 var rel = new Rectangle(
-                    (int)System.Math.Round((r.X - captureBounds.X) * scale), (int)System.Math.Round((r.Y - captureBounds.Y) * scale),
-                    (int)System.Math.Round(r.Width * scale), (int)System.Math.Round(r.Height * scale));
+                    (int)System.Math.Round((clip.X - captureBounds.X) * scale), (int)System.Math.Round((clip.Y - captureBounds.Y) * scale),
+                    (int)System.Math.Round(clip.Width * scale), (int)System.Math.Round(clip.Height * scale));
                 if (rel.Width <= 0 || rel.Height <= 0) continue;
                 g.FillRectangle(black, rel); painted++;
             }
@@ -1538,7 +1548,7 @@ git commit -m "feat(perception): off-STA ScreenCapture (by-rect, redact, clamp, 
 
 **Files:** Modify `ToolResponse.cs`, `ScreenshotTools.cs`, `PerceptionManager.cs`; Test `Server/ScreenshotToolTests.cs` (Desktop).
 
-**STA collects** geometry only (target rect, password rects across `PopupFinder.SearchRoots`, minimized/denied flags); **off-STA** does `ScreenCapture.CaptureRectangle` + redaction + PNG. **Full-desktop blacks the whole Win32 box of every denylisted window** (review §5). `output:"file"`→`NotImplemented`; minimized→`ElementNotActionable`; denylisted→`TargetDenied`; headless→`CaptureUnavailable`.
+**STA collects** geometry only (target rect, password rects across `PopupFinder.SearchRoots`, minimized/denied flags); **off-STA** does `ScreenCapture.CaptureRectangle` + redaction + PNG. **Full-desktop is REFUSED (`TargetDenied`) if any denylisted credential window is currently visible** — race-free, vs blacking a box that may move before the BitBlt (round-2 review). `output:"file"`→`NotImplemented`; minimized→`ElementNotActionable`; window denylisted→`TargetDenied`; headless→`CaptureUnavailable`.
 
 - [ ] **Step 1: `ToolResponse` image helpers** (add `using ModelContextProtocol.Protocol;`):
 ```csharp
@@ -1583,21 +1593,19 @@ public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle hand
         return new CaptureGeometry(target.BoundingRectangle, pw, false, false, null);
     });
 
-// Full-desktop: the absolute boxes of every denylisted-process window, to black out (review §5).
-public async Task<IReadOnlyList<System.Drawing.Rectangle>> DenylistedWindowBoxesAsync()
+// Full-desktop floor: is ANY denylisted-process window currently listed (visible)? If so the
+// whole-desktop capture is refused (race-free vs blacking out a window that may move before the
+// BitBlt — round-2 review). Pure Win32 list, fast.
+public async Task<bool> DenylistedWindowsVisibleAsync()
 {
-    var windows = await _windows.ListWindowsAsync(includeBounds: true);
-    var boxes = new List<System.Drawing.Rectangle>();
-    foreach (var w in windows)
-        if (PerceptionPolicy.IsDenied(w.ProcessName) && w.Bounds is { } b)
-            boxes.Add(new System.Drawing.Rectangle(b.X, b.Y, b.W, b.H));
-    return boxes;
+    var windows = await _windows.ListWindowsAsync();
+    return windows.Any(w => PerceptionPolicy.IsDenied(w.ProcessName));
 }
 ```
 (STATE-VERIFY `win.Patterns.Window.PatternOrDefault.WindowVisualState` accessor in FlaUI 5.)
 - [ ] **Step 3: Tool** (`ScreenshotTools.cs`, add `using ModelContextProtocol.Protocol;`, `using FlaUI.Mcp.Core.Errors;`) — STA geometry, then OFF-STA capture:
 ```csharp
-[McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON {bounds,dpiScale,scaleApplied,redactions}. Password fields are redacted at capture time (window/element scope covers popups; full-desktop blacks denylisted credential windows). output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
+[McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON {bounds,dpiScale,scaleApplied,redactions}. Password fields are redacted at capture time (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
 public Task<CallToolResult> DesktopScreenshot(
     [Description("Window handle, e.g. w1. Omit (and omit ref) for the full virtual desktop.")] string? window = null,
     [Description("Element ref to capture (requires window).")] string? @ref = null,
@@ -1613,9 +1621,16 @@ public Task<CallToolResult> DesktopScreenshot(
         CaptureResult result;
         if (string.IsNullOrEmpty(window))
         {
-            var boxes = await _perception.DenylistedWindowBoxesAsync();          // STA (Win32 list)
+            // Refuse full-desktop capture if ANY denylisted credential window is currently visible —
+            // race-free (a blackout box could be painted at stale coords if the window moved between
+            // enumeration and BitBlt → leak). The agent captures a specific window instead.
+            var present = await _perception.DenylistedWindowsVisibleAsync();     // STA (Win32 list)
+            if (present)
+                throw new ToolException(ToolErrorCode.TargetDenied,
+                    "A credential/denylisted window is currently visible; full-desktop capture is refused.",
+                    "capture a specific non-sensitive window: desktop_screenshot window=<handle>");
             var vbounds = ScreenCapture.VirtualScreenBounds();
-            result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, boxes, maxWidth)); // OFF-STA
+            result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, System.Array.Empty<System.Drawing.Rectangle>(), maxWidth)); // OFF-STA
         }
         else
         {
@@ -1687,7 +1702,7 @@ git commit -m "feat(perception): desktop_screenshot off-STA + popup/denylist red
 - [ ] **Step 1: Audits** — `Grep` each new tool for `[McpServerTool(ReadOnly = true)` (none `Destructive`). `Grep` every `throw new ToolException(` added this phase for a non-null `suggestedRecovery` 3rd arg. `dotnet build -c Debug` → `0 Error(s)`.
 - [ ] **Step 2: Non-Desktop gate** — `dotnet test --filter "Category!=Desktop"` → green (65 + `ToolErrorCodeAdditionsTests`).
 - [ ] **Step 3: Full Desktop suite (connected session), one class at a time** — `SnapshotModelPinTests`, `FocusedFlagTests`, `RecycleGuardTests`, `SnapshotCacheTests`, `GetBoundsTests`, `SnapshotStatsTests`, `SnapshotDiffTests`, `ListWindowsExtensionTests`, `WaitForTests`, `WaitForStableTests`, `GetFocusedElementTests`, `ScreenCaptureTests`, `ScreenshotToolTests`; regressions `SnapshotEngineTests`, `SnapshotToolsTests`, `OffscreenCullTests`, `PasswordRedactionTests`, `PopupGraftingTests`, `InteractionToolsTests`. (Debug-workflow rule: bounded foreground runs, TRX counters, loop-kill orphans.)
-- [ ] **Step 4: `ROADMAP.md`** — mark 3b-1 shipped; 3b-2 (grid/text/clipboard) stays a forward spec; backlog: screenshot occlusion (PrintWindow), full-desktop per-field redaction for non-denied windows, snapshot/diff value-change detection (needs opt-in value reads), `wait_for_stable` scope-by-ref.
+- [ ] **Step 4: `ROADMAP.md`** — mark 3b-1 shipped; 3b-2 (grid/text/clipboard) stays a forward spec; backlog: screenshot occlusion (PrintWindow), snapshot/diff value-change detection (needs opt-in value reads), `wait_for_stable` scope-by-ref, and the documented **diff identity limitation** — anonymous virtualized recycled rows (empty AutomationId + empty Name + recycled RuntimeId, e.g. WPF DataGrid) can collide under the composite key; diff such content by value/text, not structurally (also note this in the `desktop_snapshot_diff` tool description).
 - [ ] **Step 5: `README.md`** — add the 7 tools + `list_windows includeBounds`; screenshot/redaction safety note; v0.4.0.
 - [ ] **Step 6: Version** — `FlaUI.Mcp.Server.csproj` `<Version>0.4.0</Version>`.
 - [ ] **Step 7: Commit**
