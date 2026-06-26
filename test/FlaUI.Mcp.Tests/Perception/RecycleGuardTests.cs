@@ -21,7 +21,7 @@ public class RecycleGuardTests : IClassFixture<TestAppFixture>
         var (same, diverged) = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
         {
             var status = win.FindFirstDescendant(cf => cf.ByAutomationId("Status"))!;
-            var rid = status.Properties.RuntimeId.ValueOrDefault;
+            var rid = status.Properties.RuntimeId.ValueOrDefault ?? System.Array.Empty<int>();
             var live = status.Name;
             var dSame = new ElementDescriptor(rid, status.ControlType, "Status", live, null, System.Array.Empty<int>());
             var dDiff = new ElementDescriptor(rid, status.ControlType, "Status", live + "-X", null, System.Array.Empty<int>());
