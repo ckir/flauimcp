@@ -19,6 +19,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Serializes Desktop UIA tests (parallelizeTestCollections:false) so concurrent test classes
+         don't launch competing TestApp windows and collide on focus. Copied next to the assembly. -->
+    <None Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\FlaUI.Mcp.Core\FlaUI.Mcp.Core.csproj" />
     <ProjectReference Include="..\..\src\FlaUI.Mcp.Server\FlaUI.Mcp.Server.csproj" />
   </ItemGroup>
