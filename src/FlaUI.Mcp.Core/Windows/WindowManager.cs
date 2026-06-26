@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Threading;
@@ -28,17 +30,12 @@ public sealed class WindowManager : IDisposable
     public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync() =>
         _dispatcher.RunQueryAsync<IReadOnlyList<WindowInfo>>(() =>
         {
-            var desktop = _automation.GetDesktop();
-            var focused = _automation.FocusedElement();
+            // PURE Win32 — no UIA. A UIA Title/ProcessId read on the query STA blocks with no
+            // timeout on ANY momentarily-unresponsive desktop window; Win32 GetWindowText does not.
+            var foreground = GetForegroundWindow();
             var list = new List<WindowInfo>();
-            foreach (var child in desktop.FindAllChildren())
-            {
-                var w = child.AsWindow();
-                if (string.IsNullOrEmpty(w.Title)) continue;
-                int pid = w.Properties.ProcessId.ValueOrDefault;
-                bool fg = focused != null && focused.Properties.ProcessId.ValueOrDefault == pid;
-                list.Add(new WindowInfo(w.Title, SafeProcessName(pid), pid, fg));
-            }
+            foreach (var (hwnd, title, pid) in EnumTopLevel())
+                list.Add(new WindowInfo(title, SafeProcessName(pid), pid, hwnd == foreground));
             return list;
         });
 
@@ -49,20 +46,18 @@ public sealed class WindowManager : IDisposable
             // goes input-idle. Poll briefly so launch->open (and slow-rendering apps under load) don't
             // spuriously fail with "No window for pid".
             var deadline = DateTime.UtcNow.AddSeconds(12);
-            Window? match;
+            IntPtr hwnd;
             while (true)
             {
-                match = _automation.GetDesktop().FindAllChildren()
-                    .Select(c => c.AsWindow())
-                    .FirstOrDefault(w => w.Properties.ProcessId.ValueOrDefault == pid
-                                         && !string.IsNullOrEmpty(w.Title));
-                if (match != null || DateTime.UtcNow >= deadline) break;
+                hwnd = EnumTopLevel().FirstOrDefault(w => w.Pid == pid).Hwnd;
+                if (hwnd != IntPtr.Zero || DateTime.UtcNow >= deadline) break;
                 Thread.Sleep(100);
             }
-            if (match is null)
+            if (hwnd == IntPtr.Zero)
                 throw new ToolException(ToolErrorCode.WindowNotFound,
                     $"No window for pid {pid}.", "re-list windows");
-            return Register(match, pid);
+            // Touch UIA only for the ONE resolved target (our app's window — responsive).
+            return Register(_automation.FromHandle(hwnd).AsWindow(), pid);
         });
 
     public Task<T> RunOnWindowAsync<T>(WindowHandle handle, Func<Window, T> func) =>
@@ -120,6 +115,54 @@ public sealed class WindowManager : IDisposable
         try { return Process.GetProcessById(pid).ProcessName; } catch { return "unknown"; }
     }
 
+    // ── Win32 top-level window enumeration ────────────────────────────────────────────────
+    // A UIA Title/ProcessId read (the old GetDesktop().FindAllChildren() path) on the query STA
+    // blocks with NO timeout on ANY momentarily-unresponsive desktop window. GetWindowText, by
+    // MSDN design, does NOT block on a hung window of another process (it returns the cached
+    // caption). So we enumerate/match via pure Win32 and touch UIA only for the ONE resolved
+    // target window (via FromHandle).
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr extraData);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextLengthW(IntPtr hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder buffer, int maxCount);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    /// <summary>Enumerate visible, titled top-level windows via pure Win32 — never blocks on an
+    /// unresponsive window of another process (unlike a UIA Title read). Mirrors the old filter
+    /// (visible + non-empty title).</summary>
+    private static List<(IntPtr Hwnd, string Title, int Pid)> EnumTopLevel()
+    {
+        var result = new List<(IntPtr, string, int)>();
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd)) return true;
+            int len = GetWindowTextLengthW(hwnd);
+            if (len == 0) return true; // mirrors the old !string.IsNullOrEmpty(w.Title) filter
+            var sb = new StringBuilder(len + 1);
+            GetWindowTextW(hwnd, sb, sb.Capacity);
+            var title = sb.ToString();
+            if (string.IsNullOrEmpty(title)) return true;
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            result.Add((hwnd, title, (int)pid));
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
+
     public async Task<(WindowHandle handle, int pid)> LaunchAppAsync(string path, string? args, int timeoutMs)
     {
         // Snapshot all existing PIDs before launch so we can detect newly spawned ones
@@ -168,25 +211,21 @@ public sealed class WindowManager : IDisposable
     private Task<WindowHandle?> TryOpenByPidQuiet(int pid) =>
         _dispatcher.RunQueryAsync<WindowHandle?>(() =>
         {
-            var match = _automation.GetDesktop().FindAllChildren()
-                .Select(c => c.AsWindow())
-                .FirstOrDefault(w => w.Properties.ProcessId.ValueOrDefault == pid
-                                     && !string.IsNullOrEmpty(w.Title));
-            return match is null ? (WindowHandle?)null : Register(match, pid);
+            var hwnd = EnumTopLevel().FirstOrDefault(w => w.Pid == pid).Hwnd;
+            return hwnd == IntPtr.Zero
+                ? (WindowHandle?)null
+                : Register(_automation.FromHandle(hwnd).AsWindow(), pid);
         });
 
     private Task<(WindowHandle handle, int pid)?> TryOpenByMatchingNewPidQuiet(
         HashSet<int> preExistingPids, string expectedProcessName) =>
         _dispatcher.RunQueryAsync<(WindowHandle, int)?>(() =>
         {
-            foreach (var child in _automation.GetDesktop().FindAllChildren())
+            foreach (var (hwnd, _, pid) in EnumTopLevel())
             {
-                var w = child.AsWindow();
-                if (string.IsNullOrEmpty(w.Title)) continue;
-                int pid = w.Properties.ProcessId.ValueOrDefault;
                 if (preExistingPids.Contains(pid)) continue;
                 if (!LaunchedWindowMatcher.IsExpectedApp(expectedProcessName, SafeProcessName(pid))) continue;
-                return (Register(w, pid), pid);
+                return (Register(_automation.FromHandle(hwnd).AsWindow(), pid), pid);
             }
             return ((WindowHandle, int)?)null;
         });
@@ -194,22 +233,18 @@ public sealed class WindowManager : IDisposable
     public Task<WindowHandle> OpenByTitleAsync(string title) =>
         _dispatcher.RunQueryAsync(() =>
         {
-            var matches = _automation.GetDesktop().FindAllChildren()
-                .Select(c => c.AsWindow())
-                .Where(w => w.Title == title)
-                .ToList();
+            var matches = EnumTopLevel().Where(w => w.Title == title).ToList();
             if (matches.Count == 0)
                 throw new ToolException(ToolErrorCode.WindowNotFound, $"No window titled '{title}'.", "re-list windows");
             if (matches.Count > 1)
             {
-                var candidates = string.Join("; ", matches.Select(m =>
-                    $"pid={m.Properties.ProcessId.ValueOrDefault} bounds={m.BoundingRectangle}"));
+                var candidates = string.Join("; ", matches.Select(m => $"pid={m.Pid} hwnd={m.Hwnd}"));
                 throw new ToolException(ToolErrorCode.AmbiguousMatch,
                     $"{matches.Count} windows titled '{title}': {candidates}",
                     "re-open by:pid using one of the listed pids");
             }
-            var win = matches[0];
-            return Register(win, win.Properties.ProcessId.ValueOrDefault);
+            var match = matches[0];
+            return Register(_automation.FromHandle(match.Hwnd).AsWindow(), match.Pid);
         });
 
     /// <summary>Run a callback on a transient ACTION STA with the window and Desktop resolved
