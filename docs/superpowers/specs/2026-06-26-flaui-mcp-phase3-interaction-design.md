@@ -1,7 +1,7 @@
 # FlaUI.Mcp — Phase 3: Pattern-Based Interaction (design)
 
 **Date:** 2026-06-26
-**Status:** Design approved pending user review → feeds writing-plans (3a first)
+**Status:** Revised after AGY-AFTER review (cross-STA cache/window-root fix; window_transform→3a) → pending user review → feeds writing-plans (3a first)
 **Builds on:** [`2026-06-25-flaui-mcp-server-design.md`](2026-06-25-flaui-mcp-server-design.md)
 (master spec — tool semantics, error envelopes, STA dispatcher) and the
 [`project-flaui-mcp-prompt-injection`] memory (safety model).
@@ -20,9 +20,9 @@ carry `destructiveHint:true`, and an opt-in `--read-only-mode` server flag gives
 perception-only deployment.
 
 The master spec already fixes the per-tool semantics. This document fixes the **Phase-3
-decisions** made in the 2026-06-26 brainstorming (with an agy review pass): the
-two-increment split, the new components, the cross-STA execution model, the safety
-posture, and the deltas to the master tool catalog.
+decisions** made in the 2026-06-26 brainstorming (agy AGY-BEFORE + AGY-AFTER passes
+folded): the two-increment split, the new components, the cross-STA execution model, the
+safety posture, and the deltas to the master tool catalog.
 
 ## Phase boundary (recap)
 
@@ -50,10 +50,12 @@ surface; 3b completes the surface. Both are synthetic-input-free.
 | `desktop_scroll_into_view` | ScrollItemPattern | Bring an **element** into view. **Kept separate** from `desktop_scroll` (distinct intent; decided 2026-06-26). |
 | `desktop_scroll` | ScrollPattern | Scroll a **container** by direction/amount — realizes virtualized children, then re-snapshot. |
 | `desktop_set_focus` | UIA `Focus()` | **NEW (agy catch).** Pure UIA, not synthetic input. Focus is frequently a prerequisite that triggers lazy-loaded data / enables downstream controls. Element-scoped — distinct from Phase-1 `desktop_focus_window`. |
+| `desktop_window_transform` | WindowPattern / TransformPattern | maximize/minimize/restore/move/resize (**not** close — already Phase-1 `desktop_close_window`). **Pulled into 3a (decided 2026-06-26):** window-scoped, low-complexity, and independent of the ref-resolution path — acts on the window handle directly via the action STA, no descriptor re-walk. |
 
-Plus the cross-cutting 3a infrastructure: the **`Interactor`** component, the
-**action-STA cross-STA resolution** path, the **`--read-only-mode`** flag, and
-`destructiveHint` annotations on every tool above.
+Plus the cross-cutting 3a infrastructure: the **`Interactor`** component, the new
+**action-STA `UIA3Automation`** + **cross-STA descriptor resolution** path
+(`RunOnRefActionAsync`), the **`--read-only-mode`** flag, and `destructiveHint`
+annotations on every element-targeted tool above.
 
 ### 3b → v0.4.0 — structured patterns + perception completion
 
@@ -63,9 +65,7 @@ their shapes now):
 
 - **Structured patterns:** `desktop_get_grid_cell` / `desktop_grid_select`
   (GridPattern/TablePattern), `desktop_get_text` / `desktop_set_caret` /
-  `desktop_select_text_range` (TextPattern), `desktop_window_transform`
-  (Window/TransformPattern: maximize/minimize/restore/move/resize — **not** close;
-  close already shipped as Phase-1 `desktop_close_window`).
+  `desktop_select_text_range` (TextPattern). (`desktop_window_transform` moved to 3a.)
 - **Perception completion (read-only):** `desktop_screenshot` (+`dpiScale`/pixel dims),
   `desktop_get_bounds`, `desktop_snapshot_stats`, `desktop_snapshot_global`,
   `desktop_snapshot_diff`.
@@ -100,31 +100,56 @@ ref to its own native COM pointer.**
 Existing (keep): `PerceptionManager.RunOnRefAsync<T>(handle, ref, Func<element,T>)`
 resolves **and** runs `func` on the **query** STA (via
 `WindowManager.RunWithWindowAndDesktopAsync`). Correct for **read-only** ref tools
-(`get_bounds`, `get_text`, `get_grid_cell`, element screenshot — all 3b).
+(`get_bounds`, `get_text`, `get_grid_cell`, element screenshot — all 3b): the cache
+fast-path is fine there because there is no cross-apartment `Invoke`.
 
-New (3a):
-- `WindowManager.RunWithWindowAndDesktopActionAsync<T>(handle, Func<Window,desktop,T>, int timeoutMs)`
-  — sibling of the query primitive that routes through
-  `AutomationDispatcher.RunActionAsync<T>(func, timeoutMs)` (the action STA, already
-  built in Phase 1) instead of the query dispatcher.
-- `PerceptionManager.RunOnRefActionAsync<T>(handle, ref, Func<element,T>, int timeoutMs)`
-  — mirrors `RunOnRefAsync` but on the action STA: resolves the ref with
-  `RefRegistry.Resolve(handle.Id, ref, SearchRoots(win, desktop))` **on the action STA**,
-  then runs `func` (the pattern call) there. On timeout the action STA stays parked on
-  the pending COM call and the call returns `ACTION_BLOCKED_PENDING` (non-error: "likely
-  opened a modal — snapshot to see it"); the query STA remains live to perceive it.
+**The action path is NOT just "RunOnRefAsync on the action STA."** The AGY-AFTER review
+surfaced two traps (both confirmed against v0.2.0) that make naive reuse silently defeat
+the split:
 
-Every 3a state-changing tool flows: tool → `RunOnRefActionAsync` → (resolve on action
-STA) → `Interactor.<pattern>` → result.
+- **Cache trap.** `RefRegistry.Resolve`'s fast-path returns the *cached*
+  `AutomationElement` — created on the **query** STA. Hand it to the action STA, call
+  `Invoke()`, and COM marshals the call **back** to the query STA, re-blocking the very
+  thread the split exists to keep alive. → the action path must **bypass the cache** and
+  re-walk from the `ElementDescriptor` only.
+- **Window-root trap.** `WindowManager._handles` holds **query-STA** `Window` objects
+  (built with the query-STA `UIA3Automation`); they cannot serve as action-STA search
+  roots for the same reason.
 
-Resolution reuses option-C exactly as built (cache fast-path gated by RuntimeId **and**
-the offscreen/Name sanity check from Phase 2; then AutomationId; then Name+ControlType
-under nearest stable ancestor; then IndexPath). **No new error code** — if re-resolution
-fails the existing `REF_STALE_UNRESOLVABLE` is returned ("re-snapshot"); an element that
-vanishes mid-action yields the existing `ELEMENT_DISAPPEARED_DURING_ACTION`. (We do
-**not** add agy's suggested `ACTION_FAILED_STALE_REF` — it duplicates these.) Resolution
-on the action STA uses a short fast-fail budget so a churning UI fails fast to the agent
-loop rather than retrying heavily.
+So Phase 3 (3a) adds an **action-STA `UIA3Automation`** — through Phase 2 the query
+automation was the only one — and a descriptor-first, **cache-free** action resolution
+path:
+
+- A small action-STA automation provider creates and owns a `UIA3Automation` on the
+  **action** thread (mirrors how the query automation is created on the query thread; both
+  live behind `AutomationDispatcher`).
+- `PerceptionManager.RunOnRefActionAsync<T>(handle, ref, Func<element,T>, int timeoutMs)`:
+  (1) read **only** the `ElementDescriptor` from the registry (a brief locked read — *not*
+  the cached element); (2) hop to the action STA via
+  `AutomationDispatcher.RunActionAsync(…, timeoutMs)`; (3) on the action STA, resolve the
+  target window **independently** from its stored native handle (`actionAutomation.FromHandle(hwnd)`
+  — the HWND is captured once on the query STA at handle registration and stored with the
+  `WindowHandle`); (4) run the descriptor re-walk (AutomationId → Name+ControlType under
+  nearest stable ancestor → IndexPath) scoped under that action-STA window; (5) run `func`
+  (the pattern call). On timeout the action STA stays parked on the pending COM call and
+  the call returns `ACTION_BLOCKED_PENDING` (non-error: "snapshot to see the modal"); the
+  query STA stays live.
+
+To share the descriptor re-walk between the query path (cached-or-walk) and the action
+path (walk-only), **extract** the AutomationId/Name/IndexPath search from
+`RefRegistry.Resolve` into a descriptor-walk helper that takes explicit roots and does
+**not** consult the cache; `RunOnRefActionAsync` calls that helper with action-STA roots.
+
+Every 3a state-changing tool flows: tool → `RunOnRefActionAsync` → (cache-free
+descriptor-walk on the action STA) → `Interactor.<pattern>` → result. Window-scoped
+`desktop_window_transform` skips the ref path entirely — it resolves the window on the
+action STA and calls WindowPattern/TransformPattern directly.
+
+**No new resolution error code** — descriptor re-walk failure returns the existing
+`REF_STALE_UNRESOLVABLE` ("re-snapshot"); an element that vanishes mid-action yields the
+existing `ELEMENT_DISAPPEARED_DURING_ACTION`. (We do **not** add agy's suggested
+`ACTION_FAILED_STALE_REF` — it duplicates these.) The action-STA walk uses a short
+fast-fail budget so a churning UI fails fast to the agent loop rather than retrying heavily.
 
 ### `--read-only-mode` flag (Server)
 
@@ -133,9 +158,13 @@ stdio approval-token loop, no native approval toast). When the server is started
 `--read-only-mode`, any tool invocation whose tool lacks `readOnlyHint:true` is rejected
 with a structured error before execution. Implementation: read the flag in `Program.cs`
 arg handling (alongside the existing CLI/installer verb branch), store it on a small
-server-scoped option, and enforce it at the tool boundary (a shared guard in
-`ToolResponse`, reading the tool's annotation). Gives a perception-only deployment that
-does not depend on the **client** honoring `destructiveHint` — the right safety net for
+injected server-config singleton, and enforce it explicitly in the existing
+`ToolResponse.Guard` funnel via a known read/write tool classification — **not** by
+reflecting the SDK `ReadOnly` annotation at runtime. (Per the AGY-AFTER review,
+`WithToolsFromAssembly` dispatch exposes no pre-invocation hook to block on the
+attribute, so enforcement is explicit, not "magical SDK interception.") Gives a
+perception-only deployment that does not depend on the **client** honoring
+`destructiveHint` — the right safety net for
 a publicly `irm|iex`-distributed tool. **Explicitly rejected for v1:** a server-spawned
 WinForms/WPF "Allow/Deny" toast (focus-stealing, overlay z-fighting, timeout deadlock —
 a whole new failure domain, per agy and concurred).
@@ -185,6 +214,9 @@ Tests (Core, `[Trait Desktop]` unless noted):
   blocking-Invoke test's query-STA liveness is the observable proof isolation held.
 - **`set_focus`**: focusing the reveal control makes the hidden label appear in a
   follow-up snapshot.
+- **`window_transform`** (Desktop): maximize then restore the TestApp window; assert the
+  window bounds change then revert (WindowPattern/TransformPattern — window-scoped,
+  exercises the action STA without the ref path).
 - **`--read-only-mode`** (non-Desktop): with the flag set, a write tool is rejected with
   `WriteBlockedReadOnly`; a read tool passes. Pure decision seam — runs in headless CI.
 
