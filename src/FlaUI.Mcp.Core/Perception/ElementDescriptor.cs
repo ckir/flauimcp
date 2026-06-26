@@ -11,4 +11,5 @@ public sealed record ElementDescriptor(
     string AutomationId,
     string Name,
     string? AncestorAutomationId,
-    IReadOnlyList<int> IndexPath);
+    IReadOnlyList<int> IndexPath,
+    bool Focused = false);

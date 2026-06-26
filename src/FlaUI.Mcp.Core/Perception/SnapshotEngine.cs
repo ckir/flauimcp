@@ -75,17 +75,18 @@ public static class SnapshotEngine
             string childIndent = indent;
             if (include)
             {
-                var descriptor = new ElementDescriptor(rid, ct, aid, name, ancestorAid, indexPath);
-                var @ref = refs.Register(windowId, descriptor, el);
                 var rect = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
                 bool enabled = Safe(() => el.IsEnabled, false);
                 bool focusable = Safe(() => el.Properties.IsKeyboardFocusable.ValueOrDefault, false);
+                bool focused = Safe(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
                 bool isPassword = Safe(() => el.Properties.IsPassword.ValueOrDefault, false);
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 var patterns = SupportedPatterns(el);
                 string help = Safe(() => el.HelpText, "");
+                var descriptor = new ElementDescriptor(rid, ct, aid, name, ancestorAid, indexPath, focused);
+                var @ref = refs.Register(windowId, descriptor, el);
                 items.Add(new SnapshotNode(@ref, depth, indent, ct, aid, name, rect, enabled, focusable,
-                    false, isPassword, offscreen, rid, patterns, help));
+                    focused, isPassword, offscreen, rid, patterns, help));
                 childIndent = indent + "  ";
             }
             var nextAncestor = string.IsNullOrEmpty(aid) ? ancestorAid : aid;
