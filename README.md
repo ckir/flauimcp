@@ -3,8 +3,9 @@
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets an AI
 agent — Claude Code, Antigravity (agy), or any MCP client — **control the Windows desktop**:
 enumerate windows, launch applications, focus/close windows, **snapshot a window's UI into
-a ref-tagged accessibility tree**, and **act on elements through UI Automation patterns**
-(click, set value, toggle, expand, select, scroll, focus, window min/max) — with raw
+a ref-tagged accessibility tree**, **screenshot windows or the desktop, read element bounds,
+diff/stat snapshots, and wait for UI conditions**, and **act on elements through UI Automation
+patterns** (click, set value, toggle, expand, select, scroll, focus, window min/max) — with raw
 mouse/keyboard input synthesis still on the roadmap. Think "Playwright, but for native
 Windows apps."
 
@@ -57,12 +58,25 @@ tools an agent can call.
 
 | Tool | Read-only | Description |
 | --- | --- | --- |
-| `DesktopListWindows` | ✅ | List top-level windows with title, process name, and PID. |
+| `DesktopListWindows` | ✅ | List top-level windows with title, process name, and PID. Opt-in `includeBounds` adds absolute physical-pixel `Bounds` + `ZOrder` (0 = topmost) for occlusion reasoning. |
 | `DesktopOpenWindow` | ✅ | Open a window by `pid` or `title`, returning a handle (e.g. `w1`). |
-| `DesktopSnapshot` | ✅ | Walk a window's UI into an indented, ref-tagged accessibility-tree snapshot. Each line carries an `eN` ref, control type, name, bounds, state, and supported patterns. Options: `interactiveOnly` (prune noise, default on), `fullProperties` (add AutomationId/HelpText), `includeOffscreen` (default off), `maxDepth`, and `root` (root the walk at a prior ref). |
+| `DesktopSnapshot` | ✅ | Walk a window's UI into an indented, ref-tagged accessibility-tree snapshot. Each line carries an `eN` ref, control type, name, bounds, state (incl. `focused`), and supported patterns. Options: `interactiveOnly` (prune noise, default on), `fullProperties` (add AutomationId/HelpText), `includeOffscreen` (default off), `maxDepth`, and `root` (root the walk at a prior ref). |
 | `DesktopLaunchApp` | — | Launch an executable (with optional args) and return a handle to its main window. |
 | `DesktopFocusWindow` | — | Bring a window to the foreground. |
 | `DesktopCloseWindow` | — | Close a window and free its handle. |
+
+**Perception-completion tools (read-only — new in v0.4.0):** screenshot, bounds, snapshot
+stats/diff, focus, and wait conditions. All are `readOnlyHint`/non-destructive.
+
+| Tool | Description |
+| --- | --- |
+| `DesktopScreenshot` | Capture a window, an element (`window` + `ref`), or the full virtual desktop as a PNG (returned as a native MCP image block + `{bounds, dpiScale, scaleApplied, redactions}` metadata). Password fields are redacted at capture time; width is clamped to 1920. Focus the window first (no occlusion handling). |
+| `DesktopGetBounds` | Absolute physical-pixel screen bounds `{x,y,w,h}` (signed, multi-monitor safe) of an element, plus its monitor `dpiScale` and `isOffscreen`. |
+| `DesktopSnapshotStats` | Cheap orientation: control counts (total / interactive / offscreen / redacted) + a per-control-type histogram, without the full tree. Takes a `window` or a prior `snapshotId`. |
+| `DesktopSnapshotDiff` | Diff a window's current tree against an explicit baseline `snapshotId` → `added` / `removed` / `changed` (Name/Enabled/Focused), keyed by a composite identity. |
+| `DesktopWaitFor` | Poll until a selector condition holds (`until` = exists \| enabled \| gone \| valueEquals). A timeout returns `{satisfied:false}` data, not an error; on success returns the matched ref + a fresh snapshotId. |
+| `DesktopWaitForStable` | Poll until a window (or a scoped subtree) stops structurally changing; `includeText` also waits on text/Name settling. Timeout returns `{stable:false}`. |
+| `DesktopGetFocusedElement` | O(1) "where am I": the UIA-focused element's ref + descriptor + owning window (handle/title/pid). The ref is scoped to that window so you can act on it. |
 
 Read-only tools are annotated as such so MCP clients can auto-approve them while still
 prompting for the mutating ones. Every tool returns structured JSON. Errors come back as a
@@ -98,22 +112,27 @@ that may *see* the desktop but not *act* on it.
 
 ### Perception safeguards (built in)
 
-`DesktopSnapshot` reads UI into the agent's context, so it ships with privacy and safety floors
-— defense in depth, not a substitute for supervising the agent:
+`DesktopSnapshot` and `DesktopScreenshot` read UI into the agent's context, so they ship with
+privacy and safety floors — defense in depth, not a substitute for supervising the agent:
 
 - **Credential stores are blocked.** Snapshotting a window owned by a known password manager
   (1Password, Bitwarden, KeePass, and similar) is rejected outright (`TargetDenied`).
-- **Password fields are always redacted.** Any UIA password field renders as `[REDACTED]`;
-  typed secrets never enter a snapshot, even inside otherwise-allowed apps (e.g. a browser
-  password box).
+- **Password fields are always redacted — in the tree *and* in pixels.** Any UIA password field
+  renders as `[REDACTED]` in a snapshot; in a screenshot it is painted over with an opaque black
+  rectangle at capture time (covering popups/menus too), so typed secrets leak through neither
+  channel. A full-desktop screenshot is *refused* (`TargetDenied`) if a credential-store window is
+  visible — capture a specific window instead.
+- **Screenshots detect a dead session.** If the desktop is locked or RDP-disconnected (so the
+  framebuffer would be black), `DesktopScreenshot` returns `CaptureUnavailable` rather than a black
+  image.
 - **Off-screen elements are culled by default.** A snapshot reflects what the user can see; pass
   `includeOffscreen` to reach scrolled-off-but-real elements.
 - **Never run elevated.** The server warns (on stderr) if started with Administrator rights — it
   is meant to run at your user integrity level.
 
-**On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): screenshots / vision and pixel-precise
-coordinates, raw mouse/keyboard input synthesis, structured patterns (grid/text), clipboard,
-snapshot diff/stats, and an HTTP transport.
+**On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): raw mouse/keyboard input synthesis,
+structured patterns (grid/text), clipboard, occlusion-aware capture (PrintWindow), and an HTTP
+transport.
 
 ## Requirements
 

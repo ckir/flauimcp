@@ -27,93 +27,73 @@ public static class SnapshotEngine
         RefRegistry refs,
         string windowId)
     {
-        var sb = new StringBuilder();
-        int count = 0;
+        var model = Build(root, popupRoots, options, refs, windowId);
+        return (Render(model, options), model.NodeCount);
+    }
 
-        // Overlay roots (context menus / dropdowns) are rendered once under [Active Overlays].
-        // Some popups are WINDOW children (WPF/.NET 10 context menus surface as CT=Window cls=Popup
-        // children of the owner window), so the main walk would otherwise re-render them. Collect
-        // their RuntimeIds (small int[] list, no per-node string alloc) and prune them from the main
-        // traversal so each overlay element gets exactly one ref.
+    public static SnapshotModel Build(
+        AutomationElement root, IReadOnlyList<AutomationElement> popupRoots,
+        SnapshotOptions options, RefRegistry refs, string windowId)
+    {
+        var items = new List<SnapshotItem>();
         var popupRids = new List<int[]>();
         foreach (var p in popupRoots)
         {
             var prid = Safe(() => p.Properties.RuntimeId.ValueOrDefault, (int[]?)null);
             if (prid != null) popupRids.Add(prid);
         }
-
         var rootBounds = Safe(() => root.BoundingRectangle, System.Drawing.Rectangle.Empty);
-        Visit(root, depth: 0, indexPath: Array.Empty<int>(), ancestorAid: null, indent: "", cullBounds: rootBounds);
-
+        Visit(root, 0, Array.Empty<int>(), null, "", rootBounds);
         if (popupRoots.Count > 0)
         {
-            sb.AppendLine("[Active Overlays]");
+            items.Add(new OverlaysHeaderItem());
             for (int i = 0; i < popupRoots.Count; i++)
             {
-                // Each overlay is culled against ITS OWN bounds — a context menu commonly renders
-                // outside the main window, so the window's bounds must not gate its items.
-                var popupBounds = Safe(() => popupRoots[i].BoundingRectangle, System.Drawing.Rectangle.Empty);
-                Visit(popupRoots[i], depth: 0, indexPath: new[] { -1 - i }, ancestorAid: null, indent: "  ", cullBounds: popupBounds);
+                var pb = Safe(() => popupRoots[i].BoundingRectangle, System.Drawing.Rectangle.Empty);
+                Visit(popupRoots[i], 0, new[] { -1 - i }, null, "  ", pb);
             }
         }
-        return (sb.ToString(), count);
+        return new SnapshotModel(items);
 
         void Visit(AutomationElement el, int depth, int[] indexPath, string? ancestorAid, string indent,
             System.Drawing.Rectangle cullBounds)
         {
             int[] rid = Safe(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? Array.Empty<int>();
-
-            // Dedup: a popup root reached via the MAIN walk (depth > 0) is skipped here — it is
-            // rendered once under [Active Overlays]. (depth == 0 is the [Active Overlays] graft
-            // entry point for the popup itself, which must NOT be skipped.)
             if (depth > 0)
                 foreach (var prid in popupRids)
                     if (RidEqual(rid, prid)) return;
-
-            // Off-screen cull (default): skip elements UIA reports as not visible (scrolled or
-            // virtualized out of view) AND their subtrees — an off-screen element's descendants are
-            // off-screen too. Never cull a root (depth 0: the window or an overlay graft point).
-            // IncludeOffscreen opts back in to reach scrolled-off-but-real elements.
-            if (depth > 0 && !options.IncludeOffscreen
-                && Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false)) return;
-
-            // Spatial off-screen cull (default): a backstop for frameworks that fail to set IsOffscreen
-            // on clipped/scrolled-out elements. Cull a node whose bounding rect is empty or does not
-            // intersect its root's bounds (the window, or the overlay for grafted popups). Skipped when
-            // the root bounds are unknown, to avoid over-culling.
+            if (depth > 0 && !options.IncludeOffscreen && Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false)) return;
             if (depth > 0 && !options.IncludeOffscreen && cullBounds.Width > 0 && cullBounds.Height > 0)
             {
-                var rect = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
-                if (rect.Width <= 0 || rect.Height <= 0 || !rect.IntersectsWith(cullBounds)) return;
+                var rect0 = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
+                if (rect0.Width <= 0 || rect0.Height <= 0 || !rect0.IntersectsWith(cullBounds)) return;
             }
-
             string aid = Safe(() => el.AutomationId, "");
             ControlType ct = Safe(() => el.ControlType, ControlType.Custom);
             string name = Safe(() => el.Name, "");
-
             bool include = depth == 0 || !options.InteractiveOnly || IsInteresting(el, ct, name);
             string childIndent = indent;
             if (include)
             {
-                var descriptor = new ElementDescriptor(
-                    RuntimeId: rid,
-                    ControlType: ct, AutomationId: aid, Name: name,
-                    AncestorAutomationId: ancestorAid, IndexPath: indexPath);
+                var rect = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
+                bool enabled = Safe(() => el.IsEnabled, false);
+                bool focusable = Safe(() => el.Properties.IsKeyboardFocusable.ValueOrDefault, false);
+                bool focused = Safe(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
+                bool isPassword = Safe(() => el.Properties.IsPassword.ValueOrDefault, false);
+                bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
+                var patterns = SupportedPatterns(el);
+                string help = Safe(() => el.HelpText, "");
+                var descriptor = new ElementDescriptor(rid, ct, aid, name, ancestorAid, indexPath, focused);
                 var @ref = refs.Register(windowId, descriptor, el);
-                sb.AppendLine(FormatLine(indent, @ref, el, ct, name, aid, options));
-                count++;
+                items.Add(new SnapshotNode(@ref, depth, indent, ct, aid, name, rect, enabled, focusable,
+                    focused, isPassword, offscreen, rid, patterns, help));
                 childIndent = indent + "  ";
             }
-
             var nextAncestor = string.IsNullOrEmpty(aid) ? ancestorAid : aid;
             AutomationElement[] children = Safe(() => el.FindAllChildren(), Array.Empty<AutomationElement>());
             if (depth >= options.MaxDepth)
             {
-                // Don't truncate silently — tell the agent the subtree was cut at the depth limit so it
-                // doesn't conclude the missing elements don't exist.
-                if (children.Length > 0)
-                    sb.Append(childIndent).Append("… ").Append(children.Length)
-                      .Append(" more (depth limit ").Append(options.MaxDepth).AppendLine(")");
+                if (children.Length > 0) items.Add(new DepthLimitItem(childIndent, children.Length, options.MaxDepth));
                 return;
             }
             for (int i = 0; i < children.Length; i++)
@@ -126,6 +106,48 @@ public static class SnapshotEngine
         }
     }
 
+    public static string Render(SnapshotModel model, SnapshotOptions options)
+    {
+        var sb = new StringBuilder();
+        foreach (var item in model.Items)
+            switch (item)
+            {
+                case SnapshotNode n: sb.AppendLine(FormatNode(n, options)); break;
+                case OverlaysHeaderItem: sb.AppendLine("[Active Overlays]"); break;
+                case DepthLimitItem d:
+                    sb.Append(d.Indent).Append("… ").Append(d.MoreCount)
+                      .Append(" more (depth limit ").Append(d.MaxDepth).AppendLine(")");
+                    break;
+            }
+        return sb.ToString();
+    }
+
+    private static string FormatNode(SnapshotNode n, SnapshotOptions options)
+    {
+        var state = new List<string>();
+        if (n.Enabled) state.Add("enabled");
+        if (n.Focusable) state.Add("focusable");
+        if (n.Focused) state.Add("focused");
+        string shownName = n.IsPassword ? "[REDACTED]" : n.Name;
+        var sb = new StringBuilder();
+        sb.Append(n.Indent).Append('[').Append(n.Ref).Append("] ").Append(n.ControlType).Append(' ')
+          .Append('"').Append(shownName).Append('"')
+          .Append(" @{").Append(n.Bounds.X).Append(',').Append(n.Bounds.Y).Append(',')
+          .Append(n.Bounds.Width).Append(',').Append(n.Bounds.Height).Append('}')
+          .Append(" {").Append(string.Join(", ", state)).Append('}');
+        if (n.Patterns.Count > 0) sb.Append(" [").Append(string.Join(",", n.Patterns)).Append(']');
+        if (options.FullProperties)
+            sb.Append(" aid=").Append(n.AutomationId).Append(" help=\"").Append(n.HelpText).Append('"');
+        return sb.ToString();
+    }
+
+    /// <summary>Node-level counterpart to IsInteresting, for post-hoc stats over a SnapshotModel.
+    /// Mirrors the same logic without needing a live AutomationElement.</summary>
+    public static bool IsInteractiveNode(SnapshotNode n)
+        => InteractiveTypes.Contains(n.ControlType)
+           || (n.ControlType == ControlType.Text && !string.IsNullOrWhiteSpace(n.Name))
+           || n.Focusable || n.Patterns.Count > 0;
+
     private static bool IsInteresting(AutomationElement el, ControlType ct, string name)
     {
         if (InteractiveTypes.Contains(ct)) return true;
@@ -133,34 +155,6 @@ public static class SnapshotEngine
         if (Safe(() => el.Properties.IsKeyboardFocusable.ValueOrDefault, false)) return true;
         // any actionable pattern makes it interesting
         return SupportedPatterns(el).Length > 0;
-    }
-
-    private static string FormatLine(string indent, string @ref, AutomationElement el,
-        ControlType ct, string name, string aid, SnapshotOptions options)
-    {
-        var r = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
-        bool enabled = Safe(() => el.IsEnabled, false);
-        bool focusable = Safe(() => el.Properties.IsKeyboardFocusable.ValueOrDefault, false);
-        var state = new List<string>();
-        if (enabled) state.Add("enabled");
-        if (focusable) state.Add("focusable");
-
-        // Always-on secret redaction: mask the rendered value of UIA password fields so a snapshot
-        // never carries a typed password into agent context. Only the OUTPUT is masked — the
-        // descriptor in RefRegistry keeps the true Name so option-C re-resolution still works.
-        bool isPassword = Safe(() => el.Properties.IsPassword.ValueOrDefault, false);
-        string shownName = isPassword ? "[REDACTED]" : name;
-
-        var patterns = SupportedPatterns(el);
-        var sb = new StringBuilder();
-        sb.Append(indent).Append('[').Append(@ref).Append("] ").Append(ct).Append(' ')
-          .Append('"').Append(shownName).Append('"')
-          .Append(" @{").Append(r.X).Append(',').Append(r.Y).Append(',').Append(r.Width).Append(',').Append(r.Height).Append('}')
-          .Append(" {").Append(string.Join(", ", state)).Append('}');
-        if (patterns.Length > 0) sb.Append(" [").Append(string.Join(",", patterns)).Append(']');
-        if (options.FullProperties)
-            sb.Append(" aid=").Append(aid).Append(" help=\"").Append(Safe(() => el.HelpText, "")).Append('"');
-        return sb.ToString();
     }
 
     private static string[] SupportedPatterns(AutomationElement el)

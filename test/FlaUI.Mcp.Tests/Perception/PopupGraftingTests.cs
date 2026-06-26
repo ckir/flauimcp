@@ -16,7 +16,7 @@ public class PopupGraftingTests : IClassFixture<TestAppFixture>
     {
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var perception = new PerceptionManager(mgr, new RefRegistry());
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
 
         await mgr.FocusAsync(handle);

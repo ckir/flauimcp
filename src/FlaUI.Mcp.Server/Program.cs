@@ -26,8 +26,11 @@ builder.Services.AddSingleton<AutomationDispatcher>();
 builder.Services.AddSingleton<WindowManager>();
 builder.Services.AddSingleton<WindowTools>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.RefRegistry>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.SnapshotCache>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.WaitCoordinator>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.PerceptionManager>();
 builder.Services.AddSingleton<SnapshotTools>();
+builder.Services.AddSingleton<ScreenshotTools>();
 builder.Services.AddSingleton<InteractionTools>();
 
 builder.Services

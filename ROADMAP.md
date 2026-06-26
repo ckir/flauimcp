@@ -40,18 +40,27 @@ safety rationale.
     resolution (per-action transient STA, never marshal an `AutomationElement` across
     apartments), and the `--read-only-mode` flag. After 3a an agent can perceive everything
     and drive most apps through UIA patterns.
-  - **Phase 3b** (v0.4.0, pending): structured patterns + perception completion + clipboard/sync.
+  - **Phase 3b** — split by blast radius: **3b-1** (read-only perception completion) ✅ **shipped
+    v0.4.0**; **3b-2** (state-mutating structured patterns + clipboard) pending → v0.5.0.
   - *Pattern actions:* **shipped in 3a** — `desktop_invoke` (InvokePattern), `desktop_set_value`
     (ValuePattern), `desktop_toggle`, `desktop_expand`, `desktop_select`,
     `desktop_scroll_into_view`, `desktop_scroll`, `desktop_set_focus`,
-    `desktop_window_transform`. **Deferred to 3b** — `desktop_get_grid_cell` /
+    `desktop_window_transform`. **Deferred to 3b-2** — `desktop_get_grid_cell` /
     `desktop_grid_select`, `desktop_get_text` / `desktop_set_caret` /
     `desktop_select_text_range`.
-  - *Perception completion (read-only):* `desktop_screenshot` (+`dpiScale`/bounds),
-    `desktop_get_bounds`, `desktop_snapshot_stats`, `desktop_snapshot_global`,
-    `desktop_snapshot_diff`.
-  - *Clipboard / sync:* `desktop_clipboard_get` / `desktop_clipboard_set`,
-    `desktop_wait_for`, `desktop_wait_for_stable`.
+  - *Perception completion (read-only):* ✅ **shipped 3b-1** — `desktop_screenshot`
+    (native image + bounds/`dpiScale`/redactions), `desktop_get_bounds`, `desktop_snapshot_stats`,
+    `desktop_snapshot_diff`, `desktop_wait_for`, `desktop_wait_for_stable`,
+    `desktop_get_focused_element`; `desktop_list_windows` gained `includeBounds`/`zOrder`; always-on
+    `focused` flag; `RefRegistry` recycle-guard `Name` compare. (`desktop_snapshot_global` was folded
+    into `desktop_list_windows includeBounds` rather than shipped as a separate tool.)
+    **3b-1 backlog (deferred):** occlusion-aware capture (PrintWindow, vs the current focus-first
+    screen-scrape); full-desktop *per-field* redaction for non-denied windows (denylist whole-window
+    refuse is the floor); snapshot/diff *value*-change detection (needs opt-in per-node value reads —
+    omitted from the default walk for STA perf); `wait_for_stable` scope-by-ref; and the documented
+    diff-identity limit on anonymous virtualized recycled rows (empty AutomationId+Name + recycled
+    RuntimeId can collide — diff such content by value/text).
+  - *Clipboard / sync (→ 3b-2):* `desktop_clipboard_get` / `desktop_clipboard_set`.
   - *Plumbing / hardening:* **cross-STA ref resolution** (re-resolve a ref on the
     **action** STA — never marshal an `AutomationElement` across apartments), fast-path
     RuntimeId-recycle guard (Name/AutomationId sanity check on the cache fast-path).

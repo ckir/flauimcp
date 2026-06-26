@@ -39,7 +39,7 @@ public class RefResolutionTests
         using var app = new TestAppFixture();
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var perception = new PerceptionManager(mgr, new RefRegistry());
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
 
         var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
@@ -104,7 +104,7 @@ public class RefResolutionTests
         using var app = new TestAppFixture();
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var perception = new PerceptionManager(mgr, new RefRegistry());
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
 
         var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
@@ -123,7 +123,7 @@ public class RefResolutionTests
         using var app = new TestAppFixture();
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var perception = new PerceptionManager(mgr, new RefRegistry());
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
 
         var first = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });

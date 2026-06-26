@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="FlaUI.Mcp TestApp" Height="640" Width="600"
         AutomationProperties.AutomationId="MainWindow">
-    <StackPanel Margin="12">
+    <StackPanel x:Name="RootPanel" Margin="12">
         <TextBox x:Name="Input" AutomationProperties.AutomationId="Input" Margin="0,0,0,8"/>
         <PasswordBox x:Name="Secret" AutomationProperties.AutomationId="Secret" Margin="0,0,0,8"/>
         <Button x:Name="OkButton" Content="OK"
@@ -51,6 +51,9 @@
              which is the only faithful repro of the deadlock the Task-C dispatcher defends against. -->
         <Button x:Name="FreezeButton" AutomationProperties.AutomationId="FreezeButton"
                 Content="freeze UI" Click="FreezeButton_Click" Margin="0,4,0,0"/>
+        <Button x:Name="DelayRevealButton" AutomationProperties.AutomationId="DelayRevealButton"
+                Content="reveal after delay" Click="DelayRevealButton_Click" Margin="0,4,0,0"/>
+        <TextBlock x:Name="Ticker" AutomationProperties.AutomationId="Ticker" Text="0" Margin="0,4,0,0"/>
         <Border Background="#FFE0E0E0" Height="36" Margin="0,8,0,0">
             <TextBlock x:Name="MenuTarget"
                        AutomationProperties.AutomationId="MenuTarget"
