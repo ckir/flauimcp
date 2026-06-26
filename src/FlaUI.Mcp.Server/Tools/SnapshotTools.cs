@@ -66,6 +66,21 @@ public sealed class SnapshotTools
             return ToolResponse.Ok(new { satisfied = r.Satisfied, @ref = r.Ref, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId });
         });
 
+    [McpServerTool(ReadOnly = true), Description("Poll until a window subtree stops structurally changing. Optional scope via by+value (default whole window). includeText folds Name into the signature (wait on a status-text settle; do NOT use on a window with a live clock/counter). Timeout returns {stable:false}.")]
+    public Task<string> DesktopWaitForStable(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Optional scope kind: automationId|name|controlType.")] string? by = null,
+        [Description("Optional scope value (with 'by').")] string? value = null,
+        [Description("Fold Name into the signature (default false).")] bool includeText = false,
+        [Description("Quiet window ms (default 500).")] int quietMs = 500,
+        [Description("Total budget ms (default 5000).")] int timeoutMs = 5000,
+        [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500)
+        => ToolResponse.Guard(async () =>
+        {
+            var r = await _wait.WaitForStableAsync(new WindowHandle(window), by, value, includeText, quietMs, timeoutMs, pollIntervalMs);
+            return ToolResponse.Ok(new { stable = r.Stable, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId });
+        });
+
     [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/redacted, FULL tree) + a per-ControlType histogram, without the tree text. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
     public Task<string> DesktopSnapshotStats(
         [Description("Window handle. Provide this OR snapshotId.")] string? window = null,

@@ -25,6 +25,47 @@ public sealed class WaitCoordinator
 
     internal static SnapshotOptions PollOptions => new() { InteractiveOnly = false, IncludeOffscreen = false };
 
+    private static string Signature(IEnumerable<SnapshotNode> nodes, bool includeText)
+        => string.Join("\n", nodes.Select(n => includeText
+            ? $"{n.ControlType}:{n.AutomationId}:{n.Depth}:{n.Name}"
+            : $"{n.ControlType}:{n.AutomationId}:{n.Depth}"));
+
+    private static IReadOnlyList<SnapshotNode> Subtree(SnapshotModel model, string? by, string? value)
+    {
+        var nodes = model.Nodes.ToList();
+        if (string.IsNullOrEmpty(by) || string.IsNullOrEmpty(value)) return nodes;
+        int start = nodes.FindIndex(n => Matches(n, by, value));
+        if (start < 0) return System.Array.Empty<SnapshotNode>();
+        var scope = nodes[start]; var sub = new List<SnapshotNode> { scope };
+        for (int i = start + 1; i < nodes.Count && nodes[i].Depth > scope.Depth; i++) sub.Add(nodes[i]);
+        return sub;
+    }
+
+    public async Task<WaitStableResult> WaitForStableAsync(WindowHandle handle, string? by, string? value,
+        bool includeText, int quietMs, int timeoutMs, int pollIntervalMs)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int needed = (int)System.Math.Ceiling((double)quietMs / System.Math.Max(1, pollIntervalMs));
+        string? last = null; int stableCount = 0;
+        bool scopeRequested = !string.IsNullOrEmpty(by) && !string.IsNullOrEmpty(value);
+        while (true)
+        {
+            var (_, model) = await _perception.BuildModelAsync(handle, PollOptions, new RefRegistry());
+            var sub = Subtree(model, by, value);
+            if (scopeRequested && sub.Count == 0)
+                throw new ToolException(ToolErrorCode.SelectorNoMatch, $"No element matched {by}={value} to scope stability.", "widen or correct the selector");
+            var sig = Signature(sub, includeText);
+            stableCount = sig == last ? stableCount + 1 : 0; last = sig;
+            if (stableCount >= needed)
+            {
+                var (snapId, _) = await _perception.SnapshotModelForWaitAsync(handle, PollOptions);
+                return new WaitStableResult(true, (int)sw.ElapsedMilliseconds, snapId);
+            }
+            if (sw.ElapsedMilliseconds >= timeoutMs) return new WaitStableResult(false, (int)sw.ElapsedMilliseconds, null);
+            await Task.Delay(pollIntervalMs);
+        }
+    }
+
     public async Task<WaitForResult> WaitForAsync(WindowHandle handle, string by, string value,
         string until, string? equals, int timeoutMs, int pollIntervalMs)
     {

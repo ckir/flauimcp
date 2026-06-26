@@ -12,6 +12,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Secret.Password = SecretValue;
+        var ticker = new System.Windows.Threading.DispatcherTimer { Interval = System.TimeSpan.FromMilliseconds(120) };
+        int tick = 0;
+        ticker.Tick += (_, _) => Ticker.Text = (++tick).ToString();
+        ticker.Start();
     }
 
     private void OkButton_Click(object sender, RoutedEventArgs e)
