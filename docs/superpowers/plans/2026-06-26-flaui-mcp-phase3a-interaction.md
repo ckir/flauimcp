@@ -901,7 +901,18 @@ public class InteractionToolsTests
 
             // The modal is now open. Snapshot it and click OK on a FRESH action thread.
             // A single-thread action queue would hang here forever.
-            var modal = await m.OpenByTitleAsync("Modal");
+            // Bounded poll: ShowDialog creates+registers the dialog on the TestApp UI
+            // thread slightly AFTER our Invoke times out, so a one-shot lookup races the
+            // OS window registration. Retry until found or a 3s deadline (no magic sleep).
+            WindowHandle modal = default;
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < deadline)
+            {
+                try { modal = await m.OpenByTitleAsync("Modal"); if (modal.Id is not null) break; }
+                catch { /* not registered yet — retry */ }
+                await Task.Delay(50);
+            }
+            Assert.NotNull(modal.Id);
             var modalSnap = await p.SnapshotAsync(modal, new SnapshotOptions { FullProperties = true });
             var dismiss = await tools.DesktopInvoke(modal.Id, RefFor(modalSnap.Tree, "ModalOk"), timeoutMs: 3000);
             Assert.DoesNotContain("error", dismiss);
