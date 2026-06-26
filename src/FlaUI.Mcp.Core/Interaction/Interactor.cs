@@ -62,16 +62,22 @@ public static class Interactor
         if (!el.Patterns.Scroll.IsSupported) throw Unsupported("Scroll");
         var p = el.Patterns.Scroll.Pattern;
         var v = ScrollAmount.NoAmount; var h = ScrollAmount.NoAmount;
+        bool vertical;
         switch (direction.Trim().ToLowerInvariant())
         {
-            case "up": v = ScrollAmount.SmallDecrement; break;
-            case "down": v = ScrollAmount.SmallIncrement; break;
-            case "left": h = ScrollAmount.SmallDecrement; break;
-            case "right": h = ScrollAmount.SmallIncrement; break;
+            case "up": v = ScrollAmount.SmallDecrement; vertical = true; break;
+            case "down": v = ScrollAmount.SmallIncrement; vertical = true; break;
+            case "left": h = ScrollAmount.SmallDecrement; vertical = false; break;
+            case "right": h = ScrollAmount.SmallIncrement; vertical = false; break;
             default:
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     $"Unknown scroll direction '{direction}'.", "use up|down|left|right");
         }
+        // A container whose content already fits is not scrollable in that axis; ScrollPattern.Scroll
+        // would then throw a raw COM/InvalidOperation error that leaks as INTERNAL. "Nothing to
+        // scroll" is a successful no-op, not an error — gate on the axis's scrollability first.
+        if (vertical && !p.VerticallyScrollable.ValueOrDefault) return;
+        if (!vertical && !p.HorizontallyScrollable.ValueOrDefault) return;
         int reps = Math.Clamp((int)Math.Round(amount <= 0 ? 1 : amount), 1, 50);
         for (int i = 0; i < reps; i++) p.Scroll(h, v);
     }

@@ -45,6 +45,12 @@
                    Text="" Margin="0,2,0,0"/>
         <Button x:Name="ModalButton" AutomationProperties.AutomationId="ModalButton"
                 Content="open modal" Click="ModalButton_Click" Margin="0,4,0,0"/>
+        <!-- Freezes the UI thread with a real Thread.Sleep — a genuine, COM-pumping-stops freeze
+             (unlike WPF ShowDialog, which keeps the UIA pipeline responsive). A UIA action that
+             arrives WHILE this is frozen physically blocks the caller's STA on cross-apartment RPC,
+             which is the only faithful repro of the deadlock the Task-C dispatcher defends against. -->
+        <Button x:Name="FreezeButton" AutomationProperties.AutomationId="FreezeButton"
+                Content="freeze UI" Click="FreezeButton_Click" Margin="0,4,0,0"/>
         <Border Background="#FFE0E0E0" Height="36" Margin="0,8,0,0">
             <TextBlock x:Name="MenuTarget"
                        AutomationProperties.AutomationId="MenuTarget"

@@ -39,7 +39,10 @@ public class InteractionToolsTests
             var snap = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
             Assert.DoesNotContain("error", await tools.DesktopInvoke(handle.Id, RefFor(snap.Tree, "OkButton")));
             await tools.DesktopSetFocus(handle.Id, RefFor(snap.Tree, "FocusReveal"));
-            var label = await p.RunOnRefAsync(handle, RefFor(snap.Tree, "RevealedLabel"), el => el.Name);
+            // RevealedLabel starts as an EMPTY TextBlock — it has no findable peer in the first
+            // snapshot. set_focus's GotFocus sets its text, so re-snapshot to resolve it now.
+            var snap2 = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
+            var label = await p.RunOnRefAsync(handle, RefFor(snap2.Tree, "RevealedLabel"), el => el.Name);
             Assert.Equal("revealed", label);
         }
     }
@@ -84,35 +87,44 @@ public class InteractionToolsTests
         }
     }
 
-    // THE critical Task-C proof: a blocked action must NOT freeze the action context.
+    // THE critical Task-C proof: an action that PHYSICALLY blocks the action STA (target UI thread
+    // frozen, not pumping COM RPC) must not poison the dispatcher for the NEXT action.
+    //
+    // Why a real Thread.Sleep freeze and not a WPF modal: UIA InvokePattern.Invoke is fire-and-forget
+    // and WPF ShowDialog keeps the UIA pipeline pumping, so a modal NEVER blocks the caller's STA.
+    // A genuine UI-thread freeze is the only faithful repro of the cross-apartment block Task-C guards
+    // against. Because the freeze-trigger invoke is itself fire-and-forget, invoking FreezeButton
+    // RETURNS ok and the freeze starts just after — so the block lands on the action issued DURING the
+    // freeze, which is the one this test abandons and then recovers from.
     [Fact]
-    public async Task A_blocked_modal_action_does_not_deadlock_a_second_action()
+    public async Task A_blocked_action_does_not_deadlock_a_second_action()
     {
         using var app = new TestAppFixture();
         var tools = Make(app, out var handle, out var p, out var m, out var d); using (d) using (m)
         {
             var snap = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
-            // Invoke ModalButton: ShowDialog blocks the UI thread -> ACTION_BLOCKED_PENDING.
-            var blocked = await tools.DesktopInvoke(handle.Id, RefFor(snap.Tree, "ModalButton"), timeoutMs: 800);
+            var freezeRef = RefFor(snap.Tree, "FreezeButton");
+            var okRef = RefFor(snap.Tree, "OkButton");
+
+            // (1) Trigger the freeze. Fire-and-forget invoke returns ok; the UI thread then sleeps.
+            Assert.DoesNotContain("error", await tools.DesktopInvoke(handle.Id, freezeRef));
+            await Task.Delay(150); // let the queued click dequeue and Thread.Sleep actually begin
+
+            // (2) An action issued WHILE the UI is frozen blocks the transient action STA on COM RPC;
+            //     the short timeout abandons that thread and returns ActionBlockedPending.
+            var blocked = await tools.DesktopInvoke(handle.Id, okRef, timeoutMs: 500);
             Assert.Contains("ActionBlockedPending", blocked);
 
-            // The modal is now open. Snapshot it and click OK on a FRESH action thread.
-            // A single-thread action queue would hang here forever.
-            // Bounded poll: ShowDialog creates+registers the dialog on the TestApp UI
-            // thread slightly AFTER our Invoke times out, so a one-shot lookup races the
-            // OS window registration. Retry until found or a 3s deadline (no magic sleep).
-            WindowHandle modal = default;
-            var deadline = DateTime.UtcNow.AddSeconds(3);
-            while (DateTime.UtcNow < deadline)
-            {
-                try { modal = await m.OpenByTitleAsync("Modal"); if (modal.Id is not null) break; }
-                catch { /* not registered yet — retry */ }
-                await Task.Delay(50);
-            }
-            Assert.NotNull(modal.Id);
-            var modalSnap = await p.SnapshotAsync(modal, new SnapshotOptions { FullProperties = true });
-            var dismiss = await tools.DesktopInvoke(modal.Id, RefFor(modalSnap.Tree, "ModalOk"), timeoutMs: 3000);
-            Assert.DoesNotContain("error", dismiss);
+            // (3) Wait out the freeze so the target recovers AND the abandoned action STA drains its COM
+            //     call (it returns once the UI pumps again) — so teardown never kills a mid-RPC target.
+            //     The abandonment itself is already crash-safe (background thread + catch-all + finally
+            //     dispose); this wait is for deterministic, noise-free cleanup, not for safety.
+            await Task.Delay(2200); // > TestApp FreezeButton's Thread.Sleep (MainWindow.FreezeMs = 2000)
+
+            // (4) A fresh action now succeeds — proof the abandoned thread did NOT poison the dispatcher
+            //     (a single shared action thread would still be parked and this would itself time out).
+            var recovered = await tools.DesktopInvoke(handle.Id, okRef, timeoutMs: 2000);
+            Assert.DoesNotContain("error", recovered);
         }
     }
 }

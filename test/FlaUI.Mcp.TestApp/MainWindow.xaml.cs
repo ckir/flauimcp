@@ -51,4 +51,11 @@ public partial class MainWindow : Window
         dlg.Content = ok;
         dlg.ShowDialog(); // BLOCKS the UI thread until closed — the deadlock-recovery target
     }
+
+    // Genuinely freezes the UI thread (no message pump) for a fixed window. Unlike ShowDialog,
+    // this stops the thread from servicing COM RPC, so a UIA action arriving DURING the freeze
+    // physically blocks the caller's action STA — the faithful repro for the Task-C deadlock test.
+    public const int FreezeMs = 2000;
+    private void FreezeButton_Click(object sender, RoutedEventArgs e)
+        => System.Threading.Thread.Sleep(FreezeMs);
 }
