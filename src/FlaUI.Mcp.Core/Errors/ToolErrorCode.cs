@@ -17,5 +17,12 @@ public enum ToolErrorCode
     TargetDenied,
     WriteBlockedReadOnly,
     TooManyPendingActions,
-    Timeout
+    Timeout,
+    InvalidArguments,
+    CaptureUnavailable,
+    SnapshotNotFound,
+    SnapshotWindowMismatch,
+    SelectorNoMatch,
+    NoFocusedElement,
+    NotImplemented
 }
