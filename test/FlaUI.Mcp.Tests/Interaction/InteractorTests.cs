@@ -11,10 +11,13 @@ namespace FlaUI.Mcp.Tests.Interaction;
 [Trait("Category", "Desktop")]
 public class InteractorTests
 {
-    private static AutomationElement Find(WindowManager mgr, WindowHandle h, string aid) =>
-        mgr.RunWithWindowAndDesktopAsync(h, (win, _) =>
-            win.FindFirstDescendant(cf => cf.ByAutomationId(aid))
-            ?? throw new Xunit.Sdk.XunitException($"{aid} not found")).GetAwaiter().GetResult();
+    // Resolve a descendant on the window the active query-STA callback ALREADY provides.
+    // This must NOT open a NEW query-STA dispatch: the single long-lived query STA is busy
+    // running the enclosing callback, so a nested RunWith... enqueues work the STA can never
+    // pick up -> deterministic self-deadlock (the cause of the full-suite hang here).
+    private static AutomationElement Find(AutomationElement win, string aid) =>
+        win.FindFirstDescendant(cf => cf.ByAutomationId(aid))
+        ?? throw new Xunit.Sdk.XunitException($"{aid} not found");
 
     [Fact]
     public async Task Invoke_clicks_a_button()
@@ -24,7 +27,7 @@ public class InteractorTests
         using var mgr = new WindowManager(dispatcher);
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
         await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
-        { Interactor.Invoke(Find(mgr, handle, "OkButton")); return true; });
+        { Interactor.Invoke(Find(win, "OkButton")); return true; });
         var status = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
             win.FindFirstDescendant(cf => cf.ByAutomationId("Status"))!.Name);
         Assert.StartsWith("clicked", status); // TestApp handler sets "clicked: {Input.Text}"
@@ -38,7 +41,7 @@ public class InteractorTests
         using var mgr = new WindowManager(dispatcher);
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
         await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
-        { Interactor.SetValue(Find(mgr, handle, "Input"), "hello"); return true; });
+        { Interactor.SetValue(Find(win, "Input"), "hello"); return true; });
         var val = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
             win.FindFirstDescendant(cf => cf.ByAutomationId("Input"))!.AsTextBox().Text);
         Assert.Equal("hello", val);
@@ -53,7 +56,7 @@ public class InteractorTests
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
         var ex = await Assert.ThrowsAsync<ToolException>(() =>
             mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
-            { Interactor.Invoke(Find(mgr, handle, "Status")); return true; })); // Text has no InvokePattern
+            { Interactor.Invoke(Find(win, "Status")); return true; })); // Text has no InvokePattern
         Assert.Equal(ToolErrorCode.PatternUnsupported, ex.Code);
     }
 }
