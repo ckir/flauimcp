@@ -20,6 +20,61 @@ perception helpers (`desktop_snapshot_diff`, `desktop_snapshot_stats`,
 `desktop_clipboard_get`/`set`, `desktop_wait_for_stable`, and
 `suggestedRecovery` on every error envelope.
 
+## Phase plan (execution sequencing)
+
+The v1 surface ships in phases drawn by **blast radius**, not feature area — the
+"act" leg of the lethal trifecta (synthetic input) is deliberately isolated last.
+See [`docs/superpowers/specs/2026-06-25-flaui-mcp-server-design.md`](docs/superpowers/specs/2026-06-25-flaui-mcp-server-design.md)
+for the full tool semantics and [`project-flaui-mcp-prompt-injection`] memory for the
+safety rationale.
+
+- **Phase 1 — Foundation** ✅ (v0.1.x): window/session management, split query/action
+  STA dispatcher, option-C ref engine, 5 window tools.
+- **Phase 2 — Perception** ✅ (v0.2.0): `desktop_snapshot` (a11y tree + popup grafting),
+  perception-security floor (credential denylist, always-on `IsPassword` redaction,
+  off-screen cull, never-elevated warn), ReadOnly annotations.
+- **Phase 3 — Interaction (pattern-based) & perception completion** — the large,
+  high-value, *low-blast-radius* phase. Element-targeted via UIA control patterns;
+  **no synthetic mouse/keyboard.** After Phase 3 an agent can perceive everything and
+  drive most apps.
+  - *Pattern actions:* `desktop_invoke` (InvokePattern), `desktop_set_value`
+    (ValuePattern), `desktop_toggle`, `desktop_expand`, `desktop_select`,
+    `desktop_scroll_into_view`, `desktop_scroll`, `desktop_get_grid_cell` /
+    `desktop_grid_select`, `desktop_get_text` / `desktop_set_caret` /
+    `desktop_select_text_range`, `desktop_window_transform`.
+  - *Perception completion (read-only):* `desktop_screenshot` (+`dpiScale`/bounds),
+    `desktop_get_bounds`, `desktop_snapshot_stats`, `desktop_snapshot_global`,
+    `desktop_snapshot_diff`.
+  - *Clipboard / sync:* `desktop_clipboard_get` / `desktop_clipboard_set`,
+    `desktop_wait_for`, `desktop_wait_for_stable`.
+  - *Plumbing / hardening:* **cross-STA ref resolution** (re-resolve a ref on the
+    **action** STA — never marshal an `AutomationElement` across apartments), fast-path
+    RuntimeId-recycle guard (Name/AutomationId sanity check on the cache fast-path).
+  - *Safety — load-bearing even here* (a pattern `Invoke` can still click "Delete" /
+    "Send"): interaction tools carry `readOnlyHint:false, destructiveHint:true`;
+    **human-in-the-loop confirmation on every state-changing action** (mostly the
+    client's job — the server keeps tools granular, never bundling read + write, so
+    it's possible). What pattern actions *cannot* do (mis-target, type into a shell) is
+    exactly what Phase 4 adds.
+- **Phase 4 — Synthetic input (the blast-radius phase)** — deliberately small and
+  isolated. Real OS mouse/keyboard + the coordinate/vision *action* path, for apps
+  whose controls implement no patterns or have broken a11y.
+  - *Tools:* `desktop_type` (synthetic keystrokes, `Focus()`-first), `desktop_click`
+    (synthetic mouse on a ref — modifiers / double / right), `desktop_click_at` /
+    `desktop_drag` (coordinate path, screenshot-pixel contract + `xPct`/`yPct`),
+    `desktop_key` (chords, e.g. `Ctrl+S`).
+  - *Safety stack — only load-bearing once synthetic input exists:* **ACTION deny-list**
+    — refuse synthetic input into UAC / `consent.exe`, credential dialogs, password
+    managers, and interlock the worst sinks (terminal / `WindowsTerminal`, Win+R run
+    dialog, browser address bar) behind a stronger confirm or refusal; **action budget
+    + audit log** (rate-limit, re-confirm after N, log target+payload); **hard-fail on
+    elevation behind `--unsafe-allow-elevation`** (upgrades the Phase-2 warn-only).
+  - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
+    zero-UIA surfaces (also in the v2 table).
+
+Not phased here (separate follow-on, not v1-blocking): HTTP/SSE transport with its hard
+auth-token gate; RefRegistry eviction on window close.
+
 ## v2 (deferred)
 
 | Feature | Why deferred | Source |
@@ -67,7 +122,7 @@ security floors are defense-in-depth, not an injection cure.
 | --- | --- | --- |
 | **Cross-STA ref resolution** — re-resolve a ref on the *action* STA, never marshal an `AutomationElement` across apartments | Phase 3 | COM is thread-affine; `RunOnRefAsync` already resolves-then-acts in one STA lambda. Action tools must route resolution through the action dispatcher. |
 | **Fast-path recycle guard** — add a `Name`/`AutomationId` sanity check to `RefRegistry.Resolve`'s cache fast-path | Phase 3 | Virtualized container recycling (e.g. `DataGrid` scroll) can reuse a `RuntimeId` for different data; harmless in Phase 2 (refs aren't consumed by actions yet). |
-| **Hard-fail on elevation** behind `--unsafe-allow-elevation` | Phase 3 | v0.2.0 warns only; revisit when synthetic input multiplies the blast radius. |
+| **Hard-fail on elevation** behind `--unsafe-allow-elevation` | Phase 4 | v0.2.0 warns only; the blast radius that justifies refusing-to-run only arrives with synthetic input. |
 | **Redact descriptor `Name` for `IsPassword`** | micro | Belt-and-suspenders; `Name` is empty for conformant password controls today, so no secret is stored. |
 | **Window-prefixed refs in output** (`[w1:e1]`) | low | Mitigated already — the tools take window handle + ref as separate args, so refs can't alias across windows. |
 
