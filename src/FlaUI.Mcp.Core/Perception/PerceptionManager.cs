@@ -152,6 +152,34 @@ public sealed class PerceptionManager
             nodes.GroupBy(n => n.ControlType.ToString()).ToDictionary(g => g.Key, g => g.Count()));
     }
 
+    public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref) =>
+        _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
+        {
+            var procName = SafeProcessName(win);
+            if (PerceptionPolicy.IsDenied(procName))
+                return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), false, true, procName);
+            try
+            {
+                var wp = win.Patterns.Window.PatternOrDefault;
+                if (wp is not null && wp.WindowVisualState.ValueOrDefault == FlaUI.Core.Definitions.WindowVisualState.Minimized)
+                    return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), true, false, null);
+            }
+            catch { }
+            var target = string.IsNullOrEmpty(@ref) ? (AutomationElement)win : _refs.Resolve(handle.Id, @ref!, PopupFinder.SearchRoots(win, desktop));
+            var pw = new List<System.Drawing.Rectangle>();
+            foreach (var rootEl in PopupFinder.SearchRoots(win, desktop))
+            {
+                try { foreach (var d in rootEl.FindAllDescendants()) { try { if (d.Properties.IsPassword.ValueOrDefault) pw.Add(d.BoundingRectangle); } catch { } } } catch { }
+            }
+            return new CaptureGeometry(target.BoundingRectangle, pw, false, false, null);
+        });
+
+    public async Task<bool> DenylistedWindowsVisibleAsync()
+    {
+        var windows = await _windows.ListWindowsAsync();
+        return windows.Any(w => PerceptionPolicy.IsDenied(w.ProcessName));
+    }
+
     public async Task<FocusedElementInfo> GetFocusedElementAsync()
     {
         (WindowHandle Handle, string Title, int Pid)? owner;
@@ -171,3 +199,5 @@ public sealed class PerceptionManager
 }
 
 public sealed record FocusedElementInfo(string Ref, string DescriptorLine, string Title, int Pid, string? WindowHandle);
+
+public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> PasswordRects, bool Minimized, bool Denied, string? DeniedProcess);
