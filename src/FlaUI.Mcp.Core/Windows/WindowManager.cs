@@ -14,6 +14,7 @@ public sealed class WindowManager : IDisposable
     private readonly AutomationDispatcher _dispatcher;
     private readonly UIA3Automation _automation;
     private readonly ConcurrentDictionary<string, Window> _handles = new();
+    private readonly ConcurrentDictionary<string, IntPtr> _hwnds = new();
     private readonly ConcurrentDictionary<string, Process> _watched = new();
     private int _counter;
 
@@ -77,6 +78,7 @@ public sealed class WindowManager : IDisposable
     public void Invalidate(WindowHandle handle)
     {
         _handles.TryRemove(handle.Id, out _);
+        _hwnds.TryRemove(handle.Id, out _);
         if (_watched.TryRemove(handle.Id, out var p))
             try { p.Dispose(); } catch { }
     }
@@ -85,6 +87,7 @@ public sealed class WindowManager : IDisposable
     {
         var id = $"w{Interlocked.Increment(ref _counter)}";
         _handles[id] = window;
+        try { _hwnds[id] = window.Properties.NativeWindowHandle.ValueOrDefault; } catch { /* no hwnd */ }
         TryWatchProcessExit(id, pid);
         return new WindowHandle(id);
     }
@@ -197,6 +200,24 @@ public sealed class WindowManager : IDisposable
             var win = matches[0];
             return Register(win, win.Properties.ProcessId.ValueOrDefault);
         });
+
+    /// <summary>Run a callback on a transient ACTION STA with the window and Desktop resolved
+    /// by that thread's OWN automation (via the cached HWND) — so no query-STA COM object is
+    /// marshaled across apartments. Used by all state-changing pattern actions.</summary>
+    public Task<T> RunOnWindowActionAsync<T>(
+        WindowHandle handle, Func<AutomationElement, AutomationElement, T> func, int timeoutMs)
+    {
+        if (!_hwnds.TryGetValue(handle.Id, out var hwnd) || hwnd == IntPtr.Zero)
+            throw new ToolException(ToolErrorCode.WindowHandleStale,
+                $"Handle {handle.Id} is no longer valid.", "re-list windows and re-open");
+        return _dispatcher.RunActionAsync(() =>
+        {
+            using var automation = new UIA3Automation();
+            var win = automation.FromHandle(hwnd);
+            var desktop = automation.GetDesktop();
+            return func(win, desktop);
+        }, timeoutMs);
+    }
 
     public Task FocusAsync(WindowHandle handle) =>
         RunOnWindowAsync(handle, w => { w.Focus(); w.SetForeground(); return true; });

@@ -1,3 +1,4 @@
+using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
@@ -41,5 +42,21 @@ public class WindowManagerTests : IClassFixture<TestAppFixture>
         var ex = await Assert.ThrowsAsync<ToolException>(
             () => mgr.RunOnWindowAsync(handle, w => w.Title));
         Assert.Equal(ToolErrorCode.WindowHandleStale, ex.Code);
+    }
+
+    [Fact]
+    public async Task An_action_primitive_resolves_the_window_on_a_distinct_STA_thread()
+    {
+        using var app = new FlaUI.Mcp.Tests.TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var handle = await mgr.OpenByPidAsync(app.Process.Id);
+
+        var queryThread = await dispatcher.RunQueryAsync(() => Environment.CurrentManagedThreadId);
+        var (title, actionThread) = await mgr.RunOnWindowActionAsync(handle,
+            (win, _) => (win.AsWindow().Title, Environment.CurrentManagedThreadId), timeoutMs: 5000);
+
+        Assert.Contains("TestApp", title);
+        Assert.NotEqual(queryThread, actionThread); // resolved on a transient action STA, not the query STA
     }
 }
