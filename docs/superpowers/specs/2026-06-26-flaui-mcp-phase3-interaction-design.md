@@ -179,8 +179,10 @@ unchanged (reads don't open modals). This intentionally relaxes the master spec'
 single-flight action serialization — but only in the blocked case, which is exactly when a
 second action is needed to recover; non-blocked actions still serialize naturally by the
 agent awaiting each result. The abandoned action's eventual completion must not surface as
-an unobserved task exception. Implementation mechanism (raw STA `Thread` +
-`TaskCompletionSource` per call vs a custom STA `TaskScheduler`) is fixed in the 3a plan.
+an unobserved task exception. **Mechanism (decided 2026-06-26): raw STA `Thread` +
+`TaskCompletionSource` per call** — actions are sparse, stateless, and abandonable; a
+reusable STA `TaskScheduler` was rejected as exactly the parked-thread-reuse machinery we
+must avoid.
 
 Every 3a state-changing tool flows: tool → `RunOnRefActionAsync` → (cache-free
 descriptor-walk on the action STA) → `Interactor.<pattern>` → result. Window-scoped
