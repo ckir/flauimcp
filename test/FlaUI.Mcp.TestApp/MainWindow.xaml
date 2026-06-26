@@ -5,6 +5,7 @@
         AutomationProperties.AutomationId="MainWindow">
     <StackPanel Margin="12">
         <TextBox x:Name="Input" AutomationProperties.AutomationId="Input" Margin="0,0,0,8"/>
+        <PasswordBox x:Name="Secret" AutomationProperties.AutomationId="Secret" Margin="0,0,0,8"/>
         <Button x:Name="OkButton" Content="OK"
                 AutomationProperties.AutomationId="OkButton" Click="OkButton_Click"/>
         <TextBlock x:Name="Status" AutomationProperties.AutomationId="Status" Text="ready"/>

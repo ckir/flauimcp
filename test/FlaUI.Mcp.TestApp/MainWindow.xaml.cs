@@ -4,7 +4,15 @@ namespace FlaUI.Mcp.TestApp;
 
 public partial class MainWindow : Window
 {
-    public MainWindow() => InitializeComponent();
+    // A known secret typed into the PasswordBox. The redaction test asserts this literal NEVER
+    // appears in a snapshot and that the field renders as [REDACTED].
+    public const string SecretValue = "hunter2-NEVER-LEAK";
+
+    public MainWindow()
+    {
+        InitializeComponent();
+        Secret.Password = SecretValue;
+    }
 
     private void OkButton_Click(object sender, RoutedEventArgs e)
         => Status.Text = $"clicked: {Input.Text}";

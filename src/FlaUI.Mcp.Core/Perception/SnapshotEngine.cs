@@ -113,10 +113,16 @@ public static class SnapshotEngine
         if (enabled) state.Add("enabled");
         if (focusable) state.Add("focusable");
 
+        // Always-on secret redaction: mask the rendered value of UIA password fields so a snapshot
+        // never carries a typed password into agent context. Only the OUTPUT is masked — the
+        // descriptor in RefRegistry keeps the true Name so option-C re-resolution still works.
+        bool isPassword = Safe(() => el.Properties.IsPassword.ValueOrDefault, false);
+        string shownName = isPassword ? "[REDACTED]" : name;
+
         var patterns = SupportedPatterns(el);
         var sb = new StringBuilder();
         sb.Append(indent).Append('[').Append(@ref).Append("] ").Append(ct).Append(' ')
-          .Append('"').Append(name).Append('"')
+          .Append('"').Append(shownName).Append('"')
           .Append(" @{").Append(r.X).Append(',').Append(r.Y).Append(',').Append(r.Width).Append(',').Append(r.Height).Append('}')
           .Append(" {").Append(string.Join(", ", state)).Append('}');
         if (patterns.Length > 0) sb.Append(" [").Append(string.Join(",", patterns)).Append(']');
