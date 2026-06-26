@@ -89,4 +89,27 @@ public sealed class PerceptionManager
         _cache.Put(snapshotId, model);
         return (snapshotId, model);
     }
+
+    public async Task<SnapshotStats> StatsByWindowAsync(WindowHandle handle)
+    {
+        var (id, model) = await BuildModelAsync(handle, new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true }, _refs);
+        _cache.Put(id, model);
+        return Tally(id, model);
+    }
+
+    public SnapshotStats StatsBySnapshotId(string id)
+    {
+        if (!_cache.TryGet(id, out var model) || model is null)
+            throw new ToolException(ToolErrorCode.SnapshotNotFound,
+                $"Snapshot '{id}' is not in the cache (evicted or never taken).", "take a fresh desktop_snapshot and use its snapshotId");
+        return Tally(id, model);
+    }
+
+    private static SnapshotStats Tally(string id, SnapshotModel m)
+    {
+        var nodes = m.Nodes.ToList();
+        return new SnapshotStats(id, nodes.Count, nodes.Count(SnapshotEngine.IsInteractiveNode),
+            nodes.Count(n => n.IsOffscreen), nodes.Count(n => n.IsPassword),
+            nodes.GroupBy(n => n.ControlType.ToString()).ToDictionary(g => g.Key, g => g.Count()));
+    }
 }

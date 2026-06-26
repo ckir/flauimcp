@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Server;
@@ -32,5 +33,17 @@ public sealed class SnapshotTools
             };
             var r = await _perception.SnapshotAsync(new WindowHandle(window), opts);
             return ToolResponse.Ok(new { snapshotId = r.SnapshotId, nodeCount = r.NodeCount, tree = r.Tree });
+        });
+
+    [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/redacted, FULL tree) + a per-ControlType histogram, without the tree text. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
+    public Task<string> DesktopSnapshotStats(
+        [Description("Window handle. Provide this OR snapshotId.")] string? window = null,
+        [Description("A prior snapshotId, e.g. w1:4. Provide this OR window.")] string? snapshotId = null)
+        => ToolResponse.Guard(async () =>
+        {
+            if (string.IsNullOrEmpty(window) == string.IsNullOrEmpty(snapshotId))
+                throw new ToolException(ToolErrorCode.InvalidArguments, "Provide exactly one of 'window' or 'snapshotId'.", "pass a window handle or a snapshotId");
+            var s = string.IsNullOrEmpty(window) ? _perception.StatsBySnapshotId(snapshotId!) : await _perception.StatsByWindowAsync(new WindowHandle(window!));
+            return ToolResponse.Ok(new { snapshotId = s.SnapshotId, total = s.Total, interactive = s.Interactive, offscreen = s.Offscreen, redacted = s.Redacted, byControlType = s.ByControlType });
         });
 }

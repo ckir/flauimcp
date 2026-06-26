@@ -141,6 +141,13 @@ public static class SnapshotEngine
         return sb.ToString();
     }
 
+    /// <summary>Node-level counterpart to IsInteresting, for post-hoc stats over a SnapshotModel.
+    /// Mirrors the same logic without needing a live AutomationElement.</summary>
+    public static bool IsInteractiveNode(SnapshotNode n)
+        => InteractiveTypes.Contains(n.ControlType)
+           || (n.ControlType == ControlType.Text && !string.IsNullOrWhiteSpace(n.Name))
+           || n.Focusable || n.Patterns.Count > 0;
+
     private static bool IsInteresting(AutomationElement el, ControlType ct, string name)
     {
         if (InteractiveTypes.Contains(ct)) return true;
