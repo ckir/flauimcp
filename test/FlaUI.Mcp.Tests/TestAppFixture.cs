@@ -32,7 +32,14 @@ public sealed class TestAppFixture : IDisposable
 
     public void Dispose()
     {
-        try { if (!Process.HasExited) Process.Kill(entireProcessTree: true); }
+        // Wait for full exit, not just Kill: a half-torn-down TestApp window left in the desktop tree
+        // makes the NEXT test's window enumeration (ListWindowsAsync) block on the dying window's
+        // UIA property read (STA, no timeout) — which manifested as a full-suite hang.
+        try
+        {
+            if (!Process.HasExited) Process.Kill(entireProcessTree: true);
+            Process.WaitForExit(3000);
+        }
         catch { /* already gone */ }
     }
 }
