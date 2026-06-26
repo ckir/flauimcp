@@ -92,4 +92,12 @@ public sealed class SnapshotTools
             var s = string.IsNullOrEmpty(window) ? _perception.StatsBySnapshotId(snapshotId!) : await _perception.StatsByWindowAsync(new WindowHandle(window!));
             return ToolResponse.Ok(new { snapshotId = s.SnapshotId, total = s.Total, interactive = s.Interactive, offscreen = s.Offscreen, redacted = s.Redacted, byControlType = s.ByControlType });
         });
+
+    [McpServerTool(ReadOnly = true), Description("O(1) 'where am I': return the UIA-focused element's ref + descriptor line + owning window handle/title/pid. The ref is scoped to the returned window handle so you can act on it. AccessDeniedIntegrity on a secure/UAC desktop; NoFocusedElement when nothing is focused.")]
+    public Task<string> DesktopGetFocusedElement()
+        => ToolResponse.Guard(async () =>
+        {
+            var f = await _perception.GetFocusedElementAsync();
+            return ToolResponse.Ok(new { @ref = f.Ref, descriptor = f.DescriptorLine, window = new { handle = f.WindowHandle, title = f.Title, pid = f.Pid } });
+        });
 }

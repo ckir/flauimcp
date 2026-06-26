@@ -151,4 +151,23 @@ public sealed class PerceptionManager
             nodes.Count(n => n.IsOffscreen), nodes.Count(n => n.IsPassword),
             nodes.GroupBy(n => n.ControlType.ToString()).ToDictionary(g => g.Key, g => g.Count()));
     }
+
+    public async Task<FocusedElementInfo> GetFocusedElementAsync()
+    {
+        (WindowHandle Handle, string Title, int Pid)? owner;
+        try { owner = await _windows.ResolveFocusedWindowAsync(); }
+        catch (System.UnauthorizedAccessException)
+        { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the focused element (secure/UAC desktop).", "dismiss the secure prompt and retry"); }
+        if (owner is null)
+            throw new ToolException(ToolErrorCode.NoFocusedElement, "No element currently has UIA focus.", "click or tab to a control, then retry");
+        var o = owner.Value;
+        // Snapshot the owning window (full tree) and pick the focused node so the ref is actionable.
+        var (snapId, model) = await BuildModelAsync(o.Handle, new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true }, _refs);
+        _cache.Put(snapId, model);
+        var node = model.Nodes.FirstOrDefault(n => n.Focused) ?? model.Nodes.First();
+        var line = SnapshotEngine.Render(new SnapshotModel(new[] { (SnapshotItem)node }), new SnapshotOptions()).TrimEnd('\r', '\n');
+        return new FocusedElementInfo(node.Ref, line, o.Title, o.Pid, o.Handle.Id);
+    }
 }
+
+public sealed record FocusedElementInfo(string Ref, string DescriptorLine, string Title, int Pid, string? WindowHandle);

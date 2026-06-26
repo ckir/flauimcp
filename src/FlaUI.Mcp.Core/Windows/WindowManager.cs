@@ -157,6 +157,9 @@ public sealed class WindowManager : IDisposable
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    private const uint GA_ROOT = 2;
+
     [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
 
@@ -286,6 +289,24 @@ public sealed class WindowManager : IDisposable
 
     public Task FocusAsync(WindowHandle handle) =>
         RunOnWindowAsync(handle, w => { w.Focus(); w.SetForeground(); return true; });
+
+    public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowAsync() =>
+        _dispatcher.RunQueryAsync<(WindowHandle, string, int)?>(() =>
+        {
+            var focused = _automation.FocusedElement();
+            if (focused is null) return null;
+            IntPtr hwnd = IntPtr.Zero;
+            try { hwnd = focused.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+            // True top-level window via Win32 GA_ROOT; fall back to the foreground window
+            // (a focused element is always in it) when the element exposes no own HWND.
+            hwnd = hwnd != IntPtr.Zero ? GetAncestor(hwnd, GA_ROOT) : GetForegroundWindow();
+            int pid = -1; string title = "";
+            try { pid = focused.Properties.ProcessId.ValueOrDefault; } catch { }
+            try { title = focused.Properties.Name.ValueOrDefault ?? ""; } catch { }
+            if (hwnd == IntPtr.Zero) return null;
+            var handle = Register(_automation.FromHandle(hwnd).AsWindow(), pid);
+            return (handle, title, pid);
+        });
 
     public async Task CloseAsync(WindowHandle handle)
     {
