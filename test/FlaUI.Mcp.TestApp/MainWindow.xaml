@@ -27,6 +27,14 @@
                 AutomationProperties.AutomationId="OffscreenButton"
                 AutomationProperties.IsOffscreenBehavior="Offscreen"
                 Width="80" Height="24"/>
+        <!-- Laid out far outside a clipped 1px Canvas: it keeps a UIA peer and (on WPF/.NET10)
+             reports IsOffscreen=FALSE, but its bounding rect falls outside the window — so only the
+             SPATIAL cull catches it. Exercises the bounding-box backstop. -->
+        <Canvas Height="1" ClipToBounds="True">
+            <Button x:Name="SpatialOffscreenButton" Content="Spatial"
+                    AutomationProperties.AutomationId="SpatialOffscreenButton"
+                    Canvas.Left="5000" Canvas.Top="0" Width="80" Height="24"/>
+        </Canvas>
         <Border Background="#FFE0E0E0" Height="36" Margin="0,8,0,0">
             <TextBlock x:Name="MenuTarget"
                        AutomationProperties.AutomationId="MenuTarget"

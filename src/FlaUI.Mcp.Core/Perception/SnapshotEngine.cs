@@ -42,17 +42,24 @@ public static class SnapshotEngine
             if (prid != null) popupRids.Add(prid);
         }
 
-        Visit(root, depth: 0, indexPath: Array.Empty<int>(), ancestorAid: null, indent: "");
+        var rootBounds = Safe(() => root.BoundingRectangle, System.Drawing.Rectangle.Empty);
+        Visit(root, depth: 0, indexPath: Array.Empty<int>(), ancestorAid: null, indent: "", cullBounds: rootBounds);
 
         if (popupRoots.Count > 0)
         {
             sb.AppendLine("[Active Overlays]");
             for (int i = 0; i < popupRoots.Count; i++)
-                Visit(popupRoots[i], depth: 0, indexPath: new[] { -1 - i }, ancestorAid: null, indent: "  ");
+            {
+                // Each overlay is culled against ITS OWN bounds — a context menu commonly renders
+                // outside the main window, so the window's bounds must not gate its items.
+                var popupBounds = Safe(() => popupRoots[i].BoundingRectangle, System.Drawing.Rectangle.Empty);
+                Visit(popupRoots[i], depth: 0, indexPath: new[] { -1 - i }, ancestorAid: null, indent: "  ", cullBounds: popupBounds);
+            }
         }
         return (sb.ToString(), count);
 
-        void Visit(AutomationElement el, int depth, int[] indexPath, string? ancestorAid, string indent)
+        void Visit(AutomationElement el, int depth, int[] indexPath, string? ancestorAid, string indent,
+            System.Drawing.Rectangle cullBounds)
         {
             int[] rid = Safe(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? Array.Empty<int>();
 
@@ -69,6 +76,16 @@ public static class SnapshotEngine
             // IncludeOffscreen opts back in to reach scrolled-off-but-real elements.
             if (depth > 0 && !options.IncludeOffscreen
                 && Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false)) return;
+
+            // Spatial off-screen cull (default): a backstop for frameworks that fail to set IsOffscreen
+            // on clipped/scrolled-out elements. Cull a node whose bounding rect is empty or does not
+            // intersect its root's bounds (the window, or the overlay for grafted popups). Skipped when
+            // the root bounds are unknown, to avoid over-culling.
+            if (depth > 0 && !options.IncludeOffscreen && cullBounds.Width > 0 && cullBounds.Height > 0)
+            {
+                var rect = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
+                if (rect.Width <= 0 || rect.Height <= 0 || !rect.IntersectsWith(cullBounds)) return;
+            }
 
             string aid = Safe(() => el.AutomationId, "");
             ControlType ct = Safe(() => el.ControlType, ControlType.Custom);
@@ -88,15 +105,23 @@ public static class SnapshotEngine
                 childIndent = indent + "  ";
             }
 
-            if (depth >= options.MaxDepth) return;
             var nextAncestor = string.IsNullOrEmpty(aid) ? ancestorAid : aid;
             AutomationElement[] children = Safe(() => el.FindAllChildren(), Array.Empty<AutomationElement>());
+            if (depth >= options.MaxDepth)
+            {
+                // Don't truncate silently — tell the agent the subtree was cut at the depth limit so it
+                // doesn't conclude the missing elements don't exist.
+                if (children.Length > 0)
+                    sb.Append(childIndent).Append("… ").Append(children.Length)
+                      .Append(" more (depth limit ").Append(options.MaxDepth).AppendLine(")");
+                return;
+            }
             for (int i = 0; i < children.Length; i++)
             {
                 var nextPath = new int[indexPath.Length + 1];
                 Array.Copy(indexPath, nextPath, indexPath.Length);
                 nextPath[^1] = i;
-                Visit(children[i], depth + 1, nextPath, nextAncestor, childIndent);
+                Visit(children[i], depth + 1, nextPath, nextAncestor, childIndent, cullBounds);
             }
         }
     }

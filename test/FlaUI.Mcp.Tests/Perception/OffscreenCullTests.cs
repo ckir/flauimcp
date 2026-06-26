@@ -29,4 +29,36 @@ public class OffscreenCullTests : IClassFixture<TestAppFixture>
             new SnapshotOptions { FullProperties = true, IncludeOffscreen = true });
         Assert.Contains("aid=OffscreenButton", included.Tree);
     }
+
+    // SpatialOffscreenButton reports IsOffscreen=FALSE but its rect is outside the window, so only the
+    // bounding-box backstop culls it.
+    [Fact]
+    public async Task Spatially_offscreen_elements_are_culled_by_default_and_included_on_opt_in()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry());
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var culled = await perception.SnapshotAsync(handle,
+            new SnapshotOptions { FullProperties = true });
+        Assert.DoesNotContain("aid=SpatialOffscreenButton", culled.Tree);
+
+        var included = await perception.SnapshotAsync(handle,
+            new SnapshotOptions { FullProperties = true, IncludeOffscreen = true });
+        Assert.Contains("aid=SpatialOffscreenButton", included.Tree);
+    }
+
+    // A shallow MaxDepth must announce the cut rather than truncate silently.
+    [Fact]
+    public async Task Depth_limit_emits_a_truncation_marker()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry());
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { MaxDepth = 1 });
+        Assert.Contains("depth limit 1", snap.Tree);
+    }
 }
