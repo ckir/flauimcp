@@ -52,10 +52,10 @@ surface; 3b completes the surface. Both are synthetic-input-free.
 | `desktop_set_focus` | UIA `Focus()` | **NEW (agy catch).** Pure UIA, not synthetic input. Focus is frequently a prerequisite that triggers lazy-loaded data / enables downstream controls. Element-scoped — distinct from Phase-1 `desktop_focus_window`. |
 | `desktop_window_transform` | WindowPattern / TransformPattern | maximize/minimize/restore/move/resize (**not** close — already Phase-1 `desktop_close_window`). **Pulled into 3a (decided 2026-06-26):** window-scoped, low-complexity, and independent of the ref-resolution path — acts on the window handle directly via the action STA, no descriptor re-walk. |
 
-Plus the cross-cutting 3a infrastructure: the **`Interactor`** component, the new
-**action-STA `UIA3Automation`** + **cross-STA descriptor resolution** path
-(`RunOnRefActionAsync`), the **`--read-only-mode`** flag, and `destructiveHint`
-annotations on every element-targeted tool above.
+Plus the cross-cutting 3a infrastructure: the **`Interactor`** component, the
+**per-action STA action model** (Task C — fixes the modal deadlock) + **cross-STA
+descriptor resolution** path (`RunOnRefActionAsync`), the **`--read-only-mode`** flag, and
+`destructiveHint` annotations on every element-targeted tool above.
 
 ### 3b → v0.4.0 — structured patterns + perception completion
 
@@ -116,13 +116,13 @@ the split:
   (built with the query-STA `UIA3Automation`); they cannot serve as action-STA search
   roots for the same reason.
 
-So Phase 3 (3a) adds an **action-STA `UIA3Automation`** — through Phase 2 the query
-automation was the only one — and a descriptor-first, **cache-free** action resolution
-path:
+So Phase 3 (3a) reworks the action context into a **per-action STA execution model**
+(Task C) and adds a descriptor-first, **cache-free** resolution path:
 
-- A small action-STA automation provider creates and owns a `UIA3Automation` on the
-  **action** thread (mirrors how the query automation is created on the query thread; both
-  live behind `AutomationDispatcher`).
+- Each action runs on its **own transient STA thread** with its **own short-lived
+  `UIA3Automation`** (COM is apartment-affine — it cannot reuse the query automation;
+  through Phase 2 the query automation was the only one). This *supersedes* the earlier
+  notion of a single long-lived action automation — see Task C (deadlock avoidance).
 - `PerceptionManager.RunOnRefActionAsync<T>(handle, ref, Func<element,T>, int timeoutMs)`:
   (1) read **only** the `ElementDescriptor` from the registry (a brief locked read — *not*
   the cached element); (2) hop to the action STA via
@@ -152,9 +152,35 @@ walk), two extractions are required — both **3a prerequisites**:
   AutomationId/Name/IndexPath search from `RefRegistry.Resolve` into a roots-only,
   cache-free descriptor-walk helper both paths call.
 
-The action-STA `UIA3Automation` is instantiated **and** disposed *on the action STA*
-(`_action.RunAsync(() => new UIA3Automation())` / `_action.RunAsync(() => automation.Dispose())`)
-— never let the GC finalize a COM object on a random thread (AGY-AFTER lifecycle note).
+Each transient action thread instantiates **and** disposes its own `UIA3Automation` (on
+that STA thread) — never letting the GC finalize a COM object on a random thread. A thread
+abandoned on a blocked modal disposes its automation only when the blocking call finally
+returns and the thread unwinds: a bounded, self-clearing parked thread, not a permanent
+leak.
+
+### Action execution model (Task C — severe-defect fix)
+
+The Phase-1 `AutomationDispatcher` action context is a **single** long-lived STA thread
+draining a `BlockingCollection` (verified in `StaThreadContext`). That is a **deadlock**
+the moment actions exist: when an `Invoke` opens a modal the call blocks natively and
+`RunActionAsync` returns `ACTION_BLOCKED_PENDING` — but the sole action thread stays parked
+inside that call, so a **second** action (e.g. clicking "OK" to dismiss the modal) sits in
+the queue forever. The documented recovery ("snapshot, then act on it") is then
+unachievable: you can *perceive* the modal on the live query STA but never *act* on it.
+(Surfaced by the AGY-AFTER pass; confirmed against the code.)
+
+**Fix:** the action context becomes **transient STA thread per action** (abandonable), not
+a shared serial queue. Each action spins a fresh STA thread → stateless resolve-and-act
+(own `UIA3Automation`) → completes. If it blocks past the timeout it returns
+`ACTION_BLOCKED_PENDING` and the thread is **abandoned**; the *next* action gets a
+brand-new STA thread and can dismiss the modal. Safe because the Phase-3 action path holds
+**zero cross-call state** (everything re-resolved per action). The query context is
+unchanged (reads don't open modals). This intentionally relaxes the master spec's strict
+single-flight action serialization — but only in the blocked case, which is exactly when a
+second action is needed to recover; non-blocked actions still serialize naturally by the
+agent awaiting each result. The abandoned action's eventual completion must not surface as
+an unobserved task exception. Implementation mechanism (raw STA `Thread` +
+`TaskCompletionSource` per call vs a custom STA `TaskScheduler`) is fixed in the 3a plan.
 
 Every 3a state-changing tool flows: tool → `RunOnRefActionAsync` → (cache-free
 descriptor-walk on the action STA) → `Interactor.<pattern>` → result. Window-scoped
@@ -205,8 +231,16 @@ is terminal — no synthetic fallback yet), `ELEMENT_NOT_ACTIONABLE` (offscreen/
 hint `desktop_scroll_into_view`), `ACTION_BLOCKED_PENDING` (action parked past timeout —
 non-error, snapshot to see the modal), `REF_NOT_FOUND` / `REF_STALE_UNRESOLVABLE`
 (re-snapshot), `ELEMENT_DISAPPEARED_DURING_ACTION` (snapshot+retry). The
-`--read-only-mode` rejection needs **one** new code (e.g. `WriteBlockedReadOnly`) — the
-single error-catalog addition in 3a.
+`--read-only-mode` rejection needs **one** new code (`WriteBlockedReadOnly`) — the single
+error-catalog addition in 3a.
+
+**Tool robustness (plan-level, AGY-AFTER):** `set_value` checks `ValuePattern.IsReadOnly`
+(clean `ELEMENT_NOT_ACTIONABLE`, not a native throw) and focuses the element first;
+`window_transform` checks `WindowPattern.CanMaximize`/`CanMinimize` before transforming;
+`desktop_scroll` maps LLM directions to `ScrollAmount`/percent. **Read-only-mode tradeoff:**
+`scroll`/`expand` are classified **write** (they mutate state and can trigger lazy-loads or
+dismiss popups), so `--read-only-mode` blocks them — meaning a read-only deployment cannot
+scroll to realize virtualized content. Accepted: that is the correct blast-radius call.
 
 ## Testing strategy (3a)
 
@@ -231,6 +265,10 @@ Tests (Core, `[Trait Desktop]` unless noted):
 - **Popup action (AGY-AFTER catch)**: right-click → snapshot grafts the context menu →
   invoke a menu item by its ref through `RunOnRefActionAsync`; proves the action STA
   resolves a ref living at the **Desktop** level (popup roots), not just under the window.
+- **Deadlock-recovery proof (critical, Task C)**: invoke the modal-button (blocks) →
+  assert `ACTION_BLOCKED_PENDING` → issue a **second** action that dismisses the modal and
+  assert it **succeeds**. This is the test that proves the per-action STA model (a
+  single-thread action queue would hang here).
 - **`set_focus`**: focusing the reveal control makes the hidden label appear in a
   follow-up snapshot.
 - **`window_transform`** (Desktop): maximize then restore the TestApp window; assert the
