@@ -45,12 +45,23 @@ public sealed class WindowManager : IDisposable
     public Task<WindowHandle> OpenByPidAsync(int pid) =>
         _dispatcher.RunQueryAsync(() =>
         {
-            var match = _automation.GetDesktop().FindAllChildren()
-                .Select(c => c.AsWindow())
-                .FirstOrDefault(w => w.Properties.ProcessId.ValueOrDefault == pid
-                                     && !string.IsNullOrEmpty(w.Title))
-                ?? throw new ToolException(ToolErrorCode.WindowNotFound,
-                       $"No window for pid {pid}.", "re-list windows");
+            // A just-launched app's top-level window isn't always enumerable the instant the process
+            // goes input-idle. Poll briefly so launch->open (and slow-rendering apps under load) don't
+            // spuriously fail with "No window for pid".
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            Window? match;
+            while (true)
+            {
+                match = _automation.GetDesktop().FindAllChildren()
+                    .Select(c => c.AsWindow())
+                    .FirstOrDefault(w => w.Properties.ProcessId.ValueOrDefault == pid
+                                         && !string.IsNullOrEmpty(w.Title));
+                if (match != null || DateTime.UtcNow >= deadline) break;
+                Thread.Sleep(100);
+            }
+            if (match is null)
+                throw new ToolException(ToolErrorCode.WindowNotFound,
+                    $"No window for pid {pid}.", "re-list windows");
             return Register(match, pid);
         });
 
