@@ -74,16 +74,10 @@ public sealed class RefRegistry
         var entry = Lookup(windowId, @ref); // REF_NOT_FOUND if absent
         var d = entry.Descriptor;
 
-        // (1) cached fast-path — query-STA only. RuntimeId AND ControlType match AND not offscreen.
+        // (1) cached fast-path — query-STA only. RuntimeId AND ControlType match AND not offscreen AND Name matches.
         if (entry.Cached is { } cached)
         {
-            try
-            {
-                var rid = cached.Properties.RuntimeId.ValueOrDefault;
-                if (rid != null && rid.AsEnumerable().SequenceEqual(d.RuntimeId) && cached.ControlType == d.ControlType
-                    && !cached.Properties.IsOffscreen.ValueOrDefault)
-                    return cached;
-            }
+            try { if (FastPathMatches(cached, d)) return cached; }
             catch { /* element gone — fall through to the cache-free walk */ }
         }
 
@@ -129,6 +123,17 @@ public sealed class RefRegistry
             $"Ref '{@ref}' could not be re-resolved; the element appears to be gone.",
             "take a fresh desktop_snapshot");
     }
+
+    internal static bool FastPathMatches(AutomationElement cached, ElementDescriptor d)
+    {
+        var rid = cached.Properties.RuntimeId.ValueOrDefault;
+        return rid != null && rid.AsEnumerable().SequenceEqual(d.RuntimeId)
+            && cached.ControlType == d.ControlType
+            && !cached.Properties.IsOffscreen.ValueOrDefault
+            && string.Equals(Safe(() => cached.Name, ""), d.Name, System.StringComparison.Ordinal);
+    }
+
+    private static T Safe<T>(Func<T> read, T fallback) { try { return read(); } catch { return fallback; } }
 
     private static AutomationElement? TrySearch(AutomationElement root,
         Func<ConditionFactory, ConditionBase> cond)
