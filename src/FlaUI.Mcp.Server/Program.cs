@@ -19,6 +19,7 @@ if (CliRouter.IsInstallerVerb(args))
 ElevationGuard.WarnIfElevated(ElevationGuard.IsElevated(), Console.Error);
 
 var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddSingleton(ServerOptions.FromArgs(args));
 
 // Core singletons (one automation context for the whole server in this phase).
 builder.Services.AddSingleton<AutomationDispatcher>();
