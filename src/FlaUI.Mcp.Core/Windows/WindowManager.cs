@@ -62,6 +62,18 @@ public sealed class WindowManager : IDisposable
             return func(w);
         });
 
+    /// <summary>Run a read callback on the query STA with the resolved window AND the Desktop
+    /// element (the snapshot engine needs the Desktop to graft owner-process popups, which are
+    /// children of the Desktop — not the target window). Reuses the stale-handle guard.</summary>
+    public Task<T> RunWithWindowAndDesktopAsync<T>(WindowHandle handle, Func<Window, AutomationElement, T> func) =>
+        _dispatcher.RunQueryAsync(() =>
+        {
+            if (!_handles.TryGetValue(handle.Id, out var w))
+                throw new ToolException(ToolErrorCode.WindowHandleStale,
+                    $"Handle {handle.Id} is no longer valid.", "re-list windows and re-open");
+            return func(w, _automation.GetDesktop());
+        });
+
     public void Invalidate(WindowHandle handle)
     {
         _handles.TryRemove(handle.Id, out _);

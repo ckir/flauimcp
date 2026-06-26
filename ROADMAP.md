@@ -38,6 +38,39 @@ perception helpers (`desktop_snapshot_diff`, `desktop_snapshot_stats`,
 | **System-tray pseudo-window** (`desktop_open_tray` walking `Shell_TrayWnd`/`NotifyIconOverflowWindow`) | Useful for machine management (Wi-Fi/Docker tray) but a special-case surface beyond core app control. **Prioritized v2.** | Review 3 |
 | **Code signing the distributed exe** (Authenticode / cert) | An unsigned self-extracting exe that synthesizes input is a strong AV/SmartScreen trigger; signing materially improves the install experience. v1 ships unsigned + checksum + "Run anyway" docs. **Top v2 distribution item.** | Distribution spec / agy review |
 
+## Perception — known limitations & hardening backlog (Phase 2 review)
+
+Surfaced by the cycle-end adversarial review of Phase 2. None block v0.2.0; the perception
+security floors are defense-in-depth, not an injection cure.
+
+**Known limitations (documented, not bugs):**
+
+- **Denylist is process-coarse.** The credential-store denylist matches by process name, so it
+  misses *browser-embedded* password managers (`chrome://settings/passwords` is process `chrome`)
+  and *UWP* apps whose window PID resolves to `ApplicationFrameHost.exe` rather than the real
+  binary. Always-on `IsPassword` redaction is the field-level backstop; a full allowlist remains an
+  opt-in hardened posture (deliberately not the default).
+- **"Reveal password" defeats redaction.** When an app swaps a password field to plaintext (eye
+  icon → `IsPassword` toggles false), the value is, by the app's own declaration, no longer a
+  secret — nothing at our layer can re-mask it.
+- **Electron/Chromium a11y is off by default.** Chromium exposes its full UIA tree only when a
+  screen reader is detected or it is launched with `--force-renderer-accessibility`; otherwise a
+  snapshot is one large `Document` node. *Future:* set the UIA "assistive tech present" flag.
+- **Popup detection is class-name-based.** `FindOwnerPopups` recognizes Win32 (`#32768`), WPF
+  (`HwndWrapper*`/`Popup`), and `Menu`; it misses WinForms/Qt/Electron overlay classes.
+- **No occlusion awareness.** UIA reports `IsOffscreen` but not "visible-but-covered by another
+  window." Relevant to action targeting (Phase 3) and the vision path (Phase 4).
+
+**Hardening backlog:**
+
+| Item | When | Notes |
+| --- | --- | --- |
+| **Cross-STA ref resolution** — re-resolve a ref on the *action* STA, never marshal an `AutomationElement` across apartments | Phase 3 | COM is thread-affine; `RunOnRefAsync` already resolves-then-acts in one STA lambda. Action tools must route resolution through the action dispatcher. |
+| **Fast-path recycle guard** — add a `Name`/`AutomationId` sanity check to `RefRegistry.Resolve`'s cache fast-path | Phase 3 | Virtualized container recycling (e.g. `DataGrid` scroll) can reuse a `RuntimeId` for different data; harmless in Phase 2 (refs aren't consumed by actions yet). |
+| **Hard-fail on elevation** behind `--unsafe-allow-elevation` | Phase 3 | v0.2.0 warns only; revisit when synthetic input multiplies the blast radius. |
+| **Redact descriptor `Name` for `IsPassword`** | micro | Belt-and-suspenders; `Name` is empty for conformant password controls today, so no secret is stored. |
+| **Window-prefixed refs in output** (`[w1:e1]`) | low | Mitigated already — the tools take window handle + ref as separate args, so refs can't alias across windows. |
+
 ## Notes
 
 - Items marked "Both reviews" were independently flagged by both external

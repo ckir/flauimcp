@@ -2,8 +2,9 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets an AI
 agent — Claude Code, Antigravity (agy), or any MCP client — **control the Windows desktop**:
-enumerate windows, launch applications, and focus/close windows, with full UI perception and
-input synthesis on the roadmap. Think "Playwright, but for native Windows apps."
+enumerate windows, launch applications, focus/close windows, and **snapshot a window's UI into
+a ref-tagged accessibility tree**, with mouse/keyboard input synthesis on the roadmap. Think
+"Playwright, but for native Windows apps."
 
 ---
 
@@ -50,23 +51,40 @@ FlaUI.Mcp is a stdio MCP server built on [FlaUI](https://github.com/FlaUI/FlaUI)
 Automation / UIA3) and the official MCP C# SDK. It exposes Windows desktop control as MCP
 tools an agent can call.
 
-**Current tools (v1 — window management):**
+**Current tools (window management + perception):**
 
-| Tool | Description |
-| --- | --- |
-| `DesktopListWindows` | List top-level windows with title, process name, and PID. |
-| `DesktopOpenWindow` | Open a window by `pid` or `title`, returning a handle (e.g. `w1`). |
-| `DesktopLaunchApp` | Launch an executable (with optional args) and return a handle to its main window. |
-| `DesktopFocusWindow` | Bring a window to the foreground. |
-| `DesktopCloseWindow` | Close a window and free its handle. |
+| Tool | Read-only | Description |
+| --- | --- | --- |
+| `DesktopListWindows` | ✅ | List top-level windows with title, process name, and PID. |
+| `DesktopOpenWindow` | ✅ | Open a window by `pid` or `title`, returning a handle (e.g. `w1`). |
+| `DesktopSnapshot` | ✅ | Walk a window's UI into an indented, ref-tagged accessibility-tree snapshot. Each line carries an `eN` ref, control type, name, bounds, state, and supported patterns. Options: `interactiveOnly` (prune noise, default on), `fullProperties` (add AutomationId/HelpText), `includeOffscreen` (default off), `maxDepth`, and `root` (root the walk at a prior ref). |
+| `DesktopLaunchApp` | — | Launch an executable (with optional args) and return a handle to its main window. |
+| `DesktopFocusWindow` | — | Bring a window to the foreground. |
+| `DesktopCloseWindow` | — | Close a window and free its handle. |
 
-Every tool returns structured JSON. Errors come back as a uniform envelope
-(`{ error, message, suggestedRecovery }`) so the agent can recover rather than crash the
-session.
+Read-only tools are annotated as such so MCP clients can auto-approve them while still
+prompting for the mutating ones. Every tool returns structured JSON. Errors come back as a
+uniform envelope (`{ error, message, suggestedRecovery }`) so the agent can recover rather than
+crash the session.
 
-**On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): UI snapshots (accessibility tree +
-screenshots), element references, mouse/keyboard input synthesis, structured patterns
-(grid/text/scroll), clipboard, and an HTTP transport.
+### Perception safeguards (built in)
+
+`DesktopSnapshot` reads UI into the agent's context, so it ships with privacy and safety floors
+— defense in depth, not a substitute for supervising the agent:
+
+- **Credential stores are blocked.** Snapshotting a window owned by a known password manager
+  (1Password, Bitwarden, KeePass, and similar) is rejected outright (`TargetDenied`).
+- **Password fields are always redacted.** Any UIA password field renders as `[REDACTED]`;
+  typed secrets never enter a snapshot, even inside otherwise-allowed apps (e.g. a browser
+  password box).
+- **Off-screen elements are culled by default.** A snapshot reflects what the user can see; pass
+  `includeOffscreen` to reach scrolled-off-but-real elements.
+- **Never run elevated.** The server warns (on stderr) if started with Administrator rights — it
+  is meant to run at your user integrity level.
+
+**On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): screenshots / vision and pixel-precise
+coordinates, mouse/keyboard input synthesis, structured patterns (grid/text/scroll), clipboard,
+snapshot diff/stats, and an HTTP transport.
 
 ## Requirements
 

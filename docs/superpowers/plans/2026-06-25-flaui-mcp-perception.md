@@ -1330,21 +1330,55 @@ git commit -m "feat(perception): graft owner-process popups (#32768/menus) under
 
 ---
 
-### Task 8: Full-suite verification + wrap (no commit unless fixes needed)
+### Task 8: Security tool annotations + full-suite verification + wrap
 
-- [ ] **Step 1: Build the TestApp** — `dotnet build test/FlaUI.Mcp.TestApp` → succeeds.
+This task folds in the one Phase-2-scoped item from the prompt-injection threat model (see the
+project memory `project_flaui_mcp_prompt_injection.md`): annotate the **read-only** tools with the
+MCP `ReadOnly` hint so clients can auto-approve perception while gating state-changing tools. This
+encodes the read/write trust split from the start. (The heavier controls — human-in-loop on
+state-change, never-elevated, target deny-list + dangerous-sink interlocks, action budget/audit —
+are **Phase 3** spec constraints, NOT this phase; Phase 3 = synthetic input, where blast radius
+explodes.)
 
-- [ ] **Step 2: Full suite (interactive desktop session)** — `dotnet test`
-Expected: PASS, 0 failed. New tests: PerceptionValueTypes (2), RefRegistry (5), PerceptionPrimitive (2), SnapshotEngine (2), SnapshotTools (2), RefResolution (5), PopupGrafting (1) = 19 added on top of the Phase-1 + install suites.
+- [ ] **Step 1: Annotate the read-only tools with the `ReadOnly` hint**
 
-- [ ] **Step 3: CI filter (non-UIA only)** — `dotnet test --filter "Category!=Desktop"`
-Expected: PASS, 0 failed. Only PerceptionValueTypes (2) + RefRegistry (5) are non-Desktop here, plus the existing 37 install/Phase-1 non-UIA tests = 44. (Confirm the WindowTools `ToolResponse` refactor kept this green.)
+`McpServerToolAttribute` (ModelContextProtocol 1.4.0) exposes `ReadOnly` (bool, **default false**),
+`Destructive` (**default true**), `Idempotent`, `OpenWorld`. Because `Destructive` defaults to
+`true`, leaving the four mutating window tools UNannotated already marks them write/destructive —
+exactly the trust split we want. Only genuinely read-only tools get `ReadOnly = true`. **VERIFY by
+compile** that `McpServerTool(ReadOnly = true)` is accepted (it is in 1.4.0 — `McpServerToolAttribute.ReadOnly`);
+if the attribute does not expose `ReadOnly`, STOP and report `[assumed]->[actual]`.
 
-- [ ] **Step 4: Live smoke (optional, recommended)** — start the stdio host, open a window, snapshot it; confirm `desktop_snapshot` returns a ref-tagged tree for a real app (e.g. Notepad). If wired through the installed/`dotnet run` server, list → open → snapshot.
+In `src/FlaUI.Mcp.Server/Tools/SnapshotTools.cs`, change the `desktop_snapshot` attribute:
+```csharp
+    [McpServerTool(ReadOnly = true), Description("Walk a window's accessibility tree into an indented, ref-tagged snapshot. " +
+        "Each line: [e23] Button \"OK\" @{x,y,w,h} {enabled, focusable} [Invoke]. Use the e-refs with later interaction tools.")]
+```
+In `src/FlaUI.Mcp.Server/Tools/WindowTools.cs`, change ONLY the `desktop_list_windows` attribute (the read tool); leave open/launch/focus/close UNTOUCHED so they keep the default write/destructive hints:
+```csharp
+    [McpServerTool(ReadOnly = true), Description("List top-level desktop windows with title, process, and pid.")]
+```
+> No new test — this is declarative MCP metadata, covered by the build + the existing tool tests. (A reflection assertion on the annotation would be brittle.) **Do NOT** add `ReadOnly = true` to `desktop_open_window`/`desktop_launch_app`/`desktop_focus_window`/`desktop_close_window` — those mutate foreground/process/handle state and must stay client-gated.
 
-- [ ] **Step 5: Update the durable execution index** — record each task's commit SHA and set the resume point to "Phase 2 merged → write Phase 3 (Interaction) plan" in `project_flaui_mcp_execution.md` (and its `MEMORY.md` pointer), per the power-failure-resilience rule.
+- [ ] **Step 2: Build the TestApp** — `dotnet build test/FlaUI.Mcp.TestApp` → succeeds.
 
-- [ ] **Step 6: Finish the branch** — use superpowers:finishing-a-development-branch (final code review → merge `phase-2-perception` to `master`).
+- [ ] **Step 3: Full suite (interactive desktop session)** — `dotnet test`
+Expected: PASS, 0 failed. New tests: PerceptionValueTypes (2), RefRegistry (5), PerceptionPrimitive (2), SnapshotEngine (2), SnapshotTools (2), RefResolution (5), PopupGrafting (1) = 19 added on top of the Phase-1 + install suites. (The annotation change adds no tests.)
+
+- [ ] **Step 4: CI filter (non-UIA only)** — `dotnet test --filter "Category!=Desktop"`
+Expected: PASS, 0 failed. Only PerceptionValueTypes (2) + RefRegistry (5) are non-Desktop here, plus the existing 37 install/Phase-1 non-UIA tests = 44. (Confirm the WindowTools `ToolResponse` refactor + the annotation edit kept this green.)
+
+- [ ] **Step 5: Commit the annotations**
+```bash
+git add src/FlaUI.Mcp.Server/Tools/SnapshotTools.cs src/FlaUI.Mcp.Server/Tools/WindowTools.cs
+git commit -m "feat(perception): mark desktop_snapshot + list_windows ReadOnly (prompt-injection trust split)" -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+```
+
+- [ ] **Step 6: Live smoke (optional, recommended)** — start the stdio host, open a window, snapshot it; confirm `desktop_snapshot` returns a ref-tagged tree for a real app (e.g. Notepad). If wired through the installed/`dotnet run` server, list → open → snapshot.
+
+- [ ] **Step 7: Update the durable execution index** — record each task's commit SHA and set the resume point to "Phase 2 merged → write Phase 3 (Interaction) plan — which MUST open with the Security model section per `project_flaui_mcp_prompt_injection.md`" in `project_flaui_mcp_execution.md` (and its `MEMORY.md` pointer), per the power-failure-resilience rule.
+
+- [ ] **Step 8: Finish the branch** — use superpowers:finishing-a-development-branch (final code review → merge `phase-2-perception` to `master`).
 
 ---
 
