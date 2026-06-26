@@ -73,6 +73,17 @@ public class InteractionToolsTests
         }
     }
 
+    [Fact]
+    public async Task WindowTransform_maximize_then_restore()
+    {
+        using var app = new TestAppFixture();
+        var tools = Make(app, out var handle, out var p, out var m, out var d); using (d) using (m)
+        {
+            Assert.DoesNotContain("error", await tools.DesktopWindowTransform(handle.Id, "maximize"));
+            Assert.DoesNotContain("error", await tools.DesktopWindowTransform(handle.Id, "restore"));
+        }
+    }
+
     // THE critical Task-C proof: a blocked action must NOT freeze the action context.
     [Fact]
     public async Task A_blocked_modal_action_does_not_deadlock_a_second_action()

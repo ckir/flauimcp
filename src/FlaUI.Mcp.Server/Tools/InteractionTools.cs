@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Windows;
@@ -79,4 +80,16 @@ public sealed class InteractionTools
         [Description("Number of small scroll steps (default 1).")] double amount = 1,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, el => Interactor.Scroll(el, direction, amount), timeoutMs);
+
+    [McpServerTool(Destructive = true), Description("Transform a window by handle via UIA Window/Transform patterns. action = maximize|minimize|restore. (Close is desktop_close_window; move/resize land later.)")]
+    public Task<string> DesktopWindowTransform(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("maximize|minimize|restore")] string action,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            await _windows.RunOnWindowActionAsync(new WindowHandle(window),
+                (win, _) => { Interactor.WindowTransform(win.AsWindow(), action); return true; }, timeoutMs);
+            return ToolResponse.Ok(new { ok = true, action });
+        });
 }
