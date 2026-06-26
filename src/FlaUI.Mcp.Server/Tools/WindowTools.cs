@@ -12,11 +12,13 @@ public sealed class WindowTools
 
     public WindowTools(WindowManager windows) => _windows = windows;
 
-    [McpServerTool, Description("List top-level desktop windows with title, process, and pid.")]
+    [McpServerTool(ReadOnly = true), Description("List top-level desktop windows with title, process, and pid.")]
     public Task<string> DesktopListWindows() => ToolResponse.Guard(async () =>
         ToolResponse.Ok(await _windows.ListWindowsAsync()));
 
-    [McpServerTool, Description("Open a window by pid or title and return its handle (e.g. w1).")]
+    // Read-only of the environment: resolves a handle only (no focus/render/launch). Marked ReadOnly
+    // rather than renamed — rename would break the shipped v0.1.x tool name.
+    [McpServerTool(ReadOnly = true), Description("Open a window by pid or title and return its handle (e.g. w1).")]
     public Task<string> DesktopOpenWindow(
         [Description("Selector kind: \"pid\" or \"title\".")] string by,
         [Description("The pid (as text) or the exact window title.")] string value)

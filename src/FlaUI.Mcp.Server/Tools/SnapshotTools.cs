@@ -11,7 +11,7 @@ public sealed class SnapshotTools
     private readonly PerceptionManager _perception;
     public SnapshotTools(PerceptionManager perception) => _perception = perception;
 
-    [McpServerTool, Description("Walk a window's accessibility tree into an indented, ref-tagged snapshot. " +
+    [McpServerTool(ReadOnly = true), Description("Walk a window's accessibility tree into an indented, ref-tagged snapshot. " +
         "Each line: [e23] Button \"OK\" @{x,y,w,h} {enabled, focusable} [Invoke]. Use the e-refs with later interaction tools.")]
     public Task<string> DesktopSnapshot(
         [Description("Window handle, e.g. w1.")] string window,
