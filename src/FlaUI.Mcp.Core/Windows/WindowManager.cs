@@ -48,7 +48,7 @@ public sealed class WindowManager : IDisposable
             // A just-launched app's top-level window isn't always enumerable the instant the process
             // goes input-idle. Poll briefly so launch->open (and slow-rendering apps under load) don't
             // spuriously fail with "No window for pid".
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var deadline = DateTime.UtcNow.AddSeconds(12);
             Window? match;
             while (true)
             {
