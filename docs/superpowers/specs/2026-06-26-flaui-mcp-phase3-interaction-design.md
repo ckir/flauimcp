@@ -129,16 +129,32 @@ path:
   `AutomationDispatcher.RunActionAsync(…, timeoutMs)`; (3) on the action STA, resolve the
   target window **independently** from its stored native handle (`actionAutomation.FromHandle(hwnd)`
   — the HWND is captured once on the query STA at handle registration and stored with the
-  `WindowHandle`); (4) run the descriptor re-walk (AutomationId → Name+ControlType under
-  nearest stable ancestor → IndexPath) scoped under that action-STA window; (5) run `func`
-  (the pattern call). On timeout the action STA stays parked on the pending COM call and
-  the call returns `ACTION_BLOCKED_PENDING` (non-error: "snapshot to see the modal"); the
-  query STA stays live.
+  `WindowHandle`; see Task A); (4) **build the same search roots the query path uses** —
+  `{ window } + FindOwnerPopups(desktop)` — by also calling `actionAutomation.GetDesktop()`
+  on the action STA and running the **identical** popup-grafting logic. This is load-bearing
+  (AGY-AFTER catch): Win32 `#32768` context menus and WPF popups live at the **Desktop**
+  level, *not* under the window, so a ref into a context-menu item would be unresolvable
+  against the window root alone; (5) run the cache-free descriptor re-walk (AutomationId →
+  Name+ControlType under nearest stable ancestor → IndexPath) scoped across those roots;
+  (6) run `func` (the pattern call). On timeout the action STA stays parked on the pending
+  COM call and the call returns `ACTION_BLOCKED_PENDING` (non-error: "snapshot to see the
+  modal"); the query STA stays live.
 
-To share the descriptor re-walk between the query path (cached-or-walk) and the action
-path (walk-only), **extract** the AutomationId/Name/IndexPath search from
-`RefRegistry.Resolve` into a descriptor-walk helper that takes explicit roots and does
-**not** consult the cache; `RunOnRefActionAsync` calls that helper with action-STA roots.
+To share logic between the query path (cached-or-walk) and the action path (cache-free
+walk), two extractions are required — both **3a prerequisites**:
+- **Task A — cache the HWND.** `WindowManager.Register` currently maps `w#` → a query-STA
+  `Window` COM object only. Extract + cache the `NativeWindowHandle` (`IntPtr`) at
+  registration (read once on the query STA) so the action STA can `FromHandle(hwnd)`
+  without touching the query-STA `Window`.
+- **Task B — extract `FindOwnerPopups`** out of `PerceptionManager` into a pure, stateless
+  helper taking a `Desktop` element + owner identity (PID / RuntimeId), so the query and
+  action STAs build **identical** `SearchRoots`. Likewise extract the
+  AutomationId/Name/IndexPath search from `RefRegistry.Resolve` into a roots-only,
+  cache-free descriptor-walk helper both paths call.
+
+The action-STA `UIA3Automation` is instantiated **and** disposed *on the action STA*
+(`_action.RunAsync(() => new UIA3Automation())` / `_action.RunAsync(() => automation.Dispose())`)
+— never let the GC finalize a COM object on a random thread (AGY-AFTER lifecycle note).
 
 Every 3a state-changing tool flows: tool → `RunOnRefActionAsync` → (cache-free
 descriptor-walk on the action STA) → `Interactor.<pattern>` → result. Window-scoped
@@ -212,6 +228,9 @@ Tests (Core, `[Trait Desktop]` unless noted):
 - **Cross-STA correctness**: a state-change via `RunOnRefActionAsync` is observed; a ref
   resolved on a prior snapshot re-resolves on the action STA (not marshaled). The
   blocking-Invoke test's query-STA liveness is the observable proof isolation held.
+- **Popup action (AGY-AFTER catch)**: right-click → snapshot grafts the context menu →
+  invoke a menu item by its ref through `RunOnRefActionAsync`; proves the action STA
+  resolves a ref living at the **Desktop** level (popup roots), not just under the window.
 - **`set_focus`**: focusing the reveal control makes the hidden label appear in a
   follow-up snapshot.
 - **`window_transform`** (Desktop): maximize then restore the TestApp window; assert the
