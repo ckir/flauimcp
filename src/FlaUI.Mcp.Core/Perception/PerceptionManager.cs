@@ -27,6 +27,25 @@ public sealed class PerceptionManager
             return func(el);
         });
 
+    /// <summary>Resolve a ref and run a state-changing pattern action on a TRANSIENT action STA.
+    /// The descriptor is read here (plain data, thread-safe); the element is re-resolved CACHE-FREE
+    /// on the action STA against window+popup roots built by that STA's own automation — no query-STA
+    /// COM object crosses apartments. An offscreen target is rejected before acting (offscreen Invoke
+    /// can hang). On modal block past timeoutMs the call surfaces ACTION_BLOCKED_PENDING.</summary>
+    public Task<T> RunOnRefActionAsync<T>(WindowHandle handle, string @ref, Func<AutomationElement, T> func, int timeoutMs)
+    {
+        var descriptor = _refs.Lookup(handle.Id, @ref).Descriptor; // REF_NOT_FOUND if absent (cheap, off-STA)
+        return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
+        {
+            var roots = PopupFinder.SearchRoots(win, desktop);
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref); // REF_STALE_UNRESOLVABLE if gone
+            if (el.Properties.IsOffscreen.ValueOrDefault)
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
+            return func(el);
+        }, timeoutMs);
+    }
+
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
     {
