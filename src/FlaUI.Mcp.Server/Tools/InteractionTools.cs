@@ -1,0 +1,42 @@
+using System.ComponentModel;
+using FlaUI.Mcp.Core.Interaction;
+using FlaUI.Mcp.Core.Perception;
+using FlaUI.Mcp.Core.Windows;
+using ModelContextProtocol.Server;
+
+namespace FlaUI.Mcp.Server.Tools;
+
+[McpServerToolType]
+public sealed class InteractionTools
+{
+    private const int DefaultActionTimeoutMs = 4000;
+    private readonly PerceptionManager _perception;
+    private readonly WindowManager _windows;
+    private readonly ServerOptions _options;
+
+    public InteractionTools(PerceptionManager perception, WindowManager windows, ServerOptions options)
+    { _perception = perception; _windows = windows; _options = options; }
+
+    private Task<string> Act(string window, string @ref,
+        Action<FlaUI.Core.AutomationElements.AutomationElement> act, int timeoutMs)
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            await _perception.RunOnRefActionAsync(new WindowHandle(window), @ref,
+                el => { act(el); return true; }, timeoutMs);
+            return ToolResponse.Ok(new { ok = true, pathUsed = "pattern" });
+        });
+
+    [McpServerTool(Destructive = true), Description("Invoke (activate) an element by ref via its UIA InvokePattern (e.g. click a button). If it opens a modal you get ActionBlockedPending — snapshot to see the dialog, then act on it.")]
+    public Task<string> DesktopInvoke(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Element ref from a snapshot, e.g. e23.")] string @ref,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => Act(window, @ref, Interactor.Invoke, timeoutMs);
+
+    [McpServerTool(Destructive = true), Description("Set keyboard focus to an element by ref (UIA Focus). Often a prerequisite that reveals lazy-loaded content or enables downstream controls.")]
+    public Task<string> DesktopSetFocus(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Element ref from a snapshot, e.g. e23.")] string @ref,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => Act(window, @ref, Interactor.SetFocus, timeoutMs);
+}

@@ -1,0 +1,77 @@
+using FlaUI.Mcp.Core.Perception;
+using FlaUI.Mcp.Core.Threading;
+using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server;
+using FlaUI.Mcp.Server.Tools;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Server;
+
+[Trait("Category", "Desktop")]
+public class InteractionToolsTests
+{
+    private static InteractionTools Make(TestAppFixture app, out WindowHandle handle,
+        out PerceptionManager p, out WindowManager m, out AutomationDispatcher d)
+    {
+        d = new AutomationDispatcher();
+        m = new WindowManager(d);
+        p = new PerceptionManager(m, new RefRegistry());
+        var tools = new InteractionTools(p, m, new ServerOptions(ReadOnly: false));
+        handle = m.OpenByPidAsync(app.Process.Id).GetAwaiter().GetResult();
+        return tools;
+    }
+
+    private static string RefFor(string tree, string aid)
+    {
+        foreach (var line in tree.Split('\n'))
+            if (line.Contains("aid=" + aid))
+            { int lb = line.IndexOf('['), rb = line.IndexOf(']'); return line.Substring(lb + 1, rb - lb - 1); }
+        throw new Xunit.Sdk.XunitException($"no ref for aid={aid}");
+    }
+
+    [Fact]
+    public async Task Invoke_changes_state_and_set_focus_reveals_a_label()
+    {
+        using var app = new TestAppFixture();
+        var tools = Make(app, out var handle, out var p, out var m, out var d); using (d) using (m)
+        {
+            var snap = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
+            Assert.DoesNotContain("error", await tools.DesktopInvoke(handle.Id, RefFor(snap.Tree, "OkButton")));
+            await tools.DesktopSetFocus(handle.Id, RefFor(snap.Tree, "FocusReveal"));
+            var label = await p.RunOnRefAsync(handle, RefFor(snap.Tree, "RevealedLabel"), el => el.Name);
+            Assert.Equal("revealed", label);
+        }
+    }
+
+    // THE critical Task-C proof: a blocked action must NOT freeze the action context.
+    [Fact]
+    public async Task A_blocked_modal_action_does_not_deadlock_a_second_action()
+    {
+        using var app = new TestAppFixture();
+        var tools = Make(app, out var handle, out var p, out var m, out var d); using (d) using (m)
+        {
+            var snap = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
+            // Invoke ModalButton: ShowDialog blocks the UI thread -> ACTION_BLOCKED_PENDING.
+            var blocked = await tools.DesktopInvoke(handle.Id, RefFor(snap.Tree, "ModalButton"), timeoutMs: 800);
+            Assert.Contains("ActionBlockedPending", blocked);
+
+            // The modal is now open. Snapshot it and click OK on a FRESH action thread.
+            // A single-thread action queue would hang here forever.
+            // Bounded poll: ShowDialog creates+registers the dialog on the TestApp UI
+            // thread slightly AFTER our Invoke times out, so a one-shot lookup races the
+            // OS window registration. Retry until found or a 3s deadline (no magic sleep).
+            WindowHandle modal = default;
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < deadline)
+            {
+                try { modal = await m.OpenByTitleAsync("Modal"); if (modal.Id is not null) break; }
+                catch { /* not registered yet — retry */ }
+                await Task.Delay(50);
+            }
+            Assert.NotNull(modal.Id);
+            var modalSnap = await p.SnapshotAsync(modal, new SnapshotOptions { FullProperties = true });
+            var dismiss = await tools.DesktopInvoke(modal.Id, RefFor(modalSnap.Tree, "ModalOk"), timeoutMs: 3000);
+            Assert.DoesNotContain("error", dismiss);
+        }
+    }
+}
