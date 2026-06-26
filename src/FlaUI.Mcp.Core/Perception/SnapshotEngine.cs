@@ -63,6 +63,13 @@ public static class SnapshotEngine
                 foreach (var prid in popupRids)
                     if (RidEqual(rid, prid)) return;
 
+            // Off-screen cull (default): skip elements UIA reports as not visible (scrolled or
+            // virtualized out of view) AND their subtrees — an off-screen element's descendants are
+            // off-screen too. Never cull a root (depth 0: the window or an overlay graft point).
+            // IncludeOffscreen opts back in to reach scrolled-off-but-real elements.
+            if (depth > 0 && !options.IncludeOffscreen
+                && Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false)) return;
+
             string aid = Safe(() => el.AutomationId, "");
             ControlType ct = Safe(() => el.ControlType, ControlType.Custom);
             string name = Safe(() => el.Name, "");

@@ -1,7 +1,7 @@
 ﻿<Window x:Class="FlaUI.Mcp.TestApp.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="FlaUI.Mcp TestApp" Height="400" Width="600"
+        Title="FlaUI.Mcp TestApp" Height="520" Width="600"
         AutomationProperties.AutomationId="MainWindow">
     <StackPanel Margin="12">
         <TextBox x:Name="Input" AutomationProperties.AutomationId="Input" Margin="0,0,0,8"/>
@@ -19,6 +19,14 @@
                 AutomationProperties.AutomationId="RebuildItemsButton" Click="RebuildItemsButton_Click" Margin="0,8,0,0"/>
         <Button x:Name="ClearItemsButton" Content="Clear Items"
                 AutomationProperties.AutomationId="ClearItemsButton" Click="ClearItemsButton_Click" Margin="0,4,0,0"/>
+        <!-- Stays Visible (so it keeps a UIA peer) but the explicit IsOffscreenBehavior=Offscreen hint
+             makes the peer report IsOffscreen=true — the deterministic way to get "in tree but
+             off-screen" in WPF (plain visibility/scroll/clip do not flip IsOffscreen here). The
+             off-screen-cull test asserts it is absent by default and present with includeOffscreen. -->
+        <Button x:Name="OffscreenButton" Content="Offscreen"
+                AutomationProperties.AutomationId="OffscreenButton"
+                AutomationProperties.IsOffscreenBehavior="Offscreen"
+                Width="80" Height="24"/>
         <Border Background="#FFE0E0E0" Height="36" Margin="0,8,0,0">
             <TextBlock x:Name="MenuTarget"
                        AutomationProperties.AutomationId="MenuTarget"

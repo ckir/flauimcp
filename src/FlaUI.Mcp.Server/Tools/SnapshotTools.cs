@@ -18,13 +18,15 @@ public sealed class SnapshotTools
         [Description("Optional ref to root the snapshot at (from a prior snapshot of this window).")] string? root = null,
         [Description("Max tree depth (default 40).")] int maxDepth = 40,
         [Description("Prune non-interactive container/decoration noise (default true).")] bool interactiveOnly = true,
-        [Description("Append AutomationId/HelpText to each line (default false).")] bool fullProperties = false)
+        [Description("Append AutomationId/HelpText to each line (default false).")] bool fullProperties = false,
+        [Description("Include off-screen (scrolled/virtualized out of view) elements (default false).")] bool includeOffscreen = false)
         => ToolResponse.Guard(async () =>
         {
             var opts = new SnapshotOptions
             {
                 RootRef = root, MaxDepth = maxDepth,
                 InteractiveOnly = interactiveOnly, FullProperties = fullProperties,
+                IncludeOffscreen = includeOffscreen,
             };
             var r = await _perception.SnapshotAsync(new WindowHandle(window), opts);
             return ToolResponse.Ok(new { snapshotId = r.SnapshotId, nodeCount = r.NodeCount, tree = r.Tree });
