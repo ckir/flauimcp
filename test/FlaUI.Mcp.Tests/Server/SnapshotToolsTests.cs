@@ -19,8 +19,8 @@ public class SnapshotToolsTests : IClassFixture<TestAppFixture>
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
         var refs = new RefRegistry();
-        var perception = new PerceptionManager(mgr, refs);
-        var snap = new SnapshotTools(perception);
+        var perception = new PerceptionManager(mgr, refs, new SnapshotCache());
+        var snap = new SnapshotTools(perception, new WaitCoordinator(perception));
         var window = new WindowTools(mgr);
 
         var opened = await window.DesktopOpenWindow("pid", _app.Process.Id.ToString());
@@ -38,7 +38,8 @@ public class SnapshotToolsTests : IClassFixture<TestAppFixture>
     {
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var snap = new SnapshotTools(new PerceptionManager(mgr, new RefRegistry()));
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var snap = new SnapshotTools(perception, new WaitCoordinator(perception));
         var json = await snap.DesktopSnapshot("w999");
         using var doc = JsonDocument.Parse(json);
         Assert.Equal("WindowHandleStale", doc.RootElement.GetProperty("error").GetString());

@@ -16,7 +16,7 @@ public class InteractionToolsTests
     {
         d = new AutomationDispatcher();
         m = new WindowManager(d);
-        p = new PerceptionManager(m, new RefRegistry());
+        p = new PerceptionManager(m, new RefRegistry(), new SnapshotCache());
         var tools = new InteractionTools(p, m, new ServerOptions(ReadOnly: false));
         handle = m.OpenByPidAsync(app.Process.Id).GetAwaiter().GetResult();
         return tools;

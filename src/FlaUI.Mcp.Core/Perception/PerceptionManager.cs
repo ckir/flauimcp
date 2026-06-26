@@ -10,11 +10,13 @@ public sealed class PerceptionManager
 {
     private readonly WindowManager _windows;
     private readonly RefRegistry _refs;
+    private readonly SnapshotCache _cache;
 
-    public PerceptionManager(WindowManager windows, RefRegistry refs)
+    public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache)
     {
         _windows = windows;
         _refs = refs;
+        _cache = cache;
     }
 
     /// <summary>Resolve a ref to its live element on the query STA and run a read over it.
@@ -56,24 +58,35 @@ public sealed class PerceptionManager
         catch { return null; }
     }
 
-    public Task<SnapshotResult> SnapshotAsync(WindowHandle handle, SnapshotOptions options) =>
+    public Task<(string SnapshotId, SnapshotModel Model)> BuildModelAsync(
+        WindowHandle handle, SnapshotOptions options, RefRegistry refs) =>
         _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
-            // Security floor: refuse to snapshot a window owned by a known credential store. A snapshot
-            // would pull its entire UIA tree into agent context (exfiltration risk + prompt-injection
-            // target). Reject BEFORE BeginSnapshot/Walk so no refs or tree are produced. See PerceptionPolicy.
             var procName = SafeProcessName(win);
             if (PerceptionPolicy.IsDenied(procName))
                 throw new ToolException(ToolErrorCode.TargetDenied,
                     $"Snapshotting windows owned by '{procName}' is blocked (credential store).",
                     "snapshot a different, non-sensitive window");
-
             IReadOnlyList<AutomationElement> popups = PopupFinder.FindOwnerPopups(desktop, win);
             AutomationElement root = string.IsNullOrEmpty(options.RootRef)
-                ? win
-                : _refs.Resolve(handle.Id, options.RootRef!, PopupFinder.SearchRoots(win, desktop));
-            var snapshotId = _refs.BeginSnapshot(handle.Id);
-            var (tree, count) = SnapshotEngine.Walk(root, popups, options, _refs, handle.Id);
-            return new SnapshotResult(snapshotId, tree, count);
+                ? win : refs.Resolve(handle.Id, options.RootRef!, PopupFinder.SearchRoots(win, desktop));
+            var snapshotId = refs.BeginSnapshot(handle.Id);
+            var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id);
+            return (snapshotId, model);
         });
+
+    public async Task<SnapshotResult> SnapshotAsync(WindowHandle handle, SnapshotOptions options)
+    {
+        var (snapshotId, model) = await BuildModelAsync(handle, options, _refs);
+        _cache.Put(snapshotId, model);
+        return new SnapshotResult(snapshotId, SnapshotEngine.Render(model, options), model.NodeCount);
+    }
+
+    public async Task<(string SnapshotId, SnapshotModel Model)> SnapshotModelForWaitAsync(
+        WindowHandle handle, SnapshotOptions options)
+    {
+        var (snapshotId, model) = await BuildModelAsync(handle, options, _refs);
+        _cache.Put(snapshotId, model);
+        return (snapshotId, model);
+    }
 }
