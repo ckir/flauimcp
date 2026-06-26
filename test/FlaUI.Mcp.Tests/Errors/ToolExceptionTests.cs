@@ -20,4 +20,11 @@ public class ToolExceptionTests
         var ex = new ToolException(ToolErrorCode.Timeout, "waited too long");
         Assert.Null(ex.SuggestedRecovery);
     }
+
+    [Fact]
+    public void New_phase3a_codes_serialize_by_name()
+    {
+        Assert.Equal("WriteBlockedReadOnly", ToolErrorCode.WriteBlockedReadOnly.ToString());
+        Assert.Equal("TooManyPendingActions", ToolErrorCode.TooManyPendingActions.ToString());
+    }
 }
