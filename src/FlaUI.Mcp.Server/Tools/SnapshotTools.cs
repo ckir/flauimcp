@@ -35,6 +35,22 @@ public sealed class SnapshotTools
             return ToolResponse.Ok(new { snapshotId = r.SnapshotId, nodeCount = r.NodeCount, tree = r.Tree });
         });
 
+    [McpServerTool(ReadOnly = true), Description("Diff a window's CURRENT tree against an explicit baseline snapshotId. Returns added/removed/changed (Name/Enabled/Focused) keyed by composite identity (ControlType+AutomationId+RuntimeId, else +Name). Result refs belong to the new currentSnapshotId. Note: anonymous virtualized recycled rows (empty AutomationId+Name, recycled RuntimeId) can collide — diff such content by value/text instead.")]
+    public Task<string> DesktopSnapshotDiff(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("REQUIRED baseline snapshotId to diff against, e.g. w1:2.")] string baselineSnapshotId)
+        => ToolResponse.Guard(async () =>
+        {
+            var d = await _perception.DiffAsync(new WindowHandle(window), baselineSnapshotId);
+            return ToolResponse.Ok(new
+            {
+                baselineSnapshotId = d.BaselineSnapshotId, currentSnapshotId = d.CurrentSnapshotId,
+                added = d.Added.Select(a => new { @ref = a.Ref, controlType = a.ControlType, automationId = a.AutomationId, name = a.Name }),
+                removed = d.Removed.Select(a => new { @ref = a.Ref, controlType = a.ControlType, automationId = a.AutomationId, name = a.Name }),
+                changed = d.Changed.Select(c => new { @ref = c.Ref, was = c.Was, now = c.Now })
+            });
+        });
+
     [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/redacted, FULL tree) + a per-ControlType histogram, without the tree text. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
     public Task<string> DesktopSnapshotStats(
         [Description("Window handle. Provide this OR snapshotId.")] string? window = null,

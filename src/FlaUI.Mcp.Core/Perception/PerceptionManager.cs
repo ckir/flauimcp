@@ -90,6 +90,18 @@ public sealed class PerceptionManager
         return (snapshotId, model);
     }
 
+    public async Task<SnapshotDiffResult> DiffAsync(WindowHandle handle, string baselineSnapshotId)
+    {
+        if (!_cache.TryGet(baselineSnapshotId, out var baseline) || baseline is null)
+            throw new ToolException(ToolErrorCode.SnapshotNotFound, $"Baseline snapshot '{baselineSnapshotId}' is not in the cache.", "re-take the baseline snapshot");
+        var baseWindowId = baselineSnapshotId.Split(':')[0];
+        if (!string.Equals(baseWindowId, handle.Id, System.StringComparison.Ordinal))
+            throw new ToolException(ToolErrorCode.SnapshotWindowMismatch, $"Baseline '{baselineSnapshotId}' belongs to window '{baseWindowId}', not '{handle.Id}'.", "pass a baselineSnapshotId from the same window");
+        var (currentId, current) = await BuildModelAsync(handle, new SnapshotOptions(), _refs);
+        _cache.Put(currentId, current);
+        return SnapshotDiff.Compute(baselineSnapshotId, baseline, currentId, current);
+    }
+
     public async Task<SnapshotStats> StatsByWindowAsync(WindowHandle handle)
     {
         var (id, model) = await BuildModelAsync(handle, new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true }, _refs);
