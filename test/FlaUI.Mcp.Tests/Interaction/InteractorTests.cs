@@ -27,7 +27,7 @@ public class InteractorTests
         { Interactor.Invoke(Find(mgr, handle, "OkButton")); return true; });
         var status = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
             win.FindFirstDescendant(cf => cf.ByAutomationId("Status")).Name);
-        Assert.Equal("clicked", status);
+        Assert.StartsWith("clicked", status); // TestApp handler sets "clicked: {Input.Text}"
     }
 
     [Fact]
