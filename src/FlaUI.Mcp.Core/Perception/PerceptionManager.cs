@@ -1,4 +1,5 @@
 using FlaUI.Core.AutomationElements;
+using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Windows;
 
 namespace FlaUI.Mcp.Core.Perception;
@@ -114,9 +115,27 @@ public sealed class PerceptionManager
         return found;
     }
 
+    // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
+    private static string? SafeProcessName(AutomationElement el)
+    {
+        int pid = SafePid(el);
+        if (pid < 0) return null;
+        try { using var p = System.Diagnostics.Process.GetProcessById(pid); return p.ProcessName; }
+        catch { return null; }
+    }
+
     public Task<SnapshotResult> SnapshotAsync(WindowHandle handle, SnapshotOptions options) =>
         _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
+            // Security floor: refuse to snapshot a window owned by a known credential store. A snapshot
+            // would pull its entire UIA tree into agent context (exfiltration risk + prompt-injection
+            // target). Reject BEFORE BeginSnapshot/Walk so no refs or tree are produced. See PerceptionPolicy.
+            var procName = SafeProcessName(win);
+            if (PerceptionPolicy.IsDenied(procName))
+                throw new ToolException(ToolErrorCode.TargetDenied,
+                    $"Snapshotting windows owned by '{procName}' is blocked (credential store).",
+                    "snapshot a different, non-sensitive window");
+
             IReadOnlyList<AutomationElement> popups = FindOwnerPopups(desktop, win);
             AutomationElement root = string.IsNullOrEmpty(options.RootRef)
                 ? win

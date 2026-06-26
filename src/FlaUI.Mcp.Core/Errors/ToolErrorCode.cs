@@ -14,5 +14,6 @@ public enum ToolErrorCode
     ActionBlockedPending,
     ElementDisappearedDuringAction,
     UacPromptDetected,
+    TargetDenied,
     Timeout
 }
