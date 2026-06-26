@@ -33,7 +33,7 @@ public class ActionResolutionTests
         await perception.RunOnRefActionAsync(handle, okRef, el => { Interactor.Invoke(el); return true; }, timeoutMs: 5000);
 
         var status = await perception.RunOnRefAsync(handle, RefFor(snap.Tree, "Status"), el => el.Name);
-        Assert.Equal("clicked", status);
+        Assert.StartsWith("clicked", status); // TestApp handler sets "clicked: {Input.Text}"
     }
 
     [Fact]
