@@ -41,4 +41,23 @@ public class AutomationDispatcherTests
         await blocked;
         gate.Set();
     }
+
+    [Fact]
+    public async Task Action_dispatcher_caps_in_flight_actions()
+    {
+        using var d = new AutomationDispatcher();
+        using var gate = new ManualResetEventSlim(false);
+        // Fill the cap (5) with parked actions; each throws ActionBlockedPending but stays parked.
+        var parked = new List<Task>();
+        for (int i = 0; i < 5; i++)
+            parked.Add(Assert.ThrowsAsync<ToolException>(
+                () => d.RunActionAsync(() => { gate.Wait(); return 0; }, timeoutMs: 100)));
+        await Task.WhenAll(parked); // all 5 timed out (parked), slots still held
+
+        var ex = await Assert.ThrowsAsync<ToolException>(
+            () => d.RunActionAsync(() => 0, timeoutMs: 1000));
+        Assert.Equal(ToolErrorCode.TooManyPendingActions, ex.Code);
+
+        gate.Set(); // release the 5 parked threads so they unwind and free their slots
+    }
 }

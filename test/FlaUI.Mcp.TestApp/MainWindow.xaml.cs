@@ -32,4 +32,30 @@ public partial class MainWindow : Window
     }
 
     private void ClearItemsButton_Click(object sender, RoutedEventArgs e) => ItemList.Items.Clear();
+
+    private void FocusReveal_GotFocus(object sender, System.Windows.RoutedEventArgs e)
+        => RevealedLabel.Text = "revealed";
+
+    private void ModalButton_Click(object sender, System.Windows.RoutedEventArgs e)
+    {
+        var dlg = new System.Windows.Window
+        {
+            Title = "Modal",
+            Width = 200, Height = 120,
+            WindowStartupLocation = System.Windows.WindowStartupLocation.CenterOwner,
+            Owner = this
+        };
+        var ok = new System.Windows.Controls.Button { Content = "OK" };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(ok, "ModalOk");
+        ok.Click += (_, _) => dlg.Close();
+        dlg.Content = ok;
+        dlg.ShowDialog(); // BLOCKS the UI thread until closed — the deadlock-recovery target
+    }
+
+    // Genuinely freezes the UI thread (no message pump) for a fixed window. Unlike ShowDialog,
+    // this stops the thread from servicing COM RPC, so a UIA action arriving DURING the freeze
+    // physically blocks the caller's action STA — the faithful repro for the Task-C deadlock test.
+    public const int FreezeMs = 2000;
+    private void FreezeButton_Click(object sender, RoutedEventArgs e)
+        => System.Threading.Thread.Sleep(FreezeMs);
 }

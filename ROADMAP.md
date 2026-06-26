@@ -35,13 +35,18 @@ safety rationale.
   off-screen cull, never-elevated warn), ReadOnly annotations.
 - **Phase 3 — Interaction (pattern-based) & perception completion** — the large,
   high-value, *low-blast-radius* phase. Element-targeted via UIA control patterns;
-  **no synthetic mouse/keyboard.** After Phase 3 an agent can perceive everything and
-  drive most apps.
-  - *Pattern actions:* `desktop_invoke` (InvokePattern), `desktop_set_value`
+  **no synthetic mouse/keyboard.** Split into two increments by the same blast-radius logic:
+  - **Phase 3a** ✅ (v0.3.0): the 9 core pattern actions + `desktop_set_focus`, cross-STA ref
+    resolution (per-action transient STA, never marshal an `AutomationElement` across
+    apartments), and the `--read-only-mode` flag. After 3a an agent can perceive everything
+    and drive most apps through UIA patterns.
+  - **Phase 3b** (v0.4.0, pending): structured patterns + perception completion + clipboard/sync.
+  - *Pattern actions:* **shipped in 3a** — `desktop_invoke` (InvokePattern), `desktop_set_value`
     (ValuePattern), `desktop_toggle`, `desktop_expand`, `desktop_select`,
-    `desktop_scroll_into_view`, `desktop_scroll`, `desktop_get_grid_cell` /
+    `desktop_scroll_into_view`, `desktop_scroll`, `desktop_set_focus`,
+    `desktop_window_transform`. **Deferred to 3b** — `desktop_get_grid_cell` /
     `desktop_grid_select`, `desktop_get_text` / `desktop_set_caret` /
-    `desktop_select_text_range`, `desktop_window_transform`.
+    `desktop_select_text_range`.
   - *Perception completion (read-only):* `desktop_screenshot` (+`dpiScale`/bounds),
     `desktop_get_bounds`, `desktop_snapshot_stats`, `desktop_snapshot_global`,
     `desktop_snapshot_diff`.
@@ -125,6 +130,8 @@ security floors are defense-in-depth, not an injection cure.
 | **Hard-fail on elevation** behind `--unsafe-allow-elevation` | Phase 4 | v0.2.0 warns only; the blast radius that justifies refusing-to-run only arrives with synthetic input. |
 | **Redact descriptor `Name` for `IsPassword`** | micro | Belt-and-suspenders; `Name` is empty for conformant password controls today, so no secret is stored. |
 | **Window-prefixed refs in output** (`[w1:e1]`) | low | Mitigated already — the tools take window handle + ref as separate args, so refs can't alias across windows. |
+| **Shrink the shipped exe** (Native AOT or trimming) | deferred | AOT is blocked by FlaUI's runtime COM interop + the MCP SDK's reflection tool discovery + STJ reflection serialization (would need source-gen JSON context + source-gen tool registration first); trimming risks silently stripping reflected tools/serializers. Low value for a once-installed dev tool — revisit only after a source-gen migration. (User to relay to agy.) |
+| **"Driving FlaUI.Mcp" dogfood skill** — a skill teaching an agent to inspect desktop state via the installed server (`DesktopListWindows`/`DesktopSnapshot`) instead of `Get-Process` | end of roadmap | Deferred to the end of the roadmap (user, 2026-06-26); the tool surface is still growing each phase, so the skill is most useful written once the v1 surface stabilizes. |
 
 ## Notes
 

@@ -23,102 +23,34 @@ public sealed class PerceptionManager
     public Task<T> RunOnRefAsync<T>(WindowHandle handle, string @ref, Func<AutomationElement, T> func) =>
         _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
-            var el = _refs.Resolve(handle.Id, @ref, SearchRoots(win, desktop));
+            var el = _refs.Resolve(handle.Id, @ref, PopupFinder.SearchRoots(win, desktop));
             return func(el);
         });
 
-    // Window subtree first, then the owner-process popup subtrees (so a ref to a grafted
-    // context-menu item re-resolves). Each popup root is small and process-correct — Resolve never
-    // searches the whole Desktop. REPLACES the window-only version added in Task 6.
-    private static IReadOnlyList<AutomationElement> SearchRoots(AutomationElement win, AutomationElement desktop)
+    /// <summary>Resolve a ref and run a state-changing pattern action on a TRANSIENT action STA.
+    /// The descriptor is read here (plain data, thread-safe); the element is re-resolved CACHE-FREE
+    /// on the action STA against window+popup roots built by that STA's own automation — no query-STA
+    /// COM object crosses apartments. An offscreen target is rejected before acting (offscreen Invoke
+    /// can hang). On modal block past timeoutMs the call surfaces ACTION_BLOCKED_PENDING.</summary>
+    public Task<T> RunOnRefActionAsync<T>(WindowHandle handle, string @ref, Func<AutomationElement, T> func, int timeoutMs)
     {
-        var roots = new List<AutomationElement> { win };
-        roots.AddRange(FindOwnerPopups(desktop, win));
-        return roots;
-    }
-
-    private static int SafePid(AutomationElement el)
-    {
-        try { return el.Properties.ProcessId.ValueOrDefault; } catch { return -1; }
-    }
-
-    private static int[] SafeRuntimeId(AutomationElement el)
-    {
-        try { return el.Properties.RuntimeId.ValueOrDefault ?? Array.Empty<int>(); }
-        catch { return Array.Empty<int>(); }
-    }
-
-    private static System.Drawing.Rectangle SafeRect(AutomationElement el)
-    {
-        try { return el.BoundingRectangle; } catch { return System.Drawing.Rectangle.Empty; }
-    }
-
-    // Context menus and dropdowns can appear either as desktop-level children (Win32 #32768 menus,
-    // older WPF HwndWrapper hosts) OR as direct children of the main window in UIA (WPF/.NET 10+
-    // context menus surface as CT=Window, cls=Popup children of the owner window — empirically
-    // confirmed: no separate desktop entry appears for the popup PID). Both search paths use the
-    // same guards (no tooltips, no offscreen, no zero-size hosts).
-    private static IReadOnlyList<AutomationElement> FindOwnerPopups(AutomationElement desktop, AutomationElement targetWindow)
-    {
-        var found = new List<AutomationElement>();
-        int ownerPid = SafePid(targetWindow);
-        if (ownerPid < 0) return found;
-        int[] targetRid = SafeRuntimeId(targetWindow);
-
-        // Path 1 — desktop-level children: Win32 #32768 menus and older HwndWrapper WPF hosts.
-        AutomationElement[] desktopChildren;
-        try { desktopChildren = desktop.FindAllChildren(); } catch { desktopChildren = Array.Empty<AutomationElement>(); }
-        foreach (var c in desktopChildren)
+        var descriptor = _refs.Lookup(handle.Id, @ref).Descriptor; // REF_NOT_FOUND if absent (cheap, off-STA)
+        return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
-            try
-            {
-                if (c.Properties.ProcessId.ValueOrDefault != ownerPid) continue;
-                if (SafeRuntimeId(c).AsEnumerable().SequenceEqual(targetRid)) continue; // skip the window itself
-                if (c.ControlType == FlaUI.Core.Definitions.ControlType.ToolTip) continue;
-                if (c.Properties.IsOffscreen.ValueOrDefault) continue;
-                var rect = SafeRect(c);
-                if (rect.Width <= 0 || rect.Height <= 0) continue;
-                var cls = c.Properties.ClassName.ValueOrDefault ?? "";
-                bool looksPopup =
-                    cls == "#32768"                                              // Win32 context menu
-                    || cls.StartsWith("HwndWrapper", StringComparison.Ordinal)  // older WPF popup host
-                    || cls.Contains("Popup", StringComparison.OrdinalIgnoreCase)
-                    || c.ControlType == FlaUI.Core.Definitions.ControlType.Menu;
-                if (looksPopup) found.Add(c);
-            }
-            catch { /* transient — skip */ }
-        }
-
-        // Path 2 — window direct children: WPF/.NET 10 ContextMenu/Popup hosts surface as
-        // CT=Window, cls=Popup direct children of the owner window (not as desktop-level entries).
-        // Guarded the same way: no tooltips, no offscreen, no zero-size.
-        AutomationElement[] winChildren;
-        try { winChildren = targetWindow.FindAllChildren(); } catch { winChildren = Array.Empty<AutomationElement>(); }
-        foreach (var c in winChildren)
-        {
-            try
-            {
-                if (c.ControlType == FlaUI.Core.Definitions.ControlType.ToolTip) continue;
-                if (c.Properties.IsOffscreen.ValueOrDefault) continue;
-                var rect = SafeRect(c);
-                if (rect.Width <= 0 || rect.Height <= 0) continue;
-                var cls = c.Properties.ClassName.ValueOrDefault ?? "";
-                bool looksPopup =
-                    cls == "Popup"                                               // WPF/.NET 10 popup host
-                    || cls.Contains("Popup", StringComparison.OrdinalIgnoreCase)
-                    || c.ControlType == FlaUI.Core.Definitions.ControlType.Menu;
-                if (looksPopup) found.Add(c);
-            }
-            catch { /* transient — skip */ }
-        }
-
-        return found;
+            var roots = PopupFinder.SearchRoots(win, desktop);
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref); // REF_STALE_UNRESOLVABLE if gone
+            if (el.Properties.IsOffscreen.ValueOrDefault)
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
+            return func(el);
+        }, timeoutMs);
     }
 
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
     {
-        int pid = SafePid(el);
+        int pid;
+        try { pid = el.Properties.ProcessId.ValueOrDefault; } catch { pid = -1; }
         if (pid < 0) return null;
         try { using var p = System.Diagnostics.Process.GetProcessById(pid); return p.ProcessName; }
         catch { return null; }
@@ -136,10 +68,10 @@ public sealed class PerceptionManager
                     $"Snapshotting windows owned by '{procName}' is blocked (credential store).",
                     "snapshot a different, non-sensitive window");
 
-            IReadOnlyList<AutomationElement> popups = FindOwnerPopups(desktop, win);
+            IReadOnlyList<AutomationElement> popups = PopupFinder.FindOwnerPopups(desktop, win);
             AutomationElement root = string.IsNullOrEmpty(options.RootRef)
                 ? win
-                : _refs.Resolve(handle.Id, options.RootRef!, SearchRoots(win, desktop));
+                : _refs.Resolve(handle.Id, options.RootRef!, PopupFinder.SearchRoots(win, desktop));
             var snapshotId = _refs.BeginSnapshot(handle.Id);
             var (tree, count) = SnapshotEngine.Walk(root, popups, options, _refs, handle.Id);
             return new SnapshotResult(snapshotId, tree, count);

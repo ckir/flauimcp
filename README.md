@@ -2,9 +2,11 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets an AI
 agent — Claude Code, Antigravity (agy), or any MCP client — **control the Windows desktop**:
-enumerate windows, launch applications, focus/close windows, and **snapshot a window's UI into
-a ref-tagged accessibility tree**, with mouse/keyboard input synthesis on the roadmap. Think
-"Playwright, but for native Windows apps."
+enumerate windows, launch applications, focus/close windows, **snapshot a window's UI into
+a ref-tagged accessibility tree**, and **act on elements through UI Automation patterns**
+(click, set value, toggle, expand, select, scroll, focus, window min/max) — with raw
+mouse/keyboard input synthesis still on the roadmap. Think "Playwright, but for native
+Windows apps."
 
 ---
 
@@ -67,6 +69,33 @@ prompting for the mutating ones. Every tool returns structured JSON. Errors come
 uniform envelope (`{ error, message, suggestedRecovery }`) so the agent can recover rather than
 crash the session.
 
+**Interaction tools (pattern-based — new in v0.3.0):** act on an element by its snapshot `ref`
+through UI Automation control patterns. These are **not** synthetic mouse/keyboard input (that
+is a later phase) — they drive the app's own automation providers, so they work over RDP and
+never move the real cursor. All are state-changing (annotated `destructive`).
+
+| Tool | Description |
+| --- | --- |
+| `DesktopInvoke` | Activate an element (e.g. click a button) via InvokePattern. |
+| `DesktopSetValue` | Set a control's text/value via ValuePattern (focuses first). |
+| `DesktopToggle` | Toggle a checkbox/switch via TogglePattern. |
+| `DesktopExpand` | Expand/collapse a tree node, expander, or combo via ExpandCollapsePattern. |
+| `DesktopSelect` | Select a list item / radio / tab via SelectionItemPattern. |
+| `DesktopScroll` | Scroll a container (`direction` = up/down/left/right, `amount` = 1–50 steps) via ScrollPattern. |
+| `DesktopScrollIntoView` | Realize a specific item in a scrollable container via ScrollItemPattern. |
+| `DesktopSetFocus` | Set keyboard focus to an element via UIA Focus (reveals lazy-loaded content). |
+| `DesktopWindowTransform` | Maximize / minimize / restore a window via the Window pattern. |
+
+An action that opens a modal returns `ActionBlockedPending` instead of hanging the server —
+snapshot the window to see the dialog, then act on it.
+
+### Read-only mode
+
+Start the server with **`--read-only-mode`** to refuse every state-changing tool — all the
+interaction tools above, plus launch/focus/close. They short-circuit to `WriteBlockedReadOnly`
+without touching the desktop, while perception and enumeration keep working. Use it for an agent
+that may *see* the desktop but not *act* on it.
+
 ### Perception safeguards (built in)
 
 `DesktopSnapshot` reads UI into the agent's context, so it ships with privacy and safety floors
@@ -83,7 +112,7 @@ crash the session.
   is meant to run at your user integrity level.
 
 **On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): screenshots / vision and pixel-precise
-coordinates, mouse/keyboard input synthesis, structured patterns (grid/text/scroll), clipboard,
+coordinates, raw mouse/keyboard input synthesis, structured patterns (grid/text), clipboard,
 snapshot diff/stats, and an HTTP transport.
 
 ## Requirements
@@ -168,6 +197,7 @@ Uninstalling reverts configuration entries but leaves your unrelated settings un
 
 ```text
 flaui-mcp                                   # run the stdio MCP server (no args)
+flaui-mcp --read-only-mode                  # run the server but refuse all state-changing tools
 flaui-mcp install   --agent agy|generic|claude|all
 flaui-mcp uninstall --agent agy|generic|claude|all
 flaui-mcp print-config --agent generic      # print the JSON snippet to stdout

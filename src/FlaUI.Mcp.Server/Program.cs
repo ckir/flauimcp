@@ -19,6 +19,7 @@ if (CliRouter.IsInstallerVerb(args))
 ElevationGuard.WarnIfElevated(ElevationGuard.IsElevated(), Console.Error);
 
 var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddSingleton(ServerOptions.FromArgs(args));
 
 // Core singletons (one automation context for the whole server in this phase).
 builder.Services.AddSingleton<AutomationDispatcher>();
@@ -27,6 +28,7 @@ builder.Services.AddSingleton<WindowTools>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.RefRegistry>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.PerceptionManager>();
 builder.Services.AddSingleton<SnapshotTools>();
+builder.Services.AddSingleton<InteractionTools>();
 
 builder.Services
     .AddMcpServer()

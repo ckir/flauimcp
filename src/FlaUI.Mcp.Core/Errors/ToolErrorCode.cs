@@ -15,5 +15,7 @@ public enum ToolErrorCode
     ElementDisappearedDuringAction,
     UacPromptDetected,
     TargetDenied,
+    WriteBlockedReadOnly,
+    TooManyPendingActions,
     Timeout
 }

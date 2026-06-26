@@ -1,0 +1,29 @@
+name: ci
+on:
+  push:
+    branches: [ "**" ]
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  unit:
+    name: Unit (non-Desktop)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build
+        run: dotnet build -c Release
+      - name: Test (non-Desktop)
+        run: dotnet test -c Release --filter "Category!=Desktop" --no-build
+
+  # NOTE: the Desktop (Category=Desktop) UIA suite is intentionally NOT a CI job. GitHub-hosted
+  # windows-latest runners have no usable interactive session for UIA — the WPF TestApp launches but
+  # UIA attach/snapshot blocks until timeout (verified: run 28227526600 hung ~15min on the test step).
+  # Desktop tests are run locally on an interactive session:
+  #   dotnet test --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"   # UIA pattern tests
+  #   dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # synthetic input
+  # The synthetic-input test additionally needs a real (non-RDP, physical-console) input session.
+  # A self-hosted runner with an interactive desktop could host these in the future.
