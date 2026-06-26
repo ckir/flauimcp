@@ -116,3 +116,23 @@ public class InteractionToolsTests
         }
     }
 }
+
+// Non-Desktop: read-only guard short-circuits before any UIA work.
+// null! dependencies prove the guard fires BEFORE they are touched.
+public class InteractionToolsReadOnlyTests
+{
+    [Fact]
+    public async Task Read_only_mode_blocks_every_action_tool()
+    {
+        var tools = new InteractionTools(perception: null!, windows: null!, new ServerOptions(ReadOnly: true));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopInvoke("w1", "e1"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopSetValue("w1", "e1", "x"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopToggle("w1", "e1"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopExpand("w1", "e1"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopSelect("w1", "e1"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopScrollIntoView("w1", "e1"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopScroll("w1", "e1", "down"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopSetFocus("w1", "e1"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopWindowTransform("w1", "maximize"));
+    }
+}
