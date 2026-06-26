@@ -74,11 +74,7 @@ public sealed class RefRegistry
         var entry = Lookup(windowId, @ref); // REF_NOT_FOUND if absent
         var d = entry.Descriptor;
 
-        // (1) cached fast-path — RuntimeId AND ControlType must still match, AND the element must
-        // be visible in the UIA tree (IsOffscreen=false). WPF keeps peer COM objects alive after
-        // Items.Clear() so RuntimeId still matches, but those peers correctly report IsOffscreen=true
-        // because the element is no longer in the visual tree. Checking IsOffscreen gates them out
-        // so the descriptor re-walk (step 2) can confirm the element is truly gone.
+        // (1) cached fast-path — query-STA only. RuntimeId AND ControlType match AND not offscreen.
         if (entry.Cached is { } cached)
         {
             try
@@ -88,12 +84,19 @@ public sealed class RefRegistry
                     && !cached.Properties.IsOffscreen.ValueOrDefault)
                     return cached;
             }
-            catch { /* element gone — fall through to search */ }
+            catch { /* element gone — fall through to the cache-free walk */ }
         }
 
-        // (2) descriptor re-walk per search root: AutomationId then Name+ControlType, scoped under
-        // the nearest stable ancestor. Each root is small and process-correct (window subtree, then
-        // grafted popup subtrees) — never the whole Desktop, so no cross-app false positives.
+        return ResolveDescriptor(d, searchRoots, @ref);
+    }
+
+    /// <summary>Cache-free re-resolution from a descriptor against caller-supplied roots
+    /// (window first, then grafted popups). Used by the ACTION STA, which must NOT touch the
+    /// query-STA cached element. Throws REF_STALE_UNRESOLVABLE if the element is gone.</summary>
+    public AutomationElement ResolveDescriptor(ElementDescriptor d, IReadOnlyList<AutomationElement> searchRoots, string @ref)
+    {
+        // (2) descriptor re-walk per search root: AutomationId then Name+ControlType, scoped
+        // under the nearest stable ancestor.
         foreach (var searchRoot in searchRoots)
         {
             if (searchRoot is null) continue;
@@ -115,8 +118,7 @@ public sealed class RefRegistry
             }
         }
 
-        // (3) IndexPath last-resort — window-relative only (searchRoots[0] is the window root;
-        // popup index paths are sentinel-negative and abort cleanly in TryIndexPath).
+        // (3) IndexPath last-resort — window-relative only (searchRoots[0] is the window root).
         if (searchRoots.Count > 0)
         {
             var byPath = TryIndexPath(searchRoots[0], d.IndexPath);
