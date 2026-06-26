@@ -184,6 +184,22 @@ an unobserved task exception. **Mechanism (decided 2026-06-26): raw STA `Thread`
 reusable STA `TaskScheduler` was rejected as exactly the parked-thread-reuse machinery we
 must avoid.
 
+**Abandonment safety (AGY-AFTER-4 — mandatory rules):** the per-action thread completes
+its TCS only via `TrySetResult`/`TrySetException` (never `Set*` → no double-completion),
+and wraps its body in a **top-level catch-all**: if a parked thread later wakes (the modal
+is finally dismissed) and throws during teardown *after* its TCS is already completed, the
+exception must be **swallowed** — an unhandled exception on a background thread trips
+`AppDomain.UnhandledException` and crashes the whole server. The thread disposes its
+`UIA3Automation` in a `finally`. **Parked-thread cap (3a):** an `Interlocked` in-flight
+counter rejects a new action when more than a small cap (default **5**) are already
+pending — returning `TooManyPendingActions` instead of spawning another parked STA thread.
+This bounds a runaway/injected loop of modal-opening actions (each parked thread costs
+~1 MB stack + a COM apartment + an OS thread handle) without waiting for Phase 4's full
+action budget; cap = 5 still leaves room for the dismiss-the-modal recovery action.
+Concurrent action threads on the same window are safe — Windows serializes inbound
+cross-thread COM messages, and each thread has its own independent `UIA3Automation` (no
+shared proxy, no apartment violation).
+
 Every 3a state-changing tool flows: tool → `RunOnRefActionAsync` → (cache-free
 descriptor-walk on the action STA) → `Interactor.<pattern>` → result. Window-scoped
 `desktop_window_transform` skips the ref path entirely — it resolves the window on the
@@ -233,8 +249,8 @@ is terminal — no synthetic fallback yet), `ELEMENT_NOT_ACTIONABLE` (offscreen/
 hint `desktop_scroll_into_view`), `ACTION_BLOCKED_PENDING` (action parked past timeout —
 non-error, snapshot to see the modal), `REF_NOT_FOUND` / `REF_STALE_UNRESOLVABLE`
 (re-snapshot), `ELEMENT_DISAPPEARED_DURING_ACTION` (snapshot+retry). The
-`--read-only-mode` rejection needs **one** new code (`WriteBlockedReadOnly`) — the single
-error-catalog addition in 3a.
+`--read-only-mode` rejection needs `WriteBlockedReadOnly`, and the parked-thread cap (Task
+C) needs `TooManyPendingActions` — the **two** error-catalog additions in 3a.
 
 **Tool robustness (plan-level, AGY-AFTER):** `set_value` checks `ValuePattern.IsReadOnly`
 (clean `ELEMENT_NOT_ACTIONABLE`, not a native throw) and focuses the element first;
@@ -243,6 +259,10 @@ error-catalog addition in 3a.
 `scroll`/`expand` are classified **write** (they mutate state and can trigger lazy-loads or
 dismiss popups), so `--read-only-mode` blocks them — meaning a read-only deployment cannot
 scroll to realize virtualized content. Accepted: that is the correct blast-radius call.
+**Offscreen preflight (AGY-AFTER-4):** before any pattern call the action path checks
+`IsOffscreen` and returns `ELEMENT_NOT_ACTIONABLE` (hint: `scroll_into_view`) —
+`InvokePattern` on a virtualized/offscreen element can *hang indefinitely* rather than
+throw, which would needlessly burn a parked thread against the Task-C cap.
 
 ## Testing strategy (3a)
 
@@ -271,6 +291,10 @@ Tests (Core, `[Trait Desktop]` unless noted):
   assert `ACTION_BLOCKED_PENDING` → issue a **second** action that dismisses the modal and
   assert it **succeeds**. This is the test that proves the per-action STA model (a
   single-thread action queue would hang here).
+- **Parked-thread cap (Task C)**: with the cap's worth of actions already parked on
+  modals, the next action is rejected with `TooManyPendingActions` (not a new parked
+  thread). Drivable as a non-Desktop seam if the dispatcher accepts a synthetic blocking
+  `func`; else Desktop.
 - **`set_focus`**: focusing the reveal control makes the hidden label appear in a
   follow-up snapshot.
 - **`window_transform`** (Desktop): maximize then restore the TestApp window; assert the
