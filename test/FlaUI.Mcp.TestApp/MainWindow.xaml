@@ -1,7 +1,7 @@
 ﻿<Window x:Class="FlaUI.Mcp.TestApp.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="FlaUI.Mcp TestApp" Height="520" Width="600"
+        Title="FlaUI.Mcp TestApp" Height="640" Width="600"
         AutomationProperties.AutomationId="MainWindow">
     <StackPanel Margin="12">
         <TextBox x:Name="Input" AutomationProperties.AutomationId="Input" Margin="0,0,0,8"/>
@@ -35,6 +35,16 @@
                     AutomationProperties.AutomationId="SpatialOffscreenButton"
                     Canvas.Left="5000" Canvas.Top="0" Width="80" Height="24"/>
         </Canvas>
+        <CheckBox x:Name="Check" AutomationProperties.AutomationId="Check" Content="toggle me" Margin="0,8,0,0"/>
+        <Expander x:Name="Exp" AutomationProperties.AutomationId="Exp" Header="expander" Margin="0,4,0,0">
+            <TextBlock Text="inner"/>
+        </Expander>
+        <Button x:Name="FocusReveal" AutomationProperties.AutomationId="FocusReveal"
+                Content="focus reveals label" GotFocus="FocusReveal_GotFocus" Margin="0,4,0,0"/>
+        <TextBlock x:Name="RevealedLabel" AutomationProperties.AutomationId="RevealedLabel"
+                   Text="" Margin="0,2,0,0"/>
+        <Button x:Name="ModalButton" AutomationProperties.AutomationId="ModalButton"
+                Content="open modal" Click="ModalButton_Click" Margin="0,4,0,0"/>
         <Border Background="#FFE0E0E0" Height="36" Margin="0,8,0,0">
             <TextBlock x:Name="MenuTarget"
                        AutomationProperties.AutomationId="MenuTarget"
