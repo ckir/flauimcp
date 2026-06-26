@@ -58,4 +58,18 @@ public partial class MainWindow : Window
     public const int FreezeMs = 2000;
     private void FreezeButton_Click(object sender, RoutedEventArgs e)
         => System.Threading.Thread.Sleep(FreezeMs);
+
+    // Adds a NEW labeled control ~600ms after click — exercises wait_for(until:exists).
+    private void DelayRevealButton_Click(object sender, RoutedEventArgs e)
+    {
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = System.TimeSpan.FromMilliseconds(600) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            var tb = new System.Windows.Controls.TextBlock { Text = "delayed" };
+            System.Windows.Automation.AutomationProperties.SetAutomationId(tb, "DelayedLabel");
+            RootPanel.Children.Add(tb);
+        };
+        timer.Start();
+    }
 }

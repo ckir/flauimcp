@@ -1,3 +1,4 @@
+using System.Linq;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Windows;
@@ -89,6 +90,32 @@ public sealed class PerceptionManager
         _cache.Put(snapshotId, model);
         return (snapshotId, model);
     }
+
+    public Task<(bool Found, string? Value)> EvaluateSelectorValueAsync(WindowHandle handle, string by, string value) =>
+        _windows.RunWithWindowAndDesktopAsync<(bool, string?)>(handle, (win, desktop) =>
+        {
+            bool NotOffscreen(AutomationElement e) { try { return !e.Properties.IsOffscreen.ValueOrDefault; } catch { return false; } }
+            AutomationElement? Match()
+            {
+                try
+                {
+                    return by switch
+                    {
+                        "automationId" => win.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
+                        "name" => win.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
+                        "controlType" => win.FindAllDescendants().FirstOrDefault(e => { try { return NotOffscreen(e) && e.ControlType.ToString().Equals(value, System.StringComparison.OrdinalIgnoreCase); } catch { return false; } }),
+                        _ => null
+                    };
+                }
+                catch { return null; }
+            }
+            var el = Match();
+            if (el is null) return (false, null);
+            try { var vp = el.Patterns.Value.PatternOrDefault; if (vp is not null) return (true, vp.Value.ValueOrDefault); } catch { }
+            try { var nm = el.Name; if (!string.IsNullOrEmpty(nm)) return (true, nm); } catch { }
+            try { var la = el.Patterns.LegacyIAccessible.PatternOrDefault; if (la is not null) return (true, la.Value.ValueOrDefault); } catch { }
+            return (true, null);
+        });
 
     public async Task<SnapshotDiffResult> DiffAsync(WindowHandle handle, string baselineSnapshotId)
     {

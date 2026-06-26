@@ -51,6 +51,21 @@ public sealed class SnapshotTools
             });
         });
 
+    [McpServerTool(ReadOnly = true), Description("Poll a window until a selector condition holds. by=automationId|name|controlType, value=target, until=exists|enabled|gone|valueEquals (equals required for valueEquals; compares ValuePattern→Name→LegacyIAccessible). Timeout returns {satisfied:false} (NOT an error). On success returns the matched ref + a fresh snapshotId. Polls are transient (no ref growth).")]
+    public Task<string> DesktopWaitFor(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("automationId|name|controlType.")] string by,
+        [Description("Match target for 'by'.")] string value,
+        [Description("exists|enabled|gone|valueEquals (default exists).")] string until = "exists",
+        [Description("Required iff until=valueEquals.")] string? equals = null,
+        [Description("Total wait budget ms (default 5000).")] int timeoutMs = 5000,
+        [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500)
+        => ToolResponse.Guard(async () =>
+        {
+            var r = await _wait.WaitForAsync(new WindowHandle(window), by, value, until, equals, timeoutMs, pollIntervalMs);
+            return ToolResponse.Ok(new { satisfied = r.Satisfied, @ref = r.Ref, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId });
+        });
+
     [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/redacted, FULL tree) + a per-ControlType histogram, without the tree text. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
     public Task<string> DesktopSnapshotStats(
         [Description("Window handle. Provide this OR snapshotId.")] string? window = null,
