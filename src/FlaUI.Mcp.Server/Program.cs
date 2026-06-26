@@ -1,5 +1,6 @@
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Install;
 using FlaUI.Mcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,6 +13,10 @@ if (CliRouter.IsInstallerVerb(args))
         ?? System.Reflection.Assembly.GetExecutingAssembly().Location;
     return CliRouter.Run(args, exePath, Console.Out);
 }
+
+// Security: warn (on stderr — stdout is the MCP channel) if running elevated. We run the desktop at
+// user integrity by design; elevation expands the blast radius of a compromised agent.
+ElevationGuard.WarnIfElevated(ElevationGuard.IsElevated(), Console.Error);
 
 var builder = Host.CreateApplicationBuilder(args);
 
