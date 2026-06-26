@@ -12,9 +12,10 @@ public sealed class WindowTools
 
     public WindowTools(WindowManager windows) => _windows = windows;
 
-    [McpServerTool(ReadOnly = true), Description("List top-level desktop windows with title, process, and pid.")]
-    public Task<string> DesktopListWindows() => ToolResponse.Guard(async () =>
-        ToolResponse.Ok(await _windows.ListWindowsAsync()));
+    [McpServerTool(ReadOnly = true), Description("List top-level desktop windows (Title, ProcessName, Pid, IsForeground). Opt-in includeBounds adds absolute physical-px Bounds + ZOrder (0=topmost, for occlusion reasoning). Pure Win32 — never blocks on an unresponsive window. For per-window control counts, open a window and call desktop_snapshot_stats.")]
+    public Task<string> DesktopListWindows(
+        [Description("Add Bounds + ZOrder to each window (default false).")] bool includeBounds = false)
+        => ToolResponse.Guard(async () => ToolResponse.Ok(await _windows.ListWindowsAsync(includeBounds)));
 
     // Read-only of the environment: resolves a handle only (no focus/render/launch). Marked ReadOnly
     // rather than renamed — rename would break the shipped v0.1.x tool name.

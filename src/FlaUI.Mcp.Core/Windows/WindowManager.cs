@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json.Serialization;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Threading;
@@ -9,7 +10,11 @@ using FlaUI.UIA3;
 
 namespace FlaUI.Mcp.Core.Windows;
 
-public sealed record WindowInfo(string Title, string ProcessName, int Pid, bool IsForeground);
+public sealed record WindowBounds(int X, int Y, int W, int H);
+public sealed record WindowInfo(
+    string Title, string ProcessName, int Pid, bool IsForeground,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WindowBounds? Bounds = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ZOrder = null);
 
 public sealed class WindowManager : IDisposable
 {
@@ -27,17 +32,28 @@ public sealed class WindowManager : IDisposable
         _automation = _dispatcher.RunQueryAsync(() => new UIA3Automation()).GetAwaiter().GetResult();
     }
 
-    public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync() =>
+    public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync() => ListWindowsAsync(false);
+
+    public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync(bool includeBounds) =>
         _dispatcher.RunQueryAsync<IReadOnlyList<WindowInfo>>(() =>
         {
             // PURE Win32 — no UIA. A UIA Title/ProcessId read on the query STA blocks with no
             // timeout on ANY momentarily-unresponsive desktop window; Win32 GetWindowText does not.
             var foreground = GetForegroundWindow();
-            var list = new List<WindowInfo>();
+            var list = new List<WindowInfo>(); int z = 0;
             foreach (var (hwnd, title, pid) in EnumTopLevel())
-                list.Add(new WindowInfo(title, SafeProcessName(pid), pid, hwnd == foreground));
+            {
+                WindowBounds? b = null;
+                if (includeBounds && GetWindowRect(hwnd, out var r))
+                    b = new WindowBounds(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+                list.Add(new WindowInfo(title, SafeProcessName(pid), pid, hwnd == foreground, b, includeBounds ? z : (int?)null));
+                z++;
+            }
             return list;
         });
+
+    /// <summary>Run an arbitrary read on the query STA (used by full-desktop capture, which needs an STA hop without a specific window).</summary>
+    public Task<T> RunOnQueryAsync<T>(Func<T> func) => _dispatcher.RunQueryAsync(func);
 
     public Task<WindowHandle> OpenByPidAsync(int pid) =>
         _dispatcher.RunQueryAsync(() =>
@@ -140,6 +156,9 @@ public sealed class WindowManager : IDisposable
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
 
     /// <summary>Enumerate visible, titled top-level windows via pure Win32 — never blocks on an
     /// unresponsive window of another process (unlike a UIA Title read). Mirrors the old filter
