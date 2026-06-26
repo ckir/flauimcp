@@ -19,23 +19,11 @@ jobs:
       - name: Test (non-Desktop)
         run: dotnet test -c Release --filter "Category!=Desktop" --no-build
 
-  desktop:
-    name: Desktop (UIA)
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-      - name: Build (incl. WPF TestApp)
-        run: dotnet build -c Release
-      # Authoritative Phase-3a gate: UIA pattern + cross-STA + perception Desktop tests (no synthetic
-      # input). xunit.runner.json serializes collections so test classes don't fight for window focus.
-      - name: Test (Desktop, UIA patterns)
-        run: dotnet test -c Release --no-build --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"
-      # Synthetic input (SendInput) — informational only: may be denied without a true interactive
-      # input session. Failure here does NOT fail the build; it tells us if the runner allows it.
-      - name: Test (synthetic input — informational)
-        continue-on-error: true
-        run: dotnet test -c Release --no-build --filter "FullyQualifiedName~PopupGrafting"
+  # NOTE: the Desktop (Category=Desktop) UIA suite is intentionally NOT a CI job. GitHub-hosted
+  # windows-latest runners have no usable interactive session for UIA — the WPF TestApp launches but
+  # UIA attach/snapshot blocks until timeout (verified: run 28227526600 hung ~15min on the test step).
+  # Desktop tests are run locally on an interactive session:
+  #   dotnet test --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"   # UIA pattern tests
+  #   dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # synthetic input
+  # The synthetic-input test additionally needs a real (non-RDP, physical-console) input session.
+  # A self-hosted runner with an interactive desktop could host these in the future.

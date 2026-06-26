@@ -26,7 +26,7 @@ public class InteractorTests
         await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
         { Interactor.Invoke(Find(mgr, handle, "OkButton")); return true; });
         var status = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
-            win.FindFirstDescendant(cf => cf.ByAutomationId("Status")).Name);
+            win.FindFirstDescendant(cf => cf.ByAutomationId("Status"))!.Name);
         Assert.StartsWith("clicked", status); // TestApp handler sets "clicked: {Input.Text}"
     }
 
@@ -40,7 +40,7 @@ public class InteractorTests
         await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
         { Interactor.SetValue(Find(mgr, handle, "Input"), "hello"); return true; });
         var val = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
-            win.FindFirstDescendant(cf => cf.ByAutomationId("Input")).AsTextBox().Text);
+            win.FindFirstDescendant(cf => cf.ByAutomationId("Input"))!.AsTextBox().Text);
         Assert.Equal("hello", val);
     }
 
