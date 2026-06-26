@@ -65,4 +65,18 @@ public sealed class InteractionTools
         [Description("Window handle.")] string window, [Description("Element ref.")] string @ref,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, Interactor.Select, timeoutMs);
+
+    [McpServerTool(Destructive = true), Description("Scroll an element into view by ref via UIA ScrollItemPattern (realize an item in a scrollable container, then re-snapshot).")]
+    public Task<string> DesktopScrollIntoView(
+        [Description("Window handle.")] string window, [Description("Element ref.")] string @ref,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => Act(window, @ref, Interactor.ScrollIntoView, timeoutMs);
+
+    [McpServerTool(Destructive = true), Description("Scroll a container by ref via UIA ScrollPattern. direction = up|down|left|right; amount = number of small scroll steps (1..50). Realize virtualized items, then re-snapshot.")]
+    public Task<string> DesktopScroll(
+        [Description("Window handle.")] string window, [Description("Container element ref.")] string @ref,
+        [Description("up|down|left|right")] string direction,
+        [Description("Number of small scroll steps (default 1).")] double amount = 1,
+        [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
+        => Act(window, @ref, el => Interactor.Scroll(el, direction, amount), timeoutMs);
 }

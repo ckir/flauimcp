@@ -61,6 +61,18 @@ public class InteractionToolsTests
         }
     }
 
+    [Fact]
+    public async Task ScrollIntoView_and_scroll_do_not_error()
+    {
+        using var app = new TestAppFixture();
+        var tools = Make(app, out var handle, out var p, out var m, out var d); using (d) using (m)
+        {
+            var snap = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
+            Assert.DoesNotContain("error", await tools.DesktopScrollIntoView(handle.Id, RefFor(snap.Tree, "ItemC")));
+            Assert.DoesNotContain("error", await tools.DesktopScroll(handle.Id, RefFor(snap.Tree, "ItemList"), "down", 1));
+        }
+    }
+
     // THE critical Task-C proof: a blocked action must NOT freeze the action context.
     [Fact]
     public async Task A_blocked_modal_action_does_not_deadlock_a_second_action()
