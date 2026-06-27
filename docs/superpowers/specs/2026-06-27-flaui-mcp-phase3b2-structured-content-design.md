@@ -22,7 +22,7 @@ transient STA hop.
 | --- | --- | --- | --- |
 | `desktop_get_grid_cell` | READ | `{window, ref, row, col}` | `{value, controlType, automationId, isPassword}` |
 | `desktop_grid_select` | WRITE | `{window, ref, row, col}` | `{ok:true, pathUsed:"pattern"}` |
-| `desktop_get_text` | READ | `{window, ref, selectionOnly?, maxLength?}` | `{text, truncated}` |
+| `desktop_get_text` | READ | `{window, ref, selectionOnly?, maxLength?}` | `{text, truncated, isPassword}` |
 | `desktop_clipboard_get` | READ | `{}` | `{text}` |
 | `desktop_clipboard_set` | WRITE | `{text}` | `{ok:true}` |
 
@@ -50,8 +50,9 @@ scoped, as today). `row`/`col` are 0-based.
 ## 2. Tool contracts
 
 ### 2.1 `desktop_get_grid_cell` (READ, `readOnlyHint:true`)
-- **Resolve** `ref` on the timeout-guarded transient STA (see §3). The element must support
-  `GridPattern` (`PatternUnsupported` otherwise).
+- **Resolve** `ref` on the timeout-guarded transient **read** path (`RunOnRefReadAsync`,
+  see §3 — transient STA + timeout but **no** offscreen preflight, so an off-screen grid is
+  still readable). The element must support `GridPattern` (`PatternUnsupported` otherwise).
 - **Bounds:** read `GridPattern.RowCount`/`ColumnCount`; if `row<0 || col<0 ||
   row>=RowCount || col>=ColumnCount` → `GridCellOutOfRange`.
 - **Cell:** `GridPattern.GetItem(row,col)`; if it returns null → `GridCellOutOfRange`
@@ -83,8 +84,8 @@ scoped, as today). `row`/`col` are 0-based.
 - **Resolve** `ref` on the timeout-guarded transient STA (see §3). The element must support
   `TextPattern` (`PatternUnsupported` otherwise).
 - **Password short-circuit FIRST:** if the target element `IsPassword` →
-  `{ text:"[REDACTED]", truncated:false }` **before** touching `DocumentRange`/
-  `GetSelection()` (never ask the provider for a secret's text/selection).
+  `{ text:"[REDACTED]", truncated:false, isPassword:true }` **before** touching
+  `DocumentRange`/`GetSelection()` (never ask the provider for a secret's text/selection).
 - **`selectionOnly`** (bool, default `false`): `false` → `DocumentRange.GetText(maxLength+1)`;
   `true` → first range of `GetSelection()` `.GetText(maxLength+1)`. `GetSelection()` is
   brittle (many providers throw `COMException`/`InvalidOperationException` when there is no
@@ -94,7 +95,11 @@ scoped, as today). `row`/`col` are 0-based.
   `GetText`; if the returned string length **strictly exceeds** `maxLength`, trim to
   `maxLength` and set `truncated:true`; otherwise `truncated:false` (so text whose length is
   *exactly* `maxLength` is **not** flagged truncated).
-- **Returns:** `{ text:string, truncated:bool }`.
+- **Returns:** `{ text:string, truncated:bool, isPassword:bool }` (the `isPassword` flag
+  disambiguates a real `[REDACTED]` masked field from text that literally contains the
+  string `"[REDACTED]"`).
+- **Offscreen:** reading is allowed on an off-screen target (read path skips the action
+  offscreen preflight — see §3), matching `desktop_snapshot includeOffscreen` semantics.
 - **Security:** denylist check before reading (see §5) → `TargetDenied`.
 
 ### 2.4 `desktop_clipboard_get` (READ, `readOnlyHint:true`)
@@ -122,10 +127,13 @@ scoped, as today). `row`/`col` are 0-based.
     which is only for multi-string formats).
   - `GlobalLock` → copy the UTF-16 chars → write the wide null at the end → `GlobalUnlock`.
   - `OpenClipboard` → `EmptyClipboard` → `SetClipboardData(CF_UNICODETEXT, h)`.
-  - **Ownership transfer:** if `SetClipboardData` **succeeds**, the OS owns `h` — do **NOT**
-    `GlobalFree` it. If it **fails**, the OS does *not* take ownership — you **MUST**
-    `GlobalFree(h)` to avoid a leak. Then `CloseClipboard` (in a `finally`). Persistent
-    open failure → `ClipboardUnavailable`.
+  - **Ownership via an explicit flag — not just the `SetClipboardData` result.** Track
+    `bool osOwnsHandle = false` and set it `true` **only** immediately after a *successful*
+    `SetClipboardData`. The OS takes ownership of `h` *only* on that success; **every** other
+    exit path — `GlobalLock` returns `IntPtr.Zero`, `OpenClipboard`/`EmptyClipboard` fail, or
+    `SetClipboardData` fails — leaves `h` unowned. In a `finally`: `if (!osOwnsHandle &&
+    h != IntPtr.Zero) GlobalFree(h);` and always `CloseClipboard()` if the clipboard was
+    opened. Persistent open failure → `ClipboardUnavailable`.
 - **Returns:** `{ ok:true }`.
 
 ---
@@ -133,16 +141,27 @@ scoped, as today). `row`/`col` are 0-based.
 ## 3. Threading
 
 - **Grid/text reads** (`get_grid_cell`, `get_text`) resolve a `ref` and read a pattern →
-  run on the **timeout-guarded transient STA** (the Phase-3a action-dispatcher path,
-  `RunActionAsync(func, timeoutMs)` with cache-free descriptor re-resolution), **not** the
-  long-lived query STA. Rationale: `GridPattern.GetItem` and `TextPattern.GetText` can
-  synchronously force the *target app* to realize containers / compute layout; the
-  long-lived query STA has **no per-call timeout**, so a stalled provider would park it and
-  starve all perception. The transient STA is abandonable and already carries the timeout
-  machinery. (NB: this is a strict improvement here, but does not retire the *pre-existing*
-  exposure that `SnapshotAsync`'s own tree walk runs on the query STA with no per-element
-  timeout — tracked as separate hardening backlog, out of scope for 3b-2.) These are reads,
-  so they create the per-call `UIA3Automation` like actions do but perform no state change.
+  run on the **timeout-guarded transient STA** via a NEW
+  `PerceptionManager.RunOnRefReadAsync` (transient STA + `RunActionAsync(func, timeoutMs)` +
+  cache-free descriptor re-resolution), **not** the long-lived query STA. Rationale:
+  `GridPattern.GetItem` and `TextPattern.GetText` can synchronously force the *target app*
+  to realize containers / compute layout; the long-lived query STA has **no per-call
+  timeout**, so a stalled provider would park it and starve all perception. The transient
+  STA is abandonable and already carries the timeout machinery.
+  - **Read path ≠ action path.** `RunOnRefReadAsync` is a sibling of the Phase-3a
+    `RunOnRefActionAsync` that deliberately **omits** the hardcoded `IsOffscreen` →
+    `ElementNotActionable` preflight. Reads must be allowed on off-screen elements (the
+    snapshot already exposes off-screen nodes under `includeOffscreen`); forcing them
+    on-screen would make targeted reads *stricter* than perception. (`grid_select`, a write,
+    keeps `RunOnRefActionAsync` *with* the preflight, plus its own cell-offscreen check.)
+  - **Shared in-flight cap.** Because reads now use the transient-STA dispatcher, they
+    consume the same `MaxPendingActions` (=5) budget as actions (correct — a hung read parks
+    a worker exactly like a hung action). A 6th concurrent targeted read/action →
+    `TooManyPendingActions`. Clients should **serialize** bursts of targeted reads rather
+    than firing them all at once.
+  - (NB: a strict improvement, but it does not retire the *pre-existing* exposure that
+    `SnapshotAsync`'s own tree walk runs on the query STA with no per-element timeout —
+    separate hardening backlog, out of scope for 3b-2.)
 - **`grid_select`** is a state change → the same Phase-3a **action** STA path
   (`RunOnRefActionAsync`), cache-free descriptor re-resolution, per-action transient STA,
   with the offscreen-cell preflight of §2.2.
@@ -159,10 +178,11 @@ scoped, as today). `row`/`col` are 0-based.
   `GridCellOutOfRange`.
 - `src/FlaUI.Mcp.Core/Interaction/Interactor.cs` — add
   `GridSelect(AutomationElement grid, int row, int col)`.
-- `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` — add `GetGridCellAsync(handle,
-  gridRef, row, col)` and `GetTextAsync(handle, ref, selectionOnly, maxLength)` — both run
-  on the timeout-guarded transient STA (see §3), and both run the denylist check +
-  `IsPassword` redaction.
+- `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` — add `RunOnRefReadAsync<T>` (the
+  offscreen-tolerant transient-STA read sibling of `RunOnRefActionAsync`, see §3) and the two
+  readers `GetGridCellAsync(handle, gridRef, row, col)` and `GetTextAsync(handle, ref,
+  selectionOnly, maxLength)` built on it — both run the denylist check + `IsPassword`
+  redaction.
 - `src/FlaUI.Mcp.Core/Interaction/ClipboardAccess.cs` (new) — Win32 P/Invoke
   (`OpenClipboard`/`EmptyClipboard`/`GetClipboardData`/`SetClipboardData`/`GlobalLock`/
   `GlobalUnlock`/`GlobalAlloc`/`GlobalFree`/`GlobalSize`/`CloseClipboard`) run on a plain
@@ -262,10 +282,16 @@ Every error envelope keeps the existing non-null `suggestedRecovery`.
   target tree on the long-lived query STA with no per-element timeout, so a hung provider
   can park it. 3b-2 moves its *own* targeted reads off the query STA (§3); retrofitting the
   full snapshot walk with a timeout is separate hardening backlog.
-- **AGY-AFTER review folded (web relay, agy bus dead).** This spec incorporates agy's
-  exhaustive adversarial pass: clipboard Win32 memory protocol pinned (GMEM_MOVEABLE /
-  single wide-null / ownership transfer — §2.5); `grid_select` offscreen-cell preflight
-  (§2.2); `get_text` `maxLength` off-by-one + brittle-`GetSelection` try/catch + password
-  short-circuit (§2.3); clipboard moved off STA to a plain `Task` (§3); empty-string set
-  fast-path (§2.5); `PatternUnsupported` names the cell pattern (§2.2). No agy claim was
-  fabricated this round; its "double-null" wording was corrected to a single wide-null.
+- **AGY-AFTER review — TWO rounds folded (web relay, agy bus dead).** Round 1: clipboard
+  Win32 memory protocol pinned (GMEM_MOVEABLE / single wide-null / ownership transfer — §2.5);
+  `grid_select` offscreen-cell preflight (§2.2); `get_text` `maxLength` off-by-one +
+  brittle-`GetSelection` try/catch + password short-circuit (§2.3); clipboard moved off STA
+  to a plain `Task` (§3); empty-string set fast-path (§2.5); `PatternUnsupported` names the
+  cell pattern (§2.2). Round 2 (confirm-pass, all R1 fixes verified): targeted reads use a
+  new offscreen-tolerant `RunOnRefReadAsync` (§3) — NOT `RunOnRefActionAsync`, whose
+  hardcoded offscreen throw would make reads stricter than snapshot; `get_text` gains
+  `isPassword` in its payload to disambiguate a masked field from literal `"[REDACTED]"`
+  (§2.3); the clipboard ownership rule is an explicit `osOwnsHandle` flag covering *all*
+  intermediate-failure paths, not just `SetClipboardData`'s result (§2.5); targeted reads
+  share the `MaxPendingActions`=5 in-flight cap (§3, documented). No agy claim was fabricated
+  in either round; R1's "double-null" wording was corrected to a single wide-null.
