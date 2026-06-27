@@ -108,7 +108,8 @@ scoped, as today). `row`/`col` are 0-based.
   using): `OpenClipboard(IntPtr.Zero)` with a bounded retry loop (5 attempts, ~50 ms
   backoff) → `GetClipboardData(CF_UNICODETEXT)` → `GlobalLock` → marshal the UTF-16 string
   → `GlobalUnlock` → `CloseClipboard` (always close in a `finally`).
-- No text on the clipboard (`GetClipboardData` returns NULL) → `{ text:"" }` (success).
+- `GetClipboardData(CF_UNICODETEXT)` returns NULL (clipboard empty **or** holds only
+  non-text formats) → `{ text:"" }` (success; rich-format extraction is out of scope).
 - `OpenClipboard` fails after retries (another process holds the lock) →
   `ClipboardUnavailable`.
 - **Audit:** emit a one-line stderr audit-warn that the clipboard was read (no content
@@ -235,6 +236,7 @@ human-in-the-loop confirmation remains the client's job (the server keeps tools 
 | `PatternUnsupported` | reuse | element lacks Grid/Text/SelectionItem pattern |
 | `ElementNotActionable` | reuse | cell realized but not selectable |
 | `TargetDenied` | reuse | denylisted owning process on a targeted read |
+| `AccessDeniedIntegrity` | reuse | targeted read/select against a higher-integrity (elevated) target — map `UnauthorizedAccessException` explicitly here, do not leak as `INTERNAL` |
 | `WriteBlockedReadOnly` | reuse | a write tool in `--read-only-mode` |
 | (ref-resolution codes) | reuse | unknown/stale `ref`, window mismatch (as today) |
 
@@ -293,5 +295,9 @@ Every error envelope keeps the existing non-null `suggestedRecovery`.
   `isPassword` in its payload to disambiguate a masked field from literal `"[REDACTED]"`
   (§2.3); the clipboard ownership rule is an explicit `osOwnsHandle` flag covering *all*
   intermediate-failure paths, not just `SetClipboardData`'s result (§2.5); targeted reads
-  share the `MaxPendingActions`=5 in-flight cap (§3, documented). No agy claim was fabricated
-  in either round; R1's "double-null" wording was corrected to a single wide-null.
+  share the `MaxPendingActions`=5 in-flight cap (§3, documented). Round 3 (last-look gate):
+  **GATE VERDICT = GO**, all R2 amendments verified consistent; folded its two non-blocking
+  nits — clipboard NULL = empty *or* non-text format (§2.4), and an explicit
+  `AccessDeniedIntegrity` mapping for elevated/cross-integrity targeted reads instead of a
+  generic `INTERNAL` leak (§6). No agy claim was fabricated across all three rounds; R1's
+  "double-null" wording was corrected to a single wide-null.
