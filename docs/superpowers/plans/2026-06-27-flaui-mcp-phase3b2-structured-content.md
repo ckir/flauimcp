@@ -138,9 +138,18 @@ public class ContentToolsTests : IClassFixture<TestAppFixture>
         var mgr = new PerceptionManager(w, refs, new SnapshotCache());
         var handle = await w.OpenByPidAsync(_app.Process.Id);
         var snap = await mgr.SnapshotAsync(handle, new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true, FullProperties = true });
-        var line = snap.Tree.Split('\n').First(l => l.Contains("Grid"));
-        var gridRef = line.TrimStart().Split(']')[0].TrimStart('[');
+        var gridRef = RefForAid(snap.Tree, "Grid");
         return (mgr, handle, gridRef);
+    }
+
+    // Find the e-ref for a control by its AutomationId. Match the AID TOKEN, not a bare substring
+    // ("Grid" alone would also match the DataGrid ControlType). STATE-VERIFY the exact FullProperties
+    // AID rendering against RefResolutionTests.cs / the SnapshotEngine renderer before relying on the
+    // "aid=" token; if the renderer emits a different marker, match that one.
+    private static string RefForAid(string tree, string aid)
+    {
+        var line = tree.Split('\n').First(l => l.Contains($"aid={aid}"));
+        return line.TrimStart().Split(']')[0].TrimStart('[');
     }
 
     [Fact]
@@ -213,11 +222,24 @@ public class ContentToolsTests : IClassFixture<TestAppFixture>
                     throw new ToolException(ToolErrorCode.GridCellOutOfRange, $"Cell ({row},{col}) is outside the {rows}x{cols} grid.", "use in-range 0-based row/col");
                 var cell = gp.GetItem(row, col)
                     ?? throw new ToolException(ToolErrorCode.GridCellOutOfRange, $"Grid has no realized cell at ({row},{col}).", "scroll the grid to realize the row, then retry");
-                bool isPwd = cell.Properties.IsPassword.ValueOrDefault;
-                string value = isPwd ? "[REDACTED]"
-                    : (cell.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault ?? cell.Name ?? string.Empty);
-                return new GridCellInfo(value, cell.ControlType.ToString(),
-                    cell.Properties.AutomationId.ValueOrDefault ?? string.Empty, isPwd);
+                // Defensive UIA reads — a dynamically-realized cell from a faulty provider can throw
+                // COMException on a property/pattern access; mirror EvaluateSelectorValueAsync's
+                // try/catch-per-read so a flaky cell degrades gracefully, never leaks as INTERNAL.
+                bool isPwd = false;
+                try { isPwd = cell.Properties.IsPassword.ValueOrDefault; } catch { }
+                string value;
+                if (isPwd) value = "[REDACTED]";
+                else
+                {
+                    string? v = null;
+                    try { v = cell.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault; } catch { }
+                    if (string.IsNullOrEmpty(v)) { try { v = cell.Name; } catch { } }
+                    value = v ?? string.Empty;
+                }
+                string ct = "Unknown", aid = string.Empty;
+                try { ct = cell.ControlType.ToString(); } catch { }
+                try { aid = cell.Properties.AutomationId.ValueOrDefault ?? string.Empty; } catch { }
+                return new GridCellInfo(value, ct, aid, isPwd);
             }
             catch (System.UnauthorizedAccessException)
             { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
@@ -298,7 +320,7 @@ builder.Services.AddSingleton<ContentTools>();
         var mgr = new PerceptionManager(w, refs, new SnapshotCache());
         var handle = await w.OpenByPidAsync(_app.Process.Id);
         var snap = await mgr.SnapshotAsync(handle, new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true, FullProperties = true });
-        string RefFor(string aid) => snap.Tree.Split('\n').First(l => l.Contains(aid)).TrimStart().Split(']')[0].TrimStart('[');
+        string RefFor(string aid) => RefForAid(snap.Tree, aid);
 
         var doc = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 10000, 4000);
         Assert.Contains("line one", doc.Text);
@@ -326,8 +348,11 @@ builder.Services.AddSingleton<ContentTools>();
         {
             EnsureAllowed(el);
             // Password short-circuit FIRST — never ask the provider for a secret's text/selection.
-            if (el.Properties.IsPassword.ValueOrDefault)
-                return new TextReadResult("[REDACTED]", false, true);
+            // Read IsPassword defensively (a COMException here must not bypass clean handling and
+            // surface as INTERNAL); if it can't be read it's a flaky non-password field → proceed.
+            bool isPwd = false;
+            try { isPwd = el.Properties.IsPassword.ValueOrDefault; } catch { }
+            if (isPwd) return new TextReadResult("[REDACTED]", false, true);
             try
             {
                 var tp = el.Patterns.Text.PatternOrDefault
