@@ -30,6 +30,20 @@ public sealed class ContentTools
             return ToolResponse.Ok(new { value = c.Value, controlType = c.ControlType, automationId = c.AutomationId, isPassword = c.IsPassword });
         });
 
+    [McpServerTool(Destructive = true), Description("Select a grid/table cell by (row,col) via UIA SelectionItemPattern. ref = the Grid element; row/col 0-based. GridCellOutOfRange if out of bounds; ElementNotActionable if the cell is off-screen (scroll first); PatternUnsupported if the cell isn't selectable. Blocked in --read-only-mode.")]
+    public Task<string> DesktopGridSelect(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Grid element ref, e.g. e23.")] string @ref,
+        [Description("0-based row index.")] int row,
+        [Description("0-based column index.")] int col,
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            await _perception.RunOnRefActionAsync(new WindowHandle(window), @ref,
+                el => { Interactor.GridSelect(el, row, col); return true; }, timeoutMs);
+            return ToolResponse.Ok(new { ok = true, pathUsed = "pattern" });
+        });
+
     [McpServerTool(ReadOnly = true), Description("Read an element's text via UIA TextPattern. selectionOnly=true reads the current selection (empty if none). maxLength caps output (default 10000, 1..200000); truncated=true if the text exceeded it. A password field returns text=\"[REDACTED]\", isPassword=true. Off-screen targets ARE readable. PatternUnsupported if no TextPattern.")]
     public Task<string> DesktopGetText(
         [Description("Window handle, e.g. w1.")] string window,

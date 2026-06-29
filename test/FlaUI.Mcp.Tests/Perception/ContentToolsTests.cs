@@ -54,6 +54,28 @@ public class ContentToolsTests : IClassFixture<TestAppFixture>
     }
 
     [Fact]
+    public async Task Grid_select_selects_a_cell_without_error()
+    {
+        using var d = new AutomationDispatcher();
+        using var w = new WindowManager(d);
+        var (mgr, handle, gridRef) = await SnapshotAndFindGridAsync(w, new RefRegistry());
+        var ok = await mgr.RunOnRefActionAsync(handle, gridRef,
+            el => { Interactor.GridSelect(el, 1, 0); return true; }, 4000);
+        Assert.True(ok);
+    }
+
+    [Fact]
+    public async Task Grid_select_out_of_range_throws_GridCellOutOfRange()
+    {
+        using var d = new AutomationDispatcher();
+        using var w = new WindowManager(d);
+        var (mgr, handle, gridRef) = await SnapshotAndFindGridAsync(w, new RefRegistry());
+        var ex = await Assert.ThrowsAsync<FlaUI.Mcp.Core.Errors.ToolException>(
+            () => mgr.RunOnRefActionAsync(handle, gridRef, el => { Interactor.GridSelect(el, 0, 99); return true; }, 4000));
+        Assert.Equal(FlaUI.Mcp.Core.Errors.ToolErrorCode.GridCellOutOfRange, ex.Code);
+    }
+
+    [Fact]
     public async Task Get_text_reads_full_truncates_and_redacts()
     {
         using var d = new AutomationDispatcher();

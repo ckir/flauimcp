@@ -11,6 +11,7 @@
                  Text="line one&#10;line two&#10;line three"/>
         <DataGrid x:Name="Grid" AutomationProperties.AutomationId="Grid"
                   AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False"
+                  SelectionUnit="Cell"
                   Height="100" Margin="0,0,0,8"/>
         <Button x:Name="OkButton" Content="OK"
                 AutomationProperties.AutomationId="OkButton" Click="OkButton_Click"/>
