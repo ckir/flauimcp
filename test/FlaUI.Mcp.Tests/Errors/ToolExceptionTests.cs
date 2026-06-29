@@ -27,4 +27,11 @@ public class ToolExceptionTests
         Assert.Equal("WriteBlockedReadOnly", ToolErrorCode.WriteBlockedReadOnly.ToString());
         Assert.Equal("TooManyPendingActions", ToolErrorCode.TooManyPendingActions.ToString());
     }
+
+    [Fact]
+    public void New_phase3b2_codes_serialize_by_name()
+    {
+        Assert.Equal("ClipboardUnavailable", ToolErrorCode.ClipboardUnavailable.ToString());
+        Assert.Equal("GridCellOutOfRange", ToolErrorCode.GridCellOutOfRange.ToString());
+    }
 }

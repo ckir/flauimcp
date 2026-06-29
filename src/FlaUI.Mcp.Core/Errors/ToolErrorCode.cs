@@ -24,5 +24,7 @@ public enum ToolErrorCode
     SnapshotWindowMismatch,
     SelectorNoMatch,
     NoFocusedElement,
-    NotImplemented
+    NotImplemented,
+    ClipboardUnavailable,
+    GridCellOutOfRange
 }
