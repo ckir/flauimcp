@@ -52,4 +52,30 @@ public class ContentToolsTests : IClassFixture<TestAppFixture>
             () => mgr.GetGridCellAsync(handle, gridRef, 99, 0, 4000));
         Assert.Equal(FlaUI.Mcp.Core.Errors.ToolErrorCode.GridCellOutOfRange, ex.Code);
     }
+
+    [Fact]
+    public async Task Get_text_reads_full_truncates_and_redacts()
+    {
+        using var d = new AutomationDispatcher();
+        using var w = new WindowManager(d);
+        var refs = new RefRegistry();
+        var mgr = new PerceptionManager(w, refs, new SnapshotCache());
+        var handle = await w.OpenByPidAsync(_app.Process.Id);
+        var snap = await mgr.SnapshotAsync(handle, new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true, FullProperties = true });
+        string RefFor(string aid) => RefForAid(snap.Tree, aid);
+
+        var doc = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 10000, 4000);
+        Assert.Contains("line one", doc.Text);
+        Assert.False(doc.Truncated);
+        Assert.False(doc.IsPassword);
+
+        var trunc = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 4, 4000);
+        Assert.True(trunc.Truncated);
+        Assert.Equal(4, trunc.Text.Length);
+
+        var pwd = await mgr.GetTextAsync(handle, RefFor("Secret"), selectionOnly: false, maxLength: 10000, 4000);
+        Assert.Equal("[REDACTED]", pwd.Text);
+        Assert.True(pwd.IsPassword);
+        Assert.DoesNotContain("hunter2", pwd.Text);
+    }
 }

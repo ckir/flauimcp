@@ -29,4 +29,17 @@ public sealed class ContentTools
             var c = await _perception.GetGridCellAsync(new WindowHandle(window), @ref, row, col, timeoutMs);
             return ToolResponse.Ok(new { value = c.Value, controlType = c.ControlType, automationId = c.AutomationId, isPassword = c.IsPassword });
         });
+
+    [McpServerTool(ReadOnly = true), Description("Read an element's text via UIA TextPattern. selectionOnly=true reads the current selection (empty if none). maxLength caps output (default 10000, 1..200000); truncated=true if the text exceeded it. A password field returns text=\"[REDACTED]\", isPassword=true. Off-screen targets ARE readable. PatternUnsupported if no TextPattern.")]
+    public Task<string> DesktopGetText(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Element ref from a snapshot, e.g. e23.")] string @ref,
+        [Description("Read only the current selection (default false = full text).")] bool selectionOnly = false,
+        [Description("Max chars (default 10000).")] int maxLength = 10000,
+        [Description("Read timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        => ToolResponse.Guard(async () =>
+        {
+            var t = await _perception.GetTextAsync(new WindowHandle(window), @ref, selectionOnly, maxLength, timeoutMs);
+            return ToolResponse.Ok(new { text = t.Text, truncated = t.Truncated, isPassword = t.IsPassword });
+        });
 }

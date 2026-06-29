@@ -111,6 +111,41 @@ public sealed class PerceptionManager
             { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
         }, timeoutMs);
 
+    public Task<TextReadResult> GetTextAsync(WindowHandle handle, string @ref, bool selectionOnly, int maxLength, int timeoutMs) =>
+        RunOnRefReadAsync(handle, @ref, el =>
+        {
+            EnsureAllowed(el);
+            // Password short-circuit FIRST — never ask the provider for a secret's text/selection.
+            // Read IsPassword defensively (a COMException here must not bypass clean handling and
+            // surface as INTERNAL); if it can't be read it's a flaky non-password field → proceed.
+            bool isPwd = false;
+            try { isPwd = el.Properties.IsPassword.ValueOrDefault; } catch { }
+            if (isPwd) return new TextReadResult("[REDACTED]", false, true);
+            try
+            {
+                var tp = el.Patterns.Text.PatternOrDefault
+                    ?? throw new ToolException(ToolErrorCode.PatternUnsupported, "Element does not support the Text pattern.", "pick a text/document element");
+                int cap = System.Math.Clamp(maxLength, 1, 200000);
+                string raw;
+                if (selectionOnly)
+                {
+                    try
+                    {
+                        var sel = tp.GetSelection();
+                        raw = (sel is { Length: > 0 }) ? sel[0].GetText(cap + 1) : string.Empty;
+                    }
+                    catch { raw = string.Empty; } // GetSelection is brittle (throws when no selection)
+                }
+                else raw = tp.DocumentRange.GetText(cap + 1);
+
+                bool truncated = raw.Length > cap;
+                if (truncated) raw = raw.Substring(0, cap);
+                return new TextReadResult(raw, truncated, false);
+            }
+            catch (System.UnauthorizedAccessException)
+            { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
+        }, timeoutMs);
+
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
     {
@@ -265,3 +300,5 @@ public sealed record FocusedElementInfo(string Ref, string DescriptorLine, strin
 public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> PasswordRects, bool Minimized, bool Denied, string? DeniedProcess);
 
 public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword);
+
+public sealed record TextReadResult(string Text, bool Truncated, bool IsPassword);
