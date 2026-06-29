@@ -49,6 +49,68 @@ public sealed class PerceptionManager
         }, timeoutMs);
     }
 
+    /// <summary>Resolve a ref and run a READ on a TRANSIENT STA (timeout-guarded), cache-free
+    /// like the action path but WITHOUT the offscreen preflight — reads are allowed on
+    /// off-screen elements (matching desktop_snapshot includeOffscreen). GetItem/GetText can
+    /// force the target app to realize layout, so the abandonable transient STA + timeout
+    /// protects the long-lived query STA. Shares the action in-flight cap (MaxPendingActions).</summary>
+    public Task<T> RunOnRefReadAsync<T>(WindowHandle handle, string @ref, Func<AutomationElement, T> func, int timeoutMs)
+    {
+        var descriptor = _refs.Lookup(handle.Id, @ref).Descriptor;
+        return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
+        {
+            var roots = PopupFinder.SearchRoots(win, desktop);
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref);
+            return func(el);
+        }, timeoutMs);
+    }
+
+    // Replicate the snapshot security floor for targeted reads (they bypass SnapshotEngine).
+    private static void EnsureAllowed(AutomationElement el)
+    {
+        var procName = SafeProcessName(el);
+        if (PerceptionPolicy.IsDenied(procName))
+            throw new ToolException(ToolErrorCode.TargetDenied,
+                $"Reading content from windows owned by '{procName}' is blocked (credential store).",
+                "target a different, non-sensitive element");
+    }
+
+    public Task<GridCellInfo> GetGridCellAsync(WindowHandle handle, string @ref, int row, int col, int timeoutMs) =>
+        RunOnRefReadAsync(handle, @ref, el =>
+        {
+            EnsureAllowed(el);
+            try
+            {
+                var gp = el.Patterns.Grid.PatternOrDefault
+                    ?? throw new ToolException(ToolErrorCode.PatternUnsupported, "Element does not support the Grid pattern.", "pick a grid/table element");
+                int rows = gp.RowCount.ValueOrDefault, cols = gp.ColumnCount.ValueOrDefault;
+                if (row < 0 || col < 0 || row >= rows || col >= cols)
+                    throw new ToolException(ToolErrorCode.GridCellOutOfRange, $"Cell ({row},{col}) is outside the {rows}x{cols} grid.", "use in-range 0-based row/col");
+                var cell = gp.GetItem(row, col)
+                    ?? throw new ToolException(ToolErrorCode.GridCellOutOfRange, $"Grid has no realized cell at ({row},{col}).", "scroll the grid to realize the row, then retry");
+                // Defensive UIA reads — a dynamically-realized cell from a faulty provider can throw
+                // COMException on a property/pattern access; mirror EvaluateSelectorValueAsync's
+                // try/catch-per-read so a flaky cell degrades gracefully, never leaks as INTERNAL.
+                bool isPwd = false;
+                try { isPwd = cell.Properties.IsPassword.ValueOrDefault; } catch { }
+                string value;
+                if (isPwd) value = "[REDACTED]";
+                else
+                {
+                    string? v = null;
+                    try { v = cell.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault; } catch { }
+                    if (string.IsNullOrEmpty(v)) { try { v = cell.Name; } catch { } }
+                    value = v ?? string.Empty;
+                }
+                string ct = "Unknown", aid = string.Empty;
+                try { ct = cell.ControlType.ToString(); } catch { }
+                try { aid = cell.Properties.AutomationId.ValueOrDefault ?? string.Empty; } catch { }
+                return new GridCellInfo(value, ct, aid, isPwd);
+            }
+            catch (System.UnauthorizedAccessException)
+            { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
+        }, timeoutMs);
+
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
     {
@@ -201,3 +263,5 @@ public sealed class PerceptionManager
 public sealed record FocusedElementInfo(string Ref, string DescriptorLine, string Title, int Pid, string? WindowHandle);
 
 public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> PasswordRects, bool Minimized, bool Denied, string? DeniedProcess);
+
+public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword);

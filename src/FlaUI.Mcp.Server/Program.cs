@@ -32,6 +32,7 @@ builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.PerceptionManager>();
 builder.Services.AddSingleton<SnapshotTools>();
 builder.Services.AddSingleton<ScreenshotTools>();
 builder.Services.AddSingleton<InteractionTools>();
+builder.Services.AddSingleton<ContentTools>();
 
 builder.Services
     .AddMcpServer()
