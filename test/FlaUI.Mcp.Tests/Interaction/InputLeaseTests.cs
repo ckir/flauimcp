@@ -40,4 +40,23 @@ public class InputLeaseTests
         Assert.False(lease.IsValidNow(now.AddMinutes(6), "S-1-5-21-1"));  // expired
         Assert.False(lease.IsValidNow(now, "S-1-5-21-OTHER"));            // foreign sid
     }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("unknown")]
+    public void A_lease_is_invalid_when_the_current_sid_is_unresolved(string? currentSid)
+    {
+        var sid = "S-1-5-21-7";
+        var lease = new InputLease(new DateTime(2999, 1, 1, 0, 0, 0, DateTimeKind.Utc), sid, Array.Empty<string>());
+        Assert.False(lease.IsValidNow(DateTime.UtcNow, currentSid!));
+    }
+
+    [Fact]
+    public void A_lease_whose_own_sid_is_unknown_never_validates()
+    {
+        var lease = new InputLease(new DateTime(2999, 1, 1, 0, 0, 0, DateTimeKind.Utc), "unknown", Array.Empty<string>());
+        Assert.False(lease.IsValidNow(DateTime.UtcNow, "unknown"));
+    }
 }

@@ -12,7 +12,11 @@ public sealed record InputLease(DateTime ExpiryUtc, string Sid, string[] Caps)
     public bool HasCapability(string cap) => Caps.Contains(cap, StringComparer.OrdinalIgnoreCase);
 
     public bool IsValidNow(DateTime utcNow, string currentSid) =>
-        ExpiryUtc > utcNow && string.Equals(Sid, currentSid, StringComparison.OrdinalIgnoreCase);
+        ExpiryUtc > utcNow
+        && !string.IsNullOrWhiteSpace(currentSid)
+        && !string.Equals(currentSid, "unknown", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(Sid, "unknown", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(Sid, currentSid, StringComparison.OrdinalIgnoreCase);
 
     public static string Format(DateTime expiryUtc, string sid, string[] caps) =>
         $"expiryUtc={expiryUtc.ToUniversalTime():O};sid={sid};caps={string.Join(",", caps)}";
