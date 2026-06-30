@@ -70,19 +70,21 @@ safety rationale.
     client's job — the server keeps tools granular, never bundling read + write, so
     it's possible). What pattern actions *cannot* do (mis-target, type into a shell) is
     exactly what Phase 4 adds.
-- **Phase 4 — Synthetic input (the blast-radius phase)** — deliberately small and
-  isolated. Real OS mouse/keyboard + the coordinate/vision *action* path, for apps
-  whose controls implement no patterns or have broken a11y.
-  - *Tools:* `desktop_type` (synthetic keystrokes, `Focus()`-first), `desktop_click`
-    (synthetic mouse on a ref — modifiers / double / right), `desktop_click_at` /
-    `desktop_drag` (coordinate path, screenshot-pixel contract + `xPct`/`yPct`),
-    `desktop_key` (chords, e.g. `Ctrl+S`).
-  - *Safety stack — only load-bearing once synthetic input exists:* **ACTION deny-list**
-    — refuse synthetic input into UAC / `consent.exe`, credential dialogs, password
-    managers, and interlock the worst sinks (terminal / `WindowsTerminal`, Win+R run
-    dialog, browser address bar) behind a stronger confirm or refusal; **action budget
-    + audit log** (rate-limit, re-confirm after N, log target+payload); **hard-fail on
-    elevation behind `--unsafe-allow-elevation`** (upgrades the Phase-2 warn-only).
+- **Phase 4 — Synthetic input (the blast-radius phase)** — split into 4a (safety stack)
+  and 4b (real input tools), so the guards land before the blast radius does.
+  - **Phase 4a** ✅ **(v0.6.0) — input safety foundation; no input tools yet.** Ships the
+    3-seam set (`ISyntheticInput` / `IPlatformEnvironment` / `ILeaseProvider`), `InputGuard`
+    pipeline (deny-list + per-window budget + event-only audit log), file-backed time-lease
+    with `flaui-mcp unlock --minutes N [--allow-shells]` / `flaui-mcp lock` CLI (dead-man's
+    switch; agent cannot self-grant), elevation hard-fail behind `--unsafe-allow-elevation`
+    (upgrades the Phase-2 warn-only), and 2 carried 3b-2 SHOULD-FIX items. **No
+    `SendInput`-backed tool ships in this phase.**
+  - **Phase 4b** ▶ **(next — v0.7.0) — real Win32 SendInput tools + active-RDP spike.**
+    `desktop_type` (synthetic keystrokes, `Focus()`-first), `desktop_click` (synthetic mouse
+    on a ref — modifiers / double / right), `desktop_click_at` / `desktop_drag` (coordinate
+    path, screenshot-pixel contract + `xPct`/`yPct`), `desktop_key` (chords, e.g. `Ctrl+S`).
+    Includes the active-RDP spike (verifying `SendInput` round-trip over a connected RDP
+    session). Blocked on 4a guards being live.
   - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
     zero-UIA surfaces (also in the v2 table).
 
@@ -136,7 +138,7 @@ security floors are defense-in-depth, not an injection cure.
 | --- | --- | --- |
 | **Cross-STA ref resolution** — re-resolve a ref on the *action* STA, never marshal an `AutomationElement` across apartments | Phase 3 | COM is thread-affine; `RunOnRefAsync` already resolves-then-acts in one STA lambda. Action tools must route resolution through the action dispatcher. |
 | **Fast-path recycle guard** — add a `Name`/`AutomationId` sanity check to `RefRegistry.Resolve`'s cache fast-path | Phase 3 | Virtualized container recycling (e.g. `DataGrid` scroll) can reuse a `RuntimeId` for different data; harmless in Phase 2 (refs aren't consumed by actions yet). |
-| **Hard-fail on elevation** behind `--unsafe-allow-elevation` | Phase 4 | v0.2.0 warns only; the blast radius that justifies refusing-to-run only arrives with synthetic input. |
+| **Hard-fail on elevation** behind `--unsafe-allow-elevation` | ✅ Phase 4a (v0.6.0) | v0.2.0 warned only; 4a upgrades to hard-fail — synthetic input is refused when running elevated unless `--unsafe-allow-elevation` is passed. |
 | **Redact descriptor `Name` for `IsPassword`** | micro | Belt-and-suspenders; `Name` is empty for conformant password controls today, so no secret is stored. |
 | **Window-prefixed refs in output** (`[w1:e1]`) | low | Mitigated already — the tools take window handle + ref as separate args, so refs can't alias across windows. |
 | **Shrink the shipped exe** (Native AOT or trimming) | deferred | AOT is blocked by FlaUI's runtime COM interop + the MCP SDK's reflection tool discovery + STJ reflection serialization (would need source-gen JSON context + source-gen tool registration first); trimming risks silently stripping reflected tools/serializers. Low value for a once-installed dev tool — revisit only after a source-gen migration. (User to relay to agy.) |
