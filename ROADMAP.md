@@ -79,12 +79,19 @@ safety rationale.
     switch; agent cannot self-grant), elevation hard-fail behind `--unsafe-allow-elevation`
     (upgrades the Phase-2 warn-only), and 2 carried 3b-2 SHOULD-FIX items. **No
     `SendInput`-backed tool ships in this phase.**
-  - **Phase 4b** ▶ **(next — v0.7.0) — real Win32 SendInput tools + active-RDP spike.**
-    `desktop_type` (synthetic keystrokes, `Focus()`-first), `desktop_click` (synthetic mouse
-    on a ref — modifiers / double / right), `desktop_click_at` / `desktop_drag` (coordinate
-    path, screenshot-pixel contract + `xPct`/`yPct`), `desktop_key` (chords, e.g. `Ctrl+S`).
-    Includes the active-RDP spike (verifying `SendInput` round-trip over a connected RDP
-    session). Blocked on 4a guards being live.
+  - **Phase 4b** ✅ **(v0.7.0) — real Win32 SendInput tools, spike-validated.** Ships the real
+    `Win32SyntheticInput` (`SendInput`) and `Win32PlatformEnvironment` (foreground / hit-test /
+    fail-closed session oracle) leaves plus **eight tools**: `desktop_type` (Unicode keystrokes,
+    `Focus()`-first, 4096-char cap), `desktop_key` (chords, e.g. `Ctrl+S`), `desktop_click`
+    (synthetic mouse on a ref), `desktop_click_at` / `desktop_drag` (coordinate path,
+    screenshot-pixel `xPct`/`yPct` contract + VIRTUALDESK 0–65535 normalization, both drag
+    endpoints deny-listed), `desktop_input_status` (read-only lease pre-flight), and
+    `desktop_set_caret` / `desktop_select_text_range` (UIA `TextPattern`, deny-list-only,
+    lease/session/budget-exempt). `InputGuard` is now live in DI; F1–F5 merge-gate findings
+    folded; atomic pre-send foreground/hit-test re-verify in the send leaf. Validated by an
+    active-RDP spike (`SendInput` round-trip + abs-mouse normalization + ref-path `Focus()`
+    targeting confirmed) — the headless box can't run `SendInput`, so Desktop input tests are
+    console-only + manual.
   - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
     zero-UIA surfaces (also in the v2 table).
 

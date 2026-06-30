@@ -25,10 +25,18 @@ public static class ActionPolicy
     {
         var proc = processName?.Trim();
         var cls = windowClass?.Trim();
-        if (!string.IsNullOrEmpty(proc) && (DeniedProcesses.Contains(proc) || PerceptionPolicy.IsDenied(proc)))
+        // F5 (fail-closed, hardened per agy BLOCKER): a target with NO resolvable process name is
+        // intrinsically untrustworthy and must be refused — never allowed. This closes the bypass where
+        // an elevated/protected target makes Process.GetProcessById throw (proc=null) yet Win32
+        // GetClassName still returns a class (e.g. "DirectUIHWND"); the old `proc && cls` empty check
+        // skipped the fail-closed branch AND the denied-process check, falling through to Allowed.
+        // Every legitimate target (ref or coordinate) resolves an in-session process name.
+        if (string.IsNullOrEmpty(proc))
+            return ActionVerdict.Denied;
+        if (DeniedProcesses.Contains(proc) || PerceptionPolicy.IsDenied(proc))
             return ActionVerdict.Denied;
         if ((!string.IsNullOrEmpty(cls) && InterlockedClasses.Contains(cls)) ||
-            (!string.IsNullOrEmpty(proc) && InterlockedProcesses.Contains(proc)))
+            InterlockedProcesses.Contains(proc))
             return ActionVerdict.Interlocked;
         return ActionVerdict.Allowed;
     }

@@ -29,7 +29,18 @@ public static class LeaseWriter
 
     private static string CurrentSid()
     {
-        try { using var id = WindowsIdentity.GetCurrent(); return id.User?.Value ?? "unknown"; }
-        catch { return "unknown"; }
+        try
+        {
+            using var id = WindowsIdentity.GetCurrent();
+            var sid = id.User?.Value;
+            if (string.IsNullOrWhiteSpace(sid))
+                throw new InvalidOperationException("Could not resolve the current user's SID; refusing to write an unsecured lease.");
+            return sid;
+        }
+        catch (InvalidOperationException) { throw; }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("Could not resolve the current user's SID; refusing to write an unsecured lease.", ex);
+        }
     }
 }

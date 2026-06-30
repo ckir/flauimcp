@@ -9,7 +9,9 @@ public sealed class FakePlatformEnvironment : IPlatformEnvironment
     public PointTarget PointResult { get; set; }
     public bool CanDeliver { get; set; } = true;
 
+    public PointTarget RootResult { get; set; }
     public nint GetForegroundRoot() => ForegroundRoot;
     public PointTarget HitTestRoot(int x, int y) => PointResult;
+    public PointTarget ResolveRoot(nint root) => RootResult;
     public SessionInputState SessionState() => new(CanDeliver);
 }
