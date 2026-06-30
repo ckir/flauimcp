@@ -7,9 +7,10 @@ a ref-tagged accessibility tree**, **screenshot windows or the desktop, read ele
 diff/stat snapshots, and wait for UI conditions**, **act on elements through UI Automation
 patterns** (click, set value, toggle, expand, select, scroll, focus, window min/max), and
 **read and write structured content** (grid/table cells, element text via TextPattern, clipboard)
-— with Phase 4a's synthetic-input safety foundation (time-lease, deny-list, per-window budget,
-audit, elevation guard) now in place and the actual `SendInput`-backed tools landing in v0.7.0.
-Think "Playwright, but for native Windows apps."
+— and **drive synthetic mouse/keyboard input** (`SendInput`-backed type/click/drag/key, plus
+`TextPattern` caret/selection), all gated behind Phase 4a's safety foundation (time-lease,
+deny-list, per-window budget, audit, elevation guard). Think "Playwright, but for native Windows
+apps."
 
 ---
 
@@ -30,10 +31,11 @@ entire risk. Understand the following before you install:
   content (a web page, a document, an email) that content can attempt to instruct the agent
   to take desktop actions. The blast radius of a successful injection is your whole desktop
   session.
-- **The roadmap expands this surface.** v0.6.0 shipped the synthetic-input safety foundation
-  (time-lease, deny-list, per-window budget, audit, elevation guard); the actual mouse/keyboard
-  input tools land in v0.7.0. The permission you grant at install (`mcp(flaui-mcp/*)`) covers
-  those future tools too.
+- **v0.7.0 ships real synthetic input.** The `SendInput`-backed mouse/keyboard tools are now
+  live, gated behind the time-lease, deny-list, per-window budget, audit, and elevation guard
+  that v0.6.0 laid down. A human must explicitly unlock a time-bounded window (`flaui-mcp unlock`)
+  before any input fires. The permission you grant at install (`mcp(flaui-mcp/*)`) covers these
+  tools.
 - **The released binaries are NOT code-signed.** Windows SmartScreen and antivirus software
   will likely flag the installer and the self-extracting executable. You will have to click
   through "More info → Run anyway." Verify the published SHA-256 checksums before trusting a
@@ -122,10 +124,11 @@ tools are `destructive` and blocked in `--read-only-mode`.
 `IsPassword` redaction as `DesktopSnapshot` — password cells and fields always surface as
 `[REDACTED]`, and windows owned by known credential stores are denied outright.
 
-**Input safety foundation — Phase 4a (new in v0.6.0):** Phase 4a ships the safety infrastructure
-and seam interfaces required before any synthetic input tool can land. **No mouse/keyboard input
-tool ships in v0.6.0.** The `SendInput`-backed tools (`desktop_type`, `desktop_click`,
-`desktop_key`, etc.) arrive in v0.7.0 (Phase 4b).
+**Input safety foundation — Phase 4a (v0.6.0):** Phase 4a shipped the safety infrastructure and
+seam interfaces required before any synthetic input tool could land — deliberately *before* the
+blast radius. No mouse/keyboard input tool shipped in v0.6.0; the `SendInput`-backed tools
+(`desktop_type`, `desktop_click`, `desktop_key`, etc.) arrived in v0.7.0 — see **Synthetic input —
+Phase 4b** below.
 
 What Phase 4a introduces:
 
@@ -142,6 +145,50 @@ What Phase 4a introduces:
 - **Elevation hard-fail** — if the server starts with Administrator rights, synthetic input is
   refused unless `--unsafe-allow-elevation` is passed explicitly at launch (upgrades the v0.2.0
   warn-only).
+
+### Synthetic input — Phase 4b (new in v0.7.0)
+
+v0.7.0 turns on real `SendInput`-backed mouse/keyboard input, built on the Phase 4a safety
+foundation above. **Eight tools** ship:
+
+- **`desktop_type`** — type Unicode text into the focused element (or a `@ref` target). Capped at
+  4096 characters per call (`InvalidArguments` over the cap; split on a surrogate-safe boundary).
+- **`desktop_key`** — send a key chord (e.g. `ctrl+a`, `enter`, `alt+f4`) to the focused window, or
+  to a `@ref`/`window` target. `ref` without `window` is `InvalidArguments`.
+- **`desktop_click`** — click a `@ref` element by its hit-test point.
+- **`desktop_click_at`** — click an absolute window-relative point (`xPct`/`yPct`).
+- **`desktop_drag`** — press-move-release between two points; **both** endpoints are deny-list
+  checked and the end point is re-hit-tested before the button releases.
+- **`desktop_input_status`** *(read-only)* — report the current lease state
+  (`active`/`locked`, seconds remaining, whether the `shells` capability is held). Never exposes
+  the SID or any payload.
+- **`desktop_set_caret`** / **`desktop_select_text_range`** — move the caret / select a character
+  span via UIA `TextPattern`. These do **not** use `SendInput`, so they are **exempt from the
+  lease, session-active, and budget gates** — but the deny-list and terminal/console interlock
+  still apply (you cannot drive a credential dialog or a shell this way without the `shells`
+  capability).
+
+**The out-of-band lease is the required enabler.** None of the five `SendInput` tools fire
+unless a human has granted a live lease out-of-band:
+
+```bash
+flaui-mcp unlock --minutes 5 [--allow-shells]   # grant a time-bounded synthetic-input lease
+flaui-mcp lock                                   # revoke it immediately
+```
+
+The agent cannot grant, extend, or read the SID of its own lease; it expires automatically. Use
+`desktop_input_status` to check how much time remains.
+
+**The session must stay active and unlocked.** `SendInput` cannot reach a locked or
+RDP-disconnected desktop — those calls return `InputDesktopUnavailable` rather than silently
+dropping keystrokes. Keep the RDP/console session connected and the workstation unlocked while an
+agent drives input.
+
+**Elevation is still hard-refused** unless `--unsafe-allow-elevation` is passed at launch.
+
+**Honest boundary:** the lease and deny-list defend against the agent driving *high-risk* sinks,
+not against a determined same-user host shell — anything running as your user can already act as
+your user. This is a guardrail for an agent, not a sandbox.
 
 ### Read-only mode
 
@@ -174,9 +221,9 @@ privacy and safety floors — defense in depth, not a substitute for supervising
 - **Never run elevated.** The server warns (on stderr) if started with Administrator rights — it
   is meant to run at your user integrity level.
 
-**On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): Phase 4b `SendInput`-backed input tools
-(`desktop_type`, `desktop_click`, `desktop_key`, etc. — v0.7.0), occlusion-aware capture
-(PrintWindow), and an HTTP transport.
+**On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): a "driving FlaUI.Mcp" dogfood skill,
+occlusion-aware capture (PrintWindow), AOT/trim to shrink the self-contained executable, and an
+HTTP transport. (Phase 4b `SendInput`-backed input tools shipped in v0.7.0.)
 
 ## Requirements
 
