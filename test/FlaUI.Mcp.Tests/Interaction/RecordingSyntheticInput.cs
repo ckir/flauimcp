@@ -22,6 +22,7 @@ public sealed class RecordingSyntheticInput : ISyntheticInput
     public void MouseClick(int x, int y, string button, int count, string[] mods, nint root)
     { InputReverify.AssertSameRoot(root, _env.HitTestRoot(x, y).Root); Calls.Add($"MouseClick:{button}:{x},{y}:{count}"); }
 
-    public void MouseDrag(int sx, int sy, int ex, int ey, string button, nint root)
-    { InputReverify.AssertSameRoot(root, _env.HitTestRoot(ex, ey).Root); Calls.Add($"MouseDrag:{button}:{sx},{sy}->{ex},{ey}"); }
+    public void MouseDrag(int sx, int sy, int ex, int ey, string button, nint startRoot, nint endRoot)
+    { InputReverify.AssertSameRoot(startRoot, _env.HitTestRoot(sx, sy).Root);   // re-verify START before mouse-down (merge-gate blocker)
+      InputReverify.AssertSameRoot(endRoot, _env.HitTestRoot(ex, ey).Root); Calls.Add($"MouseDrag:{button}:{sx},{sy}->{ex},{ey}"); }
 }

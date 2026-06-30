@@ -99,7 +99,7 @@ public sealed class InputGuard
     public void MouseDrag(int sx, int sy, int ex, int ey, string button, ActionTarget startTarget, ActionTarget endTarget)
     {
         Authorize(startTarget, "drag", 1, secondary: endTarget);
-        _sink.MouseDrag(sx, sy, ex, ey, button, endTarget.Root);
+        _sink.MouseDrag(sx, sy, ex, ey, button, startTarget.Root, endTarget.Root);
     }
 
     /// <summary>Authorize a UIA TextPattern caret/selection mutation (desktop_set_caret / _select_text_range).

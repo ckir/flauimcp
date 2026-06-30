@@ -42,9 +42,14 @@ public sealed class Win32SyntheticInput : ISyntheticInput
         Send(inputs.ToArray());
     }
 
-    public void MouseDrag(int startX, int startY, int endX, int endY, string button, nint expectedRootAtEnd)
+    public void MouseDrag(int startX, int startY, int endX, int endY, string button, nint expectedRootAtStart, nint expectedRootAtEnd)
     {
         var (down, up) = ButtonFlags(button);
+        // re-verify the START root immediately before the mouse-DOWN (merge-gate BLOCKER, both reviewers):
+        // an overlay/focus-steal at the start coord between authorize and fire must NOT receive an
+        // unauthorized button-down (Win32 SetCapture on WM_*BUTTONDOWN would also hand it the up). This
+        // throws BEFORE any button goes down, so there is nothing to release — no stuck-button dance needed.
+        Reverify(expectedRootAtStart, _env.HitTestRoot(startX, startY).Root);
         var (sax, say) = AbsolutePoint(startX, startY);
         Send(new[] { Move(sax, say), Mouse(sax, say, down) });
         // re-verify the END root immediately before the drop (spec §3.2: an overlay can move in the gap).

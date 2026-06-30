@@ -36,4 +36,15 @@ public class RecordingSyntheticInputTests
         env.PointResult = new((nint)6, "x", "Y");                                   // moved under pointer
         Assert.Throws<ToolException>(() => rec.MouseClick(10, 20, "left", 1, System.Array.Empty<string>(), (nint)5));
     }
+
+    [Fact]
+    public void Drag_aborts_without_recording_when_the_START_root_changed()
+    {
+        // an overlay/focus-steal at the START coord must abort BEFORE any mouse-down fires (merge-gate blocker).
+        var env = new FakePlatformEnvironment { PointResult = new((nint)5, "notepad", "Notepad") };
+        var rec = new RecordingSyntheticInput(env);
+        var ex = Assert.Throws<ToolException>(() => rec.MouseDrag(0, 0, 10, 10, "left", (nint)9, (nint)5));
+        Assert.Equal(ToolErrorCode.ElementDisappearedDuringAction, ex.Code);
+        Assert.Empty(rec.Calls);
+    }
 }

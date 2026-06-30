@@ -141,11 +141,13 @@ public class InputGuardTests
     public void Drag_audits_BOTH_endpoints()
     {
         var (g, _, audit) = BuildWithAudit(ValidLease());
-        var start = new ActionTarget((nint)11, 100, "explorer", "CabinetWClass"); // start root is NOT re-verified by the sink
-        var end   = new ActionTarget(nint.Zero, 200, "notepad", "Notepad");       // end root must match the fake HitTestRoot (0) so the sink re-verify passes
+        // both roots must match the fake HitTestRoot (0) so the sink's START and END re-verify both pass
+        var start = new ActionTarget(nint.Zero, 100, "explorer", "CabinetWClass");
+        var end   = new ActionTarget(nint.Zero, 200, "notepad", "Notepad");
         g.MouseDrag(0, 0, 10, 10, "left", start, end);
         var log = audit.ToString();
-        Assert.Contains("window=11", log);          // start endpoint
+        Assert.Contains("process=explorer", log);   // start endpoint
+        Assert.Contains("process=notepad", log);    // drop endpoint
         Assert.Contains("action=drag-drop", log);   // drop endpoint audited distinctly (F4)
     }
 

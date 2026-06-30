@@ -26,10 +26,12 @@ public static class InputTargeting
     /// handle (the element often has no HWND) for audit; process/class come from the element.</summary>
     public static ActionTarget ResolveElementTarget(AutomationElement win, AutomationElement el)
     {
-        int pid = el.Properties.ProcessId.ValueOrDefault;          // STATE-VERIFY: FlaUI 5 prop accessor shape
+        int pid = -1;
+        try { pid = el.Properties.ProcessId.ValueOrDefault; } catch { } // F5: a thrown UIA read must fail closed (->Denied), not crash
         string? proc = null;
-        try { using var p = Process.GetProcessById(pid); proc = p.ProcessName; } catch { }
-        string? cls = el.Properties.ClassName.ValueOrDefault;       // null/empty if the element has no class
-        return new ActionTarget(win.Properties.NativeWindowHandle.ValueOrDefault, pid, proc, cls);
+        if (pid >= 0) { try { using var p = Process.GetProcessById(pid); proc = p.ProcessName; } catch { } }
+        string? cls = null;
+        try { cls = el.Properties.ClassName.ValueOrDefault; } catch { } // null/empty if the element has no class
+        return new ActionTarget(win.Properties.NativeWindowHandle.ValueOrDefault, pid < 0 ? 0 : pid, proc, cls);
     }
 }

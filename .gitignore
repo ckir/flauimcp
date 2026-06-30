@@ -34,3 +34,10 @@ packages/
 
 # BundleCodeBase.ps1 output (repo bundle for agy upload)
 aidesktop.txt
+
+# Publish / installer build artifacts (binaries — never in git)
+dist/
+publish/
+
+# agy (Antigravity) seam transport — internal review briefs, not source
+.clavity/
