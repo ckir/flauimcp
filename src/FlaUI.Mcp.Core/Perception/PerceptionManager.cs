@@ -91,8 +91,7 @@ public sealed class PerceptionManager
                 // Defensive UIA reads — a dynamically-realized cell from a faulty provider can throw
                 // COMException on a property/pattern access; mirror EvaluateSelectorValueAsync's
                 // try/catch-per-read so a flaky cell degrades gracefully, never leaks as INTERNAL.
-                bool isPwd = false;
-                try { isPwd = cell.Properties.IsPassword.ValueOrDefault; } catch { }
+                bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => cell.Properties.IsPassword.ValueOrDefault);
                 string value;
                 if (isPwd) value = "[REDACTED]";
                 else
@@ -109,6 +108,8 @@ public sealed class PerceptionManager
             }
             catch (System.UnauthorizedAccessException)
             { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
+            catch (System.Runtime.InteropServices.COMException)
+            { throw new ToolException(ToolErrorCode.ElementNotActionable, "The grid provider threw while reporting its cells.", "re-snapshot the grid and retry"); }
         }, timeoutMs);
 
     public Task<TextReadResult> GetTextAsync(WindowHandle handle, string @ref, bool selectionOnly, int maxLength, int timeoutMs) =>
@@ -118,8 +119,7 @@ public sealed class PerceptionManager
             // Password short-circuit FIRST — never ask the provider for a secret's text/selection.
             // Read IsPassword defensively (a COMException here must not bypass clean handling and
             // surface as INTERNAL); if it can't be read it's a flaky non-password field → proceed.
-            bool isPwd = false;
-            try { isPwd = el.Properties.IsPassword.ValueOrDefault; } catch { }
+            bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
             if (isPwd) return new TextReadResult("[REDACTED]", false, true);
             try
             {
