@@ -17,7 +17,7 @@ public class InteractionToolsTests
         d = new AutomationDispatcher();
         m = new WindowManager(d);
         p = new PerceptionManager(m, new RefRegistry(), new SnapshotCache());
-        var tools = new InteractionTools(p, m, new ServerOptions(ReadOnly: false));
+        var tools = new InteractionTools(p, m, new ServerOptions(ReadOnly: false, AllowElevation: false));
         handle = m.OpenByPidAsync(app.Process.Id).GetAwaiter().GetResult();
         return tools;
     }
@@ -136,7 +136,7 @@ public class InteractionToolsReadOnlyTests
     [Fact]
     public async Task Read_only_mode_blocks_every_action_tool()
     {
-        var tools = new InteractionTools(perception: null!, windows: null!, new ServerOptions(ReadOnly: true));
+        var tools = new InteractionTools(perception: null!, windows: null!, new ServerOptions(ReadOnly: true, AllowElevation: false));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopInvoke("w1", "e1"));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopSetValue("w1", "e1", "x"));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopToggle("w1", "e1"));

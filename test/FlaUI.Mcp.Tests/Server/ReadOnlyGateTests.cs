@@ -9,7 +9,7 @@ public class ReadOnlyGateTests
     [Fact]
     public async Task GuardWrite_blocks_when_read_only()
     {
-        var json = await ToolResponse.GuardWrite(new ServerOptions(ReadOnly: true),
+        var json = await ToolResponse.GuardWrite(new ServerOptions(ReadOnly: true, AllowElevation: false),
             () => Task.FromResult("UNREACHED"));
         Assert.Contains("WriteBlockedReadOnly", json);
     }
@@ -17,7 +17,7 @@ public class ReadOnlyGateTests
     [Fact]
     public async Task GuardWrite_runs_the_body_when_not_read_only()
     {
-        var json = await ToolResponse.GuardWrite(new ServerOptions(ReadOnly: false),
+        var json = await ToolResponse.GuardWrite(new ServerOptions(ReadOnly: false, AllowElevation: false),
             () => Task.FromResult("{\"ok\":true}"));
         Assert.Contains("ok", json);
     }
