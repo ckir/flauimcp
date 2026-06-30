@@ -41,13 +41,13 @@ safety rationale.
     apartments), and the `--read-only-mode` flag. After 3a an agent can perceive everything
     and drive most apps through UIA patterns.
   - **Phase 3b** — split by blast radius: **3b-1** (read-only perception completion) ✅ **shipped
-    v0.4.0**; **3b-2** (state-mutating structured patterns + clipboard) pending → v0.5.0.
+    v0.4.0**; **3b-2** (state-mutating structured patterns + clipboard) ✅ **shipped v0.5.0**.
   - *Pattern actions:* **shipped in 3a** — `desktop_invoke` (InvokePattern), `desktop_set_value`
     (ValuePattern), `desktop_toggle`, `desktop_expand`, `desktop_select`,
     `desktop_scroll_into_view`, `desktop_scroll`, `desktop_set_focus`,
-    `desktop_window_transform`. **Deferred to 3b-2** — `desktop_get_grid_cell` /
-    `desktop_grid_select`, `desktop_get_text` / `desktop_set_caret` /
-    `desktop_select_text_range`.
+    `desktop_window_transform`. **Shipped in 3b-2** — `desktop_get_grid_cell` /
+    `desktop_grid_select`, `desktop_get_text`. **Deferred to Phase 4** — `desktop_set_caret` /
+    `desktop_select_text_range` (text caret/range mutation; inert without synthetic input).
   - *Perception completion (read-only):* ✅ **shipped 3b-1** — `desktop_screenshot`
     (native image + bounds/`dpiScale`/redactions), `desktop_get_bounds`, `desktop_snapshot_stats`,
     `desktop_snapshot_diff`, `desktop_wait_for`, `desktop_wait_for_stable`,
@@ -60,7 +60,7 @@ safety rationale.
     omitted from the default walk for STA perf); `wait_for_stable` scope-by-ref; and the documented
     diff-identity limit on anonymous virtualized recycled rows (empty AutomationId+Name + recycled
     RuntimeId can collide — diff such content by value/text).
-  - *Clipboard / sync (→ 3b-2):* `desktop_clipboard_get` / `desktop_clipboard_set`.
+  - *Clipboard / sync:* ✅ **shipped 3b-2** — `desktop_clipboard_get` / `desktop_clipboard_set`.
   - *Plumbing / hardening:* **cross-STA ref resolution** (re-resolve a ref on the
     **action** STA — never marshal an `AutomationElement` across apartments), fast-path
     RuntimeId-recycle guard (Name/AutomationId sanity check on the cache fast-path).
