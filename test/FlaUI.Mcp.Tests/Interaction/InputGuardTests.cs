@@ -180,6 +180,16 @@ public class InputGuardTests
         Assert.Empty(sink.Calls);
     }
 
+    [Fact]
+    public void Click_at_an_unidentifiable_point_is_denied()
+    {
+        var (g, sink, _) = BuildWithAudit(ValidLease());
+        var ex = Assert.Throws<ToolException>(() => g.MouseClick(5, 5, "left", 1,
+            System.Array.Empty<string>(), new ActionTarget((nint)1, 0, null, null))); // no proc, no class
+        Assert.Equal(ToolErrorCode.TargetDenied, ex.Code);
+        Assert.Empty(sink.Calls);
+    }
+
     private sealed class StubLeaseProvider : ILeaseProvider
     {
         private readonly InputLease? _lease; private readonly DateTime _w;

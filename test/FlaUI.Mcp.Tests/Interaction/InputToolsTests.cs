@@ -60,4 +60,20 @@ public class InputToolsTests
             win.FindFirstDescendant(cf => cf.ByAutomationId("Input"))!.AsTextBox().Text);
         Assert.Equal("hello-4b", val);
     }
+
+    [SkippableFact]
+    public async Task Click_at_a_window_point_returns_no_error()
+    {
+        Skip.If(InputLocked(), "no active input lease — grant one on a console with `flaui-mcp unlock`");
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var handle = await mgr.OpenByPidAsync(app.Process.Id);
+        var tools = BuildTools(mgr, perception);
+
+        // Happy path: a click at the window's own area (0.5,0.5) hit-tests to the app window and is allowed.
+        var json = await tools.DesktopClickAt(handle.Id, 0.5, 0.5, "left", 1, 4000);
+        Assert.DoesNotContain("\"error\"", json);
+    }
 }

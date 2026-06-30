@@ -84,6 +84,82 @@ public sealed class InputTools
         return new ActionTarget(root, 0, r.ProcessName, r.WindowClass);
     }
 
+    [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers optional. Re-hit-tests that the point still maps to the target window immediately before sending. Same lease/deny-list/session gates. Blocked in --read-only-mode.")]
+    public Task<string> DesktopClick(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Element ref to click, e.g. e23.")] string @ref,
+        [Description("left|right|middle (default left).")] string button = "left",
+        [Description("1 or 2 (default 1).")] int count = 1,
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            // BLOCKER (agy): the click point may belong to a SEPARATE top-level window — a context menu,
+            // tooltip, or WPF Popup is its own HWND, NOT win's root. So derive the ActionTarget from a
+            // hit-test of the element's clickable point (the surface actually under the pixel), not from
+            // ResolveRefTarget(win) — otherwise every menu/dropdown click spuriously aborts the leaf's
+            // HitTestRoot(point)==root re-verify, and the deny-list would classify the wrong window. The
+            // leaf re-hit-tests the same point just before send, so the TOCTOU check still holds (two
+            // hit-tests at different instants catch an overlay that slides in after resolution).
+            var (target, px, py) = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref,
+                (win, el) =>
+                {
+                    System.Drawing.Point p;
+                    try { p = el.GetClickablePoint(); }
+                    catch (FlaUI.Core.Exceptions.NoClickablePointException) { var b = el.BoundingRectangle; p = new System.Drawing.Point(b.Left + b.Width / 2, b.Top + b.Height / 2); }
+                    var pt = _env.HitTestRoot(p.X, p.Y); // Win32, thread-agnostic — safe on the action STA
+                    var t = new ActionTarget(pt.Root, 0, pt.ProcessName, pt.WindowClass);
+                    return (t, p.X, p.Y);
+                }, timeoutMs);
+            await Task.Run(() => _guard.MouseClick(px, py, button, count, System.Array.Empty<string>(), target));
+            return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" });
+        });
+
+    [McpServerTool(Destructive = true), Description("Synthetic mouse click at a window-relative point. xPct/yPct in [0,1] relative to the target window's bounding rect (the same fractional space desktop_screenshot/desktop_get_bounds publish). The point is hit-tested + deny-listed in the immediate pre-send instant; an unidentifiable point is refused (TargetDenied). button=left|right|middle, count=1|2. Blocked in --read-only-mode.")]
+    public Task<string> DesktopClickAt(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("X fraction 0..1 of the window width.")] double xPct,
+        [Description("Y fraction 0..1 of the window height.")] double yPct,
+        [Description("left|right|middle (default left).")] string button = "left",
+        [Description("1 or 2 (default 1).")] int count = 1,
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            var (px, py) = await ResolveWindowPctAsync(window, xPct, yPct, timeoutMs);
+            var pt = _env.HitTestRoot(px, py);
+            var target = new ActionTarget(pt.Root, 0, pt.ProcessName, pt.WindowClass);
+            await Task.Run(() => _guard.MouseClick(px, py, button, count, System.Array.Empty<string>(), target));
+            return ToolResponse.Ok(new { ok = true, pathUsed = "coordinate" });
+        });
+
+    [McpServerTool(Destructive = true), Description("Synthetic mouse drag between two window-relative points (§5 pct space). BOTH endpoints are hit-tested + deny-listed; the END point is re-hit-tested immediately before the mouse-up. button=left|right|middle. Blocked in --read-only-mode.")]
+    public Task<string> DesktopDrag(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Start X fraction 0..1.")] double startXPct,
+        [Description("Start Y fraction 0..1.")] double startYPct,
+        [Description("End X fraction 0..1.")] double endXPct,
+        [Description("End Y fraction 0..1.")] double endYPct,
+        [Description("left|right|middle (default left).")] string button = "left",
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            var (sx, sy) = await ResolveWindowPctAsync(window, startXPct, startYPct, timeoutMs);
+            var (ex, ey) = await ResolveWindowPctAsync(window, endXPct, endYPct, timeoutMs);
+            var sPt = _env.HitTestRoot(sx, sy);
+            var ePt = _env.HitTestRoot(ex, ey);
+            var startTarget = new ActionTarget(sPt.Root, 0, sPt.ProcessName, sPt.WindowClass);
+            var endTarget = new ActionTarget(ePt.Root, 0, ePt.ProcessName, ePt.WindowClass);
+            await Task.Run(() => _guard.MouseDrag(sx, sy, ex, ey, button, startTarget, endTarget));
+            return ToolResponse.Ok(new { ok = true, pathUsed = "coordinate" });
+        });
+
+    // Resolve a window-relative fraction to a physical screen pixel via the window's physical bounds.
+    private Task<(int px, int py)> ResolveWindowPctAsync(string window, double xPct, double yPct, int timeoutMs)
+        => _windows.RunOnWindowActionAsync(new WindowHandle(window), (win, _) =>
+        {
+            var r = win.BoundingRectangle; // System.Drawing.Rectangle, physical px
+            return CoordinateMath.PctToPhysical(r.Left, r.Top, r.Width, r.Height, xPct, yPct);
+        }, timeoutMs);
+
     private static (string[] mods, string key) SplitChord(string chord)
     {
         var tokens = chord.Split('+', System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries);
