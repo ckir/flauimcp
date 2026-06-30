@@ -54,10 +54,12 @@ public sealed class InputGuard
 
         if (!_budget.TryConsume(primary.Root, now, leaseWrite))
             throw new ToolException(ToolErrorCode.InputBudgetExceeded,
-                "Synthetic-input rate limit exceeded for this window.",
-                "slow down, or re-grant the lease with `flaui-mcp unlock` to reset the budget");
+                $"Synthetic-input rate limit exceeded for this window. Retry in ~{_budget.SecondsUntilFreeSlot(primary.Root, now)}s.",
+                "wait for the window to clear, or re-grant the lease with `flaui-mcp unlock` to reset the budget");
 
         _audit.Record(primary.Root, primary.Pid, primary.ProcessName, action, payloadLength);
+        if (secondary is { } drop)
+            _audit.Record(drop.Root, drop.Pid, drop.ProcessName, action + "-drop", 1);
     }
 
     private static void CheckTarget(ActionTarget target, InputLease lease)

@@ -30,4 +30,16 @@ public sealed class ActionBudget
             return true;
         }
     }
+
+    /// <summary>Whole seconds until this window's oldest action ages out and a budget slot frees
+    /// (0 if the window currently has spare budget). For the InputBudgetExceeded recovery hint.</summary>
+    public int SecondsUntilFreeSlot(nint window, DateTime now)
+    {
+        lock (_gate)
+        {
+            if (!_hits.TryGetValue(window, out var q) || q.Count < _max) return 0;
+            var secs = (q.Peek().AddSeconds(_windowSeconds) - now).TotalSeconds;
+            return (int)Math.Max(0, Math.Ceiling(secs));
+        }
+    }
 }

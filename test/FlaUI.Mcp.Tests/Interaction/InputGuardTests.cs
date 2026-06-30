@@ -103,6 +103,62 @@ public class InputGuardTests
         Assert.Empty(sink.Calls);
     }
 
+    private static (InputGuard guard, RecordingSyntheticInput sink, System.IO.StringWriter audit) BuildWithAudit(
+        InputLease? lease, DateTime leaseWrite = default, ActionBudget? budget = null)
+    {
+        var env = new FakePlatformEnvironment { CanDeliver = true, ForegroundRoot = nint.Zero };
+        var sink = new RecordingSyntheticInput(env);
+        var leaseProv = new StubLeaseProvider(lease, leaseWrite);
+        var audit = new System.IO.StringWriter();
+        var guard = new InputGuard(sink, env, leaseProv,
+            budget ?? new ActionBudget(60, 60), new InputAudit(audit),
+            currentSid: Sid, isElevated: false, allowElevation: false, clock: () => Now);
+        return (guard, sink, audit);
+    }
+
+    [Fact]
+    public void Budget_exhaustion_refuses_with_InputBudgetExceeded()
+    {
+        var (g, sink, _) = BuildWithAudit(ValidLease(), budget: new ActionBudget(maxPerWindow: 2, windowSeconds: 60));
+        var t = new ActionTarget(nint.Zero, 0, "notepad", "Notepad");
+        g.KeyType("a", t);
+        g.KeyType("b", t);
+        var ex = Assert.Throws<ToolException>(() => g.KeyType("c", t));
+        Assert.Equal(ToolErrorCode.InputBudgetExceeded, ex.Code);
+        Assert.Equal(2, sink.Calls.Count); // the 3rd never reached the sink
+    }
+
+    [Fact]
+    public void A_lease_for_a_different_sid_refuses_with_InputNotLeased()
+    {
+        var foreign = new InputLease(new DateTime(2030, 1, 1, 0, 1, 0, DateTimeKind.Utc), "S-1-5-21-OTHER", Array.Empty<string>());
+        var (g, _, _) = BuildWithAudit(foreign);
+        var ex = Assert.Throws<ToolException>(() => g.KeyType("hi", new(nint.Zero, 0, "notepad", "Notepad")));
+        Assert.Equal(ToolErrorCode.InputNotLeased, ex.Code);
+    }
+
+    [Fact]
+    public void Drag_audits_BOTH_endpoints()
+    {
+        var (g, _, audit) = BuildWithAudit(ValidLease());
+        var start = new ActionTarget((nint)11, 100, "explorer", "CabinetWClass"); // start root is NOT re-verified by the sink
+        var end   = new ActionTarget(nint.Zero, 200, "notepad", "Notepad");       // end root must match the fake HitTestRoot (0) so the sink re-verify passes
+        g.MouseDrag(0, 0, 10, 10, "left", start, end);
+        var log = audit.ToString();
+        Assert.Contains("window=11", log);          // start endpoint
+        Assert.Contains("action=drag-drop", log);   // drop endpoint audited distinctly (F4)
+    }
+
+    [Fact]
+    public void Budget_exceeded_message_names_a_retry_wait()
+    {
+        var (g, _, _) = BuildWithAudit(ValidLease(), budget: new ActionBudget(maxPerWindow: 1, windowSeconds: 60));
+        var t = new ActionTarget(nint.Zero, 0, "notepad", "Notepad"); // root must match the fake ForegroundRoot (0) so the sink re-verify passes
+        g.KeyType("a", t);
+        var ex = Assert.Throws<ToolException>(() => g.KeyType("b", t));
+        Assert.Contains("Retry in", ex.Message);
+    }
+
     private sealed class StubLeaseProvider : ILeaseProvider
     {
         private readonly InputLease? _lease; private readonly DateTime _w;
