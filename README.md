@@ -4,9 +4,10 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that le
 agent — Claude Code, Antigravity (agy), or any MCP client — **control the Windows desktop**:
 enumerate windows, launch applications, focus/close windows, **snapshot a window's UI into
 a ref-tagged accessibility tree**, **screenshot windows or the desktop, read element bounds,
-diff/stat snapshots, and wait for UI conditions**, and **act on elements through UI Automation
-patterns** (click, set value, toggle, expand, select, scroll, focus, window min/max) — with raw
-mouse/keyboard input synthesis still on the roadmap. Think "Playwright, but for native
+diff/stat snapshots, and wait for UI conditions**, **act on elements through UI Automation
+patterns** (click, set value, toggle, expand, select, scroll, focus, window min/max), and
+**read and write structured content** (grid/table cells, element text via TextPattern, clipboard)
+— with raw mouse/keyboard input synthesis still on the roadmap. Think "Playwright, but for native
 Windows apps."
 
 ---
@@ -103,10 +104,26 @@ never move the real cursor. All are state-changing (annotated `destructive`).
 An action that opens a modal returns `ActionBlockedPending` instead of hanging the server —
 snapshot the window to see the dialog, then act on it.
 
+**Structured content & clipboard tools (new in v0.5.0):** read structured data from grid/table
+elements and interact with the system clipboard. Read-only tools are `readOnlyHint`; mutating
+tools are `destructive` and blocked in `--read-only-mode`.
+
+| Tool | Description |
+| --- | --- |
+| `DesktopGetGridCell` | ✅ Read-only. Read one grid/table cell by 0-based `(row, col)`. Returns `{value, controlType, automationId, isPassword}`. Password cells are masked as `[REDACTED]`/`isPassword:true`; credential-store windows are denied outright (`TargetDenied`). `GridCellOutOfRange` if out of bounds; `PatternUnsupported` if the element is not a grid. |
+| `DesktopGetText` | ✅ Read-only. Read an element's text via UIA TextPattern. `selectionOnly` reads only the current selection; `maxLength` caps output (default 10 000 chars, returns `truncated:true` if hit). Password fields return `[REDACTED]`/`isPassword:true`. Off-screen targets are readable. `PatternUnsupported` if no TextPattern. |
+| `DesktopGridSelect` | Select a grid/table cell by `(row, col)` via UIA SelectionItemPattern. Off-screen cells return `ElementNotActionable` — scroll into view first. Blocked in `--read-only-mode`. |
+| `DesktopClipboardGet` | ✅ Read-only. Read the system clipboard as plain text (CF_UNICODETEXT). ⚠ **Clipboard exfil risk:** the clipboard may contain passwords or tokens the user recently copied — no redaction is possible at the clipboard layer. Returns `ClipboardUnavailable` when the clipboard is locked or holds non-text content. |
+| `DesktopClipboardSet` | Write text to the system clipboard. Blocked in `--read-only-mode`. |
+
+`DesktopGetGridCell` and `DesktopGetText` honor the same credential-store denylist and
+`IsPassword` redaction as `DesktopSnapshot` — password cells and fields always surface as
+`[REDACTED]`, and windows owned by known credential stores are denied outright.
+
 ### Read-only mode
 
 Start the server with **`--read-only-mode`** to refuse every state-changing tool — all the
-interaction tools above, plus launch/focus/close. They short-circuit to `WriteBlockedReadOnly`
+interaction tools above, `DesktopGridSelect`, `DesktopClipboardSet`, plus launch/focus/close. They short-circuit to `WriteBlockedReadOnly`
 without touching the desktop, while perception and enumeration keep working. Use it for an agent
 that may *see* the desktop but not *act* on it.
 
@@ -122,6 +139,10 @@ privacy and safety floors — defense in depth, not a substitute for supervising
   rectangle at capture time (covering popups/menus too), so typed secrets leak through neither
   channel. A full-desktop screenshot is *refused* (`TargetDenied`) if a credential-store window is
   visible — capture a specific window instead.
+- **Structured content tools inherit the same protections.** `DesktopGetGridCell` and
+  `DesktopGetText` apply the credential-store denylist and always mask `IsPassword` fields as
+  `[REDACTED]`. The clipboard layer (`DesktopClipboardGet`) cannot redact — see the exfil caveat
+  in the tool table above.
 - **Screenshots detect a dead session.** If the desktop is locked or RDP-disconnected (so the
   framebuffer would be black), `DesktopScreenshot` returns `CaptureUnavailable` rather than a black
   image.
@@ -131,8 +152,7 @@ privacy and safety floors — defense in depth, not a substitute for supervising
   is meant to run at your user integrity level.
 
 **On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): raw mouse/keyboard input synthesis,
-structured patterns (grid/text), clipboard, occlusion-aware capture (PrintWindow), and an HTTP
-transport.
+occlusion-aware capture (PrintWindow), and an HTTP transport.
 
 ## Requirements
 

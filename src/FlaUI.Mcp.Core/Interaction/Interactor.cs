@@ -51,6 +51,22 @@ public static class Interactor
         el.Patterns.SelectionItem.Pattern.Select();
     }
 
+    public static void GridSelect(AutomationElement grid, int row, int col)
+    {
+        var gp = grid.Patterns.Grid.PatternOrDefault ?? throw Unsupported("Grid");
+        int rows = gp.RowCount.ValueOrDefault, cols = gp.ColumnCount.ValueOrDefault;
+        if (row < 0 || col < 0 || row >= rows || col >= cols)
+            throw new ToolException(ToolErrorCode.GridCellOutOfRange,
+                $"Cell ({row},{col}) is outside the {rows}x{cols} grid.", "use in-range 0-based row/col");
+        var cell = gp.GetItem(row, col) ?? throw new ToolException(ToolErrorCode.GridCellOutOfRange,
+            $"Grid has no realized cell at ({row},{col}).", "scroll the grid to realize the row, then retry");
+        if (cell.Properties.IsOffscreen.ValueOrDefault)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "Target cell is off-screen.", "scroll the grid to bring the cell on-screen, then retry");
+        var sel = cell.Patterns.SelectionItem.PatternOrDefault ?? throw Unsupported("SelectionItem");
+        sel.Select();
+    }
+
     public static void ScrollIntoView(AutomationElement el)
     {
         if (!el.Patterns.ScrollItem.IsSupported) throw Unsupported("ScrollItem");

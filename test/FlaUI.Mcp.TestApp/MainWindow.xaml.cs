@@ -12,6 +12,12 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Secret.Password = SecretValue;
+        Grid.ItemsSource = new[]
+        {
+            new { Name = "r0c0", Value = "r0c1" },
+            new { Name = "r1c0", Value = "r1c1" },
+            new { Name = "r2c0", Value = "r2c1" },
+        };
         var ticker = new System.Windows.Threading.DispatcherTimer { Interval = System.TimeSpan.FromMilliseconds(120) };
         int tick = 0;
         ticker.Tick += (_, _) => Ticker.Text = (++tick).ToString();
