@@ -57,6 +57,7 @@ builder.Services.AddSingleton(sp =>
         isElevated: ElevationGuard.IsElevated(),
         allowElevation: opts.AllowElevation);
 });
+builder.Services.AddSingleton<InputTools>();
 
 builder.Services
     .AddMcpServer()

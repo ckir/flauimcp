@@ -21,11 +21,15 @@ public sealed class Win32PlatformEnvironment : IPlatformEnvironment
         if (hit == 0) return new PointTarget(0, null, null);
         var root = Win32Interop.GetAncestor(hit, Win32Interop.GA_ROOT);
         if (root == 0) return new PointTarget(0, null, null);
+        return ResolveRoot(root);
+    }
 
+    public PointTarget ResolveRoot(nint root)
+    {
+        if (root == 0) return new PointTarget(0, null, null);
         Win32Interop.GetWindowThreadProcessId(root, out uint pid);
         string? proc = null;
         try { using var p = Process.GetProcessById((int)pid); proc = p.ProcessName; } catch { }
-
         var sb = new StringBuilder(256);
         string? cls = Win32Interop.GetClassName(root, sb, sb.Capacity) > 0 ? sb.ToString() : null;
         return new PointTarget(root, proc, cls);

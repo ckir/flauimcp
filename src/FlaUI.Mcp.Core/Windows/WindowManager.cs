@@ -308,6 +308,21 @@ public sealed class WindowManager : IDisposable
             return (handle, title, pid);
         });
 
+    /// <summary>The owning process base-name + class of the CURRENT UIA focused element (for the no-ref
+    /// foreground-key deny-list — classify the element that will actually receive the keystroke, not just
+    /// its host window). Null if nothing is focused. Read on the query STA like ResolveFocusedWindowAsync.</summary>
+    public Task<(int Pid, string? Process, string? Class)?> ResolveFocusedIdentityAsync() =>
+        _dispatcher.RunQueryAsync<(int, string?, string?)?>(() =>
+        {
+            var focused = _automation.FocusedElement();
+            if (focused is null) return null;
+            int pid = -1; string? proc = null; string? cls = null;
+            try { pid = focused.Properties.ProcessId.ValueOrDefault; } catch { }
+            if (pid >= 0) { try { using var p = Process.GetProcessById(pid); proc = p.ProcessName; } catch { } }
+            try { cls = focused.Properties.ClassName.ValueOrDefault; } catch { }
+            return (pid < 0 ? 0 : pid, proc, cls);
+        });
+
     public async Task CloseAsync(WindowHandle handle)
     {
         try { await RunOnWindowAsync(handle, w => { w.Close(); return true; }); }

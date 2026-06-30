@@ -159,6 +159,27 @@ public class InputGuardTests
         Assert.Contains("Retry in", ex.Message);
     }
 
+    [Fact]
+    public void Key_into_a_denied_foreground_root_refuses()
+    {
+        var (g, sink, _) = BuildWithAudit(ValidLease());
+        var ex = Assert.Throws<ToolException>(() => g.KeyChord(System.Array.Empty<string>(), "Enter",
+            new ActionTarget(nint.Zero, 0, "consent", "Credential")));
+        Assert.Equal(ToolErrorCode.TargetDenied, ex.Code);
+        Assert.Empty(sink.Calls);
+    }
+
+    [Fact]
+    public void Type_into_an_embedded_interlocked_element_needs_the_shells_cap()
+    {
+        // ref-path resolves the ELEMENT's identity (a windowsterminal pane), even if its host window is Allowed
+        var (g, sink, _) = BuildWithAudit(ValidLease()); // valid lease, NO shells cap
+        var ex = Assert.Throws<ToolException>(() => g.KeyType("dir",
+            new ActionTarget((nint)42, 300, "windowsterminal", "CASCADIA_HOSTING_WINDOW_CLASS")));
+        Assert.Equal(ToolErrorCode.SinkInterlocked, ex.Code);
+        Assert.Empty(sink.Calls);
+    }
+
     private sealed class StubLeaseProvider : ILeaseProvider
     {
         private readonly InputLease? _lease; private readonly DateTime _w;

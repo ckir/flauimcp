@@ -12,6 +12,10 @@ public interface IPlatformEnvironment
     /// process base-name (no ".exe") and window class — for the coordinate deny-list. Root 0 if none.</summary>
     PointTarget HitTestRoot(int physX, int physY);
 
+    /// <summary>Owning process base-name + window class for an already-resolved top-level root (for the
+    /// deny-list on the no-ref foreground path). Root echoes back; process/class null if unresolvable.</summary>
+    PointTarget ResolveRoot(nint root);
+
     /// <summary>Whether synthetic input can actually reach the interactive user desktop right now
     /// (OpenInputDesktop succeeds AND a foreground window exists). Fail-closed when false.</summary>
     SessionInputState SessionState();
