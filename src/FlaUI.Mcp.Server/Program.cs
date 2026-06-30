@@ -1,6 +1,8 @@
+using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
 using FlaUI.Mcp.Server;
+using System.Security.Principal;
 using FlaUI.Mcp.Server.Install;
 using FlaUI.Mcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
@@ -35,6 +37,27 @@ builder.Services.AddSingleton<InteractionTools>();
 builder.Services.AddSingleton<ContentTools>();
 builder.Services.AddSingleton<ClipboardTools>();
 
+// --- Phase 4b synthetic-input stack (InputGuard now LIVE in DI) ---
+builder.Services.AddSingleton<IPlatformEnvironment, Win32PlatformEnvironment>();
+builder.Services.AddSingleton<ISyntheticInput>(sp =>
+    new Win32SyntheticInput(sp.GetRequiredService<IPlatformEnvironment>()));
+builder.Services.AddSingleton<ILeaseProvider, FileLeaseProvider>();
+builder.Services.AddSingleton(_ => new ActionBudget());            // defaults: 60 / 60s (spec §3.4)
+builder.Services.AddSingleton(_ => new InputAudit(Console.Error)); // event-only, stderr (spec §3.4)
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<ServerOptions>();
+    return new InputGuard(
+        sp.GetRequiredService<ISyntheticInput>(),
+        sp.GetRequiredService<IPlatformEnvironment>(),
+        sp.GetRequiredService<ILeaseProvider>(),
+        sp.GetRequiredService<ActionBudget>(),
+        sp.GetRequiredService<InputAudit>(),
+        currentSid: CurrentUserSid(),
+        isElevated: ElevationGuard.IsElevated(),
+        allowElevation: opts.AllowElevation);
+});
+
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
@@ -42,3 +65,12 @@ builder.Services
 
 await builder.Build().RunAsync();
 return 0;
+
+static string CurrentUserSid()
+{
+    // Fail-soft to "unknown" here (NOT a throw — the server must still start for perception tools);
+    // an "unknown" SID is rejected by InputLease.IsValidNow (F1), so input stays locked rather than
+    // mis-binding. The lease WRITER (LeaseWriter, CLI) is the side that hard-fails on an unresolved SID.
+    try { using var id = WindowsIdentity.GetCurrent(); return id.User?.Value ?? "unknown"; }
+    catch { return "unknown"; }
+}

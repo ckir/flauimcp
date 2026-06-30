@@ -49,6 +49,24 @@ public sealed class PerceptionManager
         }, timeoutMs);
     }
 
+    /// <summary>Like RunOnRefActionAsync but the callback also receives the resolved top-level WINDOW
+    /// element (for input targeting: the ActionTarget's Root/Pid/Class come from the window, while the
+    /// action runs against the ref'd element). Same transient-action-STA + offscreen preflight.</summary>
+    public Task<T> RunOnRefForInputAsync<T>(WindowHandle handle, string @ref,
+        Func<AutomationElement, AutomationElement, T> func, int timeoutMs)
+    {
+        var descriptor = _refs.Lookup(handle.Id, @ref).Descriptor;
+        return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
+        {
+            var roots = PopupFinder.SearchRoots(win, desktop);
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref);
+            if (el.Properties.IsOffscreen.ValueOrDefault)
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
+            return func(win, el);
+        }, timeoutMs);
+    }
+
     /// <summary>Resolve a ref and run a READ on a TRANSIENT STA (timeout-guarded), cache-free
     /// like the action path but WITHOUT the offscreen preflight — reads are allowed on
     /// off-screen elements (matching desktop_snapshot includeOffscreen). GetItem/GetText can
