@@ -100,9 +100,24 @@ public sealed class InputGuard
         Authorize(startTarget, "drag", 1, secondary: endTarget);
         _sink.MouseDrag(sx, sy, ex, ey, button, endTarget.Root);
     }
+
+    /// <summary>Read-only lease status for the pre-flight tool — no input, no side effects. Active iff a
+    /// lease is present AND valid for this user right now; SecondsRemaining is clamped to >= 0.</summary>
+    public LeaseStatus Status()
+    {
+        var now = _clock();
+        var lease = _leases.Read(out _);
+        if (lease is null || !lease.IsValidNow(now, _currentSid))
+            return new LeaseStatus(false, 0, false);
+        int secs = (int)Math.Max(0, (lease.ExpiryUtc - now).TotalSeconds);
+        return new LeaseStatus(true, secs, lease.HasCapability("shells"));
+    }
 }
 
 /// <summary>The resolved target of a synthetic-input action: its top-level window root + identity for
 /// the deny-list/budget/audit. For the ref path the tool resolves these from the window handle; for the
 /// coordinate path 4b fills them from IPlatformEnvironment.HitTestRoot.</summary>
 public readonly record struct ActionTarget(nint Root, int Pid, string? ProcessName, string? WindowClass);
+
+/// <summary>Read-only lease status surfaced by desktop_input_status (carries no secret content).</summary>
+public readonly record struct LeaseStatus(bool Active, int SecondsRemaining, bool Shells);

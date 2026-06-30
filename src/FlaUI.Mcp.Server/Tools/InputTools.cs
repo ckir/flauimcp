@@ -23,6 +23,15 @@ public sealed class InputTools
         InputGuard guard, IPlatformEnvironment env)
     { _perception = perception; _windows = windows; _options = options; _guard = guard; _env = env; }
 
+    [McpServerTool(ReadOnly = true), Description("Report the synthetic-input lease status WITHOUT firing any input or touching any window. Returns { leaseStatus: \"active\"|\"locked\", secondsRemaining, shells }. Call this BEFORE a multi-step input plan to confirm a human has granted input via `flaui-mcp unlock` (the synthetic-input tools fail InputNotLeased until then), instead of discovering the lock by failing. Always safe / read-only.")]
+    public Task<string> DesktopInputStatus()
+        => ToolResponse.Guard(() =>
+        {
+            var s = _guard.Status();
+            return Task.FromResult(ToolResponse.Ok(new
+            { leaseStatus = s.Active ? "active" : "locked", secondsRemaining = s.SecondsRemaining, shells = s.Shells }));
+        });
+
     [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopType(
         [Description("Window handle, e.g. w1.")] string window,

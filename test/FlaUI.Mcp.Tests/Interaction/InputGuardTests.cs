@@ -190,6 +190,25 @@ public class InputGuardTests
         Assert.Empty(sink.Calls);
     }
 
+    [Fact]
+    public void Status_reports_active_with_seconds_remaining_and_shells()
+    {
+        var (g, _, _) = BuildWithAudit(ValidLease(caps: new[] { "shells" }));
+        var s = g.Status();
+        Assert.True(s.Active);
+        Assert.Equal(30, s.SecondsRemaining);
+        Assert.True(s.Shells);
+    }
+
+    [Fact]
+    public void Status_reports_locked_without_a_lease()
+    {
+        var (g, _, _) = BuildWithAudit(lease: null);
+        var s = g.Status();
+        Assert.False(s.Active);
+        Assert.Equal(0, s.SecondsRemaining);
+    }
+
     private sealed class StubLeaseProvider : ILeaseProvider
     {
         private readonly InputLease? _lease; private readonly DateTime _w;
