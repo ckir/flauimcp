@@ -33,6 +33,7 @@ builder.Services.AddSingleton<SnapshotTools>();
 builder.Services.AddSingleton<ScreenshotTools>();
 builder.Services.AddSingleton<InteractionTools>();
 builder.Services.AddSingleton<ContentTools>();
+builder.Services.AddSingleton<ClipboardTools>();
 
 builder.Services
     .AddMcpServer()
