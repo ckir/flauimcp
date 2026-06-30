@@ -32,6 +32,41 @@ public sealed class InputTools
             { leaseStatus = s.Active ? "active" : "locked", secondsRemaining = s.SecondsRemaining, shells = s.Shells }));
         });
 
+    [McpServerTool(Destructive = true), Description("Position the text caret in an element via UIA TextPattern (NO OS input — synthesizes no keystrokes). ref = the text element to act on; offset = UIA character offset for the caret. Routes through the deny-list (TargetDenied for credential/secure windows; interlocked shells need the 'shells' lease cap) but needs NO input lease. PatternUnsupported if the element exposes no TextPattern. Offsets are UIA character units (may differ from raw UTF-16 for emoji/non-BMP text). Blocked in --read-only-mode.")]
+    public Task<string> DesktopSetCaret(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Text element ref to act on, e.g. e23.")] string @ref,
+        [Description("UIA character offset for the caret.")] int offset,
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        => ToolResponse.GuardWrite(_options, () =>
+            _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref, (win, el) =>
+            {
+                if (offset < 0)
+                    throw new ToolException(ToolErrorCode.InvalidArguments, "offset must be >= 0.", "pass a non-negative offset");
+                var target = InputTargeting.ResolveElementTarget(win, el); // identity from el, not host win (agy R4 #3)
+                _guard.AuthorizeTextMutation(target, "set_caret"); // deny-list (lease-exempt) on the automation thread
+                TextRangeInteractor.SetCaret(el, offset);
+                return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
+            }, timeoutMs));
+
+    [McpServerTool(Destructive = true), Description("Select a text range in an element via UIA TextPattern (NO OS input). ref = the text element; start = UIA character start offset; length = character count. Same deny-list gate as desktop_set_caret; NO input lease required. PatternUnsupported if no TextPattern; InvalidArguments for negative start/length. Offsets are UIA character units (may differ from raw UTF-16 for emoji/non-BMP text). Blocked in --read-only-mode.")]
+    public Task<string> DesktopSelectTextRange(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Text element ref to act on, e.g. e23.")] string @ref,
+        [Description("UIA character start offset.")] int start,
+        [Description("Character count to select.")] int length,
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        => ToolResponse.GuardWrite(_options, () =>
+            _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref, (win, el) =>
+            {
+                if (start < 0 || length < 0)
+                    throw new ToolException(ToolErrorCode.InvalidArguments, "start and length must be >= 0.", "pass non-negative offsets");
+                var target = InputTargeting.ResolveElementTarget(win, el); // identity from el, not host win (agy R4 #3)
+                _guard.AuthorizeTextMutation(target, "select_text_range");
+                TextRangeInteractor.SelectRange(el, start, length);
+                return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
+            }, timeoutMs));
+
     [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopType(
         [Description("Window handle, e.g. w1.")] string window,

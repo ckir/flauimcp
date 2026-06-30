@@ -44,8 +44,8 @@ public sealed class InputGuard
                 "Synthetic input is locked. No unexpired lease for this user.",
                 "run `flaui-mcp unlock --minutes N` on the host to enable input");
 
-        CheckTarget(primary, lease);
-        if (secondary is { } s) CheckTarget(s, lease);
+        CheckTarget(primary, lease.HasCapability("shells"));
+        if (secondary is { } s) CheckTarget(s, lease.HasCapability("shells"));
 
         if (!_env.SessionState().CanDeliverInput)
             throw new ToolException(ToolErrorCode.InputDesktopUnavailable,
@@ -62,14 +62,15 @@ public sealed class InputGuard
             _audit.Record(drop.Root, drop.Pid, drop.ProcessName, action + "-drop", 1);
     }
 
-    private static void CheckTarget(ActionTarget target, InputLease lease)
+    // was: CheckTarget(ActionTarget target, InputLease lease) — now lease-agnostic; caller resolves the cap.
+    private static void CheckTarget(ActionTarget target, bool hasShellsCap)
     {
         var verdict = ActionPolicy.Classify(target.ProcessName, target.WindowClass);
         if (verdict == ActionVerdict.Denied)
             throw new ToolException(ToolErrorCode.TargetDenied,
                 $"Synthetic input into '{target.ProcessName}' is refused (UAC/secure-desktop/credential store).",
                 "target a different, non-sensitive window");
-        if (verdict == ActionVerdict.Interlocked && !lease.HasCapability("shells"))
+        if (verdict == ActionVerdict.Interlocked && !hasShellsCap)
             throw new ToolException(ToolErrorCode.SinkInterlocked,
                 $"Synthetic input into the interlocked sink '{target.ProcessName}' requires the 'shells' lease capability.",
                 "re-grant with `flaui-mcp unlock --minutes N --allow-shells` (human, out-of-band)");
@@ -99,6 +100,24 @@ public sealed class InputGuard
     {
         Authorize(startTarget, "drag", 1, secondary: endTarget);
         _sink.MouseDrag(sx, sy, ex, ey, button, endTarget.Root);
+    }
+
+    /// <summary>Authorize a UIA TextPattern caret/selection mutation (desktop_set_caret / _select_text_range).
+    /// Spec §4: these synthesize NO OS input, so the lease + session-state + budget gates are EXEMPT — but the
+    /// deny-list / sink-interlock ALWAYS run (selecting text in a denied credential window can exfiltrate it).
+    /// The interlock OVERRIDE still lives in the lease's 'shells' cap, so an optional valid lease is consulted
+    /// purely for that override; no lease is required for an allowed (non-interlocked) target. `target` MUST be
+    /// resolved from the ELEMENT being mutated, not its host window (agy R4 #3 — an embedded cross-process
+    /// interlocked element inside an allowed host must not be classified as the host). Audits event-only (len=0).
+    /// Performs no input — the caller runs the TextPattern op on the automation thread after this returns.
+    /// Elevation hard-fail does NOT apply here (it gates SendInput; the deny-list already blocks credential/
+    /// secure-desktop targets).</summary>
+    public void AuthorizeTextMutation(ActionTarget target, string action)
+    {
+        var lease = _leases.Read(out _);
+        bool hasShellsCap = lease is { } l && l.IsValidNow(_clock(), _currentSid) && l.HasCapability("shells");
+        CheckTarget(target, hasShellsCap); // shared deny-list/interlock (TargetDenied / SinkInterlocked)
+        _audit.Record(target.Root, target.Pid, target.ProcessName, action, 0);
     }
 
     /// <summary>Read-only lease status for the pre-flight tool — no input, no side effects. Active iff a

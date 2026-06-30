@@ -76,4 +76,31 @@ public class InputToolsTests
         var json = await tools.DesktopClickAt(handle.Id, 0.5, 0.5, "left", 1, 4000);
         Assert.DoesNotContain("\"error\"", json);
     }
+
+    [Fact]
+    public async Task Select_text_range_selects_the_requested_span()
+    {
+        // No InputLocked() skip — set_caret/select_text_range are lease-EXEMPT (no SendInput). Desktop trait
+        // is for the real UIA text provider, which the headless box still has over RDP for UIA (not SendInput).
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var handle = await mgr.OpenByPidAsync(app.Process.Id);
+        var snap = await perception.SnapshotAsync(handle, new SnapshotOptions());
+        var docRef = RefForAid(snap.Tree, "TextDoc");
+
+        var tools = BuildTools(mgr, perception);
+        var json = await tools.DesktopSelectTextRange(handle.Id, docRef, start: 0, length: 5, 4000);
+        Assert.DoesNotContain("\"error\"", json);
+
+        // verify the selection length via TextPattern GetSelection on the element
+        var selLen = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+        {
+            var el = win.FindFirstDescendant(cf => cf.ByAutomationId("TextDoc"))!;
+            var sel = el.Patterns.Text.Pattern.GetSelection();
+            return sel[0].GetText(-1).Length;
+        });
+        Assert.Equal(5, selLen);
+    }
 }

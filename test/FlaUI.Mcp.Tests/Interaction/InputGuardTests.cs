@@ -209,6 +209,34 @@ public class InputGuardTests
         Assert.Equal(0, s.SecondsRemaining);
     }
 
+    [Fact]
+    public void Text_mutation_into_a_denied_target_refuses_even_with_no_lease()
+    {
+        var (g, _, _) = BuildWithAudit(lease: null); // text-mutation is lease-EXEMPT; deny-list still runs
+        var ex = Assert.Throws<ToolException>(() => g.AuthorizeTextMutation(
+            new ActionTarget(nint.Zero, 0, "consent", "Credential"), "set_caret"));
+        Assert.Equal(ToolErrorCode.TargetDenied, ex.Code);
+    }
+
+    [Fact]
+    public void Text_mutation_into_an_allowed_target_passes_without_a_lease_and_audits()
+    {
+        var (g, _, audit) = BuildWithAudit(lease: null); // lease-EXEMPT: no throw despite null lease
+        g.AuthorizeTextMutation(new ActionTarget((nint)7, 100, "notepad", "Edit"), "select_text_range");
+        Assert.Contains("action=select_text_range", audit.ToString());
+        Assert.Contains("window=7", audit.ToString());
+    }
+
+    [Fact]
+    public void Text_mutation_into_an_interlocked_sink_needs_the_shells_cap()
+    {
+        // interlock OVERRIDE still lives in the lease's 'shells' cap (spec §3.2); no shells -> refused
+        var (g, _, _) = BuildWithAudit(ValidLease()); // valid lease but NO shells cap
+        var ex = Assert.Throws<ToolException>(() => g.AuthorizeTextMutation(
+            new ActionTarget((nint)9, 200, "windowsterminal", "CASCADIA_HOSTING_WINDOW_CLASS"), "set_caret"));
+        Assert.Equal(ToolErrorCode.SinkInterlocked, ex.Code);
+    }
+
     private sealed class StubLeaseProvider : ILeaseProvider
     {
         private readonly InputLease? _lease; private readonly DateTime _w;
