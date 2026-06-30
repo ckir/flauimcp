@@ -4,7 +4,7 @@ namespace FlaUI.Mcp.Server.Install;
 public static class CliRouter
 {
     private static readonly HashSet<string> Verbs =
-        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "--version", "-v", "--help", "-h" };
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "--version", "-v", "--help", "-h" };
 
     public static bool IsInstallerVerb(string[] args) => args.Length > 0 && Verbs.Contains(args[0]);
 
@@ -48,8 +48,18 @@ public static class CliRouter
                 }
                 return 0;
 
+            case "unlock":
+            {
+                var minutes = int.TryParse(OptionValue(args, "--minutes"), out var m) ? m : 5;
+                outp.WriteLine(Lease.LeaseWriter.Grant(minutes, HasFlag(args, "--allow-shells")));
+                return 0;
+            }
+            case "lock":
+                outp.WriteLine(Lease.LeaseWriter.Revoke());
+                return 0;
+
             default:
-                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config] [--agent agy|generic|claude|all] [--config <path>]");
+                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells]|lock] [--agent agy|generic|claude|all] [--config <path>]");
                 return 0;
         }
     }

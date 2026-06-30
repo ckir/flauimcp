@@ -34,4 +34,12 @@ public class ToolExceptionTests
         Assert.Equal("ClipboardUnavailable", ToolErrorCode.ClipboardUnavailable.ToString());
         Assert.Equal("GridCellOutOfRange", ToolErrorCode.GridCellOutOfRange.ToString());
     }
+
+    [Fact]
+    public void New_phase4a_codes_serialize_by_name()
+    {
+        foreach (var code in new[] { ToolErrorCode.InputNotLeased, ToolErrorCode.InputDesktopUnavailable,
+                                     ToolErrorCode.InputBudgetExceeded, ToolErrorCode.SinkInterlocked })
+            Assert.Equal(code.ToString(), new ToolException(code, "m", "r").Code.ToString());
+    }
 }

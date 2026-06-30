@@ -10,7 +10,7 @@ public class ClipboardToolsReadOnlyTests
     [Fact]
     public async Task Clipboard_set_is_blocked_in_read_only_mode()
     {
-        var tools = new ClipboardTools(new ServerOptions(ReadOnly: true));
+        var tools = new ClipboardTools(new ServerOptions(ReadOnly: true, AllowElevation: false));
         var json = await tools.DesktopClipboardSet("anything");
         using var doc = JsonDocument.Parse(json);
         Assert.Equal("WriteBlockedReadOnly", doc.RootElement.GetProperty("error").GetString());

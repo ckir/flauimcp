@@ -26,5 +26,9 @@ public enum ToolErrorCode
     NoFocusedElement,
     NotImplemented,
     ClipboardUnavailable,
-    GridCellOutOfRange
+    GridCellOutOfRange,
+    InputNotLeased,
+    InputDesktopUnavailable,
+    InputBudgetExceeded,
+    SinkInterlocked
 }

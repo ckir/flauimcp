@@ -7,8 +7,9 @@ a ref-tagged accessibility tree**, **screenshot windows or the desktop, read ele
 diff/stat snapshots, and wait for UI conditions**, **act on elements through UI Automation
 patterns** (click, set value, toggle, expand, select, scroll, focus, window min/max), and
 **read and write structured content** (grid/table cells, element text via TextPattern, clipboard)
-— with raw mouse/keyboard input synthesis still on the roadmap. Think "Playwright, but for native
-Windows apps."
+— with Phase 4a's synthetic-input safety foundation (time-lease, deny-list, per-window budget,
+audit, elevation guard) now in place and the actual `SendInput`-backed tools landing in v0.7.0.
+Think "Playwright, but for native Windows apps."
 
 ---
 
@@ -29,9 +30,10 @@ entire risk. Understand the following before you install:
   content (a web page, a document, an email) that content can attempt to instruct the agent
   to take desktop actions. The blast radius of a successful injection is your whole desktop
   session.
-- **The roadmap expands this surface.** Future versions add mouse/keyboard input synthesis
-  and screen/accessibility-tree reading. The permission you grant at install
-  (`mcp(flaui-mcp/*)`) covers those future tools too.
+- **The roadmap expands this surface.** v0.6.0 shipped the synthetic-input safety foundation
+  (time-lease, deny-list, per-window budget, audit, elevation guard); the actual mouse/keyboard
+  input tools land in v0.7.0. The permission you grant at install (`mcp(flaui-mcp/*)`) covers
+  those future tools too.
 - **The released binaries are NOT code-signed.** Windows SmartScreen and antivirus software
   will likely flag the installer and the self-extracting executable. You will have to click
   through "More info → Run anyway." Verify the published SHA-256 checksums before trusting a
@@ -120,6 +122,27 @@ tools are `destructive` and blocked in `--read-only-mode`.
 `IsPassword` redaction as `DesktopSnapshot` — password cells and fields always surface as
 `[REDACTED]`, and windows owned by known credential stores are denied outright.
 
+**Input safety foundation — Phase 4a (new in v0.6.0):** Phase 4a ships the safety infrastructure
+and seam interfaces required before any synthetic input tool can land. **No mouse/keyboard input
+tool ships in v0.6.0.** The `SendInput`-backed tools (`desktop_type`, `desktop_click`,
+`desktop_key`, etc.) arrive in v0.7.0 (Phase 4b).
+
+What Phase 4a introduces:
+
+- **Three seam interfaces** — `ISyntheticInput`, `IPlatformEnvironment`, `ILeaseProvider` —
+  injectable, testable boundaries isolating all future input work from the rest of the server.
+- **InputGuard pipeline** — deny-list, per-window action budget, and an event-only audit log.
+  Synthetic input into UAC / `consent.exe`, credential dialogs, and high-risk sinks (terminal,
+  browser address bar, Win+R run dialog) is refused outright; other windows consume from a
+  configurable per-window budget.
+- **Time-lease (dead-man's switch)** — synthetic input is hard-refused by default. A human grants
+  a time-bounded window via `flaui-mcp unlock --minutes N [--allow-shells]` run out-of-band; the
+  lease expires automatically when the time runs out, or immediately on `flaui-mcp lock`. The agent
+  cannot grant or extend its own lease.
+- **Elevation hard-fail** — if the server starts with Administrator rights, synthetic input is
+  refused unless `--unsafe-allow-elevation` is passed explicitly at launch (upgrades the v0.2.0
+  warn-only).
+
 ### Read-only mode
 
 Start the server with **`--read-only-mode`** to refuse every state-changing tool — all the
@@ -151,8 +174,9 @@ privacy and safety floors — defense in depth, not a substitute for supervising
 - **Never run elevated.** The server warns (on stderr) if started with Administrator rights — it
   is meant to run at your user integrity level.
 
-**On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): raw mouse/keyboard input synthesis,
-occlusion-aware capture (PrintWindow), and an HTTP transport.
+**On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): Phase 4b `SendInput`-backed input tools
+(`desktop_type`, `desktop_click`, `desktop_key`, etc. — v0.7.0), occlusion-aware capture
+(PrintWindow), and an HTTP transport.
 
 ## Requirements
 
@@ -237,6 +261,9 @@ Uninstalling reverts configuration entries but leaves your unrelated settings un
 ```text
 flaui-mcp                                   # run the stdio MCP server (no args)
 flaui-mcp --read-only-mode                  # run the server but refuse all state-changing tools
+flaui-mcp --unsafe-allow-elevation          # (v0.6.0) allow synthetic input when running elevated (default: hard-refused)
+flaui-mcp unlock --minutes N [--allow-shells]  # (v0.6.0) grant a time-bounded synthetic-input lease (human out-of-band)
+flaui-mcp lock                              # (v0.6.0) revoke the synthetic-input lease immediately
 flaui-mcp install   --agent agy|generic|claude|all
 flaui-mcp uninstall --agent agy|generic|claude|all
 flaui-mcp print-config --agent generic      # print the JSON snippet to stdout

@@ -23,6 +23,10 @@ public static class ElevationGuard
         catch { return false; }
     }
 
+    /// <summary>Hard-fail decision for the synthetic-input sink: refuse input when elevated unless the
+    /// operator opted in with --unsafe-allow-elevation. (Perception/pattern tools are unaffected.)</summary>
+    public static bool InputHardFailIfElevated(bool isElevated, bool allowElevation) => isElevated && !allowElevation;
+
     /// <summary>Pure decision seam: write the elevation warning iff <paramref name="isElevated"/>.
     /// Returns whether a warning was written.</summary>
     public static bool WarnIfElevated(bool isElevated, TextWriter stderr)

@@ -24,4 +24,18 @@ public class ElevationGuardTests
         Assert.False(wrote);
         Assert.Equal("", sw.ToString());
     }
+
+    [Theory]
+    [InlineData(true,  false, true)]   // elevated, not allowed -> refuse
+    [InlineData(true,  true,  false)]  // elevated, --unsafe-allow-elevation -> permit
+    [InlineData(false, false, false)]  // not elevated -> permit
+    public void Input_hard_fail_decision(bool elevated, bool allow, bool expectedRefuse)
+        => Assert.Equal(expectedRefuse, ElevationGuard.InputHardFailIfElevated(elevated, allow));
+
+    [Fact]
+    public void AllowElevation_flag_parsed()
+    {
+        Assert.True(FlaUI.Mcp.Server.ServerOptions.FromArgs(new[] { "--unsafe-allow-elevation" }).AllowElevation);
+        Assert.False(FlaUI.Mcp.Server.ServerOptions.FromArgs(System.Array.Empty<string>()).AllowElevation);
+    }
 }
