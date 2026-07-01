@@ -14,4 +14,12 @@ public class InputToolsContractTests
             .GetParameters().Single(x => x.Name == "interKeyDelayMs");
         Assert.Equal(15, p.DefaultValue);
     }
+
+    [Fact]
+    public void DesktopType_defaults_verify_to_true()
+    {
+        var p = typeof(InputTools).GetMethod(nameof(InputTools.DesktopType))!
+            .GetParameters().Single(x => x.Name == "verify");
+        Assert.Equal(true, p.DefaultValue);
+    }
 }

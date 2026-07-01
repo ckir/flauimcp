@@ -13,6 +13,7 @@ public sealed class InputTools
 {
     private const int DefaultTimeoutMs = 4000;
     private const int MaxTypeUnits = 4096;
+    private const int VerifySettleMs = 100; // let reactive editors commit inline-prediction/IME ghost text before the after-read
     private readonly PerceptionManager _perception;
     private readonly WindowManager _windows;
     private readonly ServerOptions _options;
@@ -67,13 +68,14 @@ public sealed class InputTools
                 return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
             }, timeoutMs));
 
-    [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. By default keystrokes are PACED (interKeyDelayMs=15) so slow/async consumers (e.g. the Win11 Notepad autocomplete pipeline) don't drop or garble fast input; when paced the foreground is re-verified before EACH key, so a mid-type focus-steal still aborts (leaving the partial text already typed). Pass interKeyDelayMs=0 for a single atomic blast (fastest; may garble on reactive editors). Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. By default keystrokes are PACED (interKeyDelayMs=15) so slow/async consumers (e.g. the Win11 Notepad autocomplete pipeline) don't drop or garble fast input; when paced the foreground is re-verified before EACH key, so a mid-type focus-steal still aborts (leaving the partial text already typed). Pass interKeyDelayMs=0 for a single atomic blast (fastest; may garble on reactive editors). By default (verify=true) the element is read back after typing and the result carries a `verify` object; on a mismatch it advises desktop_set_value (UIA ValuePattern) — the reliable path for reactive/RichEdit editors (the new Notepad). verify NEVER throws and NEVER converts a successful type into a failure. Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopType(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Element ref to focus and type into, e.g. e23.")] string @ref,
         [Description("Text to type (<=4096 UTF-16 units).")] string text,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
-        [Description("Delay in ms BETWEEN keystrokes (default 15). Paces synthetic typing so slow/async editors keep up; the foreground is re-verified before each key (abort-on-steal preserved). 0 = one atomic blast (fastest, may garble reactive editors). Negative -> InvalidArguments.")] int interKeyDelayMs = 15)
+        [Description("Delay in ms BETWEEN keystrokes (default 15). Paces synthetic typing so slow/async editors keep up; the foreground is re-verified before each key (abort-on-steal preserved). 0 = one atomic blast (fastest, may garble reactive editors). Negative -> InvalidArguments.")] int interKeyDelayMs = 15,
+        [Description("Read the element back after typing and report whether the committed text matches (default true). Soft advisory only — NEVER throws on mismatch and never fails a successful type; on mismatch it recommends desktop_set_value. Pass false for old fire-and-forget speed (skips a ~100ms settle + two reads).")] bool verify = true)
         => ToolResponse.GuardWrite(_options, async () =>
         {
             if ((text?.Length ?? 0) > MaxTypeUnits)
@@ -83,11 +85,61 @@ public sealed class InputTools
                 throw new ToolException(ToolErrorCode.InvalidArguments,
                     "interKeyDelayMs must be >= 0.", "pass 0 for a single atomic blast, or a positive per-key delay");
 
-            var target = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref,
-                (win, el) => { el.Focus(); return InputTargeting.ResolveElementTarget(win, el); }, timeoutMs);
+            // Focus + resolve the action target; when verifying, also read the RAW baseline text on the
+            // SAME transient STA (before-read sits between Focus and the SendInput's pre-send re-verify,
+            // which still aborts on a focus-steal — the before-read cannot blast the wrong window).
+            var (target, before) = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref,
+                (win, el) =>
+                {
+                    el.Focus();
+                    var t = InputTargeting.ResolveElementTarget(win, el);
+                    var b = verify ? VerifyReader.FromElement(el) : default;
+                    return (t, b);
+                }, timeoutMs);
 
             await Task.Run(() => _guard.KeyType(text ?? string.Empty, target, interKeyDelayMs));
-            return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" });
+
+            if (!verify)
+                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = VerifyResult.Disabled });
+
+            // Short-circuit on the BEFORE state before paying the settle + after-read. If the baseline
+            // already disqualifies an assertion, the after-read is wasted AND (if it later threw) would
+            // MISCLASSIFY the skip as "read-failed" — masking the true reason. So decide from `before`
+            // first; only the empty-field precondition proceeds to read back. (agy AGY-AFTER finding #1.)
+            if (before.Redacted)
+                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic",
+                    verify = VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "redacted", null, null)) });
+            if (before.Text is null)
+                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic",
+                    verify = VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "no-textpattern", null, null)) });
+            if (before.Text.Length != 0)
+                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic",
+                    verify = VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "field-not-empty", null, null)) });
+
+            // before.Text == "" : the ONLY path that asserts. Verification latency is NOT charged against
+            // the caller's type timeout — settle, then read-after on a fresh independent resolution with
+            // its own timeout. A failed read stays soft (never fails a successful type).
+            await Task.Delay(VerifySettleMs);
+            VerifyRead after;
+            try
+            {
+                after = await _perception.RunOnRefReadAsync(new WindowHandle(window), @ref,
+                    el => VerifyReader.FromElement(el), timeoutMs);
+            }
+            catch
+            {
+                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic",
+                    verify = VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "read-failed", null, null)) });
+            }
+
+            VerifyOutcome outcome =
+                after.Redacted
+                    ? new VerifyOutcome(VerifyStatus.Skipped, "redacted", null, null)
+                : after.Text is null
+                    ? new VerifyOutcome(VerifyStatus.Skipped, "read-failed", null, null)
+                    : TypedTextVerifier.Check(before.Text, after.Text, text ?? string.Empty);
+
+            return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = VerifyResult.From(outcome) });
         });
 
     [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Same lease/deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
