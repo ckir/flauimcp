@@ -153,6 +153,10 @@ foundation above. **Eight tools** ship:
 
 - **`desktop_type`** — type Unicode text into the focused element (or a `@ref` target). Capped at
   4096 characters per call (`InvalidArguments` over the cap; split on a surrogate-safe boundary).
+  Keystrokes are **paced by default** (`interKeyDelayMs=15`, new in v0.7.1) so reactive editors
+  (e.g. the Windows 11 Notepad autocomplete pipeline) don't drop or garble fast input; the
+  foreground is re-verified before *each* key, so a mid-type focus-steal still aborts. Pass
+  `interKeyDelayMs=0` for a single atomic blast (fastest; may garble on reactive editors).
 - **`desktop_key`** — send a key chord (e.g. `ctrl+a`, `enter`, `alt+f4`) to the focused window, or
   to a `@ref`/`window` target. `ref` without `window` is `InvalidArguments`.
 - **`desktop_click`** — click a `@ref` element by its hit-test point.

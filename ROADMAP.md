@@ -92,6 +92,13 @@ safety rationale.
     active-RDP spike (`SendInput` round-trip + abs-mouse normalization + ref-path `Focus()`
     targeting confirmed) — the headless box can't run `SendInput`, so Desktop input tests are
     console-only + manual.
+  - **Phase 4b.1** ✅ **(v0.7.1) — reliable `desktop_type` on reactive editors.** Live dogfooding
+    found the new Windows 11 Notepad (RichEdit + autocomplete) non-deterministically dropped/garbled
+    fast multi-word `SendInput`, while classic Win32 edits were exact. Root cause: keystrokes were
+    blasted in one `SendInput` with no pacing. Fix: `desktop_type` gains `interKeyDelayMs`
+    (default 15) — a per-character send loop that re-verifies the foreground before *each* key
+    (abort-on-focus-steal preserved; partial text on abort); `0` keeps the shipped single-batch
+    behavior byte-for-byte. Deferred follow-on (A2): opt-in typed-text verification.
   - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
     zero-UIA surfaces (also in the v2 table).
 
