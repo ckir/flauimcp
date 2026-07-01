@@ -5,7 +5,7 @@ description: Use when driving or dogfooding this project's installed FlaUI.Mcp d
 
 # Driving FlaUI.Mcp (live server)
 
-Empirically validated by live dogfooding (through v0.7.0). Use the **installed** MCP server's
+Empirically validated by live dogfooding (through v0.7.2). Use the **installed** MCP server's
 `desktop_*` tools to see/act on the real desktop — never `Get-Process`. The tools are **DEFERRED**:
 load them before use.
 
@@ -38,6 +38,11 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
   Notepad's RichEdit/autocomplete) don't drop/garble fast input; pass `0` for a raw atomic blast.
 - For a type **capability test**, prefer a **classic Win32 Edit** (Run dialog via `desktop_key "Win+R"`)
   over the new Notepad. Always verify with `desktop_get_text`.
+- **`verify` (default true, v0.7.2)** reads the element back and returns a soft `verify{ran,verified,mismatch}`;
+  on garble → `mismatch:true` + `expected`/`actual` + `recommendedFallbackTool`. It only asserts an exact
+  match when the field started **empty** — typing into a non-empty field (e.g. a Run box with MRU history)
+  returns `verified:false, mismatch:false, reason:"field-not-empty"` (abstains — **not** a failure; clear the
+  field first if you want a clean `verified:true`). `verify` never throws.
 
 ## Gotchas & recovery
 
@@ -48,7 +53,8 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
 | Keys go nowhere after closing a dialog | prior window lost foreground | `desktop_focus_window` before the next key |
 | `desktop_launch_app` LaunchTimeout (UWP/Store app) | stub launcher hands window to ApplicationFrameHost | recover via `desktop_list_windows` → `desktop_open_window by:title` |
 | `InputDesktopUnavailable` | session locked/disconnected (RDP dropped) | reconnect + unlock the session |
-| Typed text garbled / `verify.mismatch:true` | target is a reactive/RichEdit editor (new Notepad) that races synthetic keystrokes | switch to `desktop_set_value` (UIA ValuePattern) — writes the exact string byte-for-byte. (`desktop_type` reports this automatically via its `verify` object.) |
+| Typed text garbled / `verify.mismatch:true` | reactive/RichEdit editor races synthetic keystrokes | **Has `ValuePattern`** (snapshot shows `[Value,…]`, e.g. new Notepad Document): `desktop_set_value` — byte-exact. **No `ValuePattern`** (Electron `contenteditable`): `set_value` returns `PatternUnsupported` → **clipboard paste** (`desktop_clipboard_set` → focus → `desktop_key "Ctrl+V"`) — lands atomically, doesn't race. (`desktop_type`'s `verify` flags the garble automatically.) |
+| Snapshot is one opaque `Document` node, no children | Electron/Chromium a11y **off by default** | No refs to target — use the **coordinate path** (`desktop_click_at`/`desktop_drag` by `xPct`/`yPct`) or vision. Per-app fix: relaunch it with `--force-renderer-accessibility`. WinUI/WPF/Qt expose proper UIA and are fine. |
 
 ## Etiquette
 
