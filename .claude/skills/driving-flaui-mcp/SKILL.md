@@ -31,6 +31,10 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
 - The lease **expires mid-session** (`InputNotLeased` when it lapses) → re-unlock.
 - **Lease-exempt even while locked:** `desktop_set_caret`, `desktop_select_text_range`, `desktop_get_text`
   (UIA TextPattern, no OS input). `desktop_type`/`desktop_key`/click/drag fail closed `InputNotLeased`.
+- **Terminals/shells need the extra `shells` capability.** Synthetic input into an interlocked shell
+  sink (WindowsTerminal, conhost) fails `SinkInterlocked` on a plain unlock → re-grant with
+  `flaui-mcp unlock --minutes N --allow-shells`. Reading (`desktop_get_text`) is **not** gated — only
+  click/type/key into the terminal hit this. (Deliberate: injecting keystrokes into a live shell is high-risk.)
 
 ## Typing
 
@@ -43,6 +47,18 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
   match when the field started **empty** — typing into a non-empty field (e.g. a Run box with MRU history)
   returns `verified:false, mismatch:false, reason:"field-not-empty"` (abstains — **not** a failure; clear the
   field first if you want a clean `verified:true`). `verify` never throws.
+
+## Terminals & reading another agent's TUI
+
+- WindowsTerminal exposes **only the active tab** to UIA. To read a background tab, switch to it
+  (click its `TabItem` — needs the `shells` lease) then **re-snapshot**: the content `Text` ref
+  **changes on every tab switch** (`RefNotFound` if you reuse the old one). The active-tab content
+  node is `Custom → Text "PowerShell"`.
+- **A modal TUI popup can't be read from the session driving flaui-mcp** — opening it (e.g. Claude
+  Code `/usage`) suspends your own turn, so the popup only exists while you can't act. Drive a
+  **second, idle** agent session instead: switch to its tab, `desktop_type` the command +
+  `desktop_key Enter`, read the popup, then `Esc` to dismiss (leave it as found). The `/` slash-menu
+  renders in-buffer — read back and confirm the command is highlighted before Enter.
 
 ## Gotchas & recovery
 
