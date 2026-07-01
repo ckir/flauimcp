@@ -48,6 +48,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
 | Keys go nowhere after closing a dialog | prior window lost foreground | `desktop_focus_window` before the next key |
 | `desktop_launch_app` LaunchTimeout (UWP/Store app) | stub launcher hands window to ApplicationFrameHost | recover via `desktop_list_windows` → `desktop_open_window by:title` |
 | `InputDesktopUnavailable` | session locked/disconnected (RDP dropped) | reconnect + unlock the session |
+| Typed text garbled / `verify.mismatch:true` | target is a reactive/RichEdit editor (new Notepad) that races synthetic keystrokes | switch to `desktop_set_value` (UIA ValuePattern) — writes the exact string byte-for-byte. (`desktop_type` reports this automatically via its `verify` object.) |
 
 ## Etiquette
 

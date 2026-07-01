@@ -159,6 +159,15 @@ foundation above. **Eight tools** ship:
   the Windows 11 Notepad autocomplete garble (it corrupts synthetic input at any pacing); for
   reactive/autocomplete editors prefer a non-keystroke path (`desktop_set_value` / clipboard) — a
   first-class reactive-editor path is tracked for v0.7.2.
+  
+  `desktop_type` now takes an optional `verify` (bool, default `true`, new in v0.7.2). When on, it reads the element back after typing and returns a `verify` object:
+  - `{ ran, verified, mismatch }` — always present.
+  - On a clean match: `verified:true`.
+  - On a mismatch: `mismatch:true` with `expected`, `actual` (both truncated to 256 chars), a stable `recommendedFallbackTool:"desktop_set_value"`, and a human-readable `remedy`.
+  - When it can't assert (empty-field precondition not met, no readable TextPattern, read failed, or a password/redacted field): `verified:false, mismatch:false, reason:"…"`.
+  - `reason` is an **open** string — treat unknown values as forward-compatible; branch machines on `recommendedFallbackTool`, never parse `remedy`.
+  
+  Mismatch is **advisory** — `ok` stays `true` and nothing is retried or corrected. **For reactive / RichEdit editors (the new Win11 Notepad), prefer `desktop_set_value` (UIA ValuePattern)** for reliable text entry; `SendInput` can garble those editors at any pacing. Pass `verify=false` for the old fire-and-forget speed (skips a ~100 ms settle + two reads).
 - **`desktop_key`** — send a key chord (e.g. `ctrl+a`, `enter`, `alt+f4`) to the focused window, or
   to a `@ref`/`window` target. `ref` without `window` is `InvalidArguments`.
 - **`desktop_click`** — click a `@ref` element by its hit-test point.
