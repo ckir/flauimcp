@@ -17,6 +17,16 @@ public class RecordingSyntheticInputTests
     }
 
     [Fact]
+    public void Records_the_inter_key_delay_passed_to_KeyType()
+    {
+        var env = new FakePlatformEnvironment { ForegroundRoot = (nint)1 };
+        var rec = new RecordingSyntheticInput(env);
+        rec.KeyType("hi", (nint)1, 15);
+        Assert.Equal(new[] { "KeyType:hi" }, rec.Calls);
+        Assert.Equal(new[] { 15 }, rec.TypeDelays);
+    }
+
+    [Fact]
     public void Aborts_without_recording_when_foreground_changed()
     {
         var env = new FakePlatformEnvironment { ForegroundRoot = (nint)2 };   // focus stolen

@@ -93,6 +93,14 @@ public class InputGuardTests
     }
 
     [Fact]
+    public void KeyType_forwards_the_inter_key_delay_to_the_sink()
+    {
+        var (g, sink, _) = Build(ValidLease());
+        g.KeyType("hi", new(nint.Zero, 0, "notepad", "Notepad"), 15);
+        Assert.Equal(new[] { 15 }, sink.TypeDelays);
+    }
+
+    [Fact]
     public void Drag_denies_when_the_END_endpoint_is_a_denied_target()
     {
         var (g, sink, _) = Build(ValidLease());

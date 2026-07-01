@@ -12,9 +12,10 @@ public sealed class RecordingSyntheticInput : ISyntheticInput
     private readonly IPlatformEnvironment _env;
     public RecordingSyntheticInput(IPlatformEnvironment env) => _env = env;
     public List<string> Calls { get; } = new();
+    public List<int> TypeDelays { get; } = new();
 
-    public void KeyType(string text, nint root)
-    { InputReverify.AssertSameRoot(root, _env.GetForegroundRoot()); Calls.Add($"KeyType:{text}"); }
+    public void KeyType(string text, nint root, int interKeyDelayMs = 0)
+    { InputReverify.AssertSameRoot(root, _env.GetForegroundRoot()); Calls.Add($"KeyType:{text}"); TypeDelays.Add(interKeyDelayMs); }
 
     public void KeyChord(string[] mods, string key, nint root)
     { InputReverify.AssertSameRoot(root, _env.GetForegroundRoot()); Calls.Add($"KeyChord:{string.Join("+", mods)}+{key}"); }

@@ -76,10 +76,10 @@ public sealed class InputGuard
                 "re-grant with `flaui-mcp unlock --minutes N --allow-shells` (human, out-of-band)");
     }
 
-    public void KeyType(string text, ActionTarget target)
+    public void KeyType(string text, ActionTarget target, int interKeyDelayMs = 0)
     {
         Authorize(target, "type", text?.Length ?? 0);
-        _sink.KeyType(text ?? string.Empty, target.Root);
+        _sink.KeyType(text ?? string.Empty, target.Root, interKeyDelayMs);
     }
 
     public void KeyChord(string[] modifiers, string key, ActionTarget target)

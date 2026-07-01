@@ -6,7 +6,7 @@ namespace FlaUI.Mcp.Core.Interaction;
 /// interface + the recording fake; the real Win32SyntheticInput is 4b.</summary>
 public interface ISyntheticInput
 {
-    void KeyType(string text, nint expectedForegroundRoot);
+    void KeyType(string text, nint expectedForegroundRoot, int interKeyDelayMs);
     void KeyChord(string[] modifiers, string key, nint expectedForegroundRoot);
     void MouseClick(int physX, int physY, string button, int count, string[] modifiers, nint expectedRootAtPoint);
     void MouseDrag(int startX, int startY, int endX, int endY, string button, nint expectedRootAtStart, nint expectedRootAtEnd);

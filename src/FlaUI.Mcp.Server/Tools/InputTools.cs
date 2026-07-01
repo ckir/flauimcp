@@ -67,22 +67,26 @@ public sealed class InputTools
                 return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
             }, timeoutMs));
 
-    [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. By default keystrokes are PACED (interKeyDelayMs=15) so slow/async consumers (e.g. the Win11 Notepad autocomplete pipeline) don't drop or garble fast input; when paced the foreground is re-verified before EACH key, so a mid-type focus-steal still aborts (leaving the partial text already typed). Pass interKeyDelayMs=0 for a single atomic blast (fastest; may garble on reactive editors). Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopType(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Element ref to focus and type into, e.g. e23.")] string @ref,
         [Description("Text to type (<=4096 UTF-16 units).")] string text,
-        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
+        [Description("Delay in ms BETWEEN keystrokes (default 15). Paces synthetic typing so slow/async editors keep up; the foreground is re-verified before each key (abort-on-steal preserved). 0 = one atomic blast (fastest, may garble reactive editors). Negative -> InvalidArguments.")] int interKeyDelayMs = 15)
         => ToolResponse.GuardWrite(_options, async () =>
         {
             if ((text?.Length ?? 0) > MaxTypeUnits)
                 throw new ToolException(ToolErrorCode.InvalidArguments,
                     $"Text exceeds the {MaxTypeUnits} UTF-16 unit per-call cap.", "split the text across multiple desktop_type calls, slicing on a whole-character boundary (never between the two halves of a surrogate pair / an emoji)");
+            if (interKeyDelayMs < 0)
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    "interKeyDelayMs must be >= 0.", "pass 0 for a single atomic blast, or a positive per-key delay");
 
             var target = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref,
                 (win, el) => { el.Focus(); return InputTargeting.ResolveElementTarget(win, el); }, timeoutMs);
 
-            await Task.Run(() => _guard.KeyType(text ?? string.Empty, target));
+            await Task.Run(() => _guard.KeyType(text ?? string.Empty, target, interKeyDelayMs));
             return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" });
         });
 

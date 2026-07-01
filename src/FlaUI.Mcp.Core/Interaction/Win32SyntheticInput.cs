@@ -14,10 +14,22 @@ public sealed class Win32SyntheticInput : ISyntheticInput
     private readonly IPlatformEnvironment _env;
     public Win32SyntheticInput(IPlatformEnvironment env) => _env = env;
 
-    public void KeyType(string text, nint expectedForegroundRoot)
+    public void KeyType(string text, nint expectedForegroundRoot, int interKeyDelayMs = 0)
     {
-        Reverify(expectedForegroundRoot, _env.GetForegroundRoot());
-        Send(UnicodeKeyInput.Build(text ?? string.Empty));
+        if (interKeyDelayMs <= 0)
+        {
+            // Raw blast (default when unpaced): ONE re-verify + one atomic SendInput — the shipped v0.7.0
+            // behavior, byte-for-byte, so passing 0 is a true opt-out with zero regression.
+            Reverify(expectedForegroundRoot, _env.GetForegroundRoot());
+            Send(UnicodeKeyInput.Build(text ?? string.Empty));
+            return;
+        }
+        // Paced: spreading keystrokes over time re-opens the focus-steal gap the single batch closed, so
+        // re-verify the foreground BEFORE each character and abort mid-type (partial text) if focus changed.
+        UnicodeKeyTyper.Drive(text ?? string.Empty, interKeyDelayMs,
+            reverify: () => Reverify(expectedForegroundRoot, _env.GetForegroundRoot()),
+            send: Send,
+            sleep: System.Threading.Thread.Sleep);
     }
 
     public void KeyChord(string[] modifiers, string key, nint expectedForegroundRoot)
