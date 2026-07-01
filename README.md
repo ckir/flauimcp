@@ -157,8 +157,9 @@ foundation above. **Eight tools** ship:
   keep up with fast input; the foreground is re-verified before *each* key, so a mid-type focus-steal
   still aborts. Pass `interKeyDelayMs=0` for a single atomic blast. **Note:** pacing does **not** cure
   the Windows 11 Notepad autocomplete garble (it corrupts synthetic input at any pacing); for
-  reactive/autocomplete editors prefer a non-keystroke path (`desktop_set_value` / clipboard) — a
-  first-class reactive-editor path is tracked for v0.7.2.
+  reactive/autocomplete editors prefer a non-keystroke path (`desktop_set_value`, or clipboard paste
+  for editors without `ValuePattern`). The garble is now flagged automatically by `desktop_type`'s
+  `verify` (v0.7.2, below).
   
   `desktop_type` now takes an optional `verify` (bool, default `true`, new in v0.7.2). When on, it reads the element back after typing and returns a `verify` object:
   - `{ ran, verified, mismatch }` — always present.
@@ -239,6 +240,28 @@ privacy and safety floors — defense in depth, not a substitute for supervising
 **On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): a "driving FlaUI.Mcp" dogfood skill,
 occlusion-aware capture (PrintWindow), AOT/trim to shrink the self-contained executable, and an
 HTTP transport. (Phase 4b `SendInput`-backed input tools shipped in v0.7.0.)
+
+### Electron / Chromium & other custom-render apps
+
+Not every app exposes a clean accessibility tree. Honestly:
+
+- **Electron / Chromium (VS Code, Slack, Discord, Teams, …):** Chromium keeps its accessibility
+  tree **off by default**, so a snapshot is usually **one opaque `Document` node with no children**.
+  When you see that, don't hunt for inner refs — fall back to the **coordinate path**
+  (`desktop_click_at` / `desktop_drag` by `xPct`/`yPct`) or vision. Typed text into Chromium editors
+  (Monaco, CodeMirror, `contenteditable`) can **garble** like the new Notepad; `desktop_type`'s
+  `verify` flags it, but `desktop_set_value` often **isn't available** there (no `ValuePattern`) —
+  the reliable path is **clipboard paste** (`desktop_clipboard_set` → focus → `desktop_key ctrl+v`),
+  which lands atomically and doesn't race.
+  - **Escape hatch:** launch the specific app with **`--force-renderer-accessibility`** (edit its
+    shortcut / launch args) and Chromium exposes its full UIA tree for that process.
+- **WinUI 3 / WPF / WinForms / Qt:** generally expose **proper UIA peers** out of the box — this
+  caveat mostly does **not** apply (a custom-drawn control with no UIA peer is the exception).
+- **Zero-UIA surfaces (games, canvas, Citrix/RDP inners):** the coordinate + screenshot path is the
+  intended route; OCR-assisted targeting is a roadmap item.
+
+Everything above degrades **safely** — the foreground/hit-test re-verify, lease, and deny-list mean
+a limited surface **aborts or no-ops**; it never mis-fires into the wrong window.
 
 ## Requirements
 

@@ -100,6 +100,12 @@ safety rationale.
     which garbles synthetic input at *any* pacing (0ms and 15ms both fail; a classic Win32 edit is
     exact either way) — that editor needs a non-keystroke path, see 4b.2.
   - **Phase 4b.2** ✅ **(v0.7.2, delivered) — typed-text verification.** `desktop_type` optionally reads the element back (`verify`, default true) and returns a soft `verify` object; on a mismatch it names `desktop_set_value` (UIA ValuePattern) as the remedy for reactive/RichEdit editors (the new Notepad). No hard error, no auto-retry. NB: the earlier "reactive-editor non-keystroke path" framing was superseded — a live probe showed the new Notepad already exposes ValuePattern, so `desktop_set_value` was already the reliable path; v0.7.2 closes the *discoverability* gap, not a missing path.
+  - **Phase 4b.3** ⏳ **(planned) — ValuePattern-aware verify remedy.** When `desktop_type`'s verify
+    detects a mismatch on a target with **no `ValuePattern`** (e.g. an Electron `contenteditable`),
+    stop recommending `desktop_set_value` (which returns `PatternUnsupported`) and instead recommend
+    the **clipboard-paste** path (`desktop_clipboard_set` → focus → `ctrl+v`), which lands atomically
+    and doesn't race a reactive editor. Cheap (`Patterns.Value.IsSupported` is reachable at verify
+    time); closes the remedy dead-end on exactly the app class that needs it.
   - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
     zero-UIA surfaces (also in the v2 table).
 
@@ -141,7 +147,14 @@ security floors are defense-in-depth, not an injection cure.
   secret — nothing at our layer can re-mask it.
 - **Electron/Chromium a11y is off by default.** Chromium exposes its full UIA tree only when a
   screen reader is detected or it is launched with `--force-renderer-accessibility`; otherwise a
-  snapshot is one large `Document` node. *Future:* set the UIA "assistive tech present" flag.
+  snapshot is one large `Document` node (no inner refs ⇒ no element-targeted perception or input —
+  fall back to the coordinate/vision path). Typed text into Chromium editors (Monaco/CodeMirror/
+  `contenteditable`) garbles like the new Notepad; `desktop_type`'s verify flags it, but
+  `desktop_set_value` is usually `PatternUnsupported` there — clipboard paste is the reliable path
+  (see Phase 4b.3). **Per-app escape hatch:** launch with `--force-renderer-accessibility`.
+  **WinUI 3 / WPF / Qt** generally expose proper UIA peers and are *not* affected. *Future (its own
+  spike, v1.5/v2):* set the system UIA "assistive tech present" flag to light this up globally —
+  deferred because it's system-wide and alters every app's behavior.
 - **Popup detection is class-name-based.** `FindOwnerPopups` recognizes Win32 (`#32768`), WPF
   (`HwndWrapper*`/`Popup`), and `Menu`; it misses WinForms/Qt/Electron overlay classes.
 - **No occlusion awareness.** UIA reports `IsOffscreen` but not "visible-but-covered by another
