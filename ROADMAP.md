@@ -92,13 +92,17 @@ safety rationale.
     active-RDP spike (`SendInput` round-trip + abs-mouse normalization + ref-path `Focus()`
     targeting confirmed) — the headless box can't run `SendInput`, so Desktop input tests are
     console-only + manual.
-  - **Phase 4b.1** ✅ **(v0.7.1) — reliable `desktop_type` on reactive editors.** Live dogfooding
-    found the new Windows 11 Notepad (RichEdit + autocomplete) non-deterministically dropped/garbled
-    fast multi-word `SendInput`, while classic Win32 edits were exact. Root cause: keystrokes were
-    blasted in one `SendInput` with no pacing. Fix: `desktop_type` gains `interKeyDelayMs`
-    (default 15) — a per-character send loop that re-verifies the foreground before *each* key
-    (abort-on-focus-steal preserved; partial text on abort); `0` keeps the shipped single-batch
-    behavior byte-for-byte. Deferred follow-on (A2): opt-in typed-text verification.
+  - **Phase 4b.1** ✅ **(v0.7.1) — inter-key pacing for `desktop_type`.** `desktop_type` gains
+    `interKeyDelayMs` (default 15) — a per-character send loop that re-verifies the foreground before
+    *each* key (abort-on-focus-steal preserved; partial text on abort); `0` keeps the shipped
+    single-batch behavior byte-for-byte. Helps genuinely slow/async consumers keep up. **Live
+    validation caveat:** this does NOT fix the new Windows 11 Notepad (RichEdit + autocomplete),
+    which garbles synthetic input at *any* pacing (0ms and 15ms both fail; a classic Win32 edit is
+    exact either way) — that editor needs a non-keystroke path, see 4b.2.
+  - **Phase 4b.2** ⏭️ **(v0.7.2, planned) — reactive/autocomplete-editor typing.** A non-`SendInput`
+    text path (`desktop_set_value` via ValuePattern, or clipboard paste) for editors whose async
+    autocomplete corrupts per-key injection. Plus deferred A2: opt-in typed-text verification
+    (require a clear-precondition so read-back == target; rich `TypedTextMismatch`, no auto-retry).
   - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
     zero-UIA surfaces (also in the v2 table).
 
