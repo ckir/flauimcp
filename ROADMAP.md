@@ -99,10 +99,7 @@ safety rationale.
     validation caveat:** this does NOT fix the new Windows 11 Notepad (RichEdit + autocomplete),
     which garbles synthetic input at *any* pacing (0ms and 15ms both fail; a classic Win32 edit is
     exact either way) — that editor needs a non-keystroke path, see 4b.2.
-  - **Phase 4b.2** ⏭️ **(v0.7.2, planned) — reactive/autocomplete-editor typing.** A non-`SendInput`
-    text path (`desktop_set_value` via ValuePattern, or clipboard paste) for editors whose async
-    autocomplete corrupts per-key injection. Plus deferred A2: opt-in typed-text verification
-    (require a clear-precondition so read-back == target; rich `TypedTextMismatch`, no auto-retry).
+  - **Phase 4b.2** ✅ **(v0.7.2, delivered) — typed-text verification.** `desktop_type` optionally reads the element back (`verify`, default true) and returns a soft `verify` object; on a mismatch it names `desktop_set_value` (UIA ValuePattern) as the remedy for reactive/RichEdit editors (the new Notepad). No hard error, no auto-retry. NB: the earlier "reactive-editor non-keystroke path" framing was superseded — a live probe showed the new Notepad already exposes ValuePattern, so `desktop_set_value` was already the reliable path; v0.7.2 closes the *discoverability* gap, not a missing path.
   - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
     zero-UIA surfaces (also in the v2 table).
 
