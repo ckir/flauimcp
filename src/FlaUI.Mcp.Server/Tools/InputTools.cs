@@ -124,7 +124,7 @@ public sealed class InputTools
             try
             {
                 after = await _perception.RunOnRefReadAsync(new WindowHandle(window), @ref,
-                    el => VerifyReader.FromElement(el), timeoutMs);
+                    el => VerifyReader.FromElement(el, readCapability: true), timeoutMs);
             }
             catch
             {
@@ -139,7 +139,7 @@ public sealed class InputTools
                     ? new VerifyOutcome(VerifyStatus.Skipped, "read-failed", null, null)
                     : TypedTextVerifier.Check(before.Text, after.Text, text ?? string.Empty);
 
-            return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = VerifyResult.From(outcome) });
+            return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = VerifyResult.From(outcome, after.CanSetValue) });
         });
 
     [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Same lease/deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
