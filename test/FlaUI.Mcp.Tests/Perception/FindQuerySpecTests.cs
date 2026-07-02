@@ -55,4 +55,40 @@ public class FindQuerySpecTests
             ControlType: null, EnabledOnly: false));
         Assert.True(spec.MatchesPostFilter(name: "anything", enabled: true));
     }
+
+    // --- Null-element-name invariant (regression: v0.7.3 desktop_find `contains` NRE) ------------
+    // UIA returns a null Name for unnamed containers (Panes/Groups) - nearly every real window has
+    // one. EVERY name matcher must tolerate a null element name without throwing. Before the fix the
+    // "contains" branch called name.Contains(...) on a null instance -> NullReferenceException, which
+    // surfaced as an INTERNAL error and crashed desktop_find on essentially every real window (the eq
+    // branch survived via the null-safe static string.Equals). See PerceptionManager.FindAsync's
+    // el.Name read (SafeRead only substitutes its fallback on EXCEPTION, not on a null return).
+    [Theory]
+    [InlineData("eq")]
+    [InlineData("contains")]
+    public void Matches_null_element_name_never_throws_and_never_satisfies_a_name_constraint(string mode)
+    {
+        var spec = new FindQuerySpec(new FindQuery(AutomationId: null, Name: "Anything", NameMatch: mode,
+            ControlType: null, EnabledOnly: false));
+        Assert.False(spec.MatchesPostFilter(name: null, enabled: true));
+    }
+
+    [Fact]
+    public void Matches_null_element_name_passes_when_no_name_constraint()
+    {
+        // No name constraint (element matched natively by automationId/controlType): a null-Named
+        // element still passes the post-filter's name gate rather than crashing it.
+        var spec = new FindQuerySpec(new FindQuery(AutomationId: "aid1", Name: null, NameMatch: "contains",
+            ControlType: null, EnabledOnly: false));
+        Assert.True(spec.MatchesPostFilter(name: null, enabled: true));
+    }
+
+    [Fact]
+    public void Matches_null_element_name_still_honors_enabledOnly()
+    {
+        var spec = new FindQuerySpec(new FindQuery(AutomationId: null, Name: null, NameMatch: "eq",
+            ControlType: null, EnabledOnly: true));
+        Assert.True(spec.MatchesPostFilter(name: null, enabled: true));
+        Assert.False(spec.MatchesPostFilter(name: null, enabled: false));
+    }
 }

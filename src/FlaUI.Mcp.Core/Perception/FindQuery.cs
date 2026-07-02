@@ -55,15 +55,18 @@ public sealed class FindQuerySpec
     /// name "contains" (UIA ByName is exact-only) and enabledOnly. Name-"eq" is handled natively,
     /// but re-checking it here is harmless and keeps the predicate total. Callers pass the element's
     /// ALREADY-REDACTED name (a password field's name is "[REDACTED]"), so a password element can
-    /// never satisfy a name constraint (INV-5 - no name-oracle).</summary>
-    public bool MatchesPostFilter(string name, bool enabled)
+    /// never satisfy a name constraint (INV-5 - no name-oracle). The element name may be NULL (UIA
+    /// returns null for unnamed containers - Panes/Groups); a null name is treated as empty so no
+    /// matcher throws (it simply can't satisfy a non-empty name constraint).</summary>
+    public bool MatchesPostFilter(string? name, bool enabled)
     {
         if (_q.EnabledOnly && !enabled) return false;
         if (_q.Name is { } wanted)
         {
+            var n = name ?? string.Empty; // null == unnamed container; keep the predicate total
             bool ok = string.Equals(_q.NameMatch, "contains", StringComparison.Ordinal)
-                ? name.Contains(wanted, StringComparison.Ordinal)
-                : string.Equals(name, wanted, StringComparison.Ordinal);
+                ? n.Contains(wanted, StringComparison.Ordinal)
+                : string.Equals(n, wanted, StringComparison.Ordinal);
             if (!ok) return false;
         }
         return true;

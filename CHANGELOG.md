@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.4] - 2026-07-02
+
+### Fixed
+- **`desktop_find nameMatch=contains` no longer crashes.** A UIA element with a null `Name` (unnamed
+  containers — Panes/Groups, present in nearly every window) made the `contains` post-filter call
+  `string.Contains` on a null reference and throw, surfacing as an `INTERNAL` error — so `contains`
+  matching failed on essentially every real window in v0.7.3 (`eq` was unaffected). The element name is
+  now coalesced to empty at the source and the post-filter predicate is total. This also hardens the
+  `desktop_find` result wire contract: `name` and `automationId` are always present as empty strings,
+  never null. (Caught by live smoke-testing of v0.7.3; fenced by a null-Name invariant unit test across
+  every name matcher.)
+
 ## [0.7.3] - 2026-07-02
 
 ### Added
