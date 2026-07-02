@@ -100,12 +100,19 @@ safety rationale.
     which garbles synthetic input at *any* pacing (0ms and 15ms both fail; a classic Win32 edit is
     exact either way) — that editor needs a non-keystroke path, see 4b.2.
   - **Phase 4b.2** ✅ **(v0.7.2, delivered) — typed-text verification.** `desktop_type` optionally reads the element back (`verify`, default true) and returns a soft `verify` object; on a mismatch it names `desktop_set_value` (UIA ValuePattern) as the remedy for reactive/RichEdit editors (the new Notepad). No hard error, no auto-retry. NB: the earlier "reactive-editor non-keystroke path" framing was superseded — a live probe showed the new Notepad already exposes ValuePattern, so `desktop_set_value` was already the reliable path; v0.7.2 closes the *discoverability* gap, not a missing path.
-  - **Phase 4b.3** ⏳ **(planned) — ValuePattern-aware verify remedy.** When `desktop_type`'s verify
-    detects a mismatch on a target with **no `ValuePattern`** (e.g. an Electron `contenteditable`),
-    stop recommending `desktop_set_value` (which returns `PatternUnsupported`) and instead recommend
-    the **clipboard-paste** path (`desktop_clipboard_set` → focus → `ctrl+v`), which lands atomically
-    and doesn't race a reactive editor. Cheap (`Patterns.Value.IsSupported` is reachable at verify
-    time); closes the remedy dead-end on exactly the app class that needs it.
+  - **Phase 4b.3** ⏳ **(v0.7.5 — spec + plan complete, implementing) — ValuePattern-aware verify remedy.**
+    When `desktop_type`'s verify detects a mismatch, the recovery remedy is chosen by the target's
+    ValuePattern **write-capability** instead of hardcoding `desktop_set_value`. The result carries a new
+    `canSetValue` fact (`Value.IsSupported && !IsReadOnly`; `null` when a UIA read throws) plus a
+    best-effort `recommendedFallbackTool`: `desktop_set_value` when writable (and as the **safe default**
+    on unknown — a wrong guess yields a recoverable `PatternUnsupported`), or the **clipboard-paste** path
+    (`desktop_clipboard_set` → `desktop_key "Ctrl+V"`) when the target has no writable ValuePattern (e.g.
+    an Electron `contenteditable`, which returns `PatternUnsupported` from `set_value`). The `remedy` prose
+    lists both strategies. The capability is read inside the verify after-read's STA visit (no extra
+    resolution, no hot-path tax). Additive / backward-compatible. Spec:
+    [`docs/superpowers/specs/2026-07-02-flaui-mcp-phase4b3-valuepattern-remedy-design.md`](docs/superpowers/specs/2026-07-02-flaui-mcp-phase4b3-valuepattern-remedy-design.md);
+    plan: [`docs/superpowers/plans/2026-07-02-flaui-mcp-phase4b3-valuepattern-remedy.md`](docs/superpowers/plans/2026-07-02-flaui-mcp-phase4b3-valuepattern-remedy.md).
+    *Deferred follow-on:* `desktop_paste_text` (an atomic clipboard-preserving paste tool) — its own spec.
   - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
     zero-UIA surfaces (also in the v2 table).
 - **Phase 5 — Read-only targeting** — split by what shipped: durable-ref hardening first,
@@ -122,6 +129,10 @@ safety rationale.
     name); refs are additive (a find does not supersede snapshot refs). `desktop_snapshot_diff`
     gains `scope=<ref>` to diff only a subtree (re-roots the current walk; slices the cached
     baseline in-memory).
+    - **v0.7.4 hotfix** ✅ — `desktop_find nameMatch=contains` threw a `NullReferenceException` on
+      unnamed containers (UIA returns a null element `Name`), surfacing as an `INTERNAL` error on
+      essentially every real window; caught by the v0.7.3 live smoke. Fixed by coalescing the null
+      name at the read sites + making the match predicate total, with +4 null-Name invariant tests.
 
 Not phased here (separate follow-on, not v1-blocking): HTTP/SSE transport with its hard
 auth-token gate; RefRegistry eviction on window close.
