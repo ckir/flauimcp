@@ -27,3 +27,21 @@ jobs:
   #   dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # synthetic input
   # The synthetic-input test additionally needs a real (non-RDP, physical-console) input session.
   # A self-hosted runner with an interactive desktop could host these in the future.
+
+  scaffolder-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Scaffold a throwaway tool and build
+        shell: pwsh
+        run: |
+          ./scripts/new-tool.ps1 -Name DesktopCiSmoke
+          dotnet build src/FlaUI.Mcp.Server -c Release
+      - name: Assert it is discarded (never committed)
+        shell: pwsh
+        run: |
+          git checkout -- .
+          git clean -fd
