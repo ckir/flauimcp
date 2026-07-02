@@ -174,7 +174,7 @@ Real `SendInput`-backed mouse/keyboard input, built on the safety foundation abo
   `desktop_type` takes an optional `verify` (bool, default `true`). When on, it reads the element back after typing and returns a `verify` object:
   - `{ ran, verified, mismatch }` — always present.
   - On a clean match: `verified:true`.
-  - On a mismatch: `mismatch:true` with `expected`, `actual` (both truncated to 256 chars), a stable `recommendedFallbackTool:"desktop_set_value"`, and a human-readable `remedy`.
+  - On a mismatch: `mismatch:true` with `expected`, `actual` (both truncated to 256 chars), a `canSetValue` wire fact indicating whether the target has a writable ValuePattern, and a `recommendedFallbackTool` that branches to `desktop_set_value` (if `canSetValue:true`) or the clipboard-paste path (`desktop_clipboard_set` → `desktop_key "Ctrl+V"`, if no ValuePattern), plus a human-readable `remedy`.
   - When it can't assert (empty-field precondition not met, no readable TextPattern, read failed, or a password/redacted field): `verified:false, mismatch:false, reason:"…"`.
   - `reason` is an **open** string — treat unknown values as forward-compatible; branch machines on `recommendedFallbackTool`, never parse `remedy`.
   
