@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.5] - 2026-07-02
+
+### Changed
+- `desktop_type` verify: on a mismatch, the recovery remedy is now chosen by the target's
+  ValuePattern write-capability. The result carries a new `canSetValue` fact and the
+  `recommendedFallbackTool` points to `desktop_clipboard_set` (clipboard-paste path) when the
+  element has no writable ValuePattern (e.g. an Electron `contenteditable`) instead of always
+  advising `desktop_set_value` (which returns `PatternUnsupported` there). The `remedy` prose now
+  lists both strategies. Additive/backward-compatible; `verify` still never throws.
+
 ## [0.7.4] - 2026-07-02
 
 ### Fixed

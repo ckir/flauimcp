@@ -100,7 +100,7 @@ safety rationale.
     which garbles synthetic input at *any* pacing (0ms and 15ms both fail; a classic Win32 edit is
     exact either way) — that editor needs a non-keystroke path, see 4b.2.
   - **Phase 4b.2** ✅ **(v0.7.2, delivered) — typed-text verification.** `desktop_type` optionally reads the element back (`verify`, default true) and returns a soft `verify` object; on a mismatch it names `desktop_set_value` (UIA ValuePattern) as the remedy for reactive/RichEdit editors (the new Notepad). No hard error, no auto-retry. NB: the earlier "reactive-editor non-keystroke path" framing was superseded — a live probe showed the new Notepad already exposes ValuePattern, so `desktop_set_value` was already the reliable path; v0.7.2 closes the *discoverability* gap, not a missing path.
-  - **Phase 4b.3** ⏳ **(v0.7.5 — spec + plan complete, implementing) — ValuePattern-aware verify remedy.**
+  - **Phase 4b.3** ✅ **(v0.7.5) — ValuePattern-aware verify remedy.**
     When `desktop_type`'s verify detects a mismatch, the recovery remedy is chosen by the target's
     ValuePattern **write-capability** instead of hardcoding `desktop_set_value`. The result carries a new
     `canSetValue` fact (`Value.IsSupported && !IsReadOnly`; `null` when a UIA read throws) plus a
