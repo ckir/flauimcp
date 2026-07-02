@@ -41,7 +41,7 @@ public sealed class PerceptionManager
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
             var roots = PopupFinder.SearchRoots(win, desktop);
-            var el = _refs.ResolveDescriptor(descriptor, roots, @ref); // REF_STALE_UNRESOLVABLE if gone
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref, RefResolveMode.Strict); // INV-8: exact element or REF_STALE_UNRESOLVABLE
             if (el.Properties.IsOffscreen.ValueOrDefault)
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
@@ -59,7 +59,7 @@ public sealed class PerceptionManager
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
             var roots = PopupFinder.SearchRoots(win, desktop);
-            var el = _refs.ResolveDescriptor(descriptor, roots, @ref);
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref, RefResolveMode.Strict); // INV-8: exact element or REF_STALE_UNRESOLVABLE
             if (el.Properties.IsOffscreen.ValueOrDefault)
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
@@ -78,7 +78,7 @@ public sealed class PerceptionManager
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
             var roots = PopupFinder.SearchRoots(win, desktop);
-            var el = _refs.ResolveDescriptor(descriptor, roots, @ref);
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref, RefResolveMode.Lenient); // read: descriptor re-walk (ambiguity-aware)
             return func(el);
         }, timeoutMs);
     }
