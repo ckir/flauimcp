@@ -9,8 +9,9 @@ namespace FlaUI.Mcp.Server.Tools;
 public sealed class WindowTools
 {
     private readonly WindowManager _windows;
+    private readonly ServerOptions _options;
 
-    public WindowTools(WindowManager windows) => _windows = windows;
+    public WindowTools(WindowManager windows, ServerOptions options) { _windows = windows; _options = options; }
 
     [McpServerTool(ReadOnly = true), Description("List top-level desktop windows (Title, ProcessName, Pid, IsForeground). Opt-in includeBounds adds absolute physical-px Bounds + ZOrder (0=topmost, for occlusion reasoning). Pure Win32 — never blocks on an unresponsive window. For per-window control counts, open a window and call desktop_snapshot_stats.")]
     public Task<string> DesktopListWindows(
@@ -35,22 +36,22 @@ public sealed class WindowTools
             return ToolResponse.Ok(new { handle = handle.Id });
         });
 
-    [McpServerTool, Description("Launch an app and return a handle to its main window.")]
+    [McpServerTool(Destructive = true), Description("Launch an app and return a handle to its main window. Blocked in --read-only-mode.")]
     public Task<string> DesktopLaunchApp(
         [Description("Executable path.")] string path,
         [Description("Optional arguments.")] string? args = null,
         [Description("Max ms to wait for a titled window.")] int timeoutMs = 10000)
-        => ToolResponse.Guard(async () =>
+        => ToolResponse.GuardWrite(_options, async () =>
         {
             var (handle, pid) = await _windows.LaunchAppAsync(path, args, timeoutMs);
             return ToolResponse.Ok(new { handle = handle.Id, pid });
         });
 
-    [McpServerTool, Description("Bring a window to the foreground.")]
+    [McpServerTool(Destructive = true), Description("Bring a window to the foreground. Blocked in --read-only-mode.")]
     public Task<string> DesktopFocusWindow([Description("Window handle, e.g. w1.")] string window)
-        => ToolResponse.Guard(async () => { await _windows.FocusAsync(new WindowHandle(window)); return ToolResponse.Ok(new { ok = true }); });
+        => ToolResponse.GuardWrite(_options, async () => { await _windows.FocusAsync(new WindowHandle(window)); return ToolResponse.Ok(new { ok = true }); });
 
-    [McpServerTool, Description("Close a window and free its handle.")]
+    [McpServerTool(Destructive = true), Description("Close a window and free its handle. Blocked in --read-only-mode.")]
     public Task<string> DesktopCloseWindow([Description("Window handle, e.g. w1.")] string window)
-        => ToolResponse.Guard(async () => { await _windows.CloseAsync(new WindowHandle(window)); return ToolResponse.Ok(new { ok = true }); });
+        => ToolResponse.GuardWrite(_options, async () => { await _windows.CloseAsync(new WindowHandle(window)); return ToolResponse.Ok(new { ok = true }); });
 }
