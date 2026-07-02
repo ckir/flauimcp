@@ -131,7 +131,8 @@ public sealed class RefRegistry
     // A demanded ancestor matching more than this many containers is treated as irrecoverably ambiguous
     // (and this bounds the M×N per-scope search fan-out a hostile UI could force). Task 3 makes this
     // env-tunable; a plain const here keeps Task 1 self-contained.
-    private const int MaxResolveScopes = 512;
+    private static readonly int MaxResolveScopes =
+        RefResolveConfig.MaxScopes(System.Environment.GetEnvironmentVariable("FLAUI_MCP_REF_MAXSCOPES"));
 
     // Safe descriptor label for diagnostics: AutomationId is a developer-assigned constant (safe to log
     // and essential for triage); Name is frequently user content and is NEVER echoed.
