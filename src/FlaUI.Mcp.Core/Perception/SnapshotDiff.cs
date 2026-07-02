@@ -8,12 +8,43 @@ public sealed record SnapshotDiffResult(string BaselineSnapshotId, string Curren
 
 public static class SnapshotDiff
 {
-    private static string Identity(SnapshotNode n)
-        => n.RuntimeId.Count > 0
-            ? $"{n.ControlType}|{n.AutomationId}|rid:{string.Join(",", n.RuntimeId)}"
-            : $"{n.ControlType}|{n.AutomationId}|name:{n.Name}";
+    /// <summary>The single composite-identity contract used by BOTH the diff (node identity) and the
+    /// scoped-diff subtree slice. RuntimeId when present (stable across a re-walk), else Name.</summary>
+    internal static string IdentityKey(FlaUI.Core.Definitions.ControlType ct, string automationId,
+        IReadOnlyList<int> runtimeId, string name)
+        => runtimeId.Count > 0
+            ? $"{ct}|{automationId}|rid:{string.Join(",", runtimeId)}"
+            : $"{ct}|{automationId}|name:{name}";
+
+    private static string Identity(SnapshotNode n) => IdentityKey(n.ControlType, n.AutomationId, n.RuntimeId, n.Name);
     private static DiffDescriptor Desc(SnapshotNode n) => new(n.Ref, n.ControlType.ToString(), n.AutomationId, n.Name);
     private static NodeState State(SnapshotNode n) => new(n.Name, n.Enabled, n.Focused);
+
+    /// <summary>Slice a cached model down to the subtree rooted at the node matching the scope
+    /// descriptor's identity (same IdentityKey as the diff), by pre-order depth walk: the matched
+    /// node plus all following SnapshotNodes with a greater Depth, stopping at the first node whose
+    /// Depth is &lt;= the scope's (a sibling/ancestor) or a non-node marker. Missing scope => empty
+    /// (its whole current-side subtree then reads as "added"). Depth-agnostic Compute means the
+    /// slice's original depths are fine to keep.</summary>
+    public static SnapshotModel Subtree(SnapshotModel model, ElementDescriptor scope)
+    {
+        string wantId = IdentityKey(scope.ControlType, scope.AutomationId, scope.RuntimeId, scope.Name);
+
+        var items = model.Items;
+        int start = -1, scopeDepth = 0;
+        for (int i = 0; i < items.Count; i++)
+            if (items[i] is SnapshotNode n && Identity(n) == wantId) { start = i; scopeDepth = n.Depth; break; }
+        if (start < 0) return new SnapshotModel(System.Array.Empty<SnapshotItem>());
+
+        var slice = new List<SnapshotItem> { items[start] };
+        for (int i = start + 1; i < items.Count; i++)
+        {
+            if (items[i] is not SnapshotNode n) break;      // marker (overlays/depth-limit) ends the subtree
+            if (n.Depth <= scopeDepth) break;               // sibling or ancestor - subtree done
+            slice.Add(n);
+        }
+        return new SnapshotModel(slice);
+    }
 
     public static SnapshotDiffResult Compute(string baselineId, SnapshotModel baseline, string currentId, SnapshotModel current)
     {

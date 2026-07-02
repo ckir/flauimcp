@@ -108,6 +108,20 @@ safety rationale.
     time); closes the remedy dead-end on exactly the app class that needs it.
   - *Optional / v1.5:* `Windows.Media.Ocr`-assisted targeting + occlusion awareness for
     zero-UIA surfaces (also in the v2 table).
+- **Phase 5 — Read-only targeting** — split by what shipped: durable-ref hardening first,
+  direct element query second.
+  - **Phase 5a** ✅ **(v0.7.3a) — ref-resolution hardening (INV-8).** Strict RuntimeId-only resolution for
+    state-changing ref tools (`REF_STALE_UNRESOLVABLE` on a recycled `AutomationId`, no
+    positional fallback); fail-closed lenient reads (`AMBIGUOUS_MATCH`/`REF_STALE`); break-glass
+    `FLAUI_MCP_REF_STRICT=off`. Prerequisite for `desktop_find` below.
+  - **Phase 5b** ✅ **(v0.7.3) — `desktop_find` + scoped `desktop_snapshot_diff`.** `desktop_find` queries a
+    window for element refs (`automationId` / `name` `eq`\|`contains` / `controlType` /
+    `enabledOnly`, optional subtree `scope`) without walking the whole tree — returns matches
+    with bounds + isEnabled/hasFocus + `totalMatches`/`isTruncated`; read-only, honors the
+    perception deny-list and password redaction (INV-5 — password fields are not findable by
+    name); refs are additive (a find does not supersede snapshot refs). `desktop_snapshot_diff`
+    gains `scope=<ref>` to diff only a subtree (re-roots the current walk; slices the cached
+    baseline in-memory).
 
 Not phased here (separate follow-on, not v1-blocking): HTTP/SSE transport with its hard
 auth-token gate; RefRegistry eviction on window close.

@@ -196,6 +196,98 @@ public sealed class PerceptionManager
             return (snapshotId, model);
         });
 
+    /// <summary>desktop_find: resolve a UIA condition on the query STA and mint durable refs for the
+    /// matches WITHOUT superseding the window's snapshot refs (additive Register - a narrow find must
+    /// not invalidate a held snapshot ref). Applies the snapshot security floor: deny-list guard on
+    /// the window (INV-5) + IsPassword name redaction BEFORE the match decision (no name-oracle).
+    /// Matches are capped at max in tree order; TotalMatches/IsTruncated report the full count so
+    /// truncation is never silent.</summary>
+    public Task<FindResult> FindAsync(WindowHandle handle, FindQuery query, int max, string? scopeRef) =>
+        _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
+        {
+            var procName = SafeProcessName(win);
+            if (PerceptionPolicy.IsDenied(procName))
+                throw new ToolException(ToolErrorCode.TargetDenied,
+                    $"Finding in windows owned by '{procName}' is blocked (credential store).",
+                    "target a different, non-sensitive window");
+
+            var spec = new FindQuerySpec(query);
+            bool hasCtConstraint = FindQuerySpec.TryParseControlType(query.ControlType, out var wantedCt);
+            if (!string.IsNullOrWhiteSpace(query.ControlType) && !hasCtConstraint)
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    $"Unknown controlType '{query.ControlType}'.",
+                    "use a UIA ControlType name, e.g. Button, Edit, ListItem");
+
+            AutomationElement root = string.IsNullOrEmpty(scopeRef)
+                ? win
+                : _refs.Resolve(handle.Id, scopeRef!, PopupFinder.SearchRoots(win, desktop));
+
+            // Native condition for the indexed props (AutomationId, ControlType, exact Name). Name
+            // "contains" and enabledOnly are not indexed-expressible -> post-filter.
+            FlaUI.Core.Conditions.ConditionBase? Build(FlaUI.Core.Conditions.ConditionFactory cf)
+            {
+                FlaUI.Core.Conditions.ConditionBase? c = null;
+                if (!string.IsNullOrEmpty(query.AutomationId)) c = cf.ByAutomationId(query.AutomationId);
+                if (hasCtConstraint) c = c is null ? cf.ByControlType(wantedCt) : c.And(cf.ByControlType(wantedCt));
+                if (!string.IsNullOrEmpty(query.Name) && string.Equals(query.NameMatch, "eq", System.StringComparison.Ordinal))
+                    c = c is null ? cf.ByName(query.Name) : c.And(cf.ByName(query.Name));
+                return c;
+            }
+
+            // hasNative iff a native-expressible constraint exists (NOT name-contains / enabledOnly).
+            // When absent, match ALL via the no-arg overload (repo idiom PerceptionManager.cs:226) -
+            // NOT a TrueCondition/double-negation surrogate.
+            bool hasNative = !string.IsNullOrEmpty(query.AutomationId) || hasCtConstraint
+                || (!string.IsNullOrEmpty(query.Name) && string.Equals(query.NameMatch, "eq", System.StringComparison.Ordinal));
+            AutomationElement[] raw;
+            try
+            {
+                raw = (hasNative ? root.FindAllDescendants(cf => Build(cf)!) : root.FindAllDescendants()).ToArray();
+            }
+            catch { raw = System.Array.Empty<AutomationElement>(); }
+
+            var matches = new List<FindMatch>();
+            int total = 0;
+            foreach (var el in raw)
+            {
+                // INV-5: redact a password element's Name BEFORE any match decision, not just on output.
+                // Otherwise find is a name-oracle snapshot never exposes (find name="guess" -> hit => leak).
+                // Matching on the redacted name makes password fields unfindable-by-name, matching the
+                // snapshot render (SnapshotEngine.cs:131 shows password Name as "[REDACTED]").
+                bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
+                string rawName = SafeRead(() => el.Name, "");         // raw -> descriptor (re-resolution key)
+                string name = isPwd ? "[REDACTED]" : rawName;         // redacted -> match + output
+                bool enabled = SafeRead(() => el.IsEnabled, false);
+                if (!spec.MatchesPostFilter(name, enabled)) continue; // match on the redacted name (no name-oracle)
+                total++;
+                if (matches.Count >= max) continue; // keep counting total, stop collecting
+
+                // Read each primitive ONCE; reuse for BOTH the descriptor and the FindMatch (no double reads).
+                int[] rid = SafeRead(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? System.Array.Empty<int>();
+                var ctEnum = SafeRead(() => el.ControlType, FlaUI.Core.Definitions.ControlType.Custom);
+                string aid = SafeRead(() => el.AutomationId, "");
+                var b = SafeRead(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
+                bool offscreen = SafeRead(() => el.Properties.IsOffscreen.ValueOrDefault, false);
+                bool hasFocus = SafeRead(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
+
+                // Descriptor uses the RAW name - a redacted "[REDACTED]" would break Name-based re-resolution
+                // for a password field. cached: el (like snapshot's Register at SnapshotEngine.cs:87) so the
+                // ref is IMMEDIATELY usable via the RuntimeId fast-path - INCLUDING anonymous controls that
+                // have a RuntimeId but no AutomationId/Name (which cached:null could not re-resolve, making
+                // the ref dead-on-arrival - AGY-AFTER R3). Additive find refs therefore retain a COM handle
+                // (same bounded pinning snapshot already does; ~<=max per find; Phase-6 per-connection
+                // lifecycle is the eviction fix). Usability of the returned ref beats the bounded memory cost.
+                var descriptor = new ElementDescriptor(rid, ctEnum, aid, rawName,
+                    SnapshotEngine.NearestAncestorAutomationId(el), System.Array.Empty<int>(), hasFocus);
+                var @ref = _refs.Register(handle.Id, descriptor, cached: el); // ADDITIVE, cached (usable ref)
+                matches.Add(new FindMatch(@ref, aid, name, ctEnum.ToString(),
+                    new[] { b.X, b.Y, b.Width, b.Height }, offscreen, enabled, hasFocus)); // name already redacted
+            }
+            return new FindResult(matches, total, total > max);
+        });
+
+    private static T SafeRead<T>(Func<T> read, T fallback) { try { return read(); } catch { return fallback; } }
+
     public async Task<SnapshotResult> SnapshotAsync(WindowHandle handle, SnapshotOptions options)
     {
         var (snapshotId, model) = await BuildModelAsync(handle, options, _refs);
@@ -237,15 +329,26 @@ public sealed class PerceptionManager
             return (true, null);
         });
 
-    public async Task<SnapshotDiffResult> DiffAsync(WindowHandle handle, string baselineSnapshotId)
+    public async Task<SnapshotDiffResult> DiffAsync(WindowHandle handle, string baselineSnapshotId, string? scopeRef = null)
     {
         if (!_cache.TryGet(baselineSnapshotId, out var baseline) || baseline is null)
             throw new ToolException(ToolErrorCode.SnapshotNotFound, $"Baseline snapshot '{baselineSnapshotId}' is not in the cache.", "re-take the baseline snapshot");
         var baseWindowId = baselineSnapshotId.Split(':')[0];
         if (!string.Equals(baseWindowId, handle.Id, System.StringComparison.Ordinal))
             throw new ToolException(ToolErrorCode.SnapshotWindowMismatch, $"Baseline '{baselineSnapshotId}' belongs to window '{baseWindowId}', not '{handle.Id}'.", "pass a baselineSnapshotId from the same window");
-        var (currentId, current) = await BuildModelAsync(handle, new SnapshotOptions(), _refs);
+
+        // Scope: read the scope descriptor off-STA now. (RefNotFound if the ref was superseded -
+        // surfaces cleanly via ToolResponse.Guard.) BuildModelAsync resolves RootRef BEFORE its
+        // BeginSnapshot, so the same ref also re-resolves inside the walk.
+        var scopeDescriptor = string.IsNullOrEmpty(scopeRef) ? null : _refs.Lookup(handle.Id, scopeRef!).Descriptor;
+
+        var currentOptions = string.IsNullOrEmpty(scopeRef) ? new SnapshotOptions() : new SnapshotOptions { RootRef = scopeRef };
+        var (currentId, current) = await BuildModelAsync(handle, currentOptions, _refs);
         _cache.Put(currentId, current);
+
+        if (scopeDescriptor is not null)
+            baseline = SnapshotDiff.Subtree(baseline, scopeDescriptor); // slice baseline to the same subtree (in-memory)
+
         return SnapshotDiff.Compute(baselineSnapshotId, baseline, currentId, current);
     }
 
