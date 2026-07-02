@@ -206,6 +206,28 @@ agent drives input.
 not against a determined same-user host shell — anything running as your user can already act as
 your user. This is a guardrail for an agent, not a sandbox.
 
+#### Ref resolution: safe by default (v0.7.3a)
+
+A ref (`e23`) captured from a snapshot is re-resolved when you act on it — **strict on state-changing
+tools**, **lenient on reads**, and it never silently binds a different control than the ref pointed at:
+
+- **State-changing tools** (`desktop_invoke`, `desktop_set_value`, `desktop_toggle`, `desktop_expand`,
+  `desktop_select`, `desktop_set_focus`, `desktop_scroll`, `desktop_scroll_into_view`, `desktop_type`,
+  `desktop_key`, `desktop_click`, `desktop_set_caret`, `desktop_select_text_range`) require the **exact
+  element** (matched by UIA RuntimeId). If it was destroyed and recreated (e.g. a virtualized row
+  recycled its AutomationId), the action is **refused** with `REF_STALE_UNRESOLVABLE` — never
+  retargeted. Take a fresh `desktop_snapshot`. (Legacy Win32 apps with no stable UIA identity: use
+  `desktop_click_at`.)
+- **Read tools** (`desktop_get_text`, `desktop_get_grid_cell`, snapshots) re-bind within the element's
+  original container. `AMBIGUOUS_MATCH` on a duplicate AutomationId/Name (or duplicated ancestor
+  container); `REF_STALE_UNRESOLVABLE` if the container is gone or identity can't be re-verified — it
+  never guesses. Re-snapshot and pick a specific ref.
+
+**Operator override:** set `FLAUI_MCP_REF_STRICT=off` (read at startup) to force lenient resolution
+globally as a break-glass for apps with too-volatile UIA identity — this **disables the INV-8 guard**,
+so use it only when strict resolution blocks a legitimate workflow. `FLAUI_MCP_REF_MAXSCOPES` (default
+512) tunes the ancestor fan-out cap.
+
 ### Read-only mode
 
 Start the server with **`--read-only-mode`** to refuse every state-changing tool — all the
