@@ -39,6 +39,15 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
 ## Synthetic input needs a human lease
 
 - Check first: `desktop_input_status` → `{leaseStatus, secondsRemaining, shells}`.
+- **Pre-flight the target window state (the #1 driving trap):** before an input plan, run
+  `desktop_list_windows includeBounds:true` — off-screen bounds like `@{-31992,…}` mean the target is
+  **MINIMIZED**. A minimized (or otherwise non-foreground) target makes EVERY synthetic action abort
+  `ElementDisappearedDuringAction` (the TOCTOU guard). Fix: `desktop_window_transform wN restore` →
+  re-`desktop_find`/snapshot (**refs change!**) → THEN type. Tell: if `desktop_focus_window wN` returns
+  `ok:true` but `desktop_list_windows` STILL shows another window `IsForeground:true`, the target is
+  almost certainly minimized — restore it. Do NOT theorize a "background-process foreground-lock" and
+  retry the keystroke; check window state instead (a background process genuinely can't `SetForegroundWindow`
+  past the active driving terminal, but that is NOT what an abort-after-`focus:ok` is telling you).
 - Locked? A human runs on the host: `flaui-mcp unlock --minutes N` (suggest the user type `! flaui-mcp unlock --minutes N`).
 - The lease **expires mid-session** (`InputNotLeased` when it lapses) → re-unlock.
 - **Lease-exempt even while locked:** `desktop_set_caret`, `desktop_select_text_range`, `desktop_get_text`
@@ -76,7 +85,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `ElementDisappearedDuringAction` on type/key | foreground changed / target not truly focused (TOCTOU guard) | `desktop_focus_window wN` → re-snapshot → retry |
+| `ElementDisappearedDuringAction` on type/key | foreground changed / target not truly focused (TOCTOU guard) — most often the target is **MINIMIZED** (esp. if `focus_window` returned `ok:true` yet `list_windows` still shows another window `IsForeground`) | Check `desktop_list_windows includeBounds:true`; if off-screen (`@{-31992,…}`) → `desktop_window_transform wN restore` → **re-snapshot (refs change!)** → retry. Otherwise `desktop_focus_window wN` → re-snapshot → retry ONCE (don't retry-loop). |
 | Window at `@{-31992,…}`, focus won't take | window is **minimized** (won't come forward) | `desktop_window_transform wN restore` → **re-snapshot (refs change!)** → act |
 | Keys go nowhere after closing a dialog | prior window lost foreground | `desktop_focus_window` before the next key |
 | `desktop_launch_app` LaunchTimeout (UWP/Store app) | stub launcher hands window to ApplicationFrameHost | recover via `desktop_list_windows` → `desktop_open_window by:title` |
