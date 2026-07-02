@@ -28,7 +28,8 @@ public sealed class WindowManager : IDisposable
     /// <summary>Raised when a window handle is invalidated (process exit, close_window, or a
     /// PruneClosedWindows sweep observing a dead HWND). Carries the windowId. Fires at most once per
     /// invalidation and only when tracked state was actually removed. Subscribers must be thread-safe:
-    /// this can fire on a ThreadPool thread (via proc.Exited).</summary>
+    /// this can fire on a ThreadPool thread (via proc.Exited). Subscriber exceptions are swallowed on
+    /// the invalidation path (they do NOT propagate to the invalidator).</summary>
     public event Action<string>? WindowInvalidated;
 
     public WindowManager(AutomationDispatcher dispatcher)
@@ -117,7 +118,11 @@ public sealed class WindowManager : IDisposable
         if (_watched.TryRemove(handle.Id, out var p))
             try { p.Dispose(); } catch { }
         if (removed)
-            WindowInvalidated?.Invoke(handle.Id);
+            // Swallow subscriber faults: this can fire on a raw ThreadPool thread (proc.Exited), where an
+            // unhandled exception is process-fatal, and from CloseAsync's finally, where it would mask an
+            // in-flight exception. Invalidation-path robustness > surfacing a subscriber bug here (mirrors
+            // the _watched Dispose guard above).
+            try { WindowInvalidated?.Invoke(handle.Id); } catch { }
     }
 
     internal WindowHandle Register(Window window, int pid)
