@@ -10,6 +10,10 @@ All notable changes to this project are documented here. This project adheres to
 - **Scoped `desktop_snapshot_diff`.** Gains `scope=<ref>` to diff only a subtree (re-roots the current walk; slices the cached baseline in-memory).
 
 ### Security
+- **`--read-only-mode` now blocks window tools (INV).** `desktop_launch_app`, `desktop_focus_window`, and
+  `desktop_close_window` were state-changing but not gated by `--read-only-mode` (they used the non-guarding
+  path); they now short-circuit to `WriteBlockedReadOnly` like every other mutating tool, and are marked
+  `destructive` in their MCP annotations.
 - **Password-name redaction in diff (INV-5).** `desktop_snapshot_diff` now renders an IsPassword element's
   `Name` as `[REDACTED]` in added/removed/changed output, matching `desktop_snapshot` — a scoped or
   whole-tree diff can no longer surface a password element's name (name-oracle). Identity matching keeps the

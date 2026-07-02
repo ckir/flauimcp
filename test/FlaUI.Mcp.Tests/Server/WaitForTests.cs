@@ -47,7 +47,7 @@ public class WaitForTests : IClassFixture<TestAppFixture>
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var snap = new SnapshotTools(perception, new WaitCoordinator(perception));
         var inter = new InteractionTools(perception, mgr, ServerOptions.FromArgs(System.Array.Empty<string>()));
-        var window = new WindowTools(mgr);
+        var window = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false));
         var opened = await window.DesktopOpenWindow("pid", _app.Process.Id.ToString());
         var handle = JsonDocument.Parse(opened).RootElement.GetProperty("handle").GetString()!;
         return (snap, inter, handle);

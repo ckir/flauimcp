@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Tools;
 using Xunit;
 
@@ -17,7 +18,7 @@ public class WindowToolsTests : IClassFixture<TestAppFixture>
     {
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var tools = new WindowTools(mgr);
+        var tools = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false));
         var json = await tools.DesktopListWindows();
         Assert.Contains("TestApp", json);
     }
@@ -27,7 +28,7 @@ public class WindowToolsTests : IClassFixture<TestAppFixture>
     {
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var tools = new WindowTools(mgr);
+        var tools = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false));
         var json = await tools.DesktopOpenWindow("pid", "99999999");
         using var doc = JsonDocument.Parse(json);
         Assert.Equal("WindowNotFound", doc.RootElement.GetProperty("error").GetString());

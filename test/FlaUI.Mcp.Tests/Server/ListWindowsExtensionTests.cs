@@ -2,6 +2,7 @@ using System.Linq;
 using System.Text.Json;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Tools;
 using Xunit;
 
@@ -18,7 +19,7 @@ public class ListWindowsExtensionTests : IClassFixture<TestAppFixture>
     {
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
-        var tools = new WindowTools(mgr);
+        var tools = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false));
 
         var plain = await tools.DesktopListWindows();
         Assert.DoesNotContain("\"Bounds\"", plain);
