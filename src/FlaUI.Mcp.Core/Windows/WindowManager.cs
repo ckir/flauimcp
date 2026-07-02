@@ -25,6 +25,12 @@ public sealed class WindowManager : IDisposable
     private readonly ConcurrentDictionary<string, Process> _watched = new();
     private int _counter;
 
+    /// <summary>Raised when a window handle is invalidated (process exit, close_window, or a
+    /// PruneClosedWindows sweep observing a dead HWND). Carries the windowId. Fires at most once per
+    /// invalidation and only when tracked state was actually removed. Subscribers must be thread-safe:
+    /// this can fire on a ThreadPool thread (via proc.Exited).</summary>
+    public event Action<string>? WindowInvalidated;
+
     public WindowManager(AutomationDispatcher dispatcher)
     {
         _dispatcher = dispatcher;
@@ -99,10 +105,19 @@ public sealed class WindowManager : IDisposable
 
     public void Invalidate(WindowHandle handle)
     {
-        _handles.TryRemove(handle.Id, out _);
+        // Exactly-once gate. _handles is populated UNCONDITIONALLY by Register for every id, and
+        // ConcurrentDictionary.TryRemove returns true to EXACTLY ONE caller per key — so electing
+        // _handles as the SOLE gate makes WindowInvalidated fire at most once even when two threads
+        // invalidate the same handle concurrently (proc.Exited racing CloseAsync, or a sweep racing
+        // proc.Exited). _hwnds/_watched are best-effort (populated inside try/catch) so they cannot
+        // serve as the gate — remove them unconditionally (still disposing the watched process), but
+        // do NOT let their removal set `removed`.
+        bool removed = _handles.TryRemove(handle.Id, out _);
         _hwnds.TryRemove(handle.Id, out _);
         if (_watched.TryRemove(handle.Id, out var p))
             try { p.Dispose(); } catch { }
+        if (removed)
+            WindowInvalidated?.Invoke(handle.Id);
     }
 
     internal WindowHandle Register(Window window, int pid)

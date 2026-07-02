@@ -59,4 +59,20 @@ public class WindowManagerTests : IClassFixture<TestAppFixture>
         Assert.Contains("TestApp", title);
         Assert.NotEqual(queryThread, actionThread); // resolved on a transient action STA, not the query STA
     }
+
+    [Fact]
+    public async Task Invalidate_raises_WindowInvalidated_once_and_only_when_state_was_removed()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var fired = new List<string>();
+        mgr.WindowInvalidated += id => fired.Add(id);
+
+        mgr.Invalidate(handle);            // live state → fires once
+        mgr.Invalidate(handle);            // already gone → no phantom fire
+
+        Assert.Equal(new[] { handle.Id }, fired);
+    }
 }
