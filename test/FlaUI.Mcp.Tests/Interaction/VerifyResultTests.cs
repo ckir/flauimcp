@@ -102,4 +102,53 @@ public class VerifyResultTests
         Assert.False(Has(e, "expected"));
         Assert.False(Has(e, "actual"));
     }
+
+    [Fact]
+    public void Mismatch_canSetValue_true_recommends_set_value_and_emits_the_fact()
+    {
+        var o = new VerifyOutcome(VerifyStatus.Mismatch, null, Expected: "x", Actual: "y");
+        var e = Wire(VerifyResult.From(o, canSetValue: true));
+        Assert.True(e.GetProperty("mismatch").GetBoolean());
+        Assert.True(Has(e, "canSetValue"));
+        Assert.True(e.GetProperty("canSetValue").GetBoolean());
+        Assert.Equal("desktop_set_value", e.GetProperty("recommendedFallbackTool").GetString());
+    }
+
+    [Fact]
+    public void Mismatch_canSetValue_false_recommends_clipboard_and_emits_the_fact()
+    {
+        var o = new VerifyOutcome(VerifyStatus.Mismatch, null, Expected: "x", Actual: "y");
+        var e = Wire(VerifyResult.From(o, canSetValue: false));
+        Assert.True(Has(e, "canSetValue"));
+        Assert.False(e.GetProperty("canSetValue").GetBoolean());
+        Assert.Equal("desktop_clipboard_set", e.GetProperty("recommendedFallbackTool").GetString());
+    }
+
+    [Fact]
+    public void Mismatch_canSetValue_null_defaults_to_set_value_and_omits_the_fact()
+    {
+        var o = new VerifyOutcome(VerifyStatus.Mismatch, null, Expected: "x", Actual: "y");
+        var e = Wire(VerifyResult.From(o, canSetValue: null));
+        Assert.False(Has(e, "canSetValue")); // JsonIgnore-when-null: unknown -> absent
+        Assert.Equal("desktop_set_value", e.GetProperty("recommendedFallbackTool").GetString()); // safe default
+    }
+
+    [Fact]
+    public void Mismatch_remedy_prose_names_both_strategies_and_warns_off_the_truncated_echo()
+    {
+        var o = new VerifyOutcome(VerifyStatus.Mismatch, null, Expected: "x", Actual: "y");
+        var remedy = Wire(VerifyResult.From(o, canSetValue: false)).GetProperty("remedy").GetString()!;
+        Assert.Contains("desktop_set_value", remedy);
+        Assert.Contains("desktop_clipboard_set", remedy);
+        Assert.Contains("desktop_key", remedy);
+        Assert.Contains("expected", remedy); // the "do NOT use the truncated 'expected' echo" warning
+    }
+
+    [Fact]
+    public void NonMismatch_arms_never_emit_canSetValue()
+    {
+        Assert.False(Has(Wire(VerifyResult.From(new VerifyOutcome(VerifyStatus.Match, null, null, null))), "canSetValue"));
+        Assert.False(Has(Wire(VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "field-not-empty", null, null))), "canSetValue"));
+        Assert.False(Has(Wire(VerifyResult.Disabled), "canSetValue"));
+    }
 }
