@@ -10,6 +10,10 @@ All notable changes to this project are documented here. This project adheres to
 - **Scoped `desktop_snapshot_diff`.** Gains `scope=<ref>` to diff only a subtree (re-roots the current walk; slices the cached baseline in-memory).
 
 ### Security
+- **Password-name redaction in diff (INV-5).** `desktop_snapshot_diff` now renders an IsPassword element's
+  `Name` as `[REDACTED]` in added/removed/changed output, matching `desktop_snapshot` — a scoped or
+  whole-tree diff can no longer surface a password element's name (name-oracle). Identity matching keeps the
+  raw name internally (never serialized), so a password node still matches itself across baseline/current.
 - **Ref-resolution hardening (INV-8).** State-changing ref tools now resolve a ref **strictly** — they
   require the exact element by live UIA RuntimeId and refuse (`REF_STALE_UNRESOLVABLE`) rather than
   silently retarget a recycled/duplicate `AutomationId` (the destructive-action-on-the-wrong-control

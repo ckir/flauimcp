@@ -17,8 +17,14 @@ public static class SnapshotDiff
             : $"{ct}|{automationId}|name:{name}";
 
     private static string Identity(SnapshotNode n) => IdentityKey(n.ControlType, n.AutomationId, n.RuntimeId, n.Name);
-    private static DiffDescriptor Desc(SnapshotNode n) => new(n.Ref, n.ControlType.ToString(), n.AutomationId, n.Name);
-    private static NodeState State(SnapshotNode n) => new(n.Name, n.Enabled, n.Focused);
+
+    /// <summary>The Name as it may appear on the wire (added/removed/changed output): "[REDACTED]" for an
+    /// IsPassword element, matching the snapshot render (SnapshotEngine.cs:131) so a diff never becomes a
+    /// name-oracle that plain snapshot already redacts (INV-5). Identity keying keeps the RAW name (internal,
+    /// never serialized) so a password node still matches itself across baseline/current.</summary>
+    private static string ShownName(SnapshotNode n) => n.IsPassword ? "[REDACTED]" : n.Name;
+    private static DiffDescriptor Desc(SnapshotNode n) => new(n.Ref, n.ControlType.ToString(), n.AutomationId, ShownName(n));
+    private static NodeState State(SnapshotNode n) => new(ShownName(n), n.Enabled, n.Focused);
 
     /// <summary>Slice a cached model down to the subtree rooted at the node matching the scope
     /// descriptor's identity (same IdentityKey as the diff), by pre-order depth walk: the matched
