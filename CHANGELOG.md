@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.7.3] - 2026-07-02
 
 ### Added
 - **`desktop_find`.** Query a window for element refs (by automationId / name eq|contains / controlType / enabledOnly, optional subtree `scope`) without walking the whole tree. Returns matches with bounds + isEnabled/hasFocus + `totalMatches`/`isTruncated`. Read-only; honors the perception deny-list and password redaction (INV-5 — password fields are not findable by name). Refs are additive (a find does not supersede snapshot refs).
