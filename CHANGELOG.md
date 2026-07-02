@@ -14,6 +14,10 @@ All notable changes to this project are documented here. This project adheres to
   `Name` as `[REDACTED]` in added/removed/changed output, matching `desktop_snapshot` — a scoped or
   whole-tree diff can no longer surface a password element's name (name-oracle). Identity matching keeps the
   raw name internally (never serialized), so a password node still matches itself across baseline/current.
+- **Fail-closed password detection at snapshot build (INV-5).** The `IsPassword` bit is now read via the
+  fail-closed helper (redact on a COM read failure) instead of defaulting to non-password — so a flaky
+  `IsPassword` read can no longer leak a password element's raw `Name` through `desktop_snapshot` or
+  `desktop_snapshot_diff`.
 - **Ref-resolution hardening (INV-8).** State-changing ref tools now resolve a ref **strictly** — they
   require the exact element by live UIA RuntimeId and refuse (`REF_STALE_UNRESOLVABLE`) rather than
   silently retarget a recycled/duplicate `AutomationId` (the destructive-action-on-the-wrong-control

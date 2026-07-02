@@ -79,7 +79,7 @@ public static class SnapshotEngine
                 bool enabled = Safe(() => el.IsEnabled, false);
                 bool focusable = Safe(() => el.Properties.IsKeyboardFocusable.ValueOrDefault, false);
                 bool focused = Safe(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
-                bool isPassword = Safe(() => el.Properties.IsPassword.ValueOrDefault, false);
+                bool isPassword = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 var patterns = SupportedPatterns(el);
                 string help = Safe(() => el.HelpText, "");
