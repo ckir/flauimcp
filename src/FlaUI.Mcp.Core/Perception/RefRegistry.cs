@@ -84,13 +84,11 @@ public sealed class RefRegistry
         return ResolveDescriptor(d, searchRoots, @ref);
     }
 
-    /// <summary>Cache-free re-resolution from a descriptor against caller-supplied roots
-    /// (window first, then grafted popups). Used by the ACTION STA, which must NOT touch the
-    /// query-STA cached element. Throws REF_STALE_UNRESOLVABLE if the element is gone.</summary>
-    /// <summary>Cache-free re-resolution from a descriptor against caller-supplied roots. <paramref
-    /// name="mode"/> selects strictness: Strict (state-changing paths, INV-8) matches ONLY the exact
-    /// element by live RuntimeId and never rebinds; Lenient (reads) re-walks the descriptor. Throws
-    /// REF_STALE_UNRESOLVABLE if the element is gone.</summary>
+    /// <summary>Cache-free re-resolution from a descriptor against caller-supplied roots (window
+    /// first, then grafted popups). Used by the ACTION STA, which must NOT touch the query-STA cached
+    /// element. <paramref name="mode"/> selects strictness: Strict (state-changing paths, INV-8)
+    /// matches ONLY the exact element by live RuntimeId and never rebinds; Lenient (reads) re-walks
+    /// the descriptor. Throws REF_STALE_UNRESOLVABLE if the element is gone.</summary>
     public AutomationElement ResolveDescriptor(ElementDescriptor d, IReadOnlyList<AutomationElement> searchRoots,
         string @ref, RefResolveMode mode = RefResolveMode.Lenient)
     {
