@@ -20,7 +20,9 @@ public static class RefResolveConfig
     public static RefResolveMode WriteMode(string? env) =>
         StrictEnabled(env) ? RefResolveMode.Strict : RefResolveMode.Lenient;
 
-    /// <summary>Positive integer override, else the default.</summary>
+    /// <summary>Positive integer override, else the default. Parsed with the invariant culture so a
+    /// config value behaves identically regardless of the host machine's locale.</summary>
     public static int MaxScopes(string? env) =>
-        int.TryParse(env, out var n) && n > 0 ? n : DefaultMaxScopes;
+        int.TryParse(env, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var n) && n > 0 ? n : DefaultMaxScopes;
 }

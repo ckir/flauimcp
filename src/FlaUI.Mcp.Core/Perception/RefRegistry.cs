@@ -129,8 +129,8 @@ public sealed class RefRegistry
     }
 
     // A demanded ancestor matching more than this many containers is treated as irrecoverably ambiguous
-    // (and this bounds the M×N per-scope search fan-out a hostile UI could force). Task 3 makes this
-    // env-tunable; a plain const here keeps Task 1 self-contained.
+    // (and this bounds the M×N per-scope search fan-out a hostile UI could force). Env-tunable via
+    // FLAUI_MCP_REF_MAXSCOPES (parsed by RefResolveConfig.MaxScopes: positive-int override, else 512).
     private static readonly int MaxResolveScopes =
         RefResolveConfig.MaxScopes(System.Environment.GetEnvironmentVariable("FLAUI_MCP_REF_MAXSCOPES"));
 
