@@ -95,38 +95,34 @@ public sealed class RefRegistry
         if (mode == RefResolveMode.Strict)
             return ResolveStrict(d, searchRoots, @ref);
 
-        // (2) descriptor re-walk per search root: AutomationId then Name+ControlType, scoped
-        // under the nearest stable ancestor.
-        foreach (var searchRoot in searchRoots)
+        // (2) descriptor re-walk. Identity key = AutomationId if present, else Name+ControlType.
+        // Gather the ancestor scope(s) (all matching ancestors across all roots; fail-closed if a
+        // demanded ancestor is gone — never widen to the whole window), accumulate matches across every
+        // scope, dedup by live RuntimeId. >1 distinct => AMBIGUOUS_MATCH. NO positional/IndexPath
+        // fallback: an identity-unverified positional match is a data-integrity hazard on a read that
+        // feeds the agent's context.
+        var scopes = GatherScopes(searchRoots, d, @ref); // fail-closed on a missing/over-matched ancestor
+        var matches = new List<AutomationElement>();
+        foreach (var scope in scopes)
         {
-            if (searchRoot is null) continue;
-            var scope = searchRoot;
-            if (!string.IsNullOrEmpty(d.AncestorAutomationId))
-            {
-                var anc = TrySearch(searchRoot, cf => cf.ByAutomationId(d.AncestorAutomationId));
-                if (anc is not null) scope = anc;
-            }
             if (!string.IsNullOrEmpty(d.AutomationId))
-            {
-                var byAid = TrySearch(scope, cf => cf.ByAutomationId(d.AutomationId));
-                if (byAid is not null) return byAid;
-            }
-            if (!string.IsNullOrEmpty(d.Name))
-            {
-                var byName = TrySearch(scope, cf => cf.ByName(d.Name).And(cf.ByControlType(d.ControlType)));
-                if (byName is not null) return byName;
-            }
+                matches.AddRange(TrySearchAll(scope, cf => cf.ByAutomationId(d.AutomationId)));
+            else if (!string.IsNullOrEmpty(d.Name))
+                matches.AddRange(TrySearchAll(scope, cf => cf.ByName(d.Name).And(cf.ByControlType(d.ControlType))));
         }
 
-        // (3) IndexPath last-resort — window-relative only (searchRoots[0] is the window root).
-        if (searchRoots.Count > 0)
-        {
-            var byPath = TryIndexPath(searchRoots[0], d.IndexPath);
-            if (byPath is not null) return byPath;
-        }
+        var distinct = DistinctByRuntimeId(matches);
+        if (distinct.Count > 1)
+            throw new ToolException(ToolErrorCode.AmbiguousMatch,
+                $"Ref '{@ref}' matches {distinct.Count} elements by " +
+                    (string.IsNullOrEmpty(d.AutomationId) ? "Name + control type" : $"AutomationId '{d.AutomationId}'") +
+                    "; cannot safely pick one for re-resolution.",
+                "re-snapshot and use a more specific ref; if the duplication is structural (a fresh snapshot yields the same ambiguity) use coordinate-based tools instead");
+        if (distinct.Count == 1)
+            return distinct[0];
 
         throw new ToolException(ToolErrorCode.RefStaleUnresolvable,
-            $"Ref '{@ref}' could not be re-resolved; the element appears to be gone.",
+            $"Ref '{@ref}' ({Key(d)}) could not be re-resolved; the element appears to be gone.",
             "take a fresh desktop_snapshot");
     }
 
@@ -175,6 +171,27 @@ public sealed class RefRegistry
                 $"Ref '{@ref}' names ancestor container '{d.AncestorAutomationId}' which matches {scopes.Count} elements (> cap {MaxResolveScopes}); too many to safely disambiguate.",
                 "this is a structural ambiguity a fresh snapshot cannot resolve — use coordinate-based desktop_click_at, or raise FLAUI_MCP_REF_MAXSCOPES if the UI is legitimately this large");
         return scopes;
+    }
+
+    // Collapse duplicates by live RuntimeId (unique among live elements) so the same element found via
+    // overlapping roots/scopes counts once. An element whose RuntimeId cannot be read gets a unique key
+    // -> kept distinct (conservative: fail-safe toward ambiguity rather than silently binding).
+    private static IReadOnlyList<AutomationElement> DistinctByRuntimeId(IReadOnlyList<AutomationElement> els)
+    {
+        var result = new List<AutomationElement>();
+        var seen = new HashSet<string>();
+        foreach (var el in els)
+        {
+            string key;
+            try
+            {
+                var rid = el.Properties.RuntimeId.ValueOrDefault;
+                key = rid != null ? string.Join(",", rid) : "unreadable:" + result.Count;
+            }
+            catch { key = "unreadable:" + result.Count; }
+            if (seen.Add(key)) result.Add(el);
+        }
+        return result;
     }
 
     /// <summary>Strict identity re-resolution (INV-8): return ONLY the element whose live RuntimeId
@@ -241,26 +258,4 @@ public sealed class RefRegistry
     }
 
     private static T Safe<T>(Func<T> read, T fallback) { try { return read(); } catch { return fallback; } }
-
-    private static AutomationElement? TrySearch(AutomationElement root,
-        Func<ConditionFactory, ConditionBase> cond)
-    {
-        try { return root.FindFirstDescendant(cond); } catch { return null; }
-    }
-
-    private static AutomationElement? TryIndexPath(AutomationElement root, IReadOnlyList<int> path)
-    {
-        try
-        {
-            var cur = root;
-            foreach (var i in path)
-            {
-                var kids = cur.FindAllChildren();
-                if (i < 0 || i >= kids.Length) return null;
-                cur = kids[i];
-            }
-            return cur;
-        }
-        catch { return null; }
-    }
 }
