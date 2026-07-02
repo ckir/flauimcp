@@ -61,14 +61,16 @@ public sealed class RefRegistry
 
     /// <summary>Option-C resolution. Order: (1) cached element if its RuntimeId AND ControlType
     /// still match (the ControlType check guards against UIA RuntimeId recycling under
-    /// virtualization); (2) AutomationId (or Name+ControlType) scoped under the nearest stable
-    /// ancestor; (3) IndexPath as a last-resort fuzzy hint; else REF_STALE_UNRESOLVABLE. The
+    /// virtualization); (2) cache-free Lenient re-walk — AutomationId (else Name+ControlType) scoped
+    /// under the nearest stable ancestor(s), accumulated across all roots and deduped by live
+    /// RuntimeId: exactly one match is returned, more than one throws AMBIGUOUS_MATCH, none throws
+    /// REF_STALE_UNRESOLVABLE. There is NO positional/IndexPath fallback — an identity-unverified
+    /// positional guess is a data-integrity hazard on a read that feeds the agent's context. The
     /// caller supplies the search roots to walk IN ORDER — the window subtree first, then any
     /// grafted popup subtrees (context menus / dropdowns live at the Desktop, not under the
     /// window). Searching those small, process-correct subtrees — never the whole Desktop —
-    /// avoids cross-application false matches on a shared Name+ControlType. searchRoots[0] MUST be
-    /// the window root (IndexPath is window-relative). Throws REF_NOT_FOUND if the ref isn't live
-    /// for this window. Must be called on the query STA.</summary>
+    /// avoids cross-application false matches on a shared Name+ControlType. Throws REF_NOT_FOUND if
+    /// the ref isn't live for this window. Must be called on the query STA.</summary>
     public AutomationElement Resolve(string windowId, string @ref, IReadOnlyList<AutomationElement> searchRoots)
     {
         var entry = Lookup(windowId, @ref); // REF_NOT_FOUND if absent
@@ -84,44 +86,174 @@ public sealed class RefRegistry
         return ResolveDescriptor(d, searchRoots, @ref);
     }
 
-    /// <summary>Cache-free re-resolution from a descriptor against caller-supplied roots
-    /// (window first, then grafted popups). Used by the ACTION STA, which must NOT touch the
-    /// query-STA cached element. Throws REF_STALE_UNRESOLVABLE if the element is gone.</summary>
-    public AutomationElement ResolveDescriptor(ElementDescriptor d, IReadOnlyList<AutomationElement> searchRoots, string @ref)
+    /// <summary>Cache-free re-resolution from a descriptor against caller-supplied roots (window
+    /// first, then grafted popups). Used by the ACTION STA, which must NOT touch the query-STA cached
+    /// element. <paramref name="mode"/> selects strictness: Strict (state-changing paths, INV-8)
+    /// matches ONLY the exact element by live RuntimeId and never rebinds; Lenient (reads) re-walks
+    /// the descriptor. Throws REF_STALE_UNRESOLVABLE if the element is gone.</summary>
+    public AutomationElement ResolveDescriptor(ElementDescriptor d, IReadOnlyList<AutomationElement> searchRoots,
+        string @ref, RefResolveMode mode = RefResolveMode.Lenient)
     {
-        // (2) descriptor re-walk per search root: AutomationId then Name+ControlType, scoped
-        // under the nearest stable ancestor.
-        foreach (var searchRoot in searchRoots)
+        if (mode == RefResolveMode.Strict)
+            return ResolveStrict(d, searchRoots, @ref);
+
+        // (2) descriptor re-walk. Identity key = AutomationId if present, else Name+ControlType.
+        // Gather the ancestor scope(s) (all matching ancestors across all roots; fail-closed if a
+        // demanded ancestor is gone — never widen to the whole window), accumulate matches across every
+        // scope, dedup by live RuntimeId. >1 distinct => AMBIGUOUS_MATCH. NO positional/IndexPath
+        // fallback: an identity-unverified positional match is a data-integrity hazard on a read that
+        // feeds the agent's context.
+        var scopes = GatherScopes(searchRoots, d, @ref); // fail-closed on a missing/over-matched ancestor
+        var matches = new List<AutomationElement>();
+        foreach (var scope in scopes)
         {
-            if (searchRoot is null) continue;
-            var scope = searchRoot;
-            if (!string.IsNullOrEmpty(d.AncestorAutomationId))
-            {
-                var anc = TrySearch(searchRoot, cf => cf.ByAutomationId(d.AncestorAutomationId));
-                if (anc is not null) scope = anc;
-            }
             if (!string.IsNullOrEmpty(d.AutomationId))
-            {
-                var byAid = TrySearch(scope, cf => cf.ByAutomationId(d.AutomationId));
-                if (byAid is not null) return byAid;
-            }
-            if (!string.IsNullOrEmpty(d.Name))
-            {
-                var byName = TrySearch(scope, cf => cf.ByName(d.Name).And(cf.ByControlType(d.ControlType)));
-                if (byName is not null) return byName;
-            }
+                matches.AddRange(TrySearchAll(scope, cf => cf.ByAutomationId(d.AutomationId)));
+            else if (!string.IsNullOrEmpty(d.Name))
+                matches.AddRange(TrySearchAll(scope, cf => cf.ByName(d.Name).And(cf.ByControlType(d.ControlType))));
         }
 
-        // (3) IndexPath last-resort — window-relative only (searchRoots[0] is the window root).
-        if (searchRoots.Count > 0)
+        var distinct = DistinctByRuntimeId(matches);
+        if (distinct.Count > 1)
+            throw new ToolException(ToolErrorCode.AmbiguousMatch,
+                $"Ref '{@ref}' matches {distinct.Count} elements by " +
+                    (string.IsNullOrEmpty(d.AutomationId) ? "Name + control type" : $"AutomationId '{d.AutomationId}'") +
+                    "; cannot safely pick one for re-resolution.",
+                "re-snapshot and use a more specific ref; if the duplication is structural (a fresh snapshot yields the same ambiguity) use coordinate-based tools instead");
+        if (distinct.Count == 1)
+            return distinct[0];
+
+        throw new ToolException(ToolErrorCode.RefStaleUnresolvable,
+            $"Ref '{@ref}' ({Key(d)}) could not be re-resolved; the element appears to be gone.",
+            "take a fresh desktop_snapshot");
+    }
+
+    // A demanded ancestor matching more than this many containers is treated as irrecoverably ambiguous
+    // (and this bounds the M×N per-scope search fan-out a hostile UI could force). Env-tunable via
+    // FLAUI_MCP_REF_MAXSCOPES (parsed by RefResolveConfig.MaxScopes: positive-int override, else 512).
+    private static readonly int MaxResolveScopes =
+        RefResolveConfig.MaxScopes(System.Environment.GetEnvironmentVariable("FLAUI_MCP_REF_MAXSCOPES"));
+
+    // Safe descriptor label for diagnostics: AutomationId is a developer-assigned constant (safe to log
+    // and essential for triage); Name is frequently user content and is NEVER echoed.
+    private static string Key(ElementDescriptor d) =>
+        string.IsNullOrEmpty(d.AutomationId) ? "no AutomationId" : $"AutomationId '{d.AutomationId}'";
+
+    /// <summary>Resolve the scope(s) to search within. No AncestorAutomationId -> each search root. A
+    /// demanded ancestor ABSENT from every root fails closed (REF_STALE_UNRESOLVABLE) rather than
+    /// widening to the whole window — silently expanding a targeted scope to a global one is a
+    /// confused-deputy retarget. More than MaxResolveScopes matching ancestors -> AMBIGUOUS_MATCH.</summary>
+    private static IReadOnlyList<AutomationElement> GatherScopes(
+        IReadOnlyList<AutomationElement> searchRoots, ElementDescriptor d, string @ref)
+    {
+        if (string.IsNullOrEmpty(d.AncestorAutomationId))
         {
-            var byPath = TryIndexPath(searchRoots[0], d.IndexPath);
-            if (byPath is not null) return byPath;
+            var roots = new List<AutomationElement>();
+            foreach (var r in searchRoots) if (r is not null) roots.Add(r);
+            return roots;
+        }
+
+        var scopes = new List<AutomationElement>();
+        foreach (var r in searchRoots)
+        {
+            if (r is null) continue;
+            // The nearest stable ancestor can BE a search root itself (e.g. a top-level control whose
+            // only stable ancestor is the window, which carries its own AutomationId) — FindAllDescendants
+            // never matches the root it's called on, so check the root's own identity explicitly too.
+            if (string.Equals(Safe(() => r.Properties.AutomationId.ValueOrDefault, string.Empty),
+                    d.AncestorAutomationId, System.StringComparison.Ordinal))
+                scopes.Add(r);
+            scopes.AddRange(TrySearchAll(r, cf => cf.ByAutomationId(d.AncestorAutomationId)));
+        }
+        if (scopes.Count == 0)
+            throw new ToolException(ToolErrorCode.RefStaleUnresolvable,
+                $"Ref '{@ref}' names ancestor container '{d.AncestorAutomationId}' which is no longer present; not widening the search (avoids retargeting a different control).",
+                "take a fresh desktop_snapshot and use a ref from it");
+        if (scopes.Count > MaxResolveScopes)
+            throw new ToolException(ToolErrorCode.AmbiguousMatch,
+                $"Ref '{@ref}' names ancestor container '{d.AncestorAutomationId}' which matches {scopes.Count} elements (> cap {MaxResolveScopes}); too many to safely disambiguate.",
+                "this is a structural ambiguity a fresh snapshot cannot resolve — use coordinate-based desktop_click_at, or raise FLAUI_MCP_REF_MAXSCOPES if the UI is legitimately this large");
+        return scopes;
+    }
+
+    // Collapse duplicates by live RuntimeId (unique among live elements) so the same element found via
+    // overlapping roots/scopes counts once. An element whose RuntimeId cannot be read gets a UNIQUE key
+    // -> kept distinct (conservative: fail-safe toward ambiguity rather than silently binding). The
+    // unique key uses a DEDICATED monotonic sequence (never a list index / result.Count) so its
+    // collision-freedom does not depend on any subtle invariant: two unreadable elements must never
+    // collapse to one, which would silently mask a real AMBIGUOUS_MATCH (an INV-8 hole). A real
+    // RuntimeId key (joined ints) can never contain ':' so it can never collide with an "unreadable:" key.
+    private static IReadOnlyList<AutomationElement> DistinctByRuntimeId(IReadOnlyList<AutomationElement> els)
+    {
+        var result = new List<AutomationElement>();
+        var seen = new HashSet<string>();
+        int unreadableSeq = 0;
+        foreach (var el in els)
+        {
+            string key;
+            try
+            {
+                var rid = el.Properties.RuntimeId.ValueOrDefault;
+                key = rid != null ? string.Join(",", rid) : "unreadable:" + unreadableSeq++;
+            }
+            catch { key = "unreadable:" + unreadableSeq++; }
+            if (seen.Add(key)) result.Add(el);
+        }
+        return result;
+    }
+
+    /// <summary>Strict identity re-resolution (INV-8): return ONLY the element whose live RuntimeId
+    /// equals the descriptor's. Within the ancestor scope(s) NARROW with a native UIA query
+    /// (AutomationId, else Name+ControlType) and RuntimeId-verify the handful — never a full-subtree
+    /// scan. EXACTLY one match required (0 -> gone/recycled -> REF_STALE; a spoofed >1 -> AMBIGUOUS).
+    /// No captured RuntimeId, or no queryable key, -> fail closed.</summary>
+    private static AutomationElement ResolveStrict(ElementDescriptor d,
+        IReadOnlyList<AutomationElement> searchRoots, string @ref)
+    {
+        if (d.RuntimeId.Count == 0)
+            throw new ToolException(ToolErrorCode.RefStaleUnresolvable,
+                $"Ref '{@ref}' ({Key(d)}) has no stable UIA identity (RuntimeId) to re-verify for a state-changing action.",
+                "this element (or app) does not expose a stable identity; if a fresh desktop_snapshot keeps failing, use coordinate-based desktop_click_at instead");
+
+        var scopes = GatherScopes(searchRoots, d, @ref); // fail-closed on a missing/over-matched ancestor
+        // Return the (unique-among-live-elements) element whose live RuntimeId matches. Short-circuit on
+        // the first match — NO accumulate/dedup: a dedup would be BY RuntimeId, and every hit already has
+        // the SAME RuntimeId, so it would always collapse to one and could never signal a spoof. A
+        // malicious custom UIA provider that deliberately reissues a colliding RuntimeId on a decoy is
+        // out of the practical threat model (it needs attacker-controlled provider code); RuntimeId
+        // uniqueness among live elements is assumed, so the first RuntimeId match IS the element.
+        foreach (var scope in scopes)
+        {
+            try { if (RidMatches(scope, d.RuntimeId)) return scope; } catch { /* keep scanning */ } // scope itself could be the target (popup root)
+
+            IReadOnlyList<AutomationElement> candidates =
+                !string.IsNullOrEmpty(d.AutomationId)
+                    ? TrySearchAll(scope, cf => cf.ByAutomationId(d.AutomationId))
+                    : !string.IsNullOrEmpty(d.Name)
+                        ? TrySearchAll(scope, cf => cf.ByName(d.Name).And(cf.ByControlType(d.ControlType)))
+                        : System.Array.Empty<AutomationElement>();
+
+            foreach (var el in candidates)
+            {
+                try { if (RidMatches(el, d.RuntimeId)) return el; } catch { /* one flaky node — keep scanning */ }
+            }
         }
 
         throw new ToolException(ToolErrorCode.RefStaleUnresolvable,
-            $"Ref '{@ref}' could not be re-resolved; the element appears to be gone.",
-            "take a fresh desktop_snapshot");
+            $"Ref '{@ref}' ({Key(d)}) could not be re-resolved to the exact element for a state-changing action; it appears to be gone or was recycled.",
+            "take a fresh desktop_snapshot; if this app's UIA identity is unstable, an operator can set FLAUI_MCP_REF_STRICT=off (disables the INV-8 guard)");
+    }
+
+    private static bool RidMatches(AutomationElement el, IReadOnlyList<int> runtimeId)
+    {
+        var rid = el.Properties.RuntimeId.ValueOrDefault;
+        return rid != null && rid.AsEnumerable().SequenceEqual(runtimeId);
+    }
+
+    private static IReadOnlyList<AutomationElement> TrySearchAll(AutomationElement root,
+        Func<ConditionFactory, ConditionBase> cond)
+    {
+        try { return root.FindAllDescendants(cond); } catch { return System.Array.Empty<AutomationElement>(); }
     }
 
     internal static bool FastPathMatches(AutomationElement cached, ElementDescriptor d)
@@ -134,26 +266,4 @@ public sealed class RefRegistry
     }
 
     private static T Safe<T>(Func<T> read, T fallback) { try { return read(); } catch { return fallback; } }
-
-    private static AutomationElement? TrySearch(AutomationElement root,
-        Func<ConditionFactory, ConditionBase> cond)
-    {
-        try { return root.FindFirstDescendant(cond); } catch { return null; }
-    }
-
-    private static AutomationElement? TryIndexPath(AutomationElement root, IReadOnlyList<int> path)
-    {
-        try
-        {
-            var cur = root;
-            foreach (var i in path)
-            {
-                var kids = cur.FindAllChildren();
-                if (i < 0 || i >= kids.Length) return null;
-                cur = kids[i];
-            }
-            return cur;
-        }
-        catch { return null; }
-    }
 }

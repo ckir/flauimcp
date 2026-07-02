@@ -171,6 +171,7 @@ security floors are defense-in-depth, not an injection cure.
 | **Window-prefixed refs in output** (`[w1:e1]`) | low | Mitigated already — the tools take window handle + ref as separate args, so refs can't alias across windows. |
 | **Shrink the shipped exe** (Native AOT or trimming) | deferred | AOT is blocked by FlaUI's runtime COM interop + the MCP SDK's reflection tool discovery + STJ reflection serialization (would need source-gen JSON context + source-gen tool registration first); trimming risks silently stripping reflected tools/serializers. Low value for a once-installed dev tool — revisit only after a source-gen migration. (User to relay to agy.) |
 | **"Driving FlaUI.Mcp" dogfood skill** — a skill teaching an agent to inspect desktop state via the installed server (`DesktopListWindows`/`DesktopSnapshot`) instead of `Get-Process` | end of roadmap | Deferred to the end of the roadmap (user, 2026-06-26); the tool surface is still growing each phase, so the skill is most useful written once the v1 surface stabilizes. |
+| **Ref-resolution hardening (INV-8)** — strict RuntimeId-only writes (scoped narrow-then-verify; recycled AutomationId → `REF_STALE_UNRESOLVABLE`); fail-closed lenient reads (`AMBIGUOUS_MATCH`/`REF_STALE`, no positional fallback); break-glass `FLAUI_MCP_REF_STRICT=off` | v0.7.3a | Closes recycled-AutomationId destructive-action + confused-deputy read retarget; prerequisite for `desktop_find`/durable refs (Plan 2). |
 
 ## Notes
 

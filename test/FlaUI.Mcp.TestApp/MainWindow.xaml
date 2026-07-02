@@ -74,5 +74,31 @@
                 </TextBlock.ContextMenu>
             </TextBlock>
         </Border>
+        <!-- Ambiguity fixtures (v0.7.3a C2). Lenient re-resolution matching >1 element must throw
+             AMBIGUOUS_MATCH instead of silently picking the first.
+             NOTE: the ancestor containers are GroupBox, NOT a bare StackPanel. WPF layout panels
+             (StackPanel/Grid/Canvas/Border) never override OnCreateAutomationPeer, so an
+             AutomationProperties.AutomationId set on one is invisible to UIA and can never be resolved
+             as an AncestorAutomationId scope. GroupBox (a HeaderedContentControl) has a real peer, so
+             DupHost/DupRow are genuine, resolvable UIA nodes. -->
+        <GroupBox AutomationProperties.AutomationId="DupHost" Margin="0,8,0,0">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="DupA" AutomationProperties.AutomationId="DupAid"/>
+                <Button Content="DupB" AutomationProperties.AutomationId="DupAid"/>
+                <Button Content="DupName"/>
+                <Button Content="DupName"/>
+            </StackPanel>
+        </GroupBox>
+        <!-- TWO ancestors sharing one AutomationId, each holding ONE same-aid target (MAJOR-2). -->
+        <GroupBox AutomationProperties.AutomationId="DupRow" Margin="0,8,0,0">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="Row1Btn" AutomationProperties.AutomationId="RowBtn"/>
+            </StackPanel>
+        </GroupBox>
+        <GroupBox AutomationProperties.AutomationId="DupRow" Margin="0,8,0,0">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="Row2Btn" AutomationProperties.AutomationId="RowBtn"/>
+            </StackPanel>
+        </GroupBox>
     </StackPanel>
 </Window>

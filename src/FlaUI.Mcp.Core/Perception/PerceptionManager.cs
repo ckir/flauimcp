@@ -13,6 +13,11 @@ public sealed class PerceptionManager
     private readonly RefRegistry _refs;
     private readonly SnapshotCache _cache;
 
+    // Break-glass: FLAUI_MCP_REF_STRICT=off forces Lenient on state-changing paths too (disables INV-8).
+    // The env->mode mapping lives in RefResolveConfig.WriteMode so it is unit-tested (see Step 1).
+    private static readonly RefResolveMode WriteMode =
+        RefResolveConfig.WriteMode(System.Environment.GetEnvironmentVariable("FLAUI_MCP_REF_STRICT"));
+
     public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache)
     {
         _windows = windows;
@@ -41,7 +46,7 @@ public sealed class PerceptionManager
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
             var roots = PopupFinder.SearchRoots(win, desktop);
-            var el = _refs.ResolveDescriptor(descriptor, roots, @ref); // REF_STALE_UNRESOLVABLE if gone
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref, WriteMode); // INV-8 (break-glass: FLAUI_MCP_REF_STRICT=off)
             if (el.Properties.IsOffscreen.ValueOrDefault)
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
@@ -59,7 +64,7 @@ public sealed class PerceptionManager
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
             var roots = PopupFinder.SearchRoots(win, desktop);
-            var el = _refs.ResolveDescriptor(descriptor, roots, @ref);
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref, WriteMode); // INV-8 (break-glass: FLAUI_MCP_REF_STRICT=off)
             if (el.Properties.IsOffscreen.ValueOrDefault)
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
@@ -78,7 +83,7 @@ public sealed class PerceptionManager
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
             var roots = PopupFinder.SearchRoots(win, desktop);
-            var el = _refs.ResolveDescriptor(descriptor, roots, @ref);
+            var el = _refs.ResolveDescriptor(descriptor, roots, @ref, RefResolveMode.Lenient); // read: descriptor re-walk (ambiguity-aware)
             return func(el);
         }, timeoutMs);
     }
