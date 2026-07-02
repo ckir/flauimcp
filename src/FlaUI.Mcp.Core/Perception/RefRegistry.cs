@@ -61,14 +61,16 @@ public sealed class RefRegistry
 
     /// <summary>Option-C resolution. Order: (1) cached element if its RuntimeId AND ControlType
     /// still match (the ControlType check guards against UIA RuntimeId recycling under
-    /// virtualization); (2) AutomationId (or Name+ControlType) scoped under the nearest stable
-    /// ancestor; (3) IndexPath as a last-resort fuzzy hint; else REF_STALE_UNRESOLVABLE. The
+    /// virtualization); (2) cache-free Lenient re-walk — AutomationId (else Name+ControlType) scoped
+    /// under the nearest stable ancestor(s), accumulated across all roots and deduped by live
+    /// RuntimeId: exactly one match is returned, more than one throws AMBIGUOUS_MATCH, none throws
+    /// REF_STALE_UNRESOLVABLE. There is NO positional/IndexPath fallback — an identity-unverified
+    /// positional guess is a data-integrity hazard on a read that feeds the agent's context. The
     /// caller supplies the search roots to walk IN ORDER — the window subtree first, then any
     /// grafted popup subtrees (context menus / dropdowns live at the Desktop, not under the
     /// window). Searching those small, process-correct subtrees — never the whole Desktop —
-    /// avoids cross-application false matches on a shared Name+ControlType. searchRoots[0] MUST be
-    /// the window root (IndexPath is window-relative). Throws REF_NOT_FOUND if the ref isn't live
-    /// for this window. Must be called on the query STA.</summary>
+    /// avoids cross-application false matches on a shared Name+ControlType. Throws REF_NOT_FOUND if
+    /// the ref isn't live for this window. Must be called on the query STA.</summary>
     public AutomationElement Resolve(string windowId, string @ref, IReadOnlyList<AutomationElement> searchRoots)
     {
         var entry = Lookup(windowId, @ref); // REF_NOT_FOUND if absent
@@ -174,21 +176,26 @@ public sealed class RefRegistry
     }
 
     // Collapse duplicates by live RuntimeId (unique among live elements) so the same element found via
-    // overlapping roots/scopes counts once. An element whose RuntimeId cannot be read gets a unique key
-    // -> kept distinct (conservative: fail-safe toward ambiguity rather than silently binding).
+    // overlapping roots/scopes counts once. An element whose RuntimeId cannot be read gets a UNIQUE key
+    // -> kept distinct (conservative: fail-safe toward ambiguity rather than silently binding). The
+    // unique key uses a DEDICATED monotonic sequence (never a list index / result.Count) so its
+    // collision-freedom does not depend on any subtle invariant: two unreadable elements must never
+    // collapse to one, which would silently mask a real AMBIGUOUS_MATCH (an INV-8 hole). A real
+    // RuntimeId key (joined ints) can never contain ':' so it can never collide with an "unreadable:" key.
     private static IReadOnlyList<AutomationElement> DistinctByRuntimeId(IReadOnlyList<AutomationElement> els)
     {
         var result = new List<AutomationElement>();
         var seen = new HashSet<string>();
+        int unreadableSeq = 0;
         foreach (var el in els)
         {
             string key;
             try
             {
                 var rid = el.Properties.RuntimeId.ValueOrDefault;
-                key = rid != null ? string.Join(",", rid) : "unreadable:" + result.Count;
+                key = rid != null ? string.Join(",", rid) : "unreadable:" + unreadableSeq++;
             }
-            catch { key = "unreadable:" + result.Count; }
+            catch { key = "unreadable:" + unreadableSeq++; }
             if (seen.Add(key)) result.Add(el);
         }
         return result;
