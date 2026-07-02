@@ -5,7 +5,7 @@ description: Use when driving or dogfooding this project's installed FlaUI.Mcp d
 
 # Driving FlaUI.Mcp (live server)
 
-Empirically validated by live dogfooding (through v0.7.2). Use the **installed** MCP server's
+Empirically grounded in live dogfooding. Use the **installed** MCP server's
 `desktop_*` tools to see/act on the real desktop — never `Get-Process`. The tools are **DEFERRED**:
 load them before use.
 
@@ -15,7 +15,8 @@ load them before use.
 ToolSearch "select:mcp__flaui-mcp__desktop_list_windows,mcp__flaui-mcp__desktop_open_window,mcp__flaui-mcp__desktop_snapshot,mcp__flaui-mcp__desktop_get_text,mcp__flaui-mcp__desktop_input_status"
 ```
 Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic input);
-`desktop_set_caret,desktop_select_text_range` (lease-exempt text); `desktop_focus_window,desktop_window_transform` (recovery).
+`desktop_set_caret,desktop_select_text_range` (lease-exempt text); `desktop_focus_window,desktop_window_transform` (recovery);
+`desktop_find` (cheap targeting), `desktop_snapshot_diff` (change detection).
 
 ## Orientation (read-only, always safe)
 
@@ -23,6 +24,17 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
 2. `desktop_open_window` by `pid` or exact `title` → returns a handle `wN`.
 3. `desktop_snapshot wN` → indented tree with `[eN] Role "Name" @{x,y,w,h}` refs. Read results
    from **Text** nodes; **refs follow tree order, not value** — read the label before acting on `eN`.
+
+## Targeting without a full walk
+
+- `desktop_find wN` queries a window for element refs by `automationId` / `name` (`eq`|`contains`) /
+  `controlType` / `enabledOnly` (optional subtree `scope`) **without** walking the whole tree — the cheap
+  way to grab one control's ref. Returns `matches[{ref,automationId,name,controlType,bounds,…}]` +
+  `totalMatches`/`isTruncated` (narrow the query if truncated). No match ⇒ empty list (not an error).
+  Refs are **additive** — a find does NOT invalidate a prior `desktop_snapshot`'s refs. Password fields
+  return `name:"[REDACTED]"` and are not findable by name.
+- `desktop_snapshot_diff wN <baselineSnapshotId> scope=<ref>` diffs only that element's subtree (cheap
+  re-walk + in-memory baseline slice) — added/removed/changed since the baseline.
 
 ## Synthetic input needs a human lease
 
@@ -42,7 +54,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
   Notepad's RichEdit/autocomplete) don't drop/garble fast input; pass `0` for a raw atomic blast.
 - For a type **capability test**, prefer a **classic Win32 Edit** (Run dialog via `desktop_key "Win+R"`)
   over the new Notepad. Always verify with `desktop_get_text`.
-- **`verify` (default true, v0.7.2)** reads the element back and returns a soft `verify{ran,verified,mismatch}`;
+- **`verify` (default true)** reads the element back and returns a soft `verify{ran,verified,mismatch}`;
   on garble → `mismatch:true` + `expected`/`actual` + `recommendedFallbackTool`. It only asserts an exact
   match when the field started **empty** — typing into a non-empty field (e.g. a Run box with MRU history)
   returns `verified:false, mismatch:false, reason:"field-not-empty"` (abstains — **not** a failure; clear the
@@ -69,6 +81,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
 | Keys go nowhere after closing a dialog | prior window lost foreground | `desktop_focus_window` before the next key |
 | `desktop_launch_app` LaunchTimeout (UWP/Store app) | stub launcher hands window to ApplicationFrameHost | recover via `desktop_list_windows` → `desktop_open_window by:title` |
 | `InputDesktopUnavailable` | session locked/disconnected (RDP dropped) | reconnect + unlock the session |
+| `REF_STALE_UNRESOLVABLE` / `AMBIGUOUS_MATCH` on invoke/click/type/set_value | held ref's exact element (RuntimeId) is gone or duplicated — **state-changing** tools resolve refs **strictly**: no silent retarget to a recycled `AutomationId` under virtualization | re-`desktop_snapshot` or `desktop_find` to mint a fresh ref, then act (reads stay lenient). Break-glass: env `FLAUI_MCP_REF_STRICT=off` disables the guard globally |
 | Typed text garbled / `verify.mismatch:true` | reactive/RichEdit editor races synthetic keystrokes | **Has `ValuePattern`** (snapshot shows `[Value,…]`, e.g. new Notepad Document): `desktop_set_value` — byte-exact. **No `ValuePattern`** (Electron `contenteditable`): `set_value` returns `PatternUnsupported` → **clipboard paste** (`desktop_clipboard_set` → focus → `desktop_key "Ctrl+V"`) — lands atomically, doesn't race. (`desktop_type`'s `verify` flags the garble automatically.) |
 | Snapshot is one opaque `Document` node, no children | Electron/Chromium a11y **off by default** | No refs to target — use the **coordinate path** (`desktop_click_at`/`desktop_drag` by `xPct`/`yPct`) or vision. Per-app fix: relaunch it with `--force-renderer-accessibility`. WinUI/WPF/Qt expose proper UIA and are fine. |
 
