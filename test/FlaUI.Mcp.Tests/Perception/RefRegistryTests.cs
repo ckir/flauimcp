@@ -62,4 +62,53 @@ public class RefRegistryTests
         Assert.StartsWith("w1:", id1);
         Assert.NotEqual(id1, id2);
     }
+
+    [Fact]
+    public void EvictWindow_removes_all_refs_for_that_window()
+    {
+        var r = new RefRegistry();
+        r.BeginSnapshot("w1");
+        var e1 = r.Register("w1", Desc("a"), cached: null); // "e1"
+        r.EvictWindow("w1");
+        var ex = Assert.Throws<ToolException>(() => r.Lookup("w1", e1));
+        Assert.Equal(ToolErrorCode.RefNotFound, ex.Code);
+    }
+
+    [Fact]
+    public void EvictWindow_leaves_other_windows_intact()
+    {
+        var r = new RefRegistry();
+        r.BeginSnapshot("w1");
+        r.BeginSnapshot("w2");
+        var w1Ref = r.Register("w1", Desc("a"), cached: null);
+        var w2Ref = r.Register("w2", Desc("b"), cached: null);
+        r.EvictWindow("w1");
+        Assert.Throws<ToolException>(() => r.Lookup("w1", w1Ref)); // w1 gone
+        Assert.Equal("b", r.Lookup("w2", w2Ref).Descriptor.AutomationId); // w2 survives
+    }
+
+    [Fact]
+    public void EvictWindow_is_idempotent_for_unknown_and_repeated_ids()
+    {
+        var r = new RefRegistry();
+        r.EvictWindow("never-registered"); // no throw
+        r.BeginSnapshot("w1");
+        r.Register("w1", Desc("a"), cached: null);
+        r.EvictWindow("w1");
+        r.EvictWindow("w1"); // double-evict: still no throw
+    }
+
+    [Fact]
+    public void After_EvictWindow_a_fresh_snapshot_of_that_window_starts_clean()
+    {
+        var r = new RefRegistry();
+        r.BeginSnapshot("w1");
+        r.Register("w1", Desc("a"), cached: null); // e1
+        r.Register("w1", Desc("b"), cached: null); // e2
+        r.EvictWindow("w1");
+        // Counter dropped with the window: a fresh snapshot restarts refs from e1 (windowId "w1"
+        // is never reused by WindowManager, so no live stale ref can alias this new e1).
+        r.BeginSnapshot("w1");
+        Assert.Equal("e1", r.Register("w1", Desc("c"), cached: null));
+    }
 }

@@ -30,6 +30,22 @@ public sealed class RefRegistry
         }
     }
 
+    /// <summary>Evict all state for a closed window (refs + counter + snapshot seq), releasing any cached
+    /// COM element pins to the GC. Idempotent: a windowId with no entries is a no-op. Thread-safe; may be
+    /// called off the query STA (e.g. from a process-exit callback) — it only drops managed references and
+    /// never invokes a COM method on the cached element, so the release marshals safely on GC finalization.
+    /// Dropping _counter/_snapshotSeq is safe because windowId is a monotonic "w{n}" id that is never
+    /// reused, so a future window can never inherit a stale counter and alias an old ref.</summary>
+    public void EvictWindow(string windowId)
+    {
+        lock (_gate)
+        {
+            _byWindow.Remove(windowId);
+            _counter.Remove(windowId);
+            _snapshotSeq.Remove(windowId);
+        }
+    }
+
     /// <summary>Register an element; returns its fresh ref (e.g. "e23").</summary>
     public string Register(string windowId, ElementDescriptor descriptor, AutomationElement? cached)
     {
