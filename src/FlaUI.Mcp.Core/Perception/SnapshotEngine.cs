@@ -191,4 +191,25 @@ public static class SnapshotEngine
     {
         try { return read(); } catch { return fallback; }
     }
+
+    /// <summary>Walk parents to the first ancestor carrying a non-empty AutomationId (the "nearest
+    /// stable ancestor" - the same value snapshot's Visit threads top-down, so a find-built descriptor
+    /// scopes re-resolution identically to a snapshot-built one). Bounded by the tree; a null walker
+    /// or a read failure ends the walk (returns null = no stable ancestor scope).</summary>
+    public static string? NearestAncestorAutomationId(AutomationElement el)
+    {
+        try
+        {
+            var walker = el.Automation.TreeWalkerFactory.GetRawViewWalker();
+            var cur = Safe(() => walker.GetParent(el), (AutomationElement?)null);
+            while (cur is not null)
+            {
+                var aid = Safe(() => cur.AutomationId, "");
+                if (!string.IsNullOrEmpty(aid)) return aid;
+                cur = Safe(() => walker.GetParent(cur!), (AutomationElement?)null);
+            }
+        }
+        catch { /* fall through */ }
+        return null;
+    }
 }
