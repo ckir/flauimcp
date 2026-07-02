@@ -255,7 +255,10 @@ public sealed class PerceptionManager
                 // Matching on the redacted name makes password fields unfindable-by-name, matching the
                 // snapshot render (SnapshotEngine.cs:131 shows password Name as "[REDACTED]").
                 bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
-                string rawName = SafeRead(() => el.Name, "");         // raw -> descriptor (re-resolution key)
+                // el.Name returns NULL for unnamed containers (SafeRead's "" fallback fires only on an
+                // EXCEPTION, not a null return) - coalesce so the name is never null downstream (would
+                // NRE the "contains" post-filter) and the FindMatch wire contract stays "empty, never null".
+                string rawName = SafeRead(() => el.Name, "") ?? string.Empty; // raw -> descriptor (re-resolution key)
                 string name = isPwd ? "[REDACTED]" : rawName;         // redacted -> match + output
                 bool enabled = SafeRead(() => el.IsEnabled, false);
                 if (!spec.MatchesPostFilter(name, enabled)) continue; // match on the redacted name (no name-oracle)
@@ -265,7 +268,7 @@ public sealed class PerceptionManager
                 // Read each primitive ONCE; reuse for BOTH the descriptor and the FindMatch (no double reads).
                 int[] rid = SafeRead(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? System.Array.Empty<int>();
                 var ctEnum = SafeRead(() => el.ControlType, FlaUI.Core.Definitions.ControlType.Custom);
-                string aid = SafeRead(() => el.AutomationId, "");
+                string aid = SafeRead(() => el.AutomationId, "") ?? string.Empty; // never null on the wire (contract)
                 var b = SafeRead(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
                 bool offscreen = SafeRead(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 bool hasFocus = SafeRead(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
