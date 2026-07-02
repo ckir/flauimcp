@@ -23,10 +23,12 @@ $snake = ($Name -creplace '(?<!^)([A-Z])', '_$1').ToLower()
 
 $method = @"
 
-    [McpServerTool($attr), Description("TODO: one-line description of $snake. Return a small JSON object; use the {error,message,suggestedRecovery} envelope on failure.")]
-    public object $Name(/* TODO params, e.g. string window, string @ref */)
+    [McpServerTool($attr), Description("TODO: one-line description of $snake.")]
+    public Task<string> $Name(/* TODO params, e.g. string window, string @ref */)
     {
-        // TODO: thin Server method — put real UIA/logic in src/FlaUI.Mcp.Core and call it here.
+        // TODO: thin Server method. Put real UIA/logic in src/FlaUI.Mcp.Core.
+        // State-changing tools MUST route through ToolResponse.GuardWrite(_options, ...) (enforces
+        // --read-only-mode) and return ToolResponse.Ok(...); reads: Task.FromResult(ToolResponse.Ok(...)).
         throw new System.NotImplementedException("$Name not implemented yet.");
     }
 "@
@@ -60,9 +62,9 @@ if ($WhatIf) {
     Write-Host "[WhatIf] would append $Name to $Class and create $testPath"
     exit 0
 }
-Set-Content -Path $classPath -Value $newSrc -NoNewline
+Set-Content -Path $classPath -Value $newSrc -NoNewline -Encoding UTF8
 New-Item -ItemType Directory -Force -Path (Split-Path $testPath) | Out-Null
-Set-Content -Path $testPath -Value $test -NoNewline
+Set-Content -Path $testPath -Value $test -NoNewline -Encoding UTF8
 Write-Host "Created tool stub $Name ($snake) in $Class and test $testPath."
 Write-Host "Next: fill the stub + Core logic, run headless tests, then Desktop tests on an unlocked session, then update README + CHANGELOG."
 exit 0

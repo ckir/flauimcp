@@ -46,7 +46,9 @@ FlaUI.Mcp tools follow one regular pattern:
    `src/FlaUI.Mcp.Server/Tools/`, annotated `[McpServerTool(ReadOnly = true | Destructive = true),
    Description("…")]`. The MCP SDK **auto-discovers** it — no registration to edit.
 3. **Put real logic in Core.** Keep the Server method thin; UIA/state logic goes in
-   `src/FlaUI.Mcp.Core/`, which is unit-testable.
+   `src/FlaUI.Mcp.Core/`, which is unit-testable. The Server method returns `Task<string>`;
+   **state-changing tools must route through `ToolResponse.GuardWrite(_options, …)` and return
+   `ToolResponse.Ok(…)`** — that call is what enforces `--read-only-mode` and the error envelope.
 4. **Annotate correctly — this is a safety boundary.** `ReadOnly = true` for a pure read;
    `Destructive = true` for anything that changes state. A mis-annotation silently defeats
    `--read-only-mode`. Return the uniform error envelope `{ error, message, suggestedRecovery }` on

@@ -39,9 +39,5 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/new-tool.ps1 -Name DesktopCiSmoke
-          dotnet build src/FlaUI.Mcp.Server -c Release
-      - name: Assert it is discarded (never committed)
-        shell: pwsh
-        run: |
-          git checkout -- .
-          git clean -fd
+          if ($LASTEXITCODE -ne 0) { throw "new-tool.ps1 failed with exit $LASTEXITCODE" }
+          dotnet build -c Release

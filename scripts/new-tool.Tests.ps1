@@ -24,7 +24,7 @@ Describe 'new-tool.ps1' {
         & $Script -Name 'DesktopFoo' -RepoRoot $Sandbox
         $LASTEXITCODE | Should -Be 0
         $cls = Get-Content (Join-Path $Sandbox 'src/FlaUI.Mcp.Server/Tools/InteractionTools.cs') -Raw
-        $cls | Should -Match 'public\s+object\s+DesktopFoo'
+        $cls | Should -Match 'public\s+Task<string>\s+DesktopFoo'
         $cls | Should -Match 'McpServerTool\(Destructive = true\)'
         Test-Path (Join-Path $Sandbox 'test/FlaUI.Mcp.Tests/Interaction/DesktopFooTests.cs') | Should -BeTrue
     }
@@ -36,8 +36,8 @@ Describe 'new-tool.ps1' {
     It 'refuses a duplicate method (non-zero, no second copy)' {
         & $Script -Name 'DesktopFoo' -RepoRoot $Sandbox
         $LASTEXITCODE | Should -Not -Be 0
-        ([regex]::Matches((Get-Content (Join-Path $Sandbox 'src/FlaUI.Mcp.Server/Tools/InteractionTools.cs') -Raw), 'DesktopFoo').Count) |
-            Should -BeLessOrEqual 2
+        ([regex]::Matches((Get-Content (Join-Path $Sandbox 'src/FlaUI.Mcp.Server/Tools/InteractionTools.cs') -Raw), 'public Task<string> DesktopFoo\(').Count) |
+            Should -Be 1
     }
     It '-WhatIf writes nothing' {
         & $Script -Name 'DesktopBaz' -WhatIf -RepoRoot $Sandbox
