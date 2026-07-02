@@ -1,5 +1,11 @@
 # FlaUI.Mcp
 
+[![CI](https://github.com/ckir/flauimcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ckir/flauimcp/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/ckir/flauimcp?sort=semver)](https://github.com/ckir/flauimcp/releases/latest)
+[![License: PolyForm NC 1.0.0](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue)](LICENSE)
+![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
+![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
+
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets an AI
 agent — Claude Code, Antigravity (agy), or any MCP client — **control the Windows desktop**:
 enumerate windows, launch applications, focus/close windows, **snapshot a window's UI into
