@@ -478,6 +478,15 @@ Tagging a commit `v*` triggers the release workflow
 ([`.github/workflows/release.yml`](.github/workflows/release.yml)), which builds the exe and
 the Inno Setup installer and publishes them — with checksums — to a GitHub Release.
 
+## Contributing
+
+Contributions — **especially new MCP tools** — are welcome. The fast path: run
+`./scripts/new-tool.ps1 -Name DesktopFoo` to scaffold a tool + test, fill the stub, and open a PR.
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, the (honest) test loop, and the tool pattern.
+
+Heads-up: FlaUI.Mcp is noncommercially licensed and the maintainer sells commercial licenses, so your
+first PR triggers a one-click **CLA** ([CLA.md](CLA.md)).
+
 ## License
 
 [PolyForm Noncommercial License 1.0.0](LICENSE) — © 2026 Costas Kirgoussios. Free for
