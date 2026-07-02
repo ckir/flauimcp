@@ -8,11 +8,16 @@ diff/stat snapshots, and wait for UI conditions**, **act on elements through UI 
 patterns** (click, set value, toggle, expand, select, scroll, focus, window min/max), and
 **read and write structured content** (grid/table cells, element text via TextPattern, clipboard)
 — and **drive synthetic mouse/keyboard input** (`SendInput`-backed type/click/drag/key, plus
-`TextPattern` caret/selection), all gated behind Phase 4a's safety foundation (time-lease,
+`TextPattern` caret/selection), all gated behind a safety foundation (time-lease,
 deny-list, per-window budget, audit, elevation guard). Think "Playwright, but for native Windows
 apps."
 
+> **This README describes the current state of the project.** For the per-version feature
+> history — what landed when — see [`CHANGELOG.md`](CHANGELOG.md).
+
 ---
+
+<a id="warning"></a>
 
 ## ⚠️ WARNING / DISCLAIMER — READ BEFORE INSTALLING
 
@@ -31,9 +36,9 @@ entire risk. Understand the following before you install:
   content (a web page, a document, an email) that content can attempt to instruct the agent
   to take desktop actions. The blast radius of a successful injection is your whole desktop
   session.
-- **v0.7.0 ships real synthetic input.** The `SendInput`-backed mouse/keyboard tools are now
-  live, gated behind the time-lease, deny-list, per-window budget, audit, and elevation guard
-  that v0.6.0 laid down. A human must explicitly unlock a time-bounded window (`flaui-mcp unlock`)
+- **Synthetic input is live.** The `SendInput`-backed mouse/keyboard tools are gated behind the
+  time-lease, deny-list, per-window budget, audit, and elevation guard of the safety foundation.
+  A human must explicitly unlock a time-bounded window (`flaui-mcp unlock`)
   before any input fires. The permission you grant at install (`mcp(flaui-mcp/*)`) covers these
   tools.
 - **The released binaries are NOT code-signed.** Windows SmartScreen and antivirus software
@@ -70,7 +75,7 @@ tools an agent can call.
 | `DesktopFocusWindow` | — | Bring a window to the foreground. |
 | `DesktopCloseWindow` | — | Close a window and free its handle. |
 
-**Perception-completion tools (read-only — new in v0.4.0):** screenshot, bounds, snapshot
+**Perception-completion tools (read-only):** screenshot, bounds, snapshot
 stats/diff, focus, and wait conditions. All are `readOnlyHint`/non-destructive.
 
 | Tool | Description |
@@ -88,7 +93,7 @@ prompting for the mutating ones. Every tool returns structured JSON. Errors come
 uniform envelope (`{ error, message, suggestedRecovery }`) so the agent can recover rather than
 crash the session.
 
-**Interaction tools (pattern-based — new in v0.3.0):** act on an element by its snapshot `ref`
+**Interaction tools (pattern-based):** act on an element by its snapshot `ref`
 through UI Automation control patterns. These are **not** synthetic mouse/keyboard input (that
 is a later phase) — they drive the app's own automation providers, so they work over RDP and
 never move the real cursor. All are state-changing (annotated `destructive`).
@@ -108,7 +113,7 @@ never move the real cursor. All are state-changing (annotated `destructive`).
 An action that opens a modal returns `ActionBlockedPending` instead of hanging the server —
 snapshot the window to see the dialog, then act on it.
 
-**Structured content & clipboard tools (new in v0.5.0):** read structured data from grid/table
+**Structured content & clipboard tools:** read structured data from grid/table
 elements and interact with the system clipboard. Read-only tools are `readOnlyHint`; mutating
 tools are `destructive` and blocked in `--read-only-mode`.
 
@@ -124,11 +129,10 @@ tools are `destructive` and blocked in `--read-only-mode`.
 `IsPassword` redaction as `DesktopSnapshot` — password cells and fields always surface as
 `[REDACTED]`, and windows owned by known credential stores are denied outright.
 
-**Input safety foundation — Phase 4a (v0.6.0):** Phase 4a shipped the safety infrastructure and
-seam interfaces required before any synthetic input tool could land — deliberately *before* the
-blast radius. No mouse/keyboard input tool shipped in v0.6.0; the `SendInput`-backed tools
-(`desktop_type`, `desktop_click`, `desktop_key`, etc.) arrived in v0.7.0 — see **Synthetic input —
-Phase 4b** below.
+**Input safety foundation — Phase 4a:** The safety infrastructure and seam interfaces landed
+*before* any synthetic input tool could — deliberately *before* the blast radius. No mouse/keyboard
+tool lives in this layer; the `SendInput`-backed tools (`desktop_type`, `desktop_click`,
+`desktop_key`, etc.) build on it — see **Synthetic input — Phase 4b** below.
 
 What Phase 4a introduces:
 
@@ -143,25 +147,24 @@ What Phase 4a introduces:
   lease expires automatically when the time runs out, or immediately on `flaui-mcp lock`. The agent
   cannot grant or extend its own lease.
 - **Elevation hard-fail** — if the server starts with Administrator rights, synthetic input is
-  refused unless `--unsafe-allow-elevation` is passed explicitly at launch (upgrades the v0.2.0
-  warn-only).
+  refused unless `--unsafe-allow-elevation` is passed explicitly at launch.
 
-### Synthetic input — Phase 4b (new in v0.7.0)
+### Synthetic input — Phase 4b
 
-v0.7.0 turns on real `SendInput`-backed mouse/keyboard input, built on the Phase 4a safety
-foundation above. **Eight tools** ship:
+Real `SendInput`-backed mouse/keyboard input, built on the Phase 4a safety foundation above.
+**Eight tools** ship:
 
 - **`desktop_type`** — type Unicode text into the focused element (or a `@ref` target). Capped at
   4096 characters per call (`InvalidArguments` over the cap; split on a surrogate-safe boundary).
-  Keystrokes are **paced by default** (`interKeyDelayMs=15`, new in v0.7.1) so slow/async consumers
+  Keystrokes are **paced by default** (`interKeyDelayMs=15`) so slow/async consumers
   keep up with fast input; the foreground is re-verified before *each* key, so a mid-type focus-steal
   still aborts. Pass `interKeyDelayMs=0` for a single atomic blast. **Note:** pacing does **not** cure
   the Windows 11 Notepad autocomplete garble (it corrupts synthetic input at any pacing); for
   reactive/autocomplete editors prefer a non-keystroke path (`desktop_set_value`, or clipboard paste
   for editors without `ValuePattern`). The garble is now flagged automatically by `desktop_type`'s
-  `verify` (v0.7.2, below).
+  `verify` (below).
   
-  `desktop_type` now takes an optional `verify` (bool, default `true`, new in v0.7.2). When on, it reads the element back after typing and returns a `verify` object:
+  `desktop_type` takes an optional `verify` (bool, default `true`). When on, it reads the element back after typing and returns a `verify` object:
   - `{ ran, verified, mismatch }` — always present.
   - On a clean match: `verified:true`.
   - On a mismatch: `mismatch:true` with `expected`, `actual` (both truncated to 256 chars), a stable `recommendedFallbackTool:"desktop_set_value"`, and a human-readable `remedy`.
@@ -206,7 +209,7 @@ agent drives input.
 not against a determined same-user host shell — anything running as your user can already act as
 your user. This is a guardrail for an agent, not a sandbox.
 
-#### Ref resolution: safe by default (v0.7.3a)
+#### Ref resolution: safe by default
 
 A ref (`e23`) captured from a snapshot is re-resolved when you act on it — **strict on state-changing
 tools**, **lenient on reads**, and it never silently binds a different control than the ref pointed at:
@@ -261,7 +264,7 @@ privacy and safety floors — defense in depth, not a substitute for supervising
 
 **On the roadmap** (see [`ROADMAP.md`](ROADMAP.md)): a "driving FlaUI.Mcp" dogfood skill,
 occlusion-aware capture (PrintWindow), AOT/trim to shrink the self-contained executable, and an
-HTTP transport. (Phase 4b `SendInput`-backed input tools shipped in v0.7.0.)
+HTTP transport.
 
 ### Electron / Chromium & other custom-render apps
 
@@ -284,6 +287,36 @@ Not every app exposes a clean accessibility tree. Honestly:
 
 Everything above degrades **safely** — the foreground/hit-test re-verify, lease, and deny-list mean
 a limited surface **aborts or no-ops**; it never mis-fires into the wrong window.
+
+## Known limitations
+
+Capability boundaries you'll meet in practice. Each links to the fuller explanation above — this
+is just the scannable index. (These are about what the tool **can't reach**; that's distinct from
+the [security warning](#warning) at the top, which is about
+what an agent **can do** to your machine.)
+
+- **Can't drive elevated / Administrator apps.** UIPI blocks a normally-launched server from sending
+  input to higher-integrity windows — a Windows boundary, not a bug. [→ Synthetic input](#synthetic-input--phase-4b)
+- **No headless operation.** It drives real windows and needs an interactive desktop session.
+  [→ Requirements](#requirements)
+- **Input needs a connected, unlocked session.** `SendInput` can't reach a locked or RDP-disconnected
+  desktop; those calls return `InputDesktopUnavailable`. [→ Synthetic input](#synthetic-input--phase-4b)
+- **Electron / Chromium apps show one opaque node.** Their accessibility tree is off by default (VS
+  Code, Slack, Discord, Teams); use the coordinate path or `--force-renderer-accessibility`.
+  [→ Electron / Chromium](#electron--chromium--other-custom-render-apps)
+- **Some editors garble typed text.** The new Win11 Notepad and Chromium editors corrupt `SendInput`
+  at any pacing; prefer `desktop_set_value` or clipboard paste. [→ Synthetic input](#synthetic-input--phase-4b)
+- **Screenshots don't handle occlusion.** A covered window is captured as-is — focus it first.
+  [→ Perception safeguards](#perception-safeguards-built-in)
+- **Zero-UIA surfaces need the coordinate path.** Games, canvas apps, and Citrix/RDP inners expose no
+  accessibility tree; drive them by coordinate + screenshot. [→ Electron / Chromium](#electron--chromium--other-custom-render-apps)
+- **Elements with no AutomationId *and* no Name can't be re-resolved after recycling.** On a
+  cache-miss a state-changing action fails `REF_STALE_UNRESOLVABLE` (it never guesses); fall back to
+  `desktop_click_at`. [→ Ref resolution](#ref-resolution-safe-by-default)
+- **Released binaries are unsigned.** SmartScreen and antivirus will flag them; verify the published
+  SHA-256 checksums. [→ warning](#warning)
+- **It's a guardrail, not a sandbox.** The lease and deny-list constrain an agent driving high-risk
+  sinks, but anything running as your user can act as your user. [→ Synthetic input](#synthetic-input--phase-4b)
 
 ## Requirements
 
@@ -368,9 +401,9 @@ Uninstalling reverts configuration entries but leaves your unrelated settings un
 ```text
 flaui-mcp                                   # run the stdio MCP server (no args)
 flaui-mcp --read-only-mode                  # run the server but refuse all state-changing tools
-flaui-mcp --unsafe-allow-elevation          # (v0.6.0) allow synthetic input when running elevated (default: hard-refused)
-flaui-mcp unlock --minutes N [--allow-shells]  # (v0.6.0) grant a time-bounded synthetic-input lease (human out-of-band)
-flaui-mcp lock                              # (v0.6.0) revoke the synthetic-input lease immediately
+flaui-mcp --unsafe-allow-elevation          # allow synthetic input when running elevated (default: hard-refused)
+flaui-mcp unlock --minutes N [--allow-shells]  # grant a time-bounded synthetic-input lease (human out-of-band)
+flaui-mcp lock                              # revoke the synthetic-input lease immediately
 flaui-mcp install   --agent agy|generic|claude|all
 flaui-mcp uninstall --agent agy|generic|claude|all
 flaui-mcp print-config --agent generic      # print the JSON snippet to stdout
@@ -400,6 +433,50 @@ dotnet publish src/FlaUI.Mcp.Server -c Release -r win-x64 --self-contained `
 Tagging a commit `v*` triggers the release workflow
 ([`.github/workflows/release.yml`](.github/workflows/release.yml)), which builds the exe and
 the Inno Setup installer and publishes them — with checksums — to a GitHub Release.
+
+## How it compares to WebDriver-based test automation (e.g. Appium)
+
+If you've automated Windows UIs before, it was probably with **WebDriver-based test automation** —
+Appium driving the Windows Application Driver (WinAppDriver). FlaUI.Mcp and that stack both control
+Windows apps through UI Automation, but they're built for **different jobs**, and it's worth being
+clear which one you actually want.
+
+**The intent divide (the important part).** WebDriver-based tools exist for **deterministic test
+automation**: a test author writes an explicit script, runs it in a CI pipeline, and expects the
+same steps to pass or fail the same way every time. FlaUI.Mcp exists for **non-deterministic AI
+agents**: a model decides at runtime what to look at and what to do next, over MCP. These are
+largely **non-competing niches** — one serves test suites, the other serves agents. Writing a
+regression suite? Reach for the WebDriver stack. Giving an agent eyes and hands on the desktop?
+That's this.
+
+**What's similar**
+
+- Both drive Windows apps through **UI Automation** (FlaUI.Mcp via UIA3/FlaUI; appium-windows-driver
+  wraps WinAppDriver, also UIA-based).
+- Both **enumerate windows, read element properties, screenshot, and interact** with controls.
+- Both can **synthesize mouse/keyboard input** — though FlaUI.Mcp's is lease-gated (a human unlock is
+  required), while Appium's fires immediately.
+
+**What's different**
+
+| Aspect | FlaUI.Mcp | WebDriver-based (Appium + WinAppDriver) |
+|--------|-----------|------------------------------------------|
+| **Consumer** | Non-deterministic AI agents | Test authors / CI pipelines |
+| **Protocol** | Model Context Protocol (stdio JSON-RPC) | WebDriver protocol (HTTP) |
+| **Shape** | A tool surface an agent calls ad hoc | A scripted client session |
+| **Safety** | Time-lease, deny-lists, per-window budget, credential redaction | No equivalent guardrails |
+| **Ecosystem** | MCP clients (Claude Code, Antigravity, generic) | Selenium/Appium language bindings, large community |
+| **Packaging** | Single self-contained exe, no runtime | Appium server + driver + client stack |
+
+**It is *not* a drop-in Appium replacement.** FlaUI.Mcp speaks **no WebDriver protocol**, ships **no
+language-binding ecosystem** (the Java/Python/C#/JS Selenium clients), and is **not a test
+framework** — no assertions, no test runner, no page objects. If you have an Appium suite, this does
+not run it. It's a different tool for a different consumer.
+
+**Rough guide:** if you're giving an AI agent supervised control of the Windows desktop — with safety
+rails and credential redaction — FlaUI.Mcp is built for that. If you need deterministic UI test
+automation, cross-platform coverage (Appium also drives macOS/Linux/Android/iOS), or you already have
+a WebDriver investment, the Appium stack is the established choice.
 
 ## License
 
