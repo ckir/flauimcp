@@ -35,13 +35,14 @@ public sealed class SnapshotTools
             return ToolResponse.Ok(new { snapshotId = r.SnapshotId, nodeCount = r.NodeCount, tree = r.Tree });
         });
 
-    [McpServerTool(ReadOnly = true), Description("Diff a window's CURRENT tree against an explicit baseline snapshotId. Returns added/removed/changed (Name/Enabled/Focused) keyed by composite identity (ControlType+AutomationId+RuntimeId, else +Name). Result refs belong to the new currentSnapshotId. Note: anonymous virtualized recycled rows (empty AutomationId+Name, recycled RuntimeId) can collide — diff such content by value/text instead.")]
+    [McpServerTool(ReadOnly = true), Description("Diff a window's CURRENT tree against an explicit baseline snapshotId. Returns added/removed/changed (Name/Enabled/Focused) keyed by composite identity (ControlType+AutomationId+RuntimeId, else +Name). Result refs belong to the new currentSnapshotId. Optional scope=<a live ref, typically from the baseline> diffs ONLY that element's subtree (cheap: re-walks just the subtree, slices the baseline in-memory). Note: anonymous virtualized recycled rows (empty AutomationId+Name, recycled RuntimeId) can collide - diff such content by value/text instead.")]
     public Task<string> DesktopSnapshotDiff(
         [Description("Window handle, e.g. w1.")] string window,
-        [Description("REQUIRED baseline snapshotId to diff against, e.g. w1:2.")] string baselineSnapshotId)
+        [Description("REQUIRED baseline snapshotId to diff against, e.g. w1:2.")] string baselineSnapshotId,
+        [Description("Optional live ref to diff only its subtree.")] string? scope = null)
         => ToolResponse.Guard(async () =>
         {
-            var d = await _perception.DiffAsync(new WindowHandle(window), baselineSnapshotId);
+            var d = await _perception.DiffAsync(new WindowHandle(window), baselineSnapshotId, scope);
             return ToolResponse.Ok(new
             {
                 baselineSnapshotId = d.BaselineSnapshotId, currentSnapshotId = d.CurrentSnapshotId,

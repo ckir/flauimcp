@@ -329,15 +329,26 @@ public sealed class PerceptionManager
             return (true, null);
         });
 
-    public async Task<SnapshotDiffResult> DiffAsync(WindowHandle handle, string baselineSnapshotId)
+    public async Task<SnapshotDiffResult> DiffAsync(WindowHandle handle, string baselineSnapshotId, string? scopeRef = null)
     {
         if (!_cache.TryGet(baselineSnapshotId, out var baseline) || baseline is null)
             throw new ToolException(ToolErrorCode.SnapshotNotFound, $"Baseline snapshot '{baselineSnapshotId}' is not in the cache.", "re-take the baseline snapshot");
         var baseWindowId = baselineSnapshotId.Split(':')[0];
         if (!string.Equals(baseWindowId, handle.Id, System.StringComparison.Ordinal))
             throw new ToolException(ToolErrorCode.SnapshotWindowMismatch, $"Baseline '{baselineSnapshotId}' belongs to window '{baseWindowId}', not '{handle.Id}'.", "pass a baselineSnapshotId from the same window");
-        var (currentId, current) = await BuildModelAsync(handle, new SnapshotOptions(), _refs);
+
+        // Scope: read the scope descriptor off-STA now. (RefNotFound if the ref was superseded -
+        // surfaces cleanly via ToolResponse.Guard.) BuildModelAsync resolves RootRef BEFORE its
+        // BeginSnapshot, so the same ref also re-resolves inside the walk.
+        var scopeDescriptor = string.IsNullOrEmpty(scopeRef) ? null : _refs.Lookup(handle.Id, scopeRef!).Descriptor;
+
+        var currentOptions = string.IsNullOrEmpty(scopeRef) ? new SnapshotOptions() : new SnapshotOptions { RootRef = scopeRef };
+        var (currentId, current) = await BuildModelAsync(handle, currentOptions, _refs);
         _cache.Put(currentId, current);
+
+        if (scopeDescriptor is not null)
+            baseline = SnapshotDiff.Subtree(baseline, scopeDescriptor); // slice baseline to the same subtree (in-memory)
+
         return SnapshotDiff.Compute(baselineSnapshotId, baseline, currentId, current);
     }
 
