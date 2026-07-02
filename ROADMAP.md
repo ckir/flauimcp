@@ -126,6 +126,32 @@ safety rationale.
 Not phased here (separate follow-on, not v1-blocking): HTTP/SSE transport with its hard
 auth-token gate; RefRegistry eviction on window close.
 
+## Consumer-lens hardening backlog (v0.7.3 release-capstone review, 2026-07-02)
+
+Raised from a whole-repo "ready-to-cut-release" review through the eyes of the final operator (an AI
+agent driving a real desktop). None block v0.7.3; they harden the product's central promise — a
+*trustworthy* pair of hands on the desktop.
+
+- **Read-only enforcement as a structural invariant** ✅ **(shipped v0.7.3).** The capstone found that
+  `desktop_launch_app`/`focus_window`/`close_window` bypassed `--read-only-mode` (used the non-guarding
+  path). Beyond the point-fix, `ToolReadOnlyInvariantTests` now reflects the whole tool surface and
+  asserts EVERY `[McpServerTool]` declares exactly one of `ReadOnly`/`Destructive` AND that every
+  `Destructive` tool actually short-circuits to `WriteBlockedReadOnly` in read-only mode — so a future
+  tool that forgets to route through `GuardWrite` fails in CI, not production. "We remembered to gate
+  each tool" is now an enforced invariant.
+- **Continuous interactive (Desktop/UIA + synthetic-input) coverage in CI.** Today the green CI badge
+  proves only the headless half; the `Category=Desktop` suite — the part that exercises the product's
+  entire reason to exist — is maintainer-run. Stand up a self-hosted/scheduled interactive runner so a
+  regression in real UIA/`SendInput` behavior is caught continuously, not just at manual smoke time.
+  (Complements the deferred "Full DPI × OS × integrity test matrix in CI" below.)
+- **Reactive-editor typing robustness → first-class remedy.** Typed text into the new Win11 Notepad and
+  Chromium editors garbles at any pacing; today it's a documented limitation with a soft `verify` +
+  `desktop_set_value`/clipboard-paste fallback (see **Phase 4b.3** above and Known Limitations below).
+  Promote the clipboard-paste remedy from documented-workaround toward an automatic, discoverable path.
+- **Code signing the distributed exe (pull earlier).** An unsigned input-synthesizing binary that also
+  configures agents is a rough first-touch trust barrier for a *security* tool — see the "Top v2
+  distribution item" in the v2 table below; worth pulling ahead of other v2 work for adoption.
+
 ## v2 (deferred)
 
 | Feature | Why deferred | Source |
