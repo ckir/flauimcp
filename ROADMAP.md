@@ -110,11 +110,11 @@ safety rationale.
     zero-UIA surfaces (also in the v2 table).
 - **Phase 5 — Read-only targeting** — split by what shipped: durable-ref hardening first,
   direct element query second.
-  - **v0.7.3a** ✅ **— ref-resolution hardening (INV-8).** Strict RuntimeId-only resolution for
+  - **Phase 5a** ✅ **(v0.7.3a) — ref-resolution hardening (INV-8).** Strict RuntimeId-only resolution for
     state-changing ref tools (`REF_STALE_UNRESOLVABLE` on a recycled `AutomationId`, no
     positional fallback); fail-closed lenient reads (`AMBIGUOUS_MATCH`/`REF_STALE`); break-glass
     `FLAUI_MCP_REF_STRICT=off`. Prerequisite for `desktop_find` below.
-  - **v0.7.3** ✅ **— `desktop_find` + scoped `desktop_snapshot_diff`.** `desktop_find` queries a
+  - **Phase 5b** ✅ **(v0.7.3) — `desktop_find` + scoped `desktop_snapshot_diff`.** `desktop_find` queries a
     window for element refs (`automationId` / `name` `eq`\|`contains` / `controlType` /
     `enabledOnly`, optional subtree `scope`) without walking the whole tree — returns matches
     with bounds + isEnabled/hasFocus + `totalMatches`/`isTruncated`; read-only, honors the

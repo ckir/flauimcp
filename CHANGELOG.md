@@ -6,8 +6,8 @@ All notable changes to this project are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
-- `desktop_find` - query a window for element refs (by automationId / name eq|contains / controlType / enabledOnly, optional subtree `scope`) without walking the whole tree. Returns matches with bounds + isEnabled/hasFocus + `totalMatches`/`isTruncated`. Read-only; honors the perception deny-list and password redaction (INV-5 - password fields are not findable by name). Refs are additive (a find does not supersede snapshot refs).
-- `desktop_snapshot_diff` gains `scope=<ref>` to diff only a subtree (re-roots the current walk; slices the cached baseline in-memory).
+- **`desktop_find`.** Query a window for element refs (by automationId / name eq|contains / controlType / enabledOnly, optional subtree `scope`) without walking the whole tree. Returns matches with bounds + isEnabled/hasFocus + `totalMatches`/`isTruncated`. Read-only; honors the perception deny-list and password redaction (INV-5 — password fields are not findable by name). Refs are additive (a find does not supersede snapshot refs).
+- **Scoped `desktop_snapshot_diff`.** Gains `scope=<ref>` to diff only a subtree (re-roots the current walk; slices the cached baseline in-memory).
 
 ### Security
 - **Ref-resolution hardening (INV-8).** State-changing ref tools now resolve a ref **strictly** — they
