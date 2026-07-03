@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.6] - 2026-07-03
+
+### Fixed
+- **RefRegistry no longer leaks a closed window's refs.** Over a long, exploration-heavy session that
+  launches/closes many windows (or issues many additive `desktop_find`s), the per-window ref maps —
+  each potentially pinning a cached UIA/COM element — accumulated for every window ever seen and were
+  never reclaimed. Closing a window now evicts its ref state (refs + counter + snapshot seq),
+  releasing the pinned COM elements to the GC. Two paths feed the single `Invalidate` chokepoint: a
+  push signal (process exit / `desktop_close_window`) via a new `WindowInvalidated` event, and an
+  on-access liveness sweep (Win32 `IsWindow`) at the entry of `desktop_snapshot`, `desktop_find`, and
+  `desktop_list_windows` that catches windows closed by the user/app without a process exit. Purely
+  internal memory reclamation — no wire-contract, tool, or error-code change; a ref used after its
+  window is gone yields the existing `REF_NOT_FOUND` (→ take a fresh snapshot), now surfaced sooner.
+
 ## [0.7.5] - 2026-07-02
 
 ### Changed

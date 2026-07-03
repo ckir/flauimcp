@@ -8,7 +8,7 @@ namespace FlaUI.Mcp.Core.Perception;
 /// per-snapshot scoped: BeginSnapshot clears a window's refs but never resets its
 /// counter, so a stale held ref can never silently alias a new element — it misses
 /// with REF_NOT_FOUND. Accessed only from the dispatcher's single query STA, but
-/// guarded for safety. Process-wide singleton this phase (per-connection in Phase 6).</summary>
+/// guarded for safety. Process-wide singleton this phase (per-connection scoping deferred to a future HTTP/SSE phase).</summary>
 public sealed class RefRegistry
 {
     internal sealed record Entry(ElementDescriptor Descriptor, AutomationElement? Cached);
@@ -27,6 +27,24 @@ public sealed class RefRegistry
             int seq = _snapshotSeq.TryGetValue(windowId, out var s) ? s + 1 : 1;
             _snapshotSeq[windowId] = seq;
             return $"{windowId}:{seq}";
+        }
+    }
+
+    /// <summary>Evict all state for a closed window (refs + counter + snapshot seq), releasing any cached
+    /// COM element pins to the GC. Idempotent: a windowId with no entries is a no-op. Now always invoked
+    /// ON the single query STA (marshaled via WindowManager.PostToQuerySta), so it serializes with
+    /// BeginSnapshot/Register just like every other mutator and preserves the class's single-STA
+    /// invariant (see the class <summary> above) even though the invalidation signal that triggers it can
+    /// originate off-STA (e.g. a process-exit callback on a ThreadPool thread). Dropping
+    /// _counter/_snapshotSeq is safe because windowId is a monotonic "w{n}" id that is never reused, so a
+    /// future window can never inherit a stale counter and alias an old ref.</summary>
+    public void EvictWindow(string windowId)
+    {
+        lock (_gate)
+        {
+            _byWindow.Remove(windowId);
+            _counter.Remove(windowId);
+            _snapshotSeq.Remove(windowId);
         }
     }
 

@@ -25,6 +25,13 @@ public sealed class WindowManager : IDisposable
     private readonly ConcurrentDictionary<string, Process> _watched = new();
     private int _counter;
 
+    /// <summary>Raised when a window handle is invalidated (process exit, close_window, or a
+    /// PruneClosedWindows sweep observing a dead HWND). Carries the windowId. Fires at most once per
+    /// invalidation and only when tracked state was actually removed. Subscribers must be thread-safe:
+    /// this can fire on a ThreadPool thread (via proc.Exited). Subscriber exceptions are swallowed on
+    /// the invalidation path (they do NOT propagate to the invalidator).</summary>
+    public event Action<string>? WindowInvalidated;
+
     public WindowManager(AutomationDispatcher dispatcher)
     {
         _dispatcher = dispatcher;
@@ -37,6 +44,7 @@ public sealed class WindowManager : IDisposable
     public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync(bool includeBounds) =>
         _dispatcher.RunQueryAsync<IReadOnlyList<WindowInfo>>(() =>
         {
+            PruneClosedWindows(); // Phase 6 backstop: reclaim windows closed w/o a process exit
             // PURE Win32 — no UIA. A UIA Title/ProcessId read on the query STA blocks with no
             // timeout on ANY momentarily-unresponsive desktop window; Win32 GetWindowText does not.
             var foreground = GetForegroundWindow();
@@ -54,6 +62,14 @@ public sealed class WindowManager : IDisposable
 
     /// <summary>Run an arbitrary read on the query STA (used by full-desktop capture, which needs an STA hop without a specific window).</summary>
     public Task<T> RunOnQueryAsync<T>(Func<T> func) => _dispatcher.RunQueryAsync(func);
+
+    /// <summary>Fire-and-forget: marshal an action onto the single query STA so it serializes BEHIND any
+    /// in-flight query (snapshot/find walk). Used to run RefRegistry.EvictWindow on the SAME thread that
+    /// Register/BeginSnapshot run on — restoring RefRegistry's single-STA invariant even when the
+    /// invalidation originates off-STA (a proc.Exited ThreadPool callback). The marshaled action
+    /// (EvictWindow) only does locked dictionary removals and cannot throw, so the un-awaited task can
+    /// never surface an unobserved fault.</summary>
+    public void PostToQuerySta(Action action) => _ = _dispatcher.RunQueryAsync(action);
 
     public Task<WindowHandle> OpenByPidAsync(int pid) =>
         _dispatcher.RunQueryAsync(() =>
@@ -99,10 +115,51 @@ public sealed class WindowManager : IDisposable
 
     public void Invalidate(WindowHandle handle)
     {
-        _handles.TryRemove(handle.Id, out _);
+        // Exactly-once gate. _handles is populated UNCONDITIONALLY by Register for every id, and
+        // ConcurrentDictionary.TryRemove returns true to EXACTLY ONE caller per key — so electing
+        // _handles as the SOLE gate makes WindowInvalidated fire at most once even when two threads
+        // invalidate the same handle concurrently (proc.Exited racing CloseAsync, or a sweep racing
+        // proc.Exited). _hwnds/_watched are best-effort (populated inside try/catch) so they cannot
+        // serve as the gate — remove them unconditionally (still disposing the watched process), but
+        // do NOT let their removal set `removed`.
+        bool removed = _handles.TryRemove(handle.Id, out _);
         _hwnds.TryRemove(handle.Id, out _);
         if (_watched.TryRemove(handle.Id, out var p))
             try { p.Dispose(); } catch { }
+        if (removed)
+            // Swallow subscriber faults: this can fire on a raw ThreadPool thread (proc.Exited), where an
+            // unhandled exception is process-fatal, and from CloseAsync's finally, where it would mask an
+            // in-flight exception. Invalidation-path robustness > surfacing a subscriber bug here (mirrors
+            // the _watched Dispose guard above).
+            try { WindowInvalidated?.Invoke(handle.Id); } catch { }
+    }
+
+    /// <summary>Pure liveness decision (no UIA / no instance state beyond the passed pairs) so it is
+    /// unit-testable headless: given the tracked (windowId, hwnd) pairs and an aliveness predicate,
+    /// return the windowIds whose HWND is gone (IntPtr.Zero, or !isAlive). IntPtr.Zero is dead without
+    /// consulting the predicate.</summary>
+    internal static IReadOnlyList<string> DeadWindowIds(
+        IReadOnlyCollection<KeyValuePair<string, IntPtr>> tracked, Func<IntPtr, bool> isAlive)
+    {
+        var dead = new List<string>();
+        foreach (var (id, hwnd) in tracked)
+            if (hwnd == IntPtr.Zero || !isAlive(hwnd))
+                dead.Add(id);
+        return dead;
+    }
+
+    /// <summary>Best-effort memory hygiene: invalidate any tracked handle whose HWND is no longer a live
+    /// window (user/app closed it without a process exit, so neither proc.Exited nor CloseAsync fired).
+    /// Routes each dead id through Invalidate, so _handles/_hwnds/_watched AND (via the WindowInvalidated
+    /// event) RefRegistry are all reclaimed on one path. Pure Win32 (IsWindow) + ConcurrentDictionary ops
+    /// — needs no STA, safe to call off the query STA. Snapshots _hwnds first so the Invalidate-driven
+    /// TryRemove inside the loop can't corrupt the enumeration. <paramref name="isAlive"/> is injectable
+    /// for tests (default = Win32 IsWindow).</summary>
+    internal void PruneClosedWindows(Func<IntPtr, bool>? isAlive = null)
+    {
+        isAlive ??= IsWindow;
+        foreach (var id in DeadWindowIds(_hwnds.ToArray(), isAlive))
+            Invalidate(new WindowHandle(id));
     }
 
     internal WindowHandle Register(Window window, int pid)
@@ -144,6 +201,9 @@ public sealed class WindowManager : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowTextLengthW(IntPtr hwnd);
