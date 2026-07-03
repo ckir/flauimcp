@@ -44,6 +44,7 @@ public sealed class WindowManager : IDisposable
     public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync(bool includeBounds) =>
         _dispatcher.RunQueryAsync<IReadOnlyList<WindowInfo>>(() =>
         {
+            PruneClosedWindows(); // Phase 6 backstop: reclaim windows closed w/o a process exit
             // PURE Win32 — no UIA. A UIA Title/ProcessId read on the query STA blocks with no
             // timeout on ANY momentarily-unresponsive desktop window; Win32 GetWindowText does not.
             var foreground = GetForegroundWindow();

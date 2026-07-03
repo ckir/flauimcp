@@ -23,6 +23,14 @@ public sealed class PerceptionManager
         _windows = windows;
         _refs = refs;
         _cache = cache;
+        // Phase 6: close signal → evict the window's refs. Safe here because on stdio WindowManager,
+        // RefRegistry, and PerceptionManager are ALL process-lifetime singletons (Program.cs), so this
+        // subscription lives exactly as long as its target — no leak. PHASE-7 NOTE: when HTTP/SSE makes
+        // RefRegistry per-connection while WindowManager stays a singleton, this '+=' would root every
+        // dropped connection's RefRegistry via the delegate; that phase must make PerceptionManager
+        // IDisposable and '-=' unsubscribe on connection teardown. Do NOT add that now (YAGNI — no
+        // second connection exists on stdio).
+        _windows.WindowInvalidated += _refs.EvictWindow;
     }
 
     /// <summary>Resolve a ref to its live element on the query STA and run a read over it.
@@ -180,8 +188,10 @@ public sealed class PerceptionManager
     }
 
     public Task<(string SnapshotId, SnapshotModel Model)> BuildModelAsync(
-        WindowHandle handle, SnapshotOptions options, RefRegistry refs) =>
-        _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
+        WindowHandle handle, SnapshotOptions options, RefRegistry refs)
+    {
+        _windows.PruneClosedWindows(); // Phase 6 backstop: reclaim windows closed w/o a process exit
+        return _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
             var procName = SafeProcessName(win);
             if (PerceptionPolicy.IsDenied(procName))
@@ -195,6 +205,7 @@ public sealed class PerceptionManager
             var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id);
             return (snapshotId, model);
         });
+    }
 
     /// <summary>desktop_find: resolve a UIA condition on the query STA and mint durable refs for the
     /// matches WITHOUT superseding the window's snapshot refs (additive Register - a narrow find must
@@ -202,8 +213,10 @@ public sealed class PerceptionManager
     /// the window (INV-5) + IsPassword name redaction BEFORE the match decision (no name-oracle).
     /// Matches are capped at max in tree order; TotalMatches/IsTruncated report the full count so
     /// truncation is never silent.</summary>
-    public Task<FindResult> FindAsync(WindowHandle handle, FindQuery query, int max, string? scopeRef) =>
-        _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
+    public Task<FindResult> FindAsync(WindowHandle handle, FindQuery query, int max, string? scopeRef)
+    {
+        _windows.PruneClosedWindows(); // Phase 6 backstop
+        return _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
             var procName = SafeProcessName(win);
             if (PerceptionPolicy.IsDenied(procName))
@@ -288,6 +301,7 @@ public sealed class PerceptionManager
             }
             return new FindResult(matches, total, total > max);
         });
+    }
 
     private static T SafeRead<T>(Func<T> read, T fallback) { try { return read(); } catch { return fallback; } }
 
