@@ -16,8 +16,9 @@ public static class CoordinateMapping
         int winLeft, int winTop, int winWidth, int winHeight)
     {
         // Undo the downscale, then add the capture origin -> physical screen px.
-        double screenXd = captureX + bitmapX / scaleApplied;
-        double screenYd = captureY + bitmapY / scaleApplied;
+        double s = scaleApplied > 0 ? scaleApplied : 1.0; // defensive: real callers always pass >0 (CaptureResult.ScaleApplied); guard against NaN/Inf
+        double screenXd = captureX + bitmapX / s;
+        double screenYd = captureY + bitmapY / s;
         int screenX = (int)System.Math.Round(screenXd);
         int screenY = (int)System.Math.Round(screenYd);
         // Fraction of the FULL window rect (clamped so an off-window point doesn't produce an out-of-[0,1] click).

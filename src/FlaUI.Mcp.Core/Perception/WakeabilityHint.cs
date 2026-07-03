@@ -10,6 +10,12 @@ public static class WakeabilityHint
 {
     // §4 spike: opaque Chromium collapses to ~14-15 nodes (window frame + Min/Restore/Close + empty Panes);
     // hydrated is 200+. A generous boundary well below the hydrated count and above the opaque baseline.
+    // CALIBRATION CAVEAT (whole-branch review): 20 was calibrated from desktop_snapshot_stats (unpruned:
+    // opaque ~14, hydrated ~231). The live hint is computed against the CALLER's snapshot NodeCount, which
+    // under desktop_snapshot's default interactiveOnly=true is PRUNED (smaller). A hydrated-but-sparse
+    // Chromium window could therefore fall <=20 and spuriously read wakeable:true. Worst case is harmless:
+    // a no-op wake suggestion on an already-accessible window (WakeRegistry tolerates duplicate wakes).
+    // Fast-follow if precise: compute the predicate from a fixed InteractiveOnly=false walk.
     public const int CollapsedNodeThreshold = 20;
 
     public static bool IsWakeable(string? className, int nodeCount)
