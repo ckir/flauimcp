@@ -23,14 +23,19 @@ public sealed class PerceptionManager
         _windows = windows;
         _refs = refs;
         _cache = cache;
-        // Phase 6: close signal → evict the window's refs. Safe here because on stdio WindowManager,
-        // RefRegistry, and PerceptionManager are ALL process-lifetime singletons (Program.cs), so this
-        // subscription lives exactly as long as its target — no leak. PHASE-7 NOTE: when HTTP/SSE makes
-        // RefRegistry per-connection while WindowManager stays a singleton, this '+=' would root every
-        // dropped connection's RefRegistry via the delegate; that phase must make PerceptionManager
-        // IDisposable and '-=' unsubscribe on connection teardown. Do NOT add that now (YAGNI — no
-        // second connection exists on stdio).
-        _windows.WindowInvalidated += _refs.EvictWindow;
+        // Phase 6: close signal → evict the window's refs, but MARSHALED onto the single query STA via
+        // PostToQuerySta. RefRegistry is only otherwise mutated (BeginSnapshot/Register) on that STA, so
+        // routing eviction through it too keeps ALL RefRegistry mutations serialized on one thread: an
+        // evict fired while a snapshot/find walk of the same window is in flight simply queues BEHIND the
+        // walk (walk finishes registering, THEN evict wipes) — no mid-walk counter restart / ref aliasing
+        // and no orphaned cached-COM leak. The push signal can originate off-STA (proc.Exited on a
+        // ThreadPool thread); the marshal is what makes that safe.
+        // Lifetime: on stdio, WindowManager/RefRegistry/PerceptionManager are ALL process-lifetime
+        // singletons (Program.cs), so this '+=' never leaks. FUTURE HTTP/SSE NOTE: if RefRegistry becomes
+        // per-connection while WindowManager stays a singleton, this subscription would root every dropped
+        // connection's RefRegistry — that phase must make PerceptionManager IDisposable and '-=' on
+        // teardown. Do NOT add that now (YAGNI — no second connection exists on stdio).
+        _windows.WindowInvalidated += id => _windows.PostToQuerySta(() => _refs.EvictWindow(id));
     }
 
     /// <summary>Resolve a ref to its live element on the query STA and run a read over it.
@@ -190,9 +195,9 @@ public sealed class PerceptionManager
     public Task<(string SnapshotId, SnapshotModel Model)> BuildModelAsync(
         WindowHandle handle, SnapshotOptions options, RefRegistry refs)
     {
-        _windows.PruneClosedWindows(); // Phase 6 backstop: reclaim windows closed w/o a process exit
         return _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
+            _windows.PruneClosedWindows(); // Phase 6 backstop: reclaim windows closed w/o a process exit
             var procName = SafeProcessName(win);
             if (PerceptionPolicy.IsDenied(procName))
                 throw new ToolException(ToolErrorCode.TargetDenied,
@@ -215,9 +220,9 @@ public sealed class PerceptionManager
     /// truncation is never silent.</summary>
     public Task<FindResult> FindAsync(WindowHandle handle, FindQuery query, int max, string? scopeRef)
     {
-        _windows.PruneClosedWindows(); // Phase 6 backstop
         return _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
+            _windows.PruneClosedWindows(); // Phase 6 backstop
             var procName = SafeProcessName(win);
             if (PerceptionPolicy.IsDenied(procName))
                 throw new ToolException(ToolErrorCode.TargetDenied,

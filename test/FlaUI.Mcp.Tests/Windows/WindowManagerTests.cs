@@ -113,8 +113,8 @@ public class WindowManagerTests : IClassFixture<TestAppFixture>
 
         Assert.Equal("a", refs.Lookup(handle.Id, elRef).Descriptor.AutomationId); // present before close
 
-        mgr.Invalidate(handle); // fires WindowInvalidated → refs.EvictWindow(handle.Id)
-
+        mgr.Invalidate(handle); // fires WindowInvalidated → marshals refs.EvictWindow onto the query STA
+        await mgr.RunOnQueryAsync(() => true); // flush: queues BEHIND the marshaled evict, so it has run before we assert
         var ex = Assert.Throws<ToolException>(() => refs.Lookup(handle.Id, elRef));
         Assert.Equal(ToolErrorCode.RefNotFound, ex.Code); // evicted through the wiring
     }

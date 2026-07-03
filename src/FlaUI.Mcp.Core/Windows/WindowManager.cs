@@ -63,6 +63,14 @@ public sealed class WindowManager : IDisposable
     /// <summary>Run an arbitrary read on the query STA (used by full-desktop capture, which needs an STA hop without a specific window).</summary>
     public Task<T> RunOnQueryAsync<T>(Func<T> func) => _dispatcher.RunQueryAsync(func);
 
+    /// <summary>Fire-and-forget: marshal an action onto the single query STA so it serializes BEHIND any
+    /// in-flight query (snapshot/find walk). Used to run RefRegistry.EvictWindow on the SAME thread that
+    /// Register/BeginSnapshot run on — restoring RefRegistry's single-STA invariant even when the
+    /// invalidation originates off-STA (a proc.Exited ThreadPool callback). The marshaled action
+    /// (EvictWindow) only does locked dictionary removals and cannot throw, so the un-awaited task can
+    /// never surface an unobserved fault.</summary>
+    public void PostToQuerySta(Action action) => _ = _dispatcher.RunQueryAsync(action);
+
     public Task<WindowHandle> OpenByPidAsync(int pid) =>
         _dispatcher.RunQueryAsync(() =>
         {

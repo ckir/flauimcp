@@ -31,11 +31,13 @@ public sealed class RefRegistry
     }
 
     /// <summary>Evict all state for a closed window (refs + counter + snapshot seq), releasing any cached
-    /// COM element pins to the GC. Idempotent: a windowId with no entries is a no-op. Thread-safe; may be
-    /// called off the query STA (e.g. from a process-exit callback) — it only drops managed references and
-    /// never invokes a COM method on the cached element, so the release marshals safely on GC finalization.
-    /// Dropping _counter/_snapshotSeq is safe because windowId is a monotonic "w{n}" id that is never
-    /// reused, so a future window can never inherit a stale counter and alias an old ref.</summary>
+    /// COM element pins to the GC. Idempotent: a windowId with no entries is a no-op. Now always invoked
+    /// ON the single query STA (marshaled via WindowManager.PostToQuerySta), so it serializes with
+    /// BeginSnapshot/Register just like every other mutator and preserves the class's single-STA
+    /// invariant (see the class <summary> above) even though the invalidation signal that triggers it can
+    /// originate off-STA (e.g. a process-exit callback on a ThreadPool thread). Dropping
+    /// _counter/_snapshotSeq is safe because windowId is a monotonic "w{n}" id that is never reused, so a
+    /// future window can never inherit a stale counter and alias an old ref.</summary>
     public void EvictWindow(string windowId)
     {
         lock (_gate)
