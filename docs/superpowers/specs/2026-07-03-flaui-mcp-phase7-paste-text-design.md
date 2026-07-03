@@ -63,7 +63,7 @@ desktop_paste_text(
   `ToolReadOnlyInvariantTests`).
 - **Cap = 1,000,000 UTF-16 units.** Over cap → `InvalidArguments` (recovery: split on a whole-character
   boundary). Higher than `desktop_type`'s 4096 because paste pays no per-char `SendInput` cost. Empty
-  `text` allowed.
+  `text` → `InvalidArguments` (nothing to paste; keeps a degenerate call from clobbering the clipboard).
 
 ### Success envelope (via `ToolResponse.Ok`)
 ```jsonc
@@ -88,7 +88,8 @@ existing `VerifyResult` wire contract exactly (`VerifyResult.Disabled` when `ver
 `InputTools.DesktopPasteText`, wrapped in `ToolResponse.GuardWrite(_options, …)`. Ordering is
 deliberate — **all refusal gates run before the clipboard is touched** (panel Seat 1-r1):
 
-1. **Validate.** `text.Length > 1_000_000` → `InvalidArguments`.
+1. **Validate.** Empty `text` → `InvalidArguments` ("nothing to paste" — rejected so a degenerate call
+   can't clobber the clipboard). `text.Length > 1_000_000` → `InvalidArguments`.
 2. **Focus + before-read (one STA visit).** `_perception.RunOnRefForInputAsync(window, ref, (win, el) => …)`:
    `el.Focus()`, resolve `ActionTarget` via `InputTargeting.ResolveElementTarget(win, el)` (identity
    from the element, not the host window). If `verify`, capture the raw `before` text via
@@ -190,8 +191,15 @@ Read scheduling (verify=true):
 - The old fixed `PasteSettleMs(150)` is **removed**; the single `VerifySettleMs` before the after-read
   is the only settle, and restore never fires before the read observes the payload.
 
-Edge — **empty payload** (`text==""`): nothing is pasted and nothing can race; treat consumption as
-trivially satisfied for restore (restoring prior content is harmless). Plan-level detail.
+Edge — **empty payload** (`text==""`): **rejected upstream** with `InvalidArguments` (§4 step 1), so the
+flow never sees an empty payload — this removes the degenerate "would clobber then abandon" case that a
+containment gate can't confirm. *(Panel-plan-r2 Seat 1.)*
+
+**Containment gate — accepted best-effort limitation.** Because confirmation is `after.Contains(payload)
+&& !before.Contains(payload)`, restore reports `"abandoned"` (safe; payload left) when the pasted text
+**already appears** elsewhere in the field, or when a reactive editor **transforms** it. Intentional:
+restore is a courtesy, not a guarantee (the paste + the safety gates ARE guaranteed). Precise signal
+(delayed-render `WM_RENDERFORMAT`) is the tracked **Phase 7.1** follow-up; do not weaken containment.
 
 ## 7. `desktop_type` remedy re-point
 
@@ -278,8 +286,11 @@ fields). Contract: the no-writable-ValuePattern branch's `recommendedFallbackToo
 - `src/FlaUI.Mcp.Core/Interaction/InputGuard.cs` — `PreflightInput(ActionTarget)` (refusal gates
   minus budget-consume/audit); `ActionBudget` gains a non-consuming `HasFreeSlot(root, now)`.
 - `src/FlaUI.Mcp.Core/Errors/ToolErrorCode.cs` — add `ClipboardHoldsNonText`.
-- `src/FlaUI.Mcp.Server/Tools/InputTools.cs` — new `DesktopPasteText` (models on `DesktopType`);
-  containment-gate + restore logic.
+- `src/FlaUI.Mcp.Server/Tools/PasteFlow.cs` — **NEW** pure orchestrator (`PasteFlow.RunAsync` over an
+  injected `IPasteEffects`): effect ORDER + gating + containment-restore + verify-outcome. This is the
+  seam that makes the §9 safety invariants headless-testable (a recording fake). *(Panel-plan-r1 Seat 3.)*
+- `src/FlaUI.Mcp.Server/Tools/InputTools.cs` — new `DesktopPasteText` tool = thin wiring: a real
+  `IPasteEffects` (perception/guard/ClipboardAccess) handed to `PasteFlow.RunAsync`. No decision logic here.
 - `src/FlaUI.Mcp.Server/Tools/VerifyResult.cs` (+`RemedyProse`) — remedy re-point.
 - Tests: `ClipboardAccessTests`, `InputGuardTests`, `InputToolsTests`/`InputToolsContractTests`,
   `VerifyResultTests`.
