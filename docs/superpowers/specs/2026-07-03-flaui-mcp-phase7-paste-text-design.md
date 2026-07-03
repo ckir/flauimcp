@@ -160,8 +160,11 @@ the agent payload → `"abandoned"`.
 | `NonText`             | force=true (mutation happened)    | cannot restore                | `"none-nontext"`    |
 | `NonText`             | force=false                       | refused pre-mutation (`ClipboardHoldsNonText`) | — |
 
-- **`verify=false` ⇒ `"abandoned"` always** (no after-read ⇒ no confirmation). Honest + safe; the
-  agent can restore manually via `desktop_clipboard_set` if it staged the prior text out-of-band.
+- **`verify=false` ⇒ `"abandoned"`** for `Text`/`Rich`/`Empty` priors (no after-read ⇒ no
+  confirmation). Honest + safe; the agent can restore manually via `desktop_clipboard_set` if it
+  staged the prior text out-of-band. **Exception:** a `NonText` prior that was force-overwritten is
+  reported `"none-nontext"` even under `verify=false` — it can never be restored regardless of
+  confirmation (deterministic from `snap.Kind`, matching the table's `NonText` row).
 
 New P/Invokes in `ClipboardAccess`: `EnumClipboardFormats(uint)` (+ `IsClipboardFormatAvailable` if
 convenient). Existing strict OpenClipboard-retry / HGLOBAL-ownership discipline reused.
