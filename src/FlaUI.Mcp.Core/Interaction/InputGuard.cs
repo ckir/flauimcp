@@ -76,6 +76,38 @@ public sealed class InputGuard
                 "re-grant with `flaui-mcp unlock --minutes N --allow-shells` (human, out-of-band)");
     }
 
+    /// <summary>Run every REFUSAL gate a real send runs — elevation, lease, deny-list/interlock,
+    /// session-state, and a NON-consuming budget peek — WITHOUT consuming a slot or writing audit.
+    /// desktop_paste_text calls this to fail-closed BEFORE it mutates the clipboard, so a paste that
+    /// will be refused never clobbers the user's clipboard. The subsequent KeyChord re-runs the full
+    /// Authorize (idempotent re-check + budget consume + audit).</summary>
+    public void PreflightInput(ActionTarget target)
+    {
+        if (_isElevated && !_allowElevation)
+            throw new ToolException(ToolErrorCode.AccessDeniedIntegrity,
+                "Synthetic input is refused while the server runs elevated.",
+                "restart without elevation, or pass --unsafe-allow-elevation if you accept the risk");
+
+        var now = _clock();
+        var lease = _leases.Read(out _);
+        if (lease is null || !lease.IsValidNow(now, _currentSid))
+            throw new ToolException(ToolErrorCode.InputNotLeased,
+                "Synthetic input is locked. No unexpired lease for this user.",
+                "run `flaui-mcp unlock --minutes N` on the host to enable input");
+
+        CheckTarget(target, lease.HasCapability("shells"));
+
+        if (!_env.SessionState().CanDeliverInput)
+            throw new ToolException(ToolErrorCode.InputDesktopUnavailable,
+                "The interactive input desktop is unavailable (locked / disconnected / secure desktop).",
+                "connect and unlock the session, then retry");
+
+        if (!_budget.HasFreeSlot(target.Root, now))
+            throw new ToolException(ToolErrorCode.InputBudgetExceeded,
+                $"Synthetic-input rate limit exceeded for this window. Retry in ~{_budget.SecondsUntilFreeSlot(target.Root, now)}s.",
+                "wait for the window to clear, or re-grant the lease with `flaui-mcp unlock` to reset the budget");
+    }
+
     public void KeyType(string text, ActionTarget target, int interKeyDelayMs = 0)
     {
         Authorize(target, "type", text?.Length ?? 0);
