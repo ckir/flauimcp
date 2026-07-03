@@ -144,6 +144,11 @@ auth-token gate.
       push signal through the existing `Invalidate` chokepoint plus an on-access `IsWindow` liveness
       sweep at the snapshot/find/list entry points. `windowId` is a never-reused `w{n}`, so dropping
       all three registry dicts is alias-safe; no background thread, timer, or UIA event pump.
+    - **Phase 7 — `desktop_paste_text`** ✅ **(shipped v0.7.7).** Atomic clipboard-preserving Ctrl+V
+      paste for reactive editors; all input gates precede the clipboard borrow; restore only on
+      confirmed consumption; non-text fail-fast with `forceOverwriteClipboard`; mixed text+rich →
+      `text-degraded`. Deferred (Phase 7.1): delayed-render `WM_RENDERFORMAT` clipboard for a precise
+      consumption signal.
 
 ## Consumer-lens hardening backlog (v0.7.3 release-capstone review, 2026-07-02)
 
@@ -170,10 +175,13 @@ agent driving a real desktop). None block v0.7.3; they harden the product's cent
   Prerequisite hygiene: the real end-to-end `SendInput` test (`InputToolsTests`) must first be made
   reliably runnable (see the known-broken harness note in the Phase 7 spec §9).
   (Complements the deferred "Full DPI × OS × integrity test matrix in CI" below.)
-- **Reactive-editor typing robustness → first-class remedy.** Typed text into the new Win11 Notepad and
-  Chromium editors garbles at any pacing; today it's a documented limitation with a soft `verify` +
-  `desktop_set_value`/clipboard-paste fallback (see **Phase 4b.3** above and Known Limitations below).
-  Promote the clipboard-paste remedy from documented-workaround toward an automatic, discoverable path.
+- **Reactive-editor typing robustness → first-class remedy** ✅ **(delivered v0.7.7 — see Phase 7
+  above).** Typed text into the new Win11 Notepad and Chromium editors garbles at any pacing; it was a
+  documented limitation with a soft `verify` + `desktop_set_value`/clipboard-paste fallback (see
+  **Phase 4b.3** above and Known Limitations below). The clipboard-paste remedy is now the first-class
+  `desktop_paste_text` tool (atomic, clipboard-preserving) rather than a manual
+  `desktop_clipboard_set` + `desktop_key` two-step, and `desktop_type`'s verify remedy recommends it
+  directly.
 - **Code signing the distributed exe (pull earlier).** An unsigned input-synthesizing binary that also
   configures agents is a rough first-touch trust barrier for a *security* tool — see the "Top v2
   distribution item" in the v2 table below; worth pulling ahead of other v2 work for adoption.
