@@ -29,7 +29,11 @@ public sealed class WatchTools
         "{subscriptionId, event, window, ref?, controlType?, name?, bounds?, coalescedCount, timestampUtc} " +
         "(name is [REDACTED] for password fields; ref/name/bounds may be absent, e.g. window_closed). The " +
         "payload 'ref' is EPHEMERAL - minted into a small bounded pool, so it returns REF_NOT_FOUND if you wait " +
-        "too long to act; re-desktop_snapshot for a durable ref. ReadOnly + lease-exempt. NOTE: your OWN " +
+        "too long to act; re-desktop_snapshot for a durable ref. ReadOnly + lease-exempt. " +
+        "IMPORTANT - many hosts (including Claude Code) do NOT surface these push notifications to the model: " +
+        "in those you MUST poll desktop_drain_events(subscriptionId) to actually receive the events (the server " +
+        "buffers them for you) - do not just register a watch and wait for a notification that never arrives. " +
+        "NOTE: your OWN " +
         "desktop_type/click/key calls fire events too - events right after your input are likely self-caused " +
         "(correlate by timing). Caps: 5 watches/window, 20/session (TooManyWatches).")]
     public Task<string> DesktopWatch(
@@ -91,7 +95,8 @@ public sealed class WatchTools
         "Fetch and clear buffered events for a subscription. USE THIS in hosts that do NOT surface push " +
         "notifications (e.g. Claude Code today): desktop_watch delivers via 'notifications/flaui/desktop_event' " +
         "AND buffers each event here as a fallback. Returns {subscriptionId, events:[<same payload shape>], count}. " +
-        "The buffer is bounded (oldest dropped under load - see droppedCount from desktop_list_watches). Event 'ref's " +
+        "The buffer is bounded (oldest dropped under load). Returned droppedCount is the SUM of coalescer + buffer " +
+        "evictions for this subscription (>0 means you missed some state - re-desktop_snapshot to resync). Event 'ref's " +
         "are ephemeral: a drained ref may already be REF_NOT_FOUND if you waited too long - re-desktop_snapshot for a " +
         "durable ref. Do NOT also rely on push in a host that surfaces it (you'd see each event twice).")]
     public Task<string> DesktopDrainEvents(
@@ -102,6 +107,10 @@ public sealed class WatchTools
         {
             _sink.SetServer(server);
             var events = _watch.Drain(subscriptionId, max);
-            return Task.FromResult(ToolResponse.Ok(new { subscriptionId, events, count = events.Count }));
+            // Surface the summed loss (coalescer + drain-buffer evictions) inline so a draining agent sees missed
+            // state without a second desktop_list_watches call (AGY-AFTER merge-gate seat B, both drops share the
+            // registry counter). 0 if the subscription is already evicted (window closed).
+            var droppedCount = _watch.List().FirstOrDefault(w => w.SubscriptionId == subscriptionId)?.DroppedCount ?? 0;
+            return Task.FromResult(ToolResponse.Ok(new { subscriptionId, events, count = events.Count, droppedCount }));
         });
 }
