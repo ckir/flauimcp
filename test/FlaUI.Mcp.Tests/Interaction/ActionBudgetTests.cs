@@ -46,10 +46,20 @@ public class ActionBudgetTests
     [Fact]
     public void HasFreeSlot_peeks_without_consuming_then_reflects_exhaustion()
     {
+        var b = new ActionBudget(maxPerWindow: 2, windowSeconds: 60);
+        Assert.True(b.TryConsume((nint)1, T(0), leaseWriteUtc: T(0)));   // observe lease@T0 + 1 hit (1 slot left)
+        Assert.True(b.HasFreeSlot((nint)1, T(0), leaseWriteUtc: T(0)));  // 1 slot free; peek does not consume
+        Assert.True(b.HasFreeSlot((nint)1, T(0), leaseWriteUtc: T(0)));  // still free (proves no consume)
+        Assert.True(b.TryConsume((nint)1, T(0), leaseWriteUtc: T(0)));   // consume the 2nd slot
+        Assert.False(b.HasFreeSlot((nint)1, T(0), leaseWriteUtc: T(0))); // exhausted
+    }
+
+    [Fact]
+    public void HasFreeSlot_reports_free_after_a_fresh_lease_write_even_when_the_window_was_exhausted()
+    {
         var b = new ActionBudget(maxPerWindow: 1, windowSeconds: 60);
-        Assert.True(b.HasFreeSlot((nint)1, T(0)));                          // peek does not consume
-        Assert.True(b.HasFreeSlot((nint)1, T(0)));                          // still free (proves no consume)
-        Assert.True(b.TryConsume((nint)1, T(0), leaseWriteUtc: T(0)));      // consume the single slot
-        Assert.False(b.HasFreeSlot((nint)1, T(0)));                         // budget exhausted
+        Assert.True(b.TryConsume((nint)1, T(0), leaseWriteUtc: T(0)));   // exhaust the single slot under lease@T0
+        Assert.False(b.HasFreeSlot((nint)1, T(1), leaseWriteUtc: T(0))); // same lease -> still exhausted
+        Assert.True(b.HasFreeSlot((nint)1, T(1), leaseWriteUtc: T(2)));  // fresh unlock (newer write) -> budget considered free
     }
 }

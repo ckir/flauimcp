@@ -25,7 +25,6 @@ public static class ClipboardAccess
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GlobalLock(IntPtr hMem);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GlobalUnlock(IntPtr hMem);
     [DllImport("user32.dll", SetLastError = true)] private static extern uint EnumClipboardFormats(uint format);
-    [DllImport("user32.dll", SetLastError = true)] private static extern bool IsClipboardFormatAvailable(uint format);
 
     private static bool TryOpen()
     {

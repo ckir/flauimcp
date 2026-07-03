@@ -89,7 +89,7 @@ public sealed class InputGuard
                 "restart without elevation, or pass --unsafe-allow-elevation if you accept the risk");
 
         var now = _clock();
-        var lease = _leases.Read(out _);
+        var lease = _leases.Read(out var leaseWrite);
         if (lease is null || !lease.IsValidNow(now, _currentSid))
             throw new ToolException(ToolErrorCode.InputNotLeased,
                 "Synthetic input is locked. No unexpired lease for this user.",
@@ -102,7 +102,7 @@ public sealed class InputGuard
                 "The interactive input desktop is unavailable (locked / disconnected / secure desktop).",
                 "connect and unlock the session, then retry");
 
-        if (!_budget.HasFreeSlot(target.Root, now))
+        if (!_budget.HasFreeSlot(target.Root, now, leaseWrite))
             throw new ToolException(ToolErrorCode.InputBudgetExceeded,
                 $"Synthetic-input rate limit exceeded for this window. Retry in ~{_budget.SecondsUntilFreeSlot(target.Root, now)}s.",
                 "wait for the window to clear, or re-grant the lease with `flaui-mcp unlock` to reset the budget");

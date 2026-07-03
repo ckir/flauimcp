@@ -34,11 +34,14 @@ public sealed class ActionBudget
     /// <summary>Non-consuming peek: does this window currently have a free budget slot? Used by
     /// desktop_paste_text's pre-flight to fail-closed BEFORE mutating the clipboard, without spending
     /// the slot (the later KeyChord's TryConsume spends it). Prunes the window's expired hits like
-    /// TryConsume, but never enqueues.</summary>
-    public bool HasFreeSlot(nint window, DateTime now)
+    /// TryConsume, but never enqueues. Mirrors TryConsume's lease-renewal reset: a fresh unlock
+    /// (leaseWriteUtc past what we've consumed against) means the budget is reset, so report "free" —
+    /// the actual _hits.Clear() is left to the consuming TryConsume so the peek stays side-effect-light.</summary>
+    public bool HasFreeSlot(nint window, DateTime now, DateTime leaseWriteUtc)
     {
         lock (_gate)
         {
+            if (leaseWriteUtc > _seenLeaseWrite) return true; // fresh unlock -> budget reset -> free
             if (!_hits.TryGetValue(window, out var q)) return true;
             var cutoff = now.AddSeconds(-_windowSeconds);
             while (q.Count > 0 && q.Peek() <= cutoff) q.Dequeue();

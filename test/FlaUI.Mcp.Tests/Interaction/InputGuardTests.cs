@@ -272,7 +272,7 @@ public class InputGuardTests
         var (g, _, _) = BuildWithAudit(ValidLease(), budget: budget);
         var target = new ActionTarget(nint.Zero, 0, "notepad", "Notepad");
         g.PreflightInput(target);                          // passes all gates
-        Assert.True(budget.HasFreeSlot(nint.Zero, Now));   // slot NOT spent (same window root + same clock)
+        Assert.True(budget.HasFreeSlot(nint.Zero, Now, default));   // slot NOT spent (same window root + same clock); leaseWrite matches BuildWithAudit's default StubLeaseProvider write-time
     }
 
     private sealed class StubLeaseProvider : ILeaseProvider
