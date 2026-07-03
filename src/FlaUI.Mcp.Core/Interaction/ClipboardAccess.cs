@@ -24,6 +24,8 @@ public static class ClipboardAccess
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GlobalFree(IntPtr hMem);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GlobalLock(IntPtr hMem);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GlobalUnlock(IntPtr hMem);
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint EnumClipboardFormats(uint format);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool IsClipboardFormatAvailable(uint format);
 
     private static bool TryOpen()
     {
@@ -95,4 +97,35 @@ public static class ClipboardAccess
             if (opened) CloseClipboard();
         }
     });
+
+    public static Task<ClipboardSnapshot> Snapshot() => Task.Run(() =>
+    {
+        if (!TryOpen())
+            throw new ToolException(ToolErrorCode.ClipboardUnavailable, "Could not open the clipboard (locked by another process).", "retry in a moment");
+        try
+        {
+            var formats = new System.Collections.Generic.List<uint>();
+            uint f = 0;
+            while ((f = EnumClipboardFormats(f)) != 0) formats.Add(f);
+            var kind = ClipboardClassifier.Classify(formats);
+            string? text = null;
+            if (kind is PriorClipboardKind.Text or PriorClipboardKind.TextWithRichFormats)
+            {
+                IntPtr h = GetClipboardData(CF_UNICODETEXT);
+                if (h != IntPtr.Zero)
+                {
+                    IntPtr p = GlobalLock(h);
+                    if (p != IntPtr.Zero) { try { text = Marshal.PtrToStringUni(p) ?? string.Empty; } finally { GlobalUnlock(h); } }
+                }
+                text ??= string.Empty;
+            }
+            return new ClipboardSnapshot(kind, text);
+        }
+        finally { CloseClipboard(); }
+    });
 }
+
+/// <summary>A best-effort text-only snapshot of the clipboard taken before a paste borrows it.
+/// <see cref="Text"/> is non-null only for <see cref="PriorClipboardKind.Text"/> and
+/// <see cref="PriorClipboardKind.TextWithRichFormats"/> (the plain-text projection).</summary>
+public readonly record struct ClipboardSnapshot(PriorClipboardKind Kind, string? Text);

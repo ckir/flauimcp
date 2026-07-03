@@ -20,4 +20,23 @@ public class ClipboardAccessTests
         await ClipboardAccess.SetTextAsync("");
         Assert.Equal("", await ClipboardAccess.GetTextAsync());
     }
+
+    [Fact]
+    public async Task Snapshot_of_text_clipboard_is_Text_with_the_string()
+    {
+        var probe = "snap-" + System.Guid.NewGuid().ToString("N");
+        await ClipboardAccess.SetTextAsync(probe);
+        var snap = await ClipboardAccess.Snapshot();
+        Assert.Equal(PriorClipboardKind.Text, snap.Kind);
+        Assert.Equal(probe, snap.Text);
+    }
+
+    [Fact]
+    public async Task Snapshot_of_empty_clipboard_is_Empty()
+    {
+        await ClipboardAccess.SetTextAsync(""); // EmptyClipboard
+        var snap = await ClipboardAccess.Snapshot();
+        Assert.Equal(PriorClipboardKind.Empty, snap.Kind);
+        Assert.Null(snap.Text);
+    }
 }
