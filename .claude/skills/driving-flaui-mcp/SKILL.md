@@ -16,7 +16,9 @@ ToolSearch "select:mcp__flaui-mcp__desktop_list_windows,mcp__flaui-mcp__desktop_
 ```
 Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste_text` (synthetic input);
 `desktop_set_caret,desktop_select_text_range` (lease-exempt text); `desktop_focus_window,desktop_window_transform` (recovery);
-`desktop_find` (cheap targeting), `desktop_snapshot_diff` (change detection).
+`desktop_find` (cheap targeting), `desktop_snapshot_diff` (change detection);
+`desktop_wake_accessibility,desktop_release_accessibility,desktop_list_wakes` (opaque Chromium/Electron);
+`desktop_find_text,desktop_wait_for_text` (OCR targeting).
 
 ## Orientation (read-only, always safe)
 
@@ -65,6 +67,32 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   before reacting to it as an external change.
 - `droppedCount` on a `desktop_list_watches` entry (>0) means events were coalesced/buffer-dropped
   under load — re-snapshot to resync rather than trusting the stream as complete.
+
+## Opaque apps: wake-first, find_text for the residual
+
+- **Decision flow, cheapest first:** rich UIA (WinUI/WPF/WinForms/Qt) → `desktop_snapshot` directly.
+  Opaque Chromium/Electron (`desktop_snapshot` returns one big empty node with `wakeable:true`) →
+  `desktop_wake_accessibility wN` then re-`desktop_snapshot`/`desktop_find`/interact. Zero-accessibility
+  (games, canvas, Citrix/RDP inners, or an editor's text body still gated even when woken) →
+  `desktop_find_text` + `desktop_click_at` (read the content from the screenshot yourself — OCR here
+  is targeting, not reading).
+- **Wake is HELD, not one-shot.** `desktop_wake_accessibility wN` returns `{wakeId, window,
+  alreadyAwake}` — idempotent (re-waking an already-awake window just returns the same `wakeId`), and
+  it auto-releases when the window closes. Call `desktop_release_accessibility wakeId` when you're
+  done with it, but don't expect the tree to collapse immediately: Chromium re-collapses it **lazily**
+  once idle, not on release itself. `desktop_list_wakes` recovers your active wakes after a context
+  loss. All three wake tools are ReadOnly + lease-exempt (no lease needed, even while input is locked).
+- **A wake doesn't always reach the document body.** Some editors gate their actual document text
+  separately from the chrome UIA hydrates — if `desktop_snapshot` still shows an empty text body after
+  waking, that's expected; fall through to `desktop_find_text` for that content instead of retrying
+  the wake.
+- **`desktop_find_text` is fuzzy by default** (OCR misreads UI text, e.g. `"Submit"` → `"5ubmit"`) and
+  `all` defaults to true (every occurrence, not just the best). A fuzzy query can match **inside**
+  unrelated body text (`"Click Submit below"` matching a query for `"submit"`) — always check a
+  match's `text`/`bounds` (or just look at the screenshot) before `desktop_click_at`ing its
+  `xPct`/`yPct`. `desktop_wait_for_text` polls (≥750ms between OCR passes) and returns
+  `{satisfied:false}` on timeout — not an error. Both fail `OcrUnavailable` if no Windows OCR language
+  pack is installed.
 
 ## Synthetic input needs a human lease
 
@@ -134,7 +162,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 | `AMBIGUOUS_MATCH` even on a **read** (`desktop_get_text`) | reads are lenient about *recycling* but still fail closed when the ref's identity (`AutomationId`, else Name+type) matches **several live siblings** — the new Notepad shares `AutomationId "ContentTextBlock"` across 6 status texts | pick a **structurally unique** ref (e.g. the `Document`/root node, or one with a distinct Name) or re-snapshot for a more specific one |
 | `REF_NOT_FOUND` on a ref you "just had", right after a window closed | closing a window (or its process exiting) **evicts that window's refs**; windows closed by hand are caught by an on-access liveness sweep at the next `snapshot`/`find`/`list_windows` | expected, not a bug — take a fresh `desktop_snapshot`; **never reuse a ref across a window close/reopen** (the tell is `REF_NOT_FOUND`, distinct from `WindowHandleStale` on the handle) |
 | Typed text garbled / `verify.mismatch:true` | reactive/RichEdit editor races synthetic keystrokes | Mismatch result includes `canSetValue` (writable ValuePattern presence). **`canSetValue:true`** (snapshot shows `[Value,…]`, e.g. new Notepad Document): `recommendedFallbackTool:"desktop_set_value"` — byte-exact. **`canSetValue:false`** (Electron `contenteditable`, no ValuePattern): `recommendedFallbackTool:"desktop_paste_text"` — `set_value` would return `PatternUnsupported`, so use `desktop_paste_text` (atomic clipboard-backed Ctrl+V; clipboard restore is best-effort, `clipboardRestored:"abandoned"` if the landing can't be confirmed). (`desktop_type`'s `verify` flags the garble automatically.) |
-| Snapshot is one opaque `Document` node, no children | Electron/Chromium a11y **off by default** | No refs to target — use the **coordinate path** (`desktop_click_at`/`desktop_drag` by `xPct`/`yPct`) or vision. Per-app fix: relaunch it with `--force-renderer-accessibility`. WinUI/WPF/Qt expose proper UIA and are fine. |
+| Snapshot is one opaque `Document` node, no children (often `wakeable:true`) | Electron/Chromium a11y **off by default** | `desktop_wake_accessibility wN` then re-`desktop_snapshot` — usually hydrates the full tree. Still empty (or a document text body specifically)? Use `desktop_find_text` (OCR) or the **coordinate path** (`desktop_click_at`/`desktop_drag` by `xPct`/`yPct`). Per-app fix: relaunch it with `--force-renderer-accessibility`. WinUI/WPF/Qt expose proper UIA and are fine. |
 
 ## Etiquette
 

@@ -3,6 +3,37 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-07-03
+
+### Added
+- **`desktop_wake_accessibility` / `desktop_release_accessibility` / `desktop_list_wakes`** — vision
+  prong A: activate and **HOLD** an opaque Chromium/Electron window's native UIA tree so
+  `desktop_snapshot` / `desktop_find` / interaction tools can see and target its contents with full
+  precision instead of falling back to coordinates. `desktop_wake_accessibility(window)` returns
+  `{wakeId, window, alreadyAwake}` — idempotent per window (re-waking an already-awake window returns
+  the existing `wakeId`), and auto-releases when the window closes. `desktop_release_accessibility
+  (wakeId)` returns `{ok, wakeId}` and is idempotent (an unknown/already-released `wakeId` still
+  returns `ok:true`); NOTE Chromium re-collapses the tree **lazily** once idle, not necessarily
+  immediately (spike-confirmed). `desktop_list_wakes()` returns `{wakes:[{wakeId, window}]}` to
+  recover active wakes after a context loss. All three are `ReadOnly` and lease-exempt. Capped at 32
+  wakes/session (`TooManyWatches`). `desktop_snapshot` also now surfaces a `wakeable:true` hint when
+  it detects an opaque Chromium/Electron window (Chromium Win32 class with a collapsed tree) that
+  would benefit from waking.
+- **`desktop_find_text` / `desktop_wait_for_text`** — vision prong B: on-box OCR
+  (`Windows.Media.Ocr`, no external dependency) text targeting for opaque/canvas/game surfaces or an
+  editor's text body where UIA can't see the text. `desktop_find_text(query, window, region?,
+  matchMode?, all?)` returns `{matches:[{text, confidence, bounds:[x,y,w,h] (physical screen px),
+  center:[x,y] (screen px), xPct, yPct (window fractions for `desktop_click_at`)}]}`, best match
+  first; fuzzy match by default (OCR mis-reads UI text), `region` optionally scopes the capture to a
+  window-relative fraction rectangle `[xPct,yPct,wPct,hPct]`. `desktop_wait_for_text(query, window,
+  region?, timeoutMs?)` polls (throttled to ≥750ms between OCR passes) and returns `{satisfied:false}`
+  on timeout (data, not an error) or `{satisfied:true, match:{...}}` on success. Both are `ReadOnly`
+  and lease-exempt; `OcrUnavailable` if no Windows OCR language pack is installed. **OCR here is
+  targeting, not reading** — it resolves visible text to click coordinates; the model already reads
+  the screenshot. A fuzzy query can match inside body text, so verify each match's text/bounds before
+  `desktop_click_at`. An editor's document text body may remain behind a screen-reader gate even
+  after `desktop_wake_accessibility` — `desktop_find_text` is the fallback for that residual case.
+
 ## [0.8.0] - 2026-07-03
 
 ### Added

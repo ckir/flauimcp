@@ -17,7 +17,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>flaui-mcp</AssemblyName>
-    <Version>0.8.0</Version>
+    <Version>0.9.0</Version>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <InvariantGlobalization>true</InvariantGlobalization>
