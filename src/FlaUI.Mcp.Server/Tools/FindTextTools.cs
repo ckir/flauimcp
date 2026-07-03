@@ -57,4 +57,55 @@ public sealed class FindTextTools
                 })
             });
         });
+
+    [McpServerTool(ReadOnly = true), Description(
+        "Poll a window (or region) with OCR until visible text matching your query appears, or timeout. Use to " +
+        "wait for an opaque/canvas surface to render text UIA can't see (desktop_wait_for is the UIA equivalent). " +
+        "Fuzzy match. Timeout returns {satisfied:false} (NOT an error). On success returns {satisfied:true, match:" +
+        "{text,bounds,center,xPct,yPct,confidence}}. OCR is heavy, so polling is throttled to >= 750ms between " +
+        "passes; pick a timeout accordingly. ReadOnly + lease-exempt. OcrUnavailable if no OCR language pack.")]
+    public Task<string> DesktopWaitForText(
+        [Description("Text to wait for (fuzzy).")] string query,
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Optional window-relative region fractions [xPct,yPct,wPct,hPct] in [0,1].")] double[]? region = null,
+        [Description("Total wait budget ms (default 10000).")] int timeoutMs = 10000)
+        => ToolResponse.Guard(async () =>
+        {
+            // Resolve geometry ONCE up-front to fail fast on deny/minimized before entering the poll loop.
+            var initial = await _perception.ResolveTextCaptureGeometryAsync(new WindowHandle(window), region);
+            if (initial.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"OCR of windows owned by '{initial.DeniedProcess}' is blocked.", "target a non-sensitive window");
+            if (initial.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
+
+            System.Collections.Generic.IReadOnlyList<TextFindMatch>? found = null;
+            var result = await TextWaiter.WaitAsync(async () =>
+            {
+                // AGY-AFTER R1 Seat 1: RE-RESOLVE geometry EACH pass — a window can MOVE/RESIZE during a multi-second
+                // wait; a once-resolved rect would capture the stale location and compute wrong xPct/yPct. The rect
+                // read is a cheap (~1ms) STA op (fine at a >=750ms cadence — §9's off-STA rule targets the EXPENSIVE
+                // ~50-150ms CAPTURE, which stays on Task.Run). If the window vanished mid-wait, treat as not-found.
+                TextCaptureGeometry geo;
+                try { geo = await _perception.ResolveTextCaptureGeometryAsync(new WindowHandle(window), region); }
+                catch { return false; }
+                if (geo.Denied || geo.Minimized) return false;
+                var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.PasswordRects, maxWidth: 0));
+                var matches = await _finder.FindAsync(query, cap.Png, MatchMode.Fuzzy, all: false,
+                    cap.ScaleApplied, cap.X, cap.Y, geo.WindowLeft, geo.WindowTop, geo.WindowWidth, geo.WindowHeight);
+                if (matches.Count > 0) { found = matches; return true; }
+                return false;
+            }, timeoutMs, TextWaiter.MinPollIntervalMs);
+
+            if (!result.Satisfied || found is null || found.Count == 0)
+                return ToolResponse.Ok(new { satisfied = false });
+            var m = found[0];
+            return ToolResponse.Ok(new
+            {
+                satisfied = true,
+                match = new
+                {
+                    text = m.Text, confidence = m.Confidence,
+                    bounds = new[] { m.BoundsX, m.BoundsY, m.BoundsW, m.BoundsH },
+                    center = new[] { m.CenterX, m.CenterY }, xPct = m.XPct, yPct = m.YPct
+                }
+            });
+        });
 }
