@@ -13,6 +13,7 @@ public sealed class InputTools
 {
     private const int DefaultTimeoutMs = 4000;
     private const int MaxTypeUnits = 4096;
+    private const int MaxPasteUnits = 1_000_000;
     private const int VerifySettleMs = 100; // let reactive editors commit inline-prediction/IME ghost text before the after-read
     private readonly PerceptionManager _perception;
     private readonly WindowManager _windows;
@@ -141,6 +142,56 @@ public sealed class InputTools
 
             return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = VerifyResult.From(outcome, after.CanSetValue) });
         });
+
+    [McpServerTool(Destructive = true), Description("Paste text into the focused element via an atomic clipboard-backed Ctrl+V — the reliable path for reactive editors (new Win11 Notepad, Chromium contenteditable) that garble desktop_type keystrokes. ref = the element to focus. Up to 1,000,000 UTF-16 units. ALL input gates (lease/deny-list/budget/session) are checked BEFORE the clipboard is touched. By default (verify=true) the element is read back and a soft `verify` object is returned; the prior clipboard is restored ONLY when the paste is confirmed to have landed (else `clipboardRestored:\"abandoned\"`, leaving your text on the clipboard — expect this in reactive editors that transform pasted text, and whenever verify=false). A NON-text clipboard (image/files) is refused (ClipboardHoldsNonText) unless forceOverwriteClipboard=true. Mixed text+rich clipboards restore as plain text (`clipboardRestored:\"text-degraded\"`). Requires an active input lease; InputNotLeased/TargetDenied/etc. otherwise. Blocked in --read-only-mode.")]
+    public Task<string> DesktopPasteText(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Element ref to focus and paste into, e.g. e23.")] string @ref,
+        [Description("Text to paste (<=1,000,000 UTF-16 units).")] string text,
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
+        [Description("Read the element back and report whether the paste landed (default true). Soft — never throws. ALSO gates clipboard restore: with verify=false the prior clipboard is not restored (clipboardRestored:\"abandoned\").")] bool verify = true,
+        [Description("Proceed even if the clipboard holds NON-text content (image/files) that cannot be preserved. Default false = refuse with ClipboardHoldsNonText before any mutation.")] bool forceOverwriteClipboard = false)
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            if (string.IsNullOrEmpty(text))
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    "No text to paste.", "pass the text to paste (empty is rejected so a degenerate call can't clobber the clipboard)");
+            if (text.Length > MaxPasteUnits)
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    $"Text exceeds the {MaxPasteUnits} UTF-16 unit per-call cap.", "split the paste across calls on a whole-character boundary");
+
+            var fx = new PasteEffects(_perception, _guard, new WindowHandle(window), @ref, timeoutMs);
+            var outcome = await PasteFlow.RunAsync(fx, text, verify, forceOverwriteClipboard, ms => Task.Delay(ms));
+            return ToolResponse.Ok(new { ok = true, pathUsed = "clipboard-paste",
+                clipboardRestored = outcome.ClipboardRestored, verify = outcome.Verify });
+        });
+
+    /// <summary>Production IPasteEffects: focus/read via the perception STA, gate via InputGuard, and
+    /// borrow the clipboard via ClipboardAccess. Effect ORDER + gating live in PasteFlow (tested headless).</summary>
+    private sealed class PasteEffects : IPasteEffects
+    {
+        private readonly PerceptionManager _p; private readonly InputGuard _g;
+        private readonly WindowHandle _win; private readonly string _ref; private readonly int _timeout;
+        public PasteEffects(PerceptionManager p, InputGuard g, WindowHandle win, string @ref, int timeout)
+        { _p = p; _g = g; _win = win; _ref = @ref; _timeout = timeout; }
+
+        public Task<(ActionTarget, VerifyRead)> FocusAndBeforeReadAsync(bool verify) =>
+            _p.RunOnRefForInputAsync(_win, _ref, (win, el) =>
+            {
+                el.Focus();
+                var t = InputTargeting.ResolveElementTarget(win, el);
+                var b = verify ? VerifyReader.FromElement(el) : default;
+                return (t, b);
+            }, _timeout);
+
+        public void Preflight(ActionTarget target) => _g.PreflightInput(target);
+        public Task<ClipboardSnapshot> SnapshotAsync() => ClipboardAccess.Snapshot();
+        public Task SetClipboardAsync(string text) => ClipboardAccess.SetTextAsync(text);
+        public Task PasteAsync(ActionTarget target) => Task.Run(() => _g.KeyChord(new[] { "Ctrl" }, "V", target));
+        public void AuditForceOverwrite() => System.Console.Error.WriteLine("[audit] desktop_paste_text: force-overwrite of a non-text clipboard.");
+        public Task<VerifyRead> ReadAfterAsync() =>
+            _p.RunOnRefReadAsync(_win, _ref, el => VerifyReader.FromElement(el, readCapability: true), _timeout);
+    }
 
     [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Same lease/deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
     public Task<string> DesktopKey(
