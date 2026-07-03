@@ -32,7 +32,7 @@ public class WakeServiceTests
     {
         var src = new FakeSource();
         var reg = new WakeRegistry();
-        var svc = new WakeService(src, reg, windowManager: null!); // null WM ok: no WindowInvalidated in this test path
+        var svc = new WakeService(src, reg, windowManager: null); // null WM ok: no WindowInvalidated in this test path
         var wakeId = await svc.WakeAsync("w1", pid: 111);
         Assert.Equal("k1", wakeId);
         var spec = Assert.Single(src.Registered);
@@ -47,7 +47,7 @@ public class WakeServiceTests
     {
         var src = new FakeSource();
         var reg = new WakeRegistry();
-        var svc = new WakeService(src, reg, windowManager: null!);
+        var svc = new WakeService(src, reg, windowManager: null);
         var wakeId = await svc.WakeAsync("w1", pid: 111);
         await svc.ReleaseAsync(wakeId);
         Assert.Equal(1, src.DisposeCount);
@@ -61,7 +61,7 @@ public class WakeServiceTests
     {
         var src = new ThrowingSource();
         var reg = new WakeRegistry();
-        var svc = new WakeService(src, reg, windowManager: null!);
+        var svc = new WakeService(src, reg, windowManager: null);
         await Assert.ThrowsAnyAsync<Exception>(() => svc.WakeAsync("w1", pid: 111));
         Assert.Empty(reg.List()); // id was reserved then removed on the failed register
     }

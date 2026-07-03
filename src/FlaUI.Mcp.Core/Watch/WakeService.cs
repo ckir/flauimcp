@@ -24,7 +24,7 @@ public sealed class WakeService
     private readonly object _gate = new();
     private readonly Dictionary<string, IDisposable> _registrations = new();
 
-    public WakeService(IUiaEventSource source, WakeRegistry registry, WindowManager windowManager)
+    public WakeService(IUiaEventSource source, WakeRegistry registry, WindowManager? windowManager)
     {
         _source = source;
         _registry = registry;
@@ -44,6 +44,16 @@ public sealed class WakeService
             var spec = new WatchSubscriptionSpec(id, windowId, pid, WakeKinds, null, windowId);
             var reg = _source.Register(spec, NullSink); // <- the wake: activate AXMode, drop the events
             lock (_gate) _registrations[id] = reg;
+
+            // Race guard: the window can close DURING Register (OnWindowInvalidated runs on the query STA and
+            // RemoveByWindow evicts this id from the registry before we stored the disposable). If the registry
+            // no longer tracks this id, reconcile — drop + dispose off the STA so no live registration is orphaned.
+            if (!_registry.TryGet(id, out _))
+            {
+                IDisposable? orphan;
+                lock (_gate) _registrations.Remove(id, out orphan);
+                if (orphan is not null) { var o = orphan; _ = Task.Run(() => { try { o.Dispose(); } catch { } }); }
+            }
         }
         catch
         {
