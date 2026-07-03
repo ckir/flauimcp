@@ -34,6 +34,12 @@ All notable changes to this project are documented here. This project adheres to
   `desktop_click_at`. An editor's document text body may remain behind a screen-reader gate even
   after `desktop_wake_accessibility` — `desktop_find_text` is the fallback for that residual case.
 
+### Notes
+- **Raised minimum supported Windows to build 19041 (Windows 10, version 2004, May 2020).** The
+  built-in WinRT OCR projection (`Windows.Media.Ocr`) behind `desktop_find_text`/
+  `desktop_wait_for_text` moved the TFM to `net10.0-windows10.0.19041.0`; older Windows 10 builds are
+  no longer supported.
+
 ## [0.8.0] - 2026-07-03
 
 ### Added

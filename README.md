@@ -468,6 +468,10 @@ what an agent **can do** to your machine.)
   it does not summarize or transcribe text back to the agent as data — the model reads that from the
   screenshot. A fuzzy query can also match inside unrelated body text, so verify each match's
   `text`/`bounds` before acting on it. [→ Opaque apps: wake + find_text](#opaque-apps-wake--find_text)
+- **OCR only recognizes installed OCR languages.** `Windows.Media.Ocr` reads only the Windows OCR
+  languages installed on the host; a target window rendering text in a language whose OCR pack isn't
+  installed yields **no matches**, not an error — indistinguishable from "text not present."
+  [→ Opaque apps: wake + find_text](#opaque-apps-wake--find_text)
 - **The process-coarse deny-list can be punched through by OCR into RDP/Citrix wrappers.** The
   credential-store deny-list matches by process name; a denied app rendered *inside* a remote-desktop
   window is invisible to it (the visible process is the RDP/Citrix client, not the remote app), so an
@@ -496,6 +500,9 @@ what an agent **can do** to your machine.)
 ## Requirements
 
 - **Windows 10/11, x64.** (FlaUI/UIA is Windows-only.)
+- **v0.9.0+ requires Windows 10 build 19041 (version 2004) or later** — the on-box OCR features
+  (`desktop_find_text`/`desktop_wait_for_text`) depend on the WinRT OCR projection, which raised the
+  minimum supported OS build.
 - **No .NET runtime and no build tools required** for the released binaries — they are
   self-contained, single-file `win-x64` executables.
 - An **interactive desktop session** (the agent drives real windows; it does not work
