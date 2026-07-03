@@ -82,6 +82,9 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   done with it, but don't expect the tree to collapse immediately: Chromium re-collapses it **lazily**
   once idle, not on release itself. `desktop_list_wakes` recovers your active wakes after a context
   loss. All three wake tools are ReadOnly + lease-exempt (no lease needed, even while input is locked).
+  *(Verified live v0.9.0, 2026-07-04: VS Code snapshot went **14→131 nodes** on wake, exposing the
+  full menu/activity-bar/status-bar tree; re-wake returned the same `wakeId` with `alreadyAwake:true`;
+  release, then `desktop_list_wakes` empty, then a second release were all idempotent.)*
 - **A wake doesn't always reach the document body.** Some editors gate their actual document text
   separately from the chrome UIA hydrates — if `desktop_snapshot` still shows an empty text body after
   waking, that's expected; fall through to `desktop_find_text` for that content instead of retrying
@@ -93,6 +96,12 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   `xPct`/`yPct`. `desktop_wait_for_text` polls (≥750ms between OCR passes) and returns
   `{satisfied:false}` on timeout — not an error. Both fail `OcrUnavailable` if no Windows OCR language
   pack is installed.
+- **When a surface is both woken and OCR-able, the two coordinate systems agree** — `find_text`
+  bounds land within a few px of the matching UIA element's bounds, and crisp large UI text OCRs at
+  `confidence:1.0` (v0.9.0 smoke: "Show All Commands" → `find_text` `[927,679,157,12]` vs UIA
+  `@{926,673,160,23}`; menu "Selection" → OCR `[205,16,64,12]` vs UIA `[194,0,86,43]`, centers align).
+  Useful as a sanity cross-check that OCR resolved the right thing before `desktop_click_at` — but the
+  fuzzy-match caution above still holds for small/dense/anti-aliased text.
 
 ## Synthetic input needs a human lease
 
