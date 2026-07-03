@@ -469,7 +469,9 @@ real agent configuration).
 Requires the **.NET 10 SDK** (the project targets `net10.0-windows`).
 
 ```powershell
-# Build + run tests (the UIA/window tests need an interactive desktop)
+# Build + run tests. The Desktop-category UIA tests need an interactive desktop — over RDP they pass
+# while the session stays connected; only the SendInput synthetic-input tests need a physical console
+# (they can't inject into an RDP-redirected desktop). See CONTRIBUTING.md for the full test loop.
 dotnet build test/FlaUI.Mcp.TestApp
 dotnet test
 

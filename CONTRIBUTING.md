@@ -28,6 +28,14 @@ dotnet test --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"   # UI
 dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # synthetic input
 ```
 
+**Over RDP:** the UIA-pattern tests (first command) pass fine *as long as the session stays connected* —
+they drive UIA, not the physical input stack. Only the `SendInput` synthetic-input tests (second command)
+need a real **local/physical console**: they can't inject into an RDP-redirected desktop and will fail
+there regardless of the lease. So on a headless/RDP box you can still run the UIA-pattern set yourself; run
+the synthetic-input set on a machine with a physical console (or leave it to the maintainer's final
+verification). Disconnecting the RDP session (vs. staying connected) also breaks the UIA-pattern tests — the
+desktop goes non-interactive.
+
 CI runs **only the headless suite**. The maintainer does a final interactive verification of the
 Desktop tests before merging — so your PR must state you ran them locally (or that they're N/A).
 
