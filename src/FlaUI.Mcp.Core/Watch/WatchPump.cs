@@ -116,8 +116,15 @@ public sealed class WatchPump : IAsyncDisposable
             var meta = env.Meta;
             var now = DateTime.UtcNow;
             var key = meta.CoalesceKey(env.CoalesceScope);
-            var droppedSub = _coalescer.Offer(key, meta, now);
+            var (evictedKey, droppedSub) = _coalescer.Offer(key, meta, now);
             if (droppedSub is not null) _registry.IncrementDropped(droppedSub);
+            if (evictedKey is not null)
+            {
+                // The coalescer dropped this key under capacity pressure — drop its side-table entries too,
+                // else _sourceByKey (and any synthetic-close windowId) leak for a key that will never drain.
+                _sourceByKey.Remove(evictedKey);
+                if (droppedSub is not null) _closeWindowId.Remove(droppedSub);
+            }
 
             if (meta.Kind is WatchEventKind.FocusChanged or WatchEventKind.WindowOpened)
                 _sourceByKey[key] = env.Source;                       // freshest source (matches coalescer)
@@ -136,12 +143,15 @@ public sealed class WatchPump : IAsyncDisposable
             string? windowId;
             string? scopeRef = null;
             object? source = null;
+            bool synthetic = false;
 
             if (meta.Kind == WatchEventKind.WindowClosed)
             {
                 // Registry first (a real UIA close on a still-live sub), else the synthetic-close windowId map.
+                // A registry miss == a synthetic close for an already-removed sub (its buffer is already torn
+                // down); flag it so we DON'T re-vivify a WatchDrainBuffer entry for the dead subscription.
                 if (_registry.TryGet(meta.SubscriptionId, out var i) && i is not null) windowId = i.WindowId;
-                else _closeWindowId.TryGetValue(meta.SubscriptionId, out windowId);
+                else { _closeWindowId.TryGetValue(meta.SubscriptionId, out windowId); synthetic = true; }
                 _closeWindowId.Remove(meta.SubscriptionId);
             }
             else
@@ -165,7 +175,9 @@ public sealed class WatchPump : IAsyncDisposable
             if (payload is null) continue; // per-event deny-list dropped it (§10)
 
             await _sink.EmitAsync(payload, ct); // push (terminal on failure -> RunLoopAsync stops)
-            if (_drainBuffer.Append(payload.SubscriptionId, payload)) // drain: same built payload for pollers
+            // A synthetic window_closed is for an already-torn-down sub — push it, but do NOT re-create its
+            // drain buffer (Append would resurrect a WatchDrainBuffer queue entry for a dead subscription).
+            if (!synthetic && _drainBuffer.Append(payload.SubscriptionId, payload)) // drain: same built payload for pollers
                 _registry.IncrementDropped(payload.SubscriptionId);   // summed-drop accounting (agy risk#2)
         }
     }

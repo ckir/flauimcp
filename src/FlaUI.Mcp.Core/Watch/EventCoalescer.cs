@@ -30,29 +30,35 @@ public sealed class EventCoalescer
 
     /// <summary>Offer an event under its coalesce key. Merges into an existing key (bumps count/lastSeen)
     /// or inserts a new one. If inserting a NEW key exceeds capacity, evict the OLDEST distinct key and
-    /// return its SubscriptionId so the caller bumps that sub's droppedCount; otherwise returns null.</summary>
-    public string? Offer(string coalesceKey, CapturedEventMeta meta, DateTime nowUtc)
+    /// report it: EvictedKey = the coalesce key removed under capacity pressure (so the caller can drop the
+    /// key's side-table entries — e.g. _sourceByKey), DroppedSub = that key's SubscriptionId (so the caller
+    /// bumps its droppedCount). Both are null when no eviction occurred.</summary>
+    public (string? EvictedKey, string? DroppedSub) Offer(string coalesceKey, CapturedEventMeta meta, DateTime nowUtc)
     {
         if (_pending.TryGetValue(coalesceKey, out var slot))
         {
             slot.Meta = meta;          // keep the freshest meta (latest timestamp/source)
             slot.Count++;
             slot.Last = nowUtc;
-            return null;
+            return (null, null);
         }
 
+        string? evictedKey = null;
         string? droppedSub = null;
         if (_pending.Count >= _capacity)
         {
             var oldestKey = _order.First!.Value;
             _order.RemoveFirst();
             if (_pending.Remove(oldestKey, out var evicted))
+            {
+                evictedKey = oldestKey;
                 droppedSub = evicted.Meta.SubscriptionId;
+            }
         }
 
         _pending[coalesceKey] = new Slot { Meta = meta, Count = 1, First = nowUtc, Last = nowUtc };
         _order.AddLast(coalesceKey);
-        return droppedSub;
+        return (evictedKey, droppedSub);
     }
 
     /// <summary>Remove and return every aggregate ready to emit at nowUtc. structure_changed is ready once

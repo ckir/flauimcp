@@ -207,14 +207,18 @@ public sealed class Uia3EventSource : IUiaEventSource
     // outside it. Runs on a COM RPC thread — never throws.
     private void FanOut(WatchEventKind kind, AutomationElement element)
     {
-        Subscriber[] snapshot;
-        lock (_gate)
+        try
         {
-            if (!_globals.TryGetValue(kind, out var reg)) return;
-            snapshot = reg.Subscribers.ToArray();
+            Subscriber[] snapshot;
+            lock (_gate)
+            {
+                if (!_globals.TryGetValue(kind, out var reg)) return;
+                snapshot = reg.Subscribers.ToArray();
+            }
+            foreach (var s in snapshot)
+                Handle(s, element, kind);
         }
-        foreach (var s in snapshot)
-            Handle(s, element, kind);
+        catch { /* never throw on a COM callback thread (mirrors Handle's catch-all) */ }
     }
 
     // Runs on the COM callback thread. Reads ONLY cached props (no live round-trip) and MUST NOT throw:

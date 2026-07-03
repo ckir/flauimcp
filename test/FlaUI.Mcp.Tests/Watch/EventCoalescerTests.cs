@@ -17,8 +17,8 @@ public class EventCoalescerTests
         var c = new EventCoalescer(capacity: 256, debounceMs: 100);
         var t0 = new DateTime(2026, 7, 3, 10, 0, 0, DateTimeKind.Utc);
         string key = "s1|structure_changed|w1";  // subscribedScope-based key
-        Assert.Null(c.Offer(key, Meta("s1", WatchEventKind.StructureChanged, "r1", t0), t0));
-        Assert.Null(c.Offer(key, Meta("s1", WatchEventKind.StructureChanged, "r2", t0.AddMilliseconds(30)), t0.AddMilliseconds(30)));
+        Assert.Null(c.Offer(key, Meta("s1", WatchEventKind.StructureChanged, "r1", t0), t0).DroppedSub);
+        Assert.Null(c.Offer(key, Meta("s1", WatchEventKind.StructureChanged, "r2", t0.AddMilliseconds(30)), t0.AddMilliseconds(30)).DroppedSub);
         Assert.Empty(c.Drain(t0.AddMilliseconds(50)));
         var ready = c.Drain(t0.AddMilliseconds(200));
         var agg = Assert.Single(ready);
@@ -52,10 +52,11 @@ public class EventCoalescerTests
     {
         var c = new EventCoalescer(capacity: 2, debounceMs: 100);
         var t0 = new DateTime(2026, 7, 3, 10, 0, 0, DateTimeKind.Utc);
-        Assert.Null(c.Offer("s1|focus_changed|r1", Meta("s1", WatchEventKind.FocusChanged, "r1", t0), t0));
-        Assert.Null(c.Offer("s2|focus_changed|r2", Meta("s2", WatchEventKind.FocusChanged, "r2", t0.AddMilliseconds(1)), t0.AddMilliseconds(1)));
-        var dropped = c.Offer("s3|focus_changed|r3", Meta("s3", WatchEventKind.FocusChanged, "r3", t0.AddMilliseconds(2)), t0.AddMilliseconds(2));
-        Assert.Equal("s1", dropped);
+        Assert.Null(c.Offer("s1|focus_changed|r1", Meta("s1", WatchEventKind.FocusChanged, "r1", t0), t0).DroppedSub);
+        Assert.Null(c.Offer("s2|focus_changed|r2", Meta("s2", WatchEventKind.FocusChanged, "r2", t0.AddMilliseconds(1)), t0.AddMilliseconds(1)).DroppedSub);
+        var evicted = c.Offer("s3|focus_changed|r3", Meta("s3", WatchEventKind.FocusChanged, "r3", t0.AddMilliseconds(2)), t0.AddMilliseconds(2));
+        Assert.Equal("s1", evicted.DroppedSub);
+        Assert.Equal("s1|focus_changed|r1", evicted.EvictedKey); // the evicted coalesce KEY is reported too
         var keysLeft = c.Drain(t0.AddMilliseconds(3)).Select(a => a.Meta.SubscriptionId).OrderBy(x => x).ToArray();
         Assert.Equal(new[] { "s2", "s3" }, keysLeft);
     }
@@ -65,8 +66,8 @@ public class EventCoalescerTests
     {
         var c = new EventCoalescer(capacity: 1, debounceMs: 100);
         var t0 = new DateTime(2026, 7, 3, 10, 0, 0, DateTimeKind.Utc);
-        Assert.Null(c.Offer("s1|focus_changed|r1", Meta("s1", WatchEventKind.FocusChanged, "r1", t0), t0));
-        Assert.Null(c.Offer("s1|focus_changed|r1", Meta("s1", WatchEventKind.FocusChanged, "r1", t0.AddMilliseconds(5)), t0.AddMilliseconds(5)));
+        Assert.Null(c.Offer("s1|focus_changed|r1", Meta("s1", WatchEventKind.FocusChanged, "r1", t0), t0).DroppedSub);
+        Assert.Null(c.Offer("s1|focus_changed|r1", Meta("s1", WatchEventKind.FocusChanged, "r1", t0.AddMilliseconds(5)), t0.AddMilliseconds(5)).DroppedSub);
         var agg = Assert.Single(c.Drain(t0.AddMilliseconds(6)));
         Assert.Equal(2, agg.CoalescedCount);
     }

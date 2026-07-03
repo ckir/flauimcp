@@ -112,6 +112,53 @@ public class DesktopWatchTests
         }
     }
 
+    // REGRESSION (proves FIX 1 — STA-reentrant deadlock). We open a MODAL child window (same process as the
+    // main window), watch it, then close ONLY that child so the process stays alive: proc.Exited never fires,
+    // so PruneClosedWindows (running INSIDE ListWindowsAsync's query-STA lambda) is the SOLE reaper. Its
+    // Invalidate fires WindowInvalidated synchronously on the STA -> WatchService.OnWindowInvalidated ->
+    // Subscription.Dispose() which (before FIX 1) blocks on RunOnQueryAsync(...).GetAwaiter().GetResult(),
+    // self-marshalling onto the SAME STA => permanent query-STA deadlock. The guarded ListWindowsAsync below
+    // times out (Assert fails) on a regression instead of hanging the whole suite.
+    [Fact]
+    public async Task Snapshot_after_watched_window_closes_does_not_deadlock()
+    {
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        var (svc, sink, handle, mgr, pump) = await BuildAsync(app, dispatcher);
+        await using var _ = pump;
+        using (mgr)
+        {
+            // Open the modal child window (MainWindow.xaml.cs:49 ModalButton_Click -> a top-level "Modal" window).
+            await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+            { win.FindFirstDescendant(cf => cf.ByAutomationId("ModalButton"))!.AsButton().Invoke(); return true; });
+
+            // Resolve a handle to the child window (retry — it realizes a moment after the click).
+            WindowHandle? modalHandle = null;
+            for (int i = 0; i < 30 && modalHandle is null; i++)
+            {
+                try { modalHandle = await mgr.OpenByTitleAsync("Modal"); }
+                catch { await Task.Delay(100); }
+            }
+            Assert.True(modalHandle is not null, "Modal window did not appear");
+            var mh = modalHandle.Value;
+
+            // Watch the child so OnWindowInvalidated has a live registration to dispose when it is reaped.
+            await svc.WatchAsync(mh.Id, new[] { WatchEventKind.WindowOpened }, null, 4000);
+
+            // Close ONLY the child window (process stays alive). Route via win.Close() — NOT mgr.CloseAsync,
+            // which would call Invalidate itself off the STA and defeat the PruneClosedWindows repro.
+            await mgr.RunWithWindowAndDesktopAsync(mh, (win, _) => { win.Close(); return true; });
+            await Task.Delay(500); // let the HWND go away (IsWindow -> false) so PruneClosedWindows reaps it
+
+            // This runs PruneClosedWindows on the query STA -> Invalidate -> OnWindowInvalidated. GUARD it so a
+            // regression fails on the timeout instead of hanging the suite forever.
+            var op = mgr.ListWindowsAsync();
+            var done = await Task.WhenAny(op, Task.Delay(5000));
+            Assert.True(done == op, "query STA deadlocked (reentrant WindowInvalidated->blocking Dispose)");
+            await op; // observe result/exception
+        }
+    }
+
     // Wire the full pipeline (Task 8/9 shapes): WindowManager+RefRegistry, WatchRegistry, a bounded
     // Channel<EventEnvelope> (mirrors Program.cs), Uia3EventSource, RecordingSink (in place of McpEventSink),
     // WatchPump (started), WatchService. Model construction on FindTests.OpenAsync (FindTests.cs:14-22).

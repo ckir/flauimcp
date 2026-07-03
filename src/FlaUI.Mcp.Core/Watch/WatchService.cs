@@ -131,7 +131,14 @@ public sealed class WatchService
             {
                 IDisposable? reg;
                 lock (_gate) _registrations.Remove(info.SubscriptionId, out reg);
-                try { reg?.Dispose(); } catch { }
+                // STA-REENTRANCY: OnWindowInvalidated can fire ON the query STA — PruneClosedWindows runs
+                // inside a RunQueryAsync lambda (ListWindowsAsync / snapshot / find) and calls Invalidate,
+                // which fires WindowInvalidated SYNCHRONOUSLY. Uia3EventSource.Subscription.Dispose() blocks
+                // on RunOnQueryAsync(...).GetAwaiter().GetResult() — a self-marshal onto that SAME STA — so
+                // disposing inline here would deadlock the query STA forever. Offload the blocking dispose to
+                // the ThreadPool (the STA teardown then runs from a non-STA thread, which is safe). The other
+                // Dispose callers (UnwatchAsync / DisposeAllAsync) run off the STA already, so they stay inline.
+                if (reg is not null) _ = System.Threading.Tasks.Task.Run(() => { try { reg.Dispose(); } catch { } });
                 _drainBuffer.Remove(info.SubscriptionId);
                 if (info.Kinds.Contains(WatchEventKind.WindowClosed))
                 {
