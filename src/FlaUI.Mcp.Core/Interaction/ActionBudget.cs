@@ -31,6 +31,21 @@ public sealed class ActionBudget
         }
     }
 
+    /// <summary>Non-consuming peek: does this window currently have a free budget slot? Used by
+    /// desktop_paste_text's pre-flight to fail-closed BEFORE mutating the clipboard, without spending
+    /// the slot (the later KeyChord's TryConsume spends it). Prunes the window's expired hits like
+    /// TryConsume, but never enqueues.</summary>
+    public bool HasFreeSlot(nint window, DateTime now)
+    {
+        lock (_gate)
+        {
+            if (!_hits.TryGetValue(window, out var q)) return true;
+            var cutoff = now.AddSeconds(-_windowSeconds);
+            while (q.Count > 0 && q.Peek() <= cutoff) q.Dequeue();
+            return q.Count < _max;
+        }
+    }
+
     /// <summary>Whole seconds until this window's oldest action ages out and a budget slot frees
     /// (0 if the window currently has spare budget). For the InputBudgetExceeded recovery hint.</summary>
     public int SecondsUntilFreeSlot(nint window, DateTime now)

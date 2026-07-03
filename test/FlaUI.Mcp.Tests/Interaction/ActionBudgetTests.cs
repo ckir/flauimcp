@@ -42,4 +42,14 @@ public class ActionBudgetTests
         Assert.True(b.TryConsume((nint)2, T(0), T(0)));          // different window, own budget
         Assert.False(b.TryConsume((nint)1, T(0), T(0)));
     }
+
+    [Fact]
+    public void HasFreeSlot_peeks_without_consuming_then_reflects_exhaustion()
+    {
+        var b = new ActionBudget(maxPerWindow: 1, windowSeconds: 60);
+        Assert.True(b.HasFreeSlot((nint)1, T(0)));                          // peek does not consume
+        Assert.True(b.HasFreeSlot((nint)1, T(0)));                          // still free (proves no consume)
+        Assert.True(b.TryConsume((nint)1, T(0), leaseWriteUtc: T(0)));      // consume the single slot
+        Assert.False(b.HasFreeSlot((nint)1, T(0)));                         // budget exhausted
+    }
 }
