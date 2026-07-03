@@ -20,7 +20,18 @@ namespace FlaUI.Mcp.Tests.Vision;
 /// point falls inside the button's real BoundingRectangle. Runs on a live console only (Category=Desktop) — needs
 /// an actual rendered/unlocked desktop session (ScreenCapture) AND a Windows OCR language pack installed
 /// (Windows.Media.Ocr) for WindowsMediaOcrEngine to produce real recognitions; the controller must ensure both are
-/// available when running this test.</summary>
+/// available when running this test.
+///
+/// KNOWN HOST LIMITATION (NOT a code/product bug — do NOT weaken or skip this test to "fix" it): this assertion is
+/// faithful ONLY in a DPI-aware (PerMonitorV2) or real-console host. The xUnit test host process on this box has no
+/// PerMonitorV2 manifest, so it runs DPI-VIRTUALIZED: ScreenCapture.VirtualScreenBounds() reports the virtualized
+/// 1536x864 while the real screen (and the DPI-aware production server) is 1920x1080 @125%. UIA bounds come back
+/// virtualized but the GDI CaptureRectangle hits the PHYSICAL screen, so the capture rect lands on the wrong region
+/// and OCR returns {"matches":[]} — a capture/bounds coordinate-space MISMATCH that exists only under the
+/// virtualized test host, NOT in the production server (which is PerMonitorV2 DPI-aware and captures correctly).
+/// We deliberately do NOT call SetProcessDpiAwarenessContext here (process-wide; would perturb other Desktop
+/// tests). The true end-to-end §6 coord-landing is validated by the release live-smoke on the installed
+/// (DPI-aware) server.</summary>
 [Trait("Category", "Desktop")]
 public class DesktopFindTextTests
 {

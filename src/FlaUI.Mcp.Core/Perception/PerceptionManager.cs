@@ -442,18 +442,7 @@ public sealed class PerceptionManager
                 geo.Bounds, geo.PasswordRects, geo.Bounds.X, geo.Bounds.Y, geo.Bounds.Width, geo.Bounds.Height);
 
         var win = geo.Bounds; // full window physical rect (target was `win` itself since @ref is null)
-        var capture = win;
-        if (region is not null)
-        {
-            if (region.Length != 4 || region.Any(v => v < 0.0 || v > 1.0))
-                throw new ToolException(ToolErrorCode.InvalidArguments,
-                    "region must be [xPct,yPct,wPct,hPct], each in [0,1].", "pass 4 fractions in [0,1]");
-            int x = win.X + (int)System.Math.Round(region[0] * win.Width);
-            int y = win.Y + (int)System.Math.Round(region[1] * win.Height);
-            int w = (int)System.Math.Round(region[2] * win.Width);
-            int h = (int)System.Math.Round(region[3] * win.Height);
-            capture = new System.Drawing.Rectangle(x, y, w, h);
-        }
+        var capture = TextCaptureGeometry.ComputeCaptureBounds(win, region);
         return new TextCaptureGeometry(false, null, false, capture, geo.PasswordRects, win.X, win.Y, win.Width, win.Height);
     }
 
