@@ -19,7 +19,8 @@ public sealed record VerifyResult
         "If canSetValue is true, use desktop_set_value (UIA ValuePattern) for byte-exact entry. " +
         "If canSetValue is false (e.g. an Electron contenteditable with no ValuePattern), use " +
         "desktop_paste_text with your ORIGINAL full text (do NOT use the truncated 'expected' echo) " +
-        "— it pastes atomically and restores the prior clipboard. If canSetValue is absent/unknown, " +
+        "— it pastes atomically; restoring the prior clipboard is best-effort (often " +
+        "clipboardRestored:\"abandoned\" in the reactive editors this path targets). If canSetValue is absent/unknown, " +
         "try desktop_set_value first and fall back to desktop_paste_text on PatternUnsupported.";
 
     [JsonPropertyName("ran")] public bool Ran { get; init; }
