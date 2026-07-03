@@ -60,7 +60,10 @@ desktop_watch(window: string,            // window handle, e.g. w1
 - `structure_changed`: `RegisterStructureChangedEvent` on the window root (or on `scope`'s element subtree).
 - Refusals (fail-closed, before any registration): unknown event token → `InvalidArguments`; a **deny-listed /
   credential window** → `TargetDenied` (no watching a credential store); stale window handle →
-  `WindowHandleStale`. Read-only mode does NOT block it (it is `ReadOnly`).
+  `WindowHandleStale`; an invalid/stale `scope` ref → `RefStaleUnresolvable` (reuse the existing ref-resolution
+  code — no new error code); exceeding the **subscription cap** → `TooManyWatches` (round-4 Seat Q — cap
+  concurrent subscriptions per window AND per session, e.g. 5/window, to bound UIA COM resource use so a looping
+  agent can't exhaust the automation client). Read-only mode does NOT block it (it is `ReadOnly`).
 
 ### `desktop_unwatch`
 ```
@@ -96,9 +99,11 @@ Params (one event; booleans/strings always present unless marked optional — Js
   "timestampUtc": "2026-07-03T...Z"     // when the event was observed
 }
 ```
-**Contract notes:** `ref` is minted into the subscription's window RefRegistry and is resolvable by later tools
-(subject to the usual strict/lenient ref rules); it may already be stale by the time the agent acts (expected —
-that is the nature of async events). `name` follows INV-5 exactly (§10). The payload is intentionally **minimal**
+**Contract notes:** `ref` is minted into a **bounded per-subscription ephemeral ref pool** (§16.5 — NOT the
+durable window RefRegistry, which would bloat under an event storm) and is resolvable by later tools while fresh
+(subject to the usual strict/lenient ref rules); it may already be stale — or aged out of the pool
+(`REF_NOT_FOUND`) — by the time the agent acts (expected — that is the nature of async events; re-`desktop_snapshot`
+if you need a durable ref). `name` follows INV-5 exactly (§10). The payload is intentionally **minimal**
 (no full subtree) — the agent calls `desktop_snapshot`/`desktop_get_text` with `ref` if it wants detail. Wording
 of any human-facing string is not stability-guaranteed; the machine keys above are.
 
@@ -129,17 +134,23 @@ The **central hazard** (roadmap's "biggest complexity/risk"): UIA delivers event
 on that thread crosses apartments and can deadlock or violate the single-STA invariant. Resolution — a **three-stage
 pipeline** keeping all UIA object access on the one query STA:
 
-1. **Register (on query STA) WITH A CACHE REQUEST.** `desktop_watch` runs the FlaUI `Register*Event` calls via
-   `AutomationDispatcher.RunQueryAsync` (UIA event registration must happen from the automation-owning STA), and
-   **registers them under a UIA `CacheRequest` that pre-fetches `RuntimeId`, `ProcessId`, `ControlType`, `Name`,
-   and `BoundingRectangle`** (AGY-AFTER Seat A). The delivered event's source element then carries these as
-   **cached** properties — readable from the local cache with NO live cross-apartment COM round-trip. The
+1. **Register (on query STA) WITH A MINIMAL CACHE REQUEST.** `desktop_watch` runs the FlaUI `Register*Event`
+   calls via `AutomationDispatcher.RunQueryAsync` (UIA event registration must happen from the automation-owning
+   STA), and registers them under a UIA `CacheRequest` that pre-fetches **ONLY the cheap identity props
+   `ProcessId` and `RuntimeId`** (AGY-AFTER Seat A + round-3 Seat J). *Why only those two:* caching **heavy**
+   props (`Name`, `BoundingRectangle`) on a GLOBAL event forces UIA to synchronously cross-process query the
+   (possibly unresponsive) source app **before firing every callback**, which can stutter the whole desktop.
+   `ProcessId`/`RuntimeId` are cheap intrinsic props — enough for the COM-thread PID-filter (§7) and coalesce key
+   (§8) with negligible overhead. The heavier `ControlType`/`Name`/`BoundingRectangle` are read **live on the
+   query STA** during payload-build (§6.3), only for the FEW events that survive the PID filter and coalescing.
+   The delivered event's source carries the two cached props readable with NO cross-apartment round-trip. The
    registered handler is a **thin capture** delegate.
 2. **Capture (on the COM callback thread) — minimal, non-blocking.** The handler performs NO *live* UIA reads
    (the cross-apartment ban), but it MAY read the **cached** properties above off the event's source, because
    those are local — no COM round-trip, no deadlock risk. Using them it: (a) drops the event immediately if it
    fails the process filter (foreign `ProcessId` for focus/window events — §7, closes the Seat-B DoS *before* the
-   channel), else (b) computes the coalesce key from the cached `RuntimeId` (§8) and offers
+   channel), else (b) computes the **kind-dependent** coalesce key (§8 — cached `RuntimeId` for focus/window events, the
+   subscribed *scope* for `structure_changed`, NOT the per-child source) and offers
    `(subscriptionId, kind, cachedProps, timestamp)` to a **bounded `System.Threading.Channels.Channel`** (single
    reader). If the channel is full it applies the drop/coalesce policy (§8) and increments the sub's
    `droppedCount` — it never blocks the COM thread. (Carrying the cached props forward also lets the worker build
@@ -174,12 +185,24 @@ established once and **ref-counted** across all subscriptions that need it; the 
 ## 8. Back-pressure & coalescing
 
 `structure_changed` (and focus churn) can burst. Policy:
-- **Bounded channel** (capacity `N`, e.g. 256). Use **coalesce-on-key**: events keyed
-  `(subscriptionId, kind, targetContainerRuntimeId)` collapse to the most-recent, carrying `coalescedCount`. A
-  full channel after coalescing drops oldest distinct keys and bumps `droppedCount` (surfaced via
-  `desktop_list_watches`) so loss is observable, never silent.
-- **Debounce** `structure_changed` per key (e.g. 100 ms quiet window) so a list repopulating row-by-row emits one
-  event, not hundreds.
+- **Bounded channel** (capacity `N`, e.g. 256). **Coalesce-on-key, and the key DEPENDS ON THE EVENT KIND**
+  (round-4 Seat R — this is load-bearing):
+  - `structure_changed` → key `(subscriptionId, kind, **subscribedScope**)` — i.e. collapse ALL structure churn
+    within the subscription's watched window/`scope` into ONE event. **Do NOT key on the event source's
+    `RuntimeId`:** UIA fires one `structure_changed` per changed *child*, each with a UNIQUE source `RuntimeId`, so
+    a source-keyed coalesce would NOT collapse a 100-row list repopulation — it would overflow the channel and
+    spam 100 notifications. The subscribedScope is known at subscription time (no source read needed), so the COM
+    thread can key on it directly. This also means one coalesced structure event ⇒ one minted ref (bounding §16.5
+    churn). The agent's correct reaction to `structure_changed` is "re-`desktop_snapshot` the scope" anyway — it
+    does not need per-child granularity. The coalesced event's payload `ref` points to the **subscribed
+    scope/container** (the window root or `scope` ref the builder already holds), NOT the transient last-collapsed
+    child — which may already be removed and would be useless to snapshot (round-5 Seat S).
+  - `focus_changed` / `window_opened` / `window_closed` → key `(subscriptionId, kind, sourceRuntimeId)` (the
+    cached RuntimeId) — these are not storms; per-source keying is correct.
+  - Coalesced events carry `coalescedCount`. A full channel after coalescing drops oldest distinct keys and bumps
+    `droppedCount` (surfaced via `desktop_list_watches`) so loss is observable, never silent.
+- **Debounce** `structure_changed` per (sub, scope) key (e.g. 100 ms quiet window) so a list repopulating
+  row-by-row emits one settled event, not a burst.
 - Exact capacity/debounce constants are tunable **plan-time** parameters (behind named consts), not wire contract.
 
 ## 9. Subscription lifecycle
@@ -296,6 +319,27 @@ deaf. This is the mirror of §14's server-side feasibility risk and is **the sin
    `focus_changed` fire for elevated/inaccessible apps (UAC, Task Manager); a non-elevated server's cache
    pre-fetch may return `null`/`0` for `ProcessId`/`Name`. The capture handler treats missing cached props as
    "drop this event" (can't PID-filter it safely) and NEVER throws on the callback thread.
+5. **Event refs live in a bounded, evictable EVENT-REF LAYER of the RefRegistry — resolvable but capped (round-3
+   Seat K + round-4 Seats O/P, Critical).** Event `ref`s must be resolvable by the SAME `desktop_snapshot`/
+   `desktop_get_text` path the agent already uses — which resolves a bare ref string against the window's
+   `RefRegistry` and cannot know about a *private* per-subscription pool (round-4 Seat O: a private pool makes
+   every event ref unresolvable). So event refs ARE minted into the `RefRegistry`, but into a **bounded,
+   self-evicting event-ref layer** (LRU cap and/or short TTL, e.g. last 64 per subscription) kept DISTINCT from
+   the durable snapshot-ref layer (which persists until window close). This keeps event refs (a) resolvable via
+   the normal path and (b) incapable of unbounded growth under a `structure_changed` storm (round-3 Seat K) — an
+   aged-out event ref resolves to `REF_NOT_FOUND` (expected for a stale async event; §4). The §8 `structure_changed`
+   coalescing (one settled event per subtree, not one per child) already bounds the mint rate. **Drain-mode caveat
+   (round-4 Seat P):** if the §15a drainable buffer is built, a buffered payload MUST pin its event ref alive
+   until drained (ref lifetime bound to buffer retention, not a wall-clock TTL that could expire the ref before
+   the agent polls). Exact cap/TTL is a plan-time constant.
+6. **The agent's own input self-triggers events — document it (round-3 Seat L, Important).** A `desktop_type`/
+   `desktop_click`/`desktop_key` the agent issues will itself fire `focus_changed`/`structure_changed` for the
+   target — the agent receives async notifications for its OWN actions, with no UIA `isSelfTriggered` flag to
+   distinguish them. v1: the `desktop_watch` tool description AND `SKILL.md` explicitly warn that events
+   immediately following the agent's own synthetic-input calls are likely self-caused (correlate by timing /
+   `coalescedCount`). *Optional plan-time enhancement (not required for v1):* a brief server-side
+   event-suppression window scoped to the target PID during `InputTools` execution, to swallow the self-echo at
+   the source — noted as a design option, deferred unless the spike shows the self-echo is disruptive.
 
 ## 15. Version & docs
 
