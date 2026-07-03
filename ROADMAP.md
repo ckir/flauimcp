@@ -135,7 +135,12 @@ safety rationale.
       name at the read sites + making the match predicate total, with +4 null-Name invariant tests.
 
 Not phased here (separate follow-on, not v1-blocking): HTTP/SSE transport with its hard
-auth-token gate; RefRegistry eviction on window close.
+auth-token gate.
+    - **Phase 6 — RefRegistry eviction on window close** ✅ **(shipped v0.7.6).** A closed window's
+      ref state (and `WindowManager`'s per-window COM pin) is reclaimed via a `WindowInvalidated`
+      push signal through the existing `Invalidate` chokepoint plus an on-access `IsWindow` liveness
+      sweep at the snapshot/find/list entry points. `windowId` is a never-reused `w{n}`, so dropping
+      all three registry dicts is alias-safe; no background thread, timer, or UIA event pump.
 
 ## Consumer-lens hardening backlog (v0.7.3 release-capstone review, 2026-07-02)
 
