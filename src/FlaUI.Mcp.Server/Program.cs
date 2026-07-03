@@ -60,6 +60,21 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<InputTools>();
 
+// --- Phase 8 desktop_watch (UIA event streaming over stdio; push+drain) ---
+builder.Services.AddSingleton(_ =>
+    System.Threading.Channels.Channel.CreateBounded<FlaUI.Mcp.Core.Watch.EventEnvelope>(
+        new System.Threading.Channels.BoundedChannelOptions(256)
+        { FullMode = System.Threading.Channels.BoundedChannelFullMode.DropWrite, SingleReader = true }));
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.WatchDrainBuffer>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.WatchRegistry>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.IUiaEventSource, FlaUI.Mcp.Core.Watch.Uia3EventSource>();
+builder.Services.AddSingleton<FlaUI.Mcp.Server.Watch.McpEventSink>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.IEventSink>(sp => sp.GetRequiredService<FlaUI.Mcp.Server.Watch.McpEventSink>());
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.WatchService>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.WatchPump>();
+builder.Services.AddHostedService<FlaUI.Mcp.Server.Watch.WatchPumpHostedService>();
+// NOTE: WatchTools is registered in Task 10 (class does not exist yet) — do NOT add it here.
+
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
