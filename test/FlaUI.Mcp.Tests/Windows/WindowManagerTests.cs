@@ -75,4 +75,22 @@ public class WindowManagerTests : IClassFixture<TestAppFixture>
 
         Assert.Equal(new[] { handle.Id }, fired);
     }
+
+    [Fact]
+    public async Task PruneClosedWindows_invalidates_a_tracked_handle_a_fake_predicate_reports_dead()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id); // registers _hwnds[handle.Id]
+
+        var fired = new List<string>();
+        mgr.WindowInvalidated += id => fired.Add(id);
+
+        mgr.PruneClosedWindows(isAlive: _ => false); // force "everything dead"
+
+        Assert.Contains(handle.Id, fired);
+        var ex = await Assert.ThrowsAsync<ToolException>(
+            () => mgr.RunOnWindowAsync(handle, w => w.Title));
+        Assert.Equal(ToolErrorCode.WindowHandleStale, ex.Code); // handle really was invalidated
+    }
 }

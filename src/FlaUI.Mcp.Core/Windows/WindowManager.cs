@@ -125,6 +125,34 @@ public sealed class WindowManager : IDisposable
             try { WindowInvalidated?.Invoke(handle.Id); } catch { }
     }
 
+    /// <summary>Pure liveness decision (no UIA / no instance state beyond the passed pairs) so it is
+    /// unit-testable headless: given the tracked (windowId, hwnd) pairs and an aliveness predicate,
+    /// return the windowIds whose HWND is gone (IntPtr.Zero, or !isAlive). IntPtr.Zero is dead without
+    /// consulting the predicate.</summary>
+    internal static IReadOnlyList<string> DeadWindowIds(
+        IReadOnlyCollection<KeyValuePair<string, IntPtr>> tracked, Func<IntPtr, bool> isAlive)
+    {
+        var dead = new List<string>();
+        foreach (var (id, hwnd) in tracked)
+            if (hwnd == IntPtr.Zero || !isAlive(hwnd))
+                dead.Add(id);
+        return dead;
+    }
+
+    /// <summary>Best-effort memory hygiene: invalidate any tracked handle whose HWND is no longer a live
+    /// window (user/app closed it without a process exit, so neither proc.Exited nor CloseAsync fired).
+    /// Routes each dead id through Invalidate, so _handles/_hwnds/_watched AND (via the WindowInvalidated
+    /// event) RefRegistry are all reclaimed on one path. Pure Win32 (IsWindow) + ConcurrentDictionary ops
+    /// — needs no STA, safe to call off the query STA. Snapshots _hwnds first so the Invalidate-driven
+    /// TryRemove inside the loop can't corrupt the enumeration. <paramref name="isAlive"/> is injectable
+    /// for tests (default = Win32 IsWindow).</summary>
+    internal void PruneClosedWindows(Func<IntPtr, bool>? isAlive = null)
+    {
+        isAlive ??= IsWindow;
+        foreach (var id in DeadWindowIds(_hwnds.ToArray(), isAlive))
+            Invalidate(new WindowHandle(id));
+    }
+
     internal WindowHandle Register(Window window, int pid)
     {
         var id = $"w{Interlocked.Increment(ref _counter)}";
@@ -164,6 +192,9 @@ public sealed class WindowManager : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowTextLengthW(IntPtr hwnd);
