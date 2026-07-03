@@ -204,10 +204,20 @@ public sealed class PerceptionManager
                     $"Snapshotting windows owned by '{procName}' is blocked (credential store).",
                     "snapshot a different, non-sensitive window");
             IReadOnlyList<AutomationElement> popups = PopupFinder.FindOwnerPopups(desktop, win);
-            AutomationElement root = string.IsNullOrEmpty(options.RootRef)
+            bool isFullWindow = string.IsNullOrEmpty(options.RootRef);
+            AutomationElement root = isFullWindow
                 ? win : refs.Resolve(handle.Id, options.RootRef!, PopupFinder.SearchRoots(win, desktop));
             var snapshotId = refs.BeginSnapshot(handle.Id);
             var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id);
+            // Phase 9 §3: wakeable hint is a whole-WINDOW opacity signal, not a subtree one — only computed for
+            // a full-window snapshot (RootRef null). win is the window root (same element the tree was built
+            // from when isFullWindow); read its ClassName defensively (WindowManager.cs idiom).
+            if (isFullWindow)
+            {
+                string? cls;
+                try { cls = win.Properties.ClassName.ValueOrDefault; } catch { cls = null; }
+                model = model with { Wakeable = WakeabilityHint.IsWakeable(cls, model.NodeCount) };
+            }
             return (snapshotId, model);
         });
     }
@@ -314,7 +324,7 @@ public sealed class PerceptionManager
     {
         var (snapshotId, model) = await BuildModelAsync(handle, options, _refs);
         _cache.Put(snapshotId, model);
-        return new SnapshotResult(snapshotId, SnapshotEngine.Render(model, options), model.NodeCount);
+        return new SnapshotResult(snapshotId, SnapshotEngine.Render(model, options), model.NodeCount, model.Wakeable);
     }
 
     public async Task<(string SnapshotId, SnapshotModel Model)> SnapshotModelForWaitAsync(
