@@ -417,6 +417,9 @@ what an agent **can do** to your machine.)
 - **Some editors garble typed text.** The new Win11 Notepad and Chromium editors corrupt `SendInput`
   at any pacing; prefer `desktop_set_value` where available, else `desktop_paste_text` (its clipboard
   restore is best-effort, not guaranteed). [→ Synthetic input](#synthetic-input)
+- **Watch event refs are ephemeral.** An event's `ref` lives in a small bounded per-window pool (64,
+  shared across all event kinds), so a busy `structure_changed` watch can evict older refs before you
+  act on them → `REF_NOT_FOUND`. Re-`desktop_snapshot` for a durable ref. [→ Event streaming](#event-streaming-desktop_watch)
 - **Screenshots don't handle occlusion.** A covered window is captured as-is — focus it first.
   [→ Perception safeguards](#perception-safeguards-built-in)
 - **Zero-UIA surfaces need the coordinate path.** Games, canvas apps, and Citrix/RDP inners expose no
