@@ -8,7 +8,7 @@ namespace FlaUI.Mcp.Core.Perception;
 /// per-snapshot scoped: BeginSnapshot clears a window's refs but never resets its
 /// counter, so a stale held ref can never silently alias a new element — it misses
 /// with REF_NOT_FOUND. Accessed only from the dispatcher's single query STA, but
-/// guarded for safety. Process-wide singleton this phase (per-connection in Phase 6).</summary>
+/// guarded for safety. Process-wide singleton this phase (per-connection scoping deferred to a future HTTP/SSE phase).</summary>
 public sealed class RefRegistry
 {
     internal sealed record Entry(ElementDescriptor Descriptor, AutomationElement? Cached);
