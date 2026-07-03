@@ -49,7 +49,7 @@ public class InputToolsTests
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
 
-        var snap = await perception.SnapshotAsync(handle, new SnapshotOptions());
+        var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
         var inputRef = RefForAid(snap.Tree, "Input");
 
         var tools = BuildTools(mgr, perception);
@@ -87,7 +87,7 @@ public class InputToolsTests
         using var mgr = new WindowManager(dispatcher);
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
-        var snap = await perception.SnapshotAsync(handle, new SnapshotOptions());
+        var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
         var docRef = RefForAid(snap.Tree, "TextDoc");
 
         var tools = BuildTools(mgr, perception);
@@ -102,5 +102,29 @@ public class InputToolsTests
             return sel[0].GetText(-1).Length;
         });
         Assert.Equal(5, selLen);
+    }
+
+    [SkippableFact]
+    public async Task PasteText_writes_text_into_the_focused_textbox_and_restores_clipboard()
+    {
+        Skip.If(InputLocked(), "no active input lease — grant one on a console with `flaui-mcp unlock`");
+        await ClipboardAccess.SetTextAsync("PRIOR-CLIP-guard");        // stage a text clipboard
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var handle = await mgr.OpenByPidAsync(app.Process.Id);
+        var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
+        var inputRef = RefForAid(snap.Tree, "Input");
+
+        var tools = BuildTools(mgr, perception);
+        var json = await tools.DesktopPasteText(handle.Id, inputRef, "pasted-hello", 4000);
+        Assert.DoesNotContain("\"error\"", json);
+        Assert.Contains("clipboard-paste", json);
+
+        var val = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+            win.FindFirstDescendant(cf => cf.ByAutomationId("Input"))!.AsTextBox().Text);
+        Assert.Contains("pasted-hello", val);
+        Assert.Equal("PRIOR-CLIP-guard", await ClipboardAccess.GetTextAsync()); // empty field -> confirmed -> restored
     }
 }

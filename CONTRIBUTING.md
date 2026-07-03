@@ -28,13 +28,15 @@ dotnet test --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"   # UI
 dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # synthetic input
 ```
 
-**Over RDP:** the UIA-pattern tests (first command) pass fine *as long as the session stays connected* —
-they drive UIA, not the physical input stack. Only the `SendInput` synthetic-input tests (second command)
-need a real **local/physical console**: they can't inject into an RDP-redirected desktop and will fail
-there regardless of the lease. So on a headless/RDP box you can still run the UIA-pattern set yourself; run
-the synthetic-input set on a machine with a physical console (or leave it to the maintainer's final
-verification). Disconnecting the RDP session (vs. staying connected) also breaks the UIA-pattern tests — the
-desktop goes non-interactive.
+**Over RDP:** both sets run over RDP **as long as the session stays connected and unlocked** — this is a
+*session-state* requirement, not an RDP limitation. The UIA-pattern tests drive UIA; the synthetic-input
+tests fire real `SendInput`, which injects fine into a connected, unlocked session (measured 2026-07-03:
+`OpenInputDesktop` succeeds and `SendInput` returns non-zero with `GetLastError`=0 over live RDP — a
+**physical console is not required**). The synthetic-input tests additionally need a granted lease
+(`flaui-mcp unlock`). What breaks input is **disconnecting or locking** the session: the active desktop
+switches to the secure `WinSta0\Winlogon` and calls fail (`InputDesktopUnavailable`) — which is exactly
+the state an unattended CI runner is in. So run either set yourself in a connected, unlocked session; do
+**not** assume a headless/physical-console box is required.
 
 CI runs **only the headless suite**. The maintainer does a final interactive verification of the
 Desktop tests before merging — so your PR must state you ran them locally (or that they're N/A).

@@ -159,7 +159,7 @@ What this layer introduces:
 ### Synthetic input
 
 Real `SendInput`-backed mouse/keyboard input, built on the safety foundation above.
-**Eight tools** ship:
+**Nine tools** ship:
 
 - **`desktop_type`** — type Unicode text into the focused element (or a `@ref` target). Capped at
   4096 characters per call (`InvalidArguments` over the cap; split on a surrogate-safe boundary).
@@ -178,7 +178,20 @@ Real `SendInput`-backed mouse/keyboard input, built on the safety foundation abo
   - When it can't assert (empty-field precondition not met, no readable TextPattern, read failed, or a password/redacted field): `verified:false, mismatch:false, reason:"…"`.
   - `reason` is an **open** string — treat unknown values as forward-compatible; branch machines on `recommendedFallbackTool`, never parse `remedy`.
   
-  Mismatch is **advisory** — `ok` stays `true` and nothing is retried or corrected. **For reactive / RichEdit editors (the new Win11 Notepad), prefer `desktop_set_value` (UIA ValuePattern)** for reliable text entry; `SendInput` can garble those editors at any pacing. Pass `verify=false` for the old fire-and-forget speed (skips a ~100 ms settle + two reads).
+  Mismatch is **advisory** — `ok` stays `true` and nothing is retried or corrected. **For reactive / RichEdit editors (the new Win11 Notepad), prefer `desktop_set_value` (UIA ValuePattern) when the target has one, or `desktop_paste_text` otherwise** — `SendInput` can garble those editors at any pacing. Pass `verify=false` for the old fire-and-forget speed (skips a ~100 ms settle + two reads).
+- **`desktop_paste_text`** — paste text into a `@ref` target via an atomic clipboard-backed Ctrl+V,
+  the reliable path for reactive editors that garble `desktop_type` keystrokes (new Win11 Notepad,
+  Chromium `contenteditable`). All input gates (lease/deny-list/budget/session) are checked **before**
+  the clipboard is touched, so a paste that would be refused never clobbers it. Clipboard restore is
+  **best-effort**: the prior clipboard is put back only when the paste is confirmed to have landed
+  (`clipboardRestored:"restored"`); otherwise it reports `clipboardRestored:"abandoned"` and leaves
+  your pasted text sitting on the clipboard — this is expected whenever `verify=false` (no landing
+  check is done) and in reactive editors that transform pasted text so the read-back can't confirm a
+  match. A clipboard already holding non-text content (image/files) is refused
+  (`ClipboardHoldsNonText`) unless `forceOverwriteClipboard=true`; a mixed text+rich clipboard is
+  restored as plain text (`clipboardRestored:"text-degraded"`). The guarantees are the **paste** and
+  the **safety** (no leak, no wrong text, no clobber on a refused paste) — restore is a courtesy, not
+  a promise.
 - **`desktop_key`** — send a key chord (e.g. `ctrl+a`, `enter`, `alt+f4`) to the focused window, or
   to a `@ref`/`window` target. `ref` without `window` is `InvalidArguments`.
 - **`desktop_click`** — click a `@ref` element by its hit-test point.
@@ -223,7 +236,7 @@ tools**, **lenient on reads**, and it never silently binds a different control t
 
 - **State-changing tools** (`desktop_invoke`, `desktop_set_value`, `desktop_toggle`, `desktop_expand`,
   `desktop_select`, `desktop_set_focus`, `desktop_scroll`, `desktop_scroll_into_view`, `desktop_type`,
-  `desktop_key`, `desktop_click`, `desktop_set_caret`, `desktop_select_text_range`) require the **exact
+  `desktop_key`, `desktop_click`, `desktop_set_caret`, `desktop_select_text_range`, `desktop_paste_text`) require the **exact
   element** (matched by UIA RuntimeId). If it was destroyed and recreated (e.g. a virtualized row
   recycled its AutomationId), the action is **refused** with `REF_STALE_UNRESOLVABLE` — never
   retargeted. Take a fresh `desktop_snapshot`. (Legacy Win32 apps with no stable UIA identity: use
@@ -283,8 +296,8 @@ Not every app exposes a clean accessibility tree. Honestly:
   (`desktop_click_at` / `desktop_drag` by `xPct`/`yPct`) or vision. Typed text into Chromium editors
   (Monaco, CodeMirror, `contenteditable`) can **garble** like the new Notepad; `desktop_type`'s
   `verify` flags it, but `desktop_set_value` often **isn't available** there (no `ValuePattern`) —
-  the reliable path is **clipboard paste** (`desktop_clipboard_set` → focus → `desktop_key ctrl+v`),
-  which lands atomically and doesn't race.
+  the reliable path is **`desktop_paste_text`** (atomic clipboard-backed Ctrl+V; clipboard restore is
+  best-effort — see [Synthetic input](#synthetic-input)).
   - **Escape hatch:** launch the specific app with **`--force-renderer-accessibility`** (edit its
     shortcut / launch args) and Chromium exposes its full UIA tree for that process.
 - **WinUI 3 / WPF / WinForms / Qt:** generally expose **proper UIA peers** out of the box — this
@@ -356,7 +369,8 @@ what an agent **can do** to your machine.)
   Code, Slack, Discord, Teams); use the coordinate path or `--force-renderer-accessibility`.
   [→ Electron / Chromium](#electron--chromium--other-custom-render-apps)
 - **Some editors garble typed text.** The new Win11 Notepad and Chromium editors corrupt `SendInput`
-  at any pacing; prefer `desktop_set_value` or clipboard paste. [→ Synthetic input](#synthetic-input)
+  at any pacing; prefer `desktop_set_value` where available, else `desktop_paste_text` (its clipboard
+  restore is best-effort, not guaranteed). [→ Synthetic input](#synthetic-input)
 - **Screenshots don't handle occlusion.** A covered window is captured as-is — focus it first.
   [→ Perception safeguards](#perception-safeguards-built-in)
 - **Zero-UIA surfaces need the coordinate path.** Games, canvas apps, and Citrix/RDP inners expose no
@@ -469,9 +483,9 @@ real agent configuration).
 Requires the **.NET 10 SDK** (the project targets `net10.0-windows`).
 
 ```powershell
-# Build + run tests. The Desktop-category UIA tests need an interactive desktop — over RDP they pass
-# while the session stays connected; only the SendInput synthetic-input tests need a physical console
-# (they can't inject into an RDP-redirected desktop). See CONTRIBUTING.md for the full test loop.
+# Build + run tests. The Desktop-category tests need an interactive desktop; over RDP they run while the
+# session stays connected and unlocked. SendInput works over connected RDP too (session-state, not RDP —
+# no physical console required); it fails only when the session is disconnected/locked. See CONTRIBUTING.md.
 dotnet build test/FlaUI.Mcp.TestApp
 dotnet test
 

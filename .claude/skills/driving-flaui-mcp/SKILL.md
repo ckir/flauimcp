@@ -14,7 +14,7 @@ load them before use.
 ```
 ToolSearch "select:mcp__flaui-mcp__desktop_list_windows,mcp__flaui-mcp__desktop_open_window,mcp__flaui-mcp__desktop_snapshot,mcp__flaui-mcp__desktop_get_text,mcp__flaui-mcp__desktop_input_status"
 ```
-Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic input);
+Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste_text` (synthetic input);
 `desktop_set_caret,desktop_select_text_range` (lease-exempt text); `desktop_focus_window,desktop_window_transform` (recovery);
 `desktop_find` (cheap targeting), `desktop_snapshot_diff` (change detection).
 
@@ -67,7 +67,17 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
   on garble → `mismatch:true` + `expected`/`actual` + `recommendedFallbackTool`. It only asserts an exact
   match when the field started **empty** — typing into a non-empty field (e.g. a Run box with MRU history)
   returns `verified:false, mismatch:false, reason:"field-not-empty"` (abstains — **not** a failure; clear the
-  field first if you want a clean `verified:true`). `verify` never throws.
+  field first if you want a clean `verified:true`). `verify` never throws. `recommendedFallbackTool` now
+  points to `desktop_set_value` (writable ValuePattern) or `desktop_paste_text` (no writable
+  ValuePattern) instead of the old manual `desktop_clipboard_set`+`desktop_key "Ctrl+V"` two-step.
+- **A reactive editor that garbles `desktop_type`** (new Win11 Notepad, Chromium `contenteditable`) →
+  use `desktop_paste_text wN eN "text"` instead. It's an atomic clipboard-backed Ctrl+V: all input
+  gates run before the clipboard is touched, so a refused paste never clobbers it. Clipboard restore
+  is **best-effort** — it only restores your prior clipboard when the paste is confirmed to have
+  landed; otherwise (including whenever you pass `verify=false`, or in editors that transform pasted
+  text so the landing check can't confirm) it reports `clipboardRestored:"abandoned"` and leaves your
+  pasted text on the clipboard. Non-text clipboard content (image/files) is refused
+  (`ClipboardHoldsNonText`) unless `forceOverwriteClipboard=true`.
 
 ## Terminals & reading another agent's TUI
 
@@ -93,7 +103,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag` (synthetic i
 | `REF_STALE_UNRESOLVABLE` / `AMBIGUOUS_MATCH` on invoke/click/type/set_value | held ref's exact element (RuntimeId) is gone or duplicated — **state-changing** tools resolve refs **strictly**: no silent retarget to a recycled `AutomationId` under virtualization | re-`desktop_snapshot` or `desktop_find` to mint a fresh ref, then act (reads stay lenient). Break-glass: env `FLAUI_MCP_REF_STRICT=off` disables the guard globally |
 | `AMBIGUOUS_MATCH` even on a **read** (`desktop_get_text`) | reads are lenient about *recycling* but still fail closed when the ref's identity (`AutomationId`, else Name+type) matches **several live siblings** — the new Notepad shares `AutomationId "ContentTextBlock"` across 6 status texts | pick a **structurally unique** ref (e.g. the `Document`/root node, or one with a distinct Name) or re-snapshot for a more specific one |
 | `REF_NOT_FOUND` on a ref you "just had", right after a window closed | closing a window (or its process exiting) **evicts that window's refs**; windows closed by hand are caught by an on-access liveness sweep at the next `snapshot`/`find`/`list_windows` | expected, not a bug — take a fresh `desktop_snapshot`; **never reuse a ref across a window close/reopen** (the tell is `REF_NOT_FOUND`, distinct from `WindowHandleStale` on the handle) |
-| Typed text garbled / `verify.mismatch:true` | reactive/RichEdit editor races synthetic keystrokes | Mismatch result includes `canSetValue` (writable ValuePattern presence). **`canSetValue:true`** (snapshot shows `[Value,…]`, e.g. new Notepad Document): `recommendedFallbackTool:"desktop_set_value"` — byte-exact. **`canSetValue:false`** (Electron `contenteditable`, no ValuePattern): `recommendedFallbackTool:"desktop_clipboard_set"` — `set_value` would return `PatternUnsupported`, so use the **clipboard paste** path (`desktop_clipboard_set` → focus → `desktop_key "Ctrl+V"`) — lands atomically, doesn't race. (`desktop_type`'s `verify` flags the garble automatically.) |
+| Typed text garbled / `verify.mismatch:true` | reactive/RichEdit editor races synthetic keystrokes | Mismatch result includes `canSetValue` (writable ValuePattern presence). **`canSetValue:true`** (snapshot shows `[Value,…]`, e.g. new Notepad Document): `recommendedFallbackTool:"desktop_set_value"` — byte-exact. **`canSetValue:false`** (Electron `contenteditable`, no ValuePattern): `recommendedFallbackTool:"desktop_paste_text"` — `set_value` would return `PatternUnsupported`, so use `desktop_paste_text` (atomic clipboard-backed Ctrl+V; clipboard restore is best-effort, `clipboardRestored:"abandoned"` if the landing can't be confirmed). (`desktop_type`'s `verify` flags the garble automatically.) |
 | Snapshot is one opaque `Document` node, no children | Electron/Chromium a11y **off by default** | No refs to target — use the **coordinate path** (`desktop_click_at`/`desktop_drag` by `xPct`/`yPct`) or vision. Per-app fix: relaunch it with `--force-renderer-accessibility`. WinUI/WPF/Qt expose proper UIA and are fine. |
 
 ## Etiquette

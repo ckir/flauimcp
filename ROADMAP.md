@@ -90,8 +90,11 @@ safety rationale.
     lease/session/budget-exempt). `InputGuard` is now live in DI; F1–F5 merge-gate findings
     folded; atomic pre-send foreground/hit-test re-verify in the send leaf. Validated by an
     active-RDP spike (`SendInput` round-trip + abs-mouse normalization + ref-path `Focus()`
-    targeting confirmed) — the headless box can't run `SendInput`, so Desktop input tests are
-    console-only + manual.
+    targeting confirmed), and re-confirmed 2026-07-03 (`OpenInputDesktop` OK + `SendInput` non-zero /
+    err=0 over live RDP). `SendInput` is a **session-state** dependency, not an RDP one: it works in a
+    connected, unlocked session and fails only when disconnected/locked (`WinSta0\Winlogon`) — which is
+    what an unattended CI runner is. So Desktop input tests are maintainer-run in a connected session,
+    not "unrunnable over RDP".
   - **Phase 4b.1** ✅ **(v0.7.1) — inter-key pacing for `desktop_type`.** `desktop_type` gains
     `interKeyDelayMs` (default 15) — a per-character send loop that re-verifies the foreground before
     *each* key (abort-on-focus-steal preserved; partial text on abort); `0` keeps the shipped
@@ -141,6 +144,11 @@ auth-token gate.
       push signal through the existing `Invalidate` chokepoint plus an on-access `IsWindow` liveness
       sweep at the snapshot/find/list entry points. `windowId` is a never-reused `w{n}`, so dropping
       all three registry dicts is alias-safe; no background thread, timer, or UIA event pump.
+    - **Phase 7 — `desktop_paste_text`** ✅ **(shipped v0.7.7).** Atomic clipboard-preserving Ctrl+V
+      paste for reactive editors; all input gates precede the clipboard borrow; restore only on
+      confirmed consumption; non-text fail-fast with `forceOverwriteClipboard`; mixed text+rich →
+      `text-degraded`. Deferred (Phase 7.1): delayed-render `WM_RENDERFORMAT` clipboard for a precise
+      consumption signal.
 
 ## Consumer-lens hardening backlog (v0.7.3 release-capstone review, 2026-07-02)
 
@@ -159,11 +167,21 @@ agent driving a real desktop). None block v0.7.3; they harden the product's cent
   proves only the headless half; the `Category=Desktop` suite — the part that exercises the product's
   entire reason to exist — is maintainer-run. Stand up a self-hosted/scheduled interactive runner so a
   regression in real UIA/`SendInput` behavior is caught continuously, not just at manual smoke time.
+  **Feasibility validated (2026-07-03):** `SendInput` works in any *connected, unlocked* session, so a
+  local connected+leased run is already a legitimate pre-tag gate. The **sound** unattended approach is
+  **Sysinternals Autologon → box boots into an unlocked physical console → run the CI agent as an
+  interactive startup app (never a Session-0 Windows service)**; `tscon /dest:console` is *not* sound
+  (resolution collapse breaks bounds/visibility tests; WS2022/Win11 harden against `tscon` hijacking).
+  Prerequisite hygiene: the real end-to-end `SendInput` test (`InputToolsTests`) must first be made
+  reliably runnable (see the known-broken harness note in the Phase 7 spec §9).
   (Complements the deferred "Full DPI × OS × integrity test matrix in CI" below.)
-- **Reactive-editor typing robustness → first-class remedy.** Typed text into the new Win11 Notepad and
-  Chromium editors garbles at any pacing; today it's a documented limitation with a soft `verify` +
-  `desktop_set_value`/clipboard-paste fallback (see **Phase 4b.3** above and Known Limitations below).
-  Promote the clipboard-paste remedy from documented-workaround toward an automatic, discoverable path.
+- **Reactive-editor typing robustness → first-class remedy** ✅ **(delivered v0.7.7 — see Phase 7
+  above).** Typed text into the new Win11 Notepad and Chromium editors garbles at any pacing; it was a
+  documented limitation with a soft `verify` + `desktop_set_value`/clipboard-paste fallback (see
+  **Phase 4b.3** above and Known Limitations below). The clipboard-paste remedy is now the first-class
+  `desktop_paste_text` tool (atomic, clipboard-preserving) rather than a manual
+  `desktop_clipboard_set` + `desktop_key` two-step, and `desktop_type`'s verify remedy recommends it
+  directly.
 - **Code signing the distributed exe (pull earlier).** An unsigned input-synthesizing binary that also
   configures agents is a rough first-touch trust barrier for a *security* tool — see the "Top v2
   distribution item" in the v2 table below; worth pulling ahead of other v2 work for adoption.

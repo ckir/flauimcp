@@ -8,7 +8,7 @@ namespace FlaUI.Mcp.Server.Tools;
 /// ran/verified/mismatch are ALWAYS present so a strict client never hits a missing-key error; the
 /// string keys are conditional (JsonIgnore-when-null). `reason` is an OPEN string; consumers must
 /// tolerate unknown tokens. `recommendedFallbackTool` is a STABLE machine key — either
-/// desktop_set_value or desktop_clipboard_set, branched on the `canSetValue` wire fact — and
+/// desktop_set_value or desktop_paste_text, branched on the `canSetValue` wire fact — and
 /// `remedy` is opaque human/LLM prose whose wording is NOT guaranteed stable across minor versions.</summary>
 public sealed record VerifyResult
 {
@@ -17,11 +17,11 @@ public sealed record VerifyResult
     private const string RemedyProse =
         "Text was not entered correctly — the target likely races synthetic keystrokes. " +
         "If canSetValue is true, use desktop_set_value (UIA ValuePattern) for byte-exact entry. " +
-        "If canSetValue is false (e.g. an Electron contenteditable with no ValuePattern), use the " +
-        "clipboard-paste path: desktop_clipboard_set with your ORIGINAL full text — do NOT use the " +
-        "truncated 'expected' echo in this result — then desktop_key \"Ctrl+V\" targeting this " +
-        "element's ref+window (which focuses it first). If canSetValue is absent/unknown, try " +
-        "desktop_set_value first and fall back to the clipboard path on PatternUnsupported.";
+        "If canSetValue is false (e.g. an Electron contenteditable with no ValuePattern), use " +
+        "desktop_paste_text with your ORIGINAL full text (do NOT use the truncated 'expected' echo) " +
+        "— it pastes atomically; restoring the prior clipboard is best-effort (often " +
+        "clipboardRestored:\"abandoned\" in the reactive editors this path targets). If canSetValue is absent/unknown, " +
+        "try desktop_set_value first and fall back to desktop_paste_text on PatternUnsupported.";
 
     [JsonPropertyName("ran")] public bool Ran { get; init; }
     [JsonPropertyName("verified")] public bool Verified { get; init; }
@@ -60,7 +60,7 @@ public sealed record VerifyResult
                 CanSetValue = canSetValue,
                 // true/null -> set_value (null is the SAFE default: a wrong set_value guess yields a
                 // recoverable PatternUnsupported; defaulting to clipboard would clobber the clipboard).
-                RecommendedFallbackTool = canSetValue == false ? "desktop_clipboard_set" : "desktop_set_value",
+                RecommendedFallbackTool = canSetValue == false ? "desktop_paste_text" : "desktop_set_value",
                 Remedy = RemedyProse,
             },
         VerifyStatus.Skipped =>

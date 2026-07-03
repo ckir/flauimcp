@@ -30,5 +30,6 @@ public enum ToolErrorCode
     InputNotLeased,
     InputDesktopUnavailable,
     InputBudgetExceeded,
-    SinkInterlocked
+    SinkInterlocked,
+    ClipboardHoldsNonText
 }

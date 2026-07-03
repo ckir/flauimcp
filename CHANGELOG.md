@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.7] - 2026-07-03
+
+### Added
+- **`desktop_paste_text`** — atomic clipboard-preserving paste for reactive editors (new Win11
+  Notepad, Chromium `contenteditable`) that garble `desktop_type` keystrokes. Session-state safe:
+  ALL input gates (lease / deny-list / budget / session-state) are checked BEFORE the clipboard is
+  borrowed, so a paste that will be refused never clobbers the clipboard. The prior clipboard is
+  restored only when the paste is confirmed to have landed (else `clipboardRestored:"abandoned"`,
+  leaving your text on the clipboard — expected in reactive editors that transform pasted text, and
+  whenever `verify=false`). A non-text clipboard (image/files) is refused with
+  `ClipboardHoldsNonText` unless `forceOverwriteClipboard=true`; mixed text+rich clipboards restore
+  as plain text (`clipboardRestored:"text-degraded"`).
+
+### Changed
+- `desktop_type` verify remedy now recommends `desktop_paste_text` (instead of the manual
+  `desktop_clipboard_set` + `desktop_key` two-step) for no-writable-ValuePattern targets.
+
 ## [0.7.6] - 2026-07-03
 
 ### Fixed

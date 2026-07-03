@@ -247,6 +247,34 @@ public class InputGuardTests
         Assert.Equal(ToolErrorCode.SinkInterlocked, ex.Code);
     }
 
+    [Fact]
+    public void PreflightInput_throws_InputNotLeased_when_no_lease()
+    {
+        var (g, _, _) = Build(lease: null);
+        var target = new ActionTarget(nint.Zero, 0, "notepad", "Notepad");
+        var ex = Assert.Throws<ToolException>(() => g.PreflightInput(target));
+        Assert.Equal(ToolErrorCode.InputNotLeased, ex.Code);
+    }
+
+    [Fact]
+    public void PreflightInput_throws_TargetDenied_for_a_denied_window()
+    {
+        var (g, _, _) = Build(ValidLease());
+        var denied = new ActionTarget(nint.Zero, 0, "consent", "Credential");
+        var ex = Assert.Throws<ToolException>(() => g.PreflightInput(denied));
+        Assert.Equal(ToolErrorCode.TargetDenied, ex.Code);
+    }
+
+    [Fact]
+    public void PreflightInput_does_not_consume_budget()
+    {
+        var budget = new ActionBudget(maxPerWindow: 1, windowSeconds: 60);
+        var (g, _, _) = BuildWithAudit(ValidLease(), budget: budget);
+        var target = new ActionTarget(nint.Zero, 0, "notepad", "Notepad");
+        g.PreflightInput(target);                          // passes all gates
+        Assert.True(budget.HasFreeSlot(nint.Zero, Now, default));   // slot NOT spent (same window root + same clock); leaseWrite matches BuildWithAudit's default StubLeaseProvider write-time
+    }
+
     private sealed class StubLeaseProvider : ILeaseProvider
     {
         private readonly InputLease? _lease; private readonly DateTime _w;
