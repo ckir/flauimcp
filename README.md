@@ -286,6 +286,52 @@ privacy and safety floors — defense in depth, not a substitute for supervising
 occlusion-aware capture (PrintWindow), AOT/trim to shrink the self-contained executable, and an
 HTTP transport.
 
+### Event streaming (`desktop_watch`)
+
+React to desktop changes instead of polling snapshots in a loop. **Four tools**, all `ReadOnly`
+and lease-exempt (they synthesize no input):
+
+| Tool | Description |
+| --- | --- |
+| `DesktopWatch` | Subscribe to UIA events on a window: `window_opened`, `window_closed` (child dialogs/popups), `focus_changed` (input focus moves within that window's process), `structure_changed` (subtree repopulated — coalesced/debounced). Optional `scope=<ref>` narrows `structure_changed` to a subtree. Returns `{subscriptionId, window, events, scope?}`. |
+| `DesktopUnwatch` | Stop a subscription. Idempotent — an unknown/already-ended `subscriptionId` returns `ok:true`. |
+| `DesktopListWatches` | List your active subscriptions (recover them after a context loss). Returns `watches[{subscriptionId, window, events, scope?, droppedCount}]`. |
+| `DesktopDrainEvents` | Fetch and clear buffered events for a subscription. Returns `{subscriptionId, events:[…], count}`. |
+
+Events are delivered as MCP server→client notifications (method
+**`notifications/flaui/desktop_event`**) over the existing **stdio** pipe — there is no HTTP/SSE
+transport involved. Each notification (and each event returned by `DesktopDrainEvents`) has the
+same payload shape:
+
+```
+{ subscriptionId, event, window, ref?, controlType?, name?, bounds?, coalescedCount, timestampUtc }
+```
+
+`ref`/`name`/`bounds` may be absent (e.g. `window_closed`); `name` is `[REDACTED]` for password
+fields (the same INV-5 redaction as `DesktopSnapshot`).
+
+**Push+drain, not push-only.** Some MCP hosts — including Claude Code today — do not surface
+unsolicited server→client notifications back to the model. `desktop_watch` therefore *also*
+buffers every event server-side; **`desktop_drain_events` is the reliable path in hosts that
+don't surface push notifications.** Don't rely on both in the same host — a host that does
+surface push would otherwise see each event twice.
+
+Other things to know:
+
+- **Coalescing/back-pressure.** `structure_changed` bursts are coalesced and debounced;
+  `coalescedCount` on a payload tells you how many raw events were folded into it. A `droppedCount
+  > 0` on `DesktopListWatches` means the buffer overflowed under load — re-`desktop_snapshot` to
+  resync rather than trusting the stream to be complete.
+- **Refs are ephemeral.** An event's `ref` is minted into a small bounded pool — it can return
+  `REF_NOT_FOUND` if you wait too long to act on it (drained or notified). Re-`desktop_snapshot` for
+  a durable ref.
+- **Auto-evict on close.** A subscription is torn down automatically when its window closes (reuses
+  the Phase-6 `WindowInvalidated` chokepoint) — no leaked subscriptions to clean up by hand.
+- **Caps:** 5 watches per window, 20 per session (`TooManyWatches` beyond that).
+- **Self-trigger warning.** Your own `desktop_type`/`desktop_click`/`desktop_key` calls fire UIA
+  events too — an event arriving right after your own input is likely self-caused; correlate by
+  timing rather than assuming an external change.
+
 ### Electron / Chromium & other custom-render apps
 
 Not every app exposes a clean accessibility tree. Honestly:

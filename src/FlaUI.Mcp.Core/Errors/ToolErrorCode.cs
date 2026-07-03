@@ -31,5 +31,6 @@ public enum ToolErrorCode
     InputDesktopUnavailable,
     InputBudgetExceeded,
     SinkInterlocked,
-    ClipboardHoldsNonText
+    ClipboardHoldsNonText,
+    TooManyWatches
 }
