@@ -115,13 +115,13 @@ public class VerifyResultTests
     }
 
     [Fact]
-    public void Mismatch_canSetValue_false_recommends_clipboard_and_emits_the_fact()
+    public void Mismatch_canSetValue_false_recommends_paste_text_and_emits_the_fact()
     {
         var o = new VerifyOutcome(VerifyStatus.Mismatch, null, Expected: "x", Actual: "y");
         var e = Wire(VerifyResult.From(o, canSetValue: false));
         Assert.True(Has(e, "canSetValue"));
         Assert.False(e.GetProperty("canSetValue").GetBoolean());
-        Assert.Equal("desktop_clipboard_set", e.GetProperty("recommendedFallbackTool").GetString());
+        Assert.Equal("desktop_paste_text", e.GetProperty("recommendedFallbackTool").GetString());
     }
 
     [Fact]
@@ -139,9 +139,24 @@ public class VerifyResultTests
         var o = new VerifyOutcome(VerifyStatus.Mismatch, null, Expected: "x", Actual: "y");
         var remedy = Wire(VerifyResult.From(o, canSetValue: false)).GetProperty("remedy").GetString()!;
         Assert.Contains("desktop_set_value", remedy);
-        Assert.Contains("desktop_clipboard_set", remedy);
-        Assert.Contains("desktop_key", remedy);
+        Assert.Contains("desktop_paste_text", remedy);
         Assert.Contains("expected", remedy); // the "do NOT use the truncated 'expected' echo" warning
+    }
+
+    [Fact]
+    public void Mismatch_with_no_writable_valuepattern_recommends_desktop_paste_text()
+    {
+        var outcome = new VerifyOutcome(VerifyStatus.Mismatch, null, "expected", "actual");
+        var r = VerifyResult.From(outcome, canSetValue: false);
+        Assert.Equal("desktop_paste_text", r.RecommendedFallbackTool);
+    }
+
+    [Fact]
+    public void Mismatch_with_writable_valuepattern_still_recommends_set_value()
+    {
+        var outcome = new VerifyOutcome(VerifyStatus.Mismatch, null, "expected", "actual");
+        var r = VerifyResult.From(outcome, canSetValue: true);
+        Assert.Equal("desktop_set_value", r.RecommendedFallbackTool);
     }
 
     [Fact]
