@@ -41,14 +41,18 @@ Keep each register's returned handler and pass it to the matching un-register on
 disposable must `dispatcher.RunQueryAsync(...)` the unregister, mirroring `PerceptionManager.cs:38`):
 
 ```csharp
-element.UnregisterAutomationEventHandler(AutomationEventHandlerBase handler);       // window_opened/closed
-element.UnregisterStructureChangedEventHandler(StructureChangedEventHandlerBase h); // structure_changed
-automation.UnregisterFocusChangedEvent(FocusChangedEventHandlerBase handler);       // focus_changed
+// CORRECTED (Task 7b reflection-verified: the Unregister* methods are on FrameworkAutomationElement, NOT on
+// AutomationElement — register/unregister are split across two interfaces in FlaUI 5.0.0):
+element.FrameworkAutomationElement.UnregisterAutomationEventHandler(AutomationEventHandlerBase handler);       // window_opened/closed
+element.FrameworkAutomationElement.UnregisterStructureChangedEventHandler(StructureChangedEventHandlerBase h); // structure_changed
+automation.UnregisterFocusChangedEvent(FocusChangedEventHandlerBase handler);       // focus_changed (this ONE is on AutomationBase — exact)
 // Blunt fallback (used by the probe for cleanup): automation.UnregisterAllEvents();
 ```
 
-The register return value (`IAutomationEventHandler` etc.) is the concrete `*EventHandlerBase` — assignable to the
-un-register parameter directly (store as the interface or base type, pass to Unregister).
+The register return value (`AutomationEventHandlerBase`/`StructureChangedEventHandlerBase`/`FocusChangedEventHandlerBase`)
+is assignable to the matching un-register parameter directly. NOTE: the element-side Unregister* methods are reached
+via `element.FrameworkAutomationElement.*`, not `element.*` (compiler-confirmed in Task 7b `6c281a7`); only the
+focus unregister is directly on `automation` (`AutomationBase`).
 
 ## CacheRequest — `Activate()`-only (the §16.1 decision)
 
