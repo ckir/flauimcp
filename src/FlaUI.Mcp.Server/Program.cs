@@ -73,7 +73,7 @@ builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.IEventSink>(sp => sp.GetRequi
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.WatchService>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.WatchPump>();
 builder.Services.AddHostedService<FlaUI.Mcp.Server.Watch.WatchPumpHostedService>();
-// NOTE: WatchTools is registered in Task 10 (class does not exist yet) — do NOT add it here.
+builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.WatchTools>();
 
 builder.Services
     .AddMcpServer()
