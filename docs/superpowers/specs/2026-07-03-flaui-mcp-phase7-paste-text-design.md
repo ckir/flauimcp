@@ -255,6 +255,15 @@ fields). Contract: the no-writable-ValuePattern branch's `recommendedFallbackToo
 > console → CI agent as an interactive startup app (never a Session-0 service)**; `tscon /dest:console`
 > is *not* sound (resolution collapse + WS2022/Win11 `tscon`-hijack hardening).
 
+> **⚠ Pre-existing broken harness to fix first (found 2026-07-03).** The one real end-to-end `SendInput`
+> test, `InputToolsTests.Type_writes_text_into_the_focused_textbox`, currently fails *before* any input —
+> at `RefForAid(tree, "Input")` (`Sequence contains no matching element`): the WPF TestApp snapshot has no
+> `aid=Input` node. It is a `[SkippableFact]` that otherwise just *skips* (no lease), so this has been
+> latent. It is NOT a `SendInput` failure (injection was independently confirmed working over live RDP).
+> Before the paste tool's Desktop tests can give a trustworthy green, investigate + fix this harness
+> (stale TestApp tree? snapshot scope? renamed control) so `desktop_paste_text`'s Desktop suite doesn't
+> inherit it. Track as a small task in the plan; it is a prerequisite for the interactive-CI item too.
+
 - Live paste into the new Win11 Notepad and a Chromium `contenteditable`; multi-word string lands
   byte-for-byte where `desktop_type` garbles.
 - Pre-seed a **text** clipboard, paste into a non-empty field → prior text restored (`"text"`).
