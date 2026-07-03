@@ -429,6 +429,34 @@ public sealed class PerceptionManager
             return new CaptureGeometry(target.BoundingRectangle, pw, false, false, null);
         });
 
+    /// <summary>Phase 9 Task 10 (§6): resolve BOTH the capture rect (the whole window, or a region sub-rect of it)
+    /// AND the full window physical rect, for desktop_find_text. Wraps ResolveWindowCaptureGeometryAsync(handle,
+    /// @ref: null) — which already returns the FULL window rect as CaptureGeometry.Bounds when no @ref is given —
+    /// then crops to `region` (window-relative fractions [xPct,yPct,wPct,hPct] in [0,1]) if supplied. Purely
+    /// additive: no existing caller of ResolveWindowCaptureGeometryAsync is touched.</summary>
+    public async Task<TextCaptureGeometry> ResolveTextCaptureGeometryAsync(WindowHandle handle, double[]? region)
+    {
+        var geo = await ResolveWindowCaptureGeometryAsync(handle, null);
+        if (geo.Denied || geo.Minimized)
+            return new TextCaptureGeometry(geo.Denied, geo.DeniedProcess, geo.Minimized,
+                geo.Bounds, geo.PasswordRects, geo.Bounds.X, geo.Bounds.Y, geo.Bounds.Width, geo.Bounds.Height);
+
+        var win = geo.Bounds; // full window physical rect (target was `win` itself since @ref is null)
+        var capture = win;
+        if (region is not null)
+        {
+            if (region.Length != 4 || region.Any(v => v < 0.0 || v > 1.0))
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    "region must be [xPct,yPct,wPct,hPct], each in [0,1].", "pass 4 fractions in [0,1]");
+            int x = win.X + (int)System.Math.Round(region[0] * win.Width);
+            int y = win.Y + (int)System.Math.Round(region[1] * win.Height);
+            int w = (int)System.Math.Round(region[2] * win.Width);
+            int h = (int)System.Math.Round(region[3] * win.Height);
+            capture = new System.Drawing.Rectangle(x, y, w, h);
+        }
+        return new TextCaptureGeometry(false, null, false, capture, geo.PasswordRects, win.X, win.Y, win.Width, win.Height);
+    }
+
     public async Task<bool> DenylistedWindowsVisibleAsync()
     {
         var windows = await _windows.ListWindowsAsync();

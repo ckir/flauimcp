@@ -80,6 +80,11 @@ builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.WakeRegistry>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Watch.WakeService>();
 builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.WakeTools>();
 
+// --- Phase 9 OCR text targeting (Prong B) ---
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Vision.IOcrEngine, FlaUI.Mcp.Core.Vision.WindowsMediaOcrEngine>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Vision.TextFinder>();
+builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.FindTextTools>();
+
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
