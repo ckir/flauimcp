@@ -152,12 +152,15 @@ multi-connection server driving one physical desktop is a focus-steal mirage (ag
       confirmed consumption; non-text fail-fast with `forceOverwriteClipboard`; mixed text+rich →
       `text-degraded`. Deferred (Phase 7.1): delayed-render `WM_RENDERFORMAT` clipboard for a precise
       consumption signal.
-    - **Phase 8 — `desktop_watch` (UIA event streaming over stdio)** 🔵 **(design; target v0.8.0).**
+    - **Phase 8 — `desktop_watch` (UIA event streaming over stdio)** ✅ **(shipped v0.8.0).**
       Push perception: subscribe to UIA events (`window_opened`/`window_closed`/`focus_changed`/
       `structure_changed`) and receive them as **MCP server→client notifications over the existing stdio
       pipe** — no HTTP/SSE (MCP is JSON-RPC; `ModelContextProtocol` 1.4.0 exposes `SendNotificationAsync`,
-      verified). New tools `desktop_watch`/`desktop_unwatch`/`desktop_list_watches` (all `ReadOnly`,
-      lease-exempt). Central design: UIA callbacks arrive on COM RPC threads → thin non-blocking capture →
+      verified). Shipped tools `desktop_watch`/`desktop_unwatch`/`desktop_list_watches`/`desktop_drain_events`
+      (all `ReadOnly`, lease-exempt) — the fourth, `desktop_drain_events`, was added over the course of the
+      phase once host-surfacing testing showed some hosts (including Claude Code) don't surface unsolicited
+      notifications to the model, so every event is also buffered server-side as a reliable fallback
+      (push+drain). Central design: UIA callbacks arrive on COM RPC threads → thin non-blocking capture →
       coalesce/debounce → payload-build marshaled onto the single query STA (INV-5 redaction, minted ref) →
       emit off-STA. Subscription lifecycle reuses the Phase-6 `WindowInvalidated` chokepoint for
       auto-evict-on-close. **Scope fork decided agy-first (2026-07-03)** — HTTP/SSE (below) was the original
@@ -208,7 +211,7 @@ agent driving a real desktop). None block v0.7.3; they harden the product's cent
 
 | Feature | Why deferred | Source |
 | --- | --- | --- |
-| **UIA event streaming** (`desktop_watch` — Window_Opened, StructureChanged, FocusChanged) | ⬆️ **PULLED INTO Phase 8 (design, v0.8.0)** — over **stdio** MCP notifications, NOT SSE (the SSE assumption was the reason it was deferred; it was a false dependency). The real risk (COM-thread event callbacks × the STA dispatcher) is addressed by the Phase 8 capture→coalesce→STA-marshal→emit pipeline. | Both reviews |
+| **UIA event streaming** (`desktop_watch` — Window_Opened, StructureChanged, FocusChanged) | ✅ **SHIPPED in Phase 8 (v0.8.0)** — over **stdio** MCP notifications, NOT SSE (the SSE assumption was the reason it was deferred; it was a false dependency). The real risk (COM-thread event callbacks × the STA dispatcher) is addressed by the Phase 8 capture→coalesce→STA-marshal→emit pipeline. Push+drain: `desktop_drain_events` was added as a reliable fallback for hosts that don't surface MCP notifications. | Both reviews |
 | **Built-in OCR fallback** (`Windows.Media.Ocr` augmenting `desktop_screenshot` with text bounding boxes) | On-box API, no external dep, genuinely useful for zero-UIA apps (games, canvas, Citrix). Opt-in, not core to first working server. v1.5 candidate. | Both reviews |
 | **Window arrangement** (`desktop_arrange_windows` tile/cascade) | Cosmetic scope creep; `desktop_window_transform` + `desktop_snapshot_global` cover the real needs. | Review 1 |
 | **Shell / system integration** (shell execute, notification area, taskbar pinning) | Scope creep beyond UI automation. Clipboard (the high-value piece) is already in v1. | Review 1 |

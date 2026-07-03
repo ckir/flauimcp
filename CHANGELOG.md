@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-07-03
+
+### Added
+- **`desktop_watch` / `desktop_unwatch` / `desktop_list_watches` / `desktop_drain_events`** — push perception:
+  subscribe to UIA events (`window_opened`, `window_closed`, `focus_changed`, `structure_changed`) and receive
+  them as MCP server→client notifications (`notifications/flaui/desktop_event`) over the existing **stdio** pipe —
+  no HTTP/SSE. Because some hosts (including Claude Code) do not surface unsolicited notifications to the model,
+  each event is ALSO buffered server-side and retrievable via **`desktop_drain_events`** (push+drain: use drain
+  in hosts that don't surface push). All four tools are ReadOnly and lease-exempt. Events carry a freshly-minted
+  (bounded, evictable) `ref`, `controlType`, INV-5-redacted `name`, `bounds`, and a `coalescedCount`.
+  `structure_changed` is coalesced + debounced; focus/window events are process-filtered to the subscribed
+  window. Subscriptions auto-evict when their window closes (reuses the Phase-6 `WindowInvalidated` chokepoint).
+  Caps: 5 watches/window, 20/session. Event `ref`s are ephemeral (bounded pool) — re-`desktop_snapshot` for a
+  durable ref if a drained/notified ref returns `REF_NOT_FOUND`.
+
 ## [0.7.7] - 2026-07-03
 
 ### Added

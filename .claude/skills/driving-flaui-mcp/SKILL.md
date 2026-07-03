@@ -36,6 +36,25 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 - `desktop_snapshot_diff wN <baselineSnapshotId> scope=<ref>` diffs only that element's subtree (cheap
   re-walk + in-memory baseline slice) — added/removed/changed since the baseline.
 
+## React instead of poll (`desktop_watch`)
+
+- Instead of looping `desktop_snapshot`/`desktop_find` to notice a change, subscribe once:
+  `desktop_watch wN [window_opened,window_closed,focus_changed,structure_changed]` → returns a
+  `subscriptionId`. Optional `scope=<ref>` narrows `structure_changed` to one subtree.
+- **In Claude Code, push notifications aren't surfaced to you** — poll
+  `desktop_drain_events(subscriptionId)` instead to fetch the buffered events (push+drain: the
+  server buffers every event server-side specifically because some hosts don't surface
+  `notifications/flaui/desktop_event`). Each drained event is `{subscriptionId, event, window,
+  ref?, controlType?, name?, bounds?, coalescedCount, timestampUtc}`.
+- For detail on an event, `desktop_snapshot`/`desktop_get_text` its `ref` — but act promptly:
+  event `ref`s are **ephemeral** (a small bounded pool), so an old one returns `REF_NOT_FOUND` once
+  it ages out. Re-`desktop_snapshot` for a durable ref rather than treating that as an error.
+- **Self-trigger warning:** your own `desktop_type`/`desktop_click`/`desktop_key` calls fire UIA
+  events too — an event right after your own input is likely self-caused; correlate by timing
+  before reacting to it as an external change.
+- `droppedCount` on a `desktop_list_watches` entry (>0) means events were coalesced/buffer-dropped
+  under load — re-snapshot to resync rather than trusting the stream as complete.
+
 ## Synthetic input needs a human lease
 
 - Check first: `desktop_input_status` → `{leaseStatus, secondsRemaining, shells}`.
