@@ -138,7 +138,10 @@ safety rationale.
       name at the read sites + making the match predicate total, with +4 null-Name invariant tests.
 
 Not phased here (separate follow-on, not v1-blocking): HTTP/SSE transport with its hard
-auth-token gate.
+auth-token gate. **Note (2026-07-03):** the one capability that seemed to *need* HTTP/SSE — push event
+streaming — was **decoupled** from it in Phase 8 (MCP JSON-RPC notifications ride the existing stdio pipe),
+so HTTP/SSE is now only about *remote reachability* (driving a cloud/headless box). Deprioritized: a
+multi-connection server driving one physical desktop is a focus-steal mirage (agy-first, 2026-07-03).
     - **Phase 6 — RefRegistry eviction on window close** ✅ **(shipped v0.7.6).** A closed window's
       ref state (and `WindowManager`'s per-window COM pin) is reclaimed via a `WindowInvalidated`
       push signal through the existing `Invalidate` chokepoint plus an on-access `IsWindow` liveness
@@ -149,6 +152,21 @@ auth-token gate.
       confirmed consumption; non-text fail-fast with `forceOverwriteClipboard`; mixed text+rich →
       `text-degraded`. Deferred (Phase 7.1): delayed-render `WM_RENDERFORMAT` clipboard for a precise
       consumption signal.
+    - **Phase 8 — `desktop_watch` (UIA event streaming over stdio)** 🔵 **(design; target v0.8.0).**
+      Push perception: subscribe to UIA events (`window_opened`/`window_closed`/`focus_changed`/
+      `structure_changed`) and receive them as **MCP server→client notifications over the existing stdio
+      pipe** — no HTTP/SSE (MCP is JSON-RPC; `ModelContextProtocol` 1.4.0 exposes `SendNotificationAsync`,
+      verified). New tools `desktop_watch`/`desktop_unwatch`/`desktop_list_watches` (all `ReadOnly`,
+      lease-exempt). Central design: UIA callbacks arrive on COM RPC threads → thin non-blocking capture →
+      coalesce/debounce → payload-build marshaled onto the single query STA (INV-5 redaction, minted ref) →
+      emit off-STA. Subscription lifecycle reuses the Phase-6 `WindowInvalidated` chokepoint for
+      auto-evict-on-close. **Scope fork decided agy-first (2026-07-03)** — HTTP/SSE (below) was the original
+      lean and was **discarded** for this capability (a multi-tenant server driving one physical
+      mouse/keyboard is a focus-steal mirage; events don't need it). Spec:
+      [`docs/superpowers/specs/2026-07-03-flaui-mcp-phase8-desktop-watch-design.md`](docs/superpowers/specs/2026-07-03-flaui-mcp-phase8-desktop-watch-design.md).
+    - **Phase 9 (queued) — OCR/vision perception fallback.** `Windows.Media.Ocr` (on-box) as a transparent
+      fallback when UIA fails (Electron/Chromium/games/Citrix collapse to one `Document` node — the most-cited
+      limitation in this roadmap) + OCR-anchored targeting/waits. Low architectural risk; agy-first #2 pick.
 
 ## Consumer-lens hardening backlog (v0.7.3 release-capstone review, 2026-07-02)
 
@@ -190,7 +208,7 @@ agent driving a real desktop). None block v0.7.3; they harden the product's cent
 
 | Feature | Why deferred | Source |
 | --- | --- | --- |
-| **UIA event streaming** (`desktop_watch` — Window_Opened, StructureChanged, FocusChanged → MCP notifications over SSE) | Highest-value creative idea, but the biggest complexity/risk: UIA event callbacks arrive on COM threads and must interplay with the STA dispatcher; needs bidirectional agent prompting. Polling + `desktop_snapshot_diff` covers v1 needs. | Both reviews |
+| **UIA event streaming** (`desktop_watch` — Window_Opened, StructureChanged, FocusChanged) | ⬆️ **PULLED INTO Phase 8 (design, v0.8.0)** — over **stdio** MCP notifications, NOT SSE (the SSE assumption was the reason it was deferred; it was a false dependency). The real risk (COM-thread event callbacks × the STA dispatcher) is addressed by the Phase 8 capture→coalesce→STA-marshal→emit pipeline. | Both reviews |
 | **Built-in OCR fallback** (`Windows.Media.Ocr` augmenting `desktop_screenshot` with text bounding boxes) | On-box API, no external dep, genuinely useful for zero-UIA apps (games, canvas, Citrix). Opt-in, not core to first working server. v1.5 candidate. | Both reviews |
 | **Window arrangement** (`desktop_arrange_windows` tile/cascade) | Cosmetic scope creep; `desktop_window_transform` + `desktop_snapshot_global` cover the real needs. | Review 1 |
 | **Shell / system integration** (shell execute, notification area, taskbar pinning) | Scope creep beyond UI automation. Clipboard (the high-value piece) is already in v1. | Review 1 |
