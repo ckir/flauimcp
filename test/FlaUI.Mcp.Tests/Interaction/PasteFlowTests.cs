@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Interaction;
@@ -104,6 +105,7 @@ public class PasteFlowTests
             Before = new VerifyRead { Text = "" }, After = new VerifyRead { Text = "bar" } };
         var r = await Run(fx);
         Assert.Equal("text-degraded", r.ClipboardRestored);
+        Assert.Contains("set:PRIOR", fx.Log);            // restored the SAVED prior plain text, not the payload
     }
 
     [Fact]
@@ -133,6 +135,7 @@ public class PasteFlowTests
             Before = new VerifyRead { Text = "" }, After = new VerifyRead { Text = "bar" } };
         var r = await Run(fx);
         Assert.Equal("empty", r.ClipboardRestored);
+        Assert.Contains(fx.Log, s => s == "set:");        // restored an EMPTY clipboard, not stale prior text
     }
 
     [Fact]
@@ -142,5 +145,17 @@ public class PasteFlowTests
             Before = new VerifyRead { Text = "" }, After = new VerifyRead { Text = "bar" } };
         var r = await Run(fx, force: true);
         Assert.Equal("none-nontext", r.ClipboardRestored);
+        Assert.Equal(1, fx.Log.Count(s => s.StartsWith("set:")));  // ONLY the payload set; no restore write
+    }
+
+    [Fact]
+    public async Task Redacted_after_read_blocks_restore_and_reports_redacted()
+    {
+        var fx = new FakeEffects { Snap = new(PriorClipboardKind.Text, "PRIOR"),
+            Before = new VerifyRead { Text = "" }, After = new VerifyRead { Text = "secret", Redacted = true } };
+        var r = await Run(fx);
+        Assert.Equal("abandoned", r.ClipboardRestored);          // redacted after-read cannot confirm containment
+        Assert.DoesNotContain(fx.Log, s => s == "set:PRIOR");    // prior NOT restored off a redacted read
+        Assert.Equal("redacted", r.Verify.Reason);               // verify skips as redacted
     }
 }

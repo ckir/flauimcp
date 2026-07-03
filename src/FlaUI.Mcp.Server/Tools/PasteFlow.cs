@@ -47,7 +47,12 @@ public static class PasteFlow
         await fx.PasteAsync(target);        // Ctrl+V through the full guard pipeline
 
         if (!verify)
-            return new PasteOutcome("abandoned", VerifyResult.Disabled);
+            // A force-overwritten non-text clipboard can never be restored (deterministic, no read
+            // needed) -> "none-nontext" even without verification; otherwise no after-read means no
+            // consumption confirmation -> "abandoned" (spec §5 table).
+            return new PasteOutcome(
+                snap.Kind == PriorClipboardKind.NonText ? "none-nontext" : "abandoned",
+                VerifyResult.Disabled);
 
         await delay(VerifySettleMs);
         VerifyRead after;
@@ -58,6 +63,9 @@ public static class PasteFlow
                 VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "read-failed", null, null)));
         }
 
+        // Containment consumption gate. NOTE: a null before-read (no TextPattern / read fault) is treated
+        // as "did not contain the payload" (?? false) — an accepted best-effort assumption; in practice a
+        // null before-read almost always means the after-read of the same element also fails.
         // Consumption gate = containment (INDEPENDENT of the agent-facing verify outcome; the two answer
         // different questions and MAY disagree, e.g. clipboardRestored:"text" with verify field-not-empty).
         bool consumed = !after.Redacted && after.Text is not null
@@ -66,14 +74,26 @@ public static class PasteFlow
 
         string restored = "abandoned";
         if (consumed)
-            restored = snap.Kind switch
+        {
+            try
             {
-                PriorClipboardKind.Text => await SetAnd(fx, snap.Text ?? string.Empty, "text"),
-                PriorClipboardKind.TextWithRichFormats => await SetAnd(fx, snap.Text ?? string.Empty, "text-degraded"),
-                PriorClipboardKind.Empty => await SetAnd(fx, string.Empty, "empty"),
-                PriorClipboardKind.NonText => "none-nontext", // forced; cannot restore
-                _ => "abandoned",
-            };
+                restored = snap.Kind switch
+                {
+                    PriorClipboardKind.Text => await SetAnd(fx, snap.Text ?? string.Empty, "text"),
+                    PriorClipboardKind.TextWithRichFormats => await SetAnd(fx, snap.Text ?? string.Empty, "text-degraded"),
+                    PriorClipboardKind.Empty => await SetAnd(fx, string.Empty, "empty"),
+                    PriorClipboardKind.NonText => "none-nontext", // forced; cannot restore
+                    _ => "abandoned",
+                };
+            }
+            catch
+            {
+                // The paste already landed and was confirmed; a failed restore-write must NOT surface as
+                // a hard error (the agent would retry -> double-paste). Best-effort restore: report
+                // "abandoned" (prior not restored; the agent's payload remains on the clipboard).
+                restored = "abandoned";
+            }
+        }
         else if (snap.Kind == PriorClipboardKind.NonText) restored = "none-nontext";
 
         VerifyOutcome outcome =
