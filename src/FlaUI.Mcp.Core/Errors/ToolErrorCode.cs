@@ -32,5 +32,6 @@ public enum ToolErrorCode
     InputBudgetExceeded,
     SinkInterlocked,
     ClipboardHoldsNonText,
-    TooManyWatches
+    TooManyWatches,
+    OcrUnavailable
 }

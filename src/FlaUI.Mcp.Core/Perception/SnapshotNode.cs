@@ -32,4 +32,9 @@ public sealed record SnapshotModel(IReadOnlyList<SnapshotItem> Items)
 {
     public IEnumerable<SnapshotNode> Nodes => Items.OfType<SnapshotNode>();
     public int NodeCount => Items.Count(i => i is SnapshotNode);
+
+    // Phase 9 §3: set only by BuildModelAsync for a FULL-WINDOW snapshot (RootRef null), where the window-root
+    // ClassName is in scope. An init-only property (not a positional-ctor param) so existing `new
+    // SnapshotModel(items)` call sites and tuple-destructuring callers (e.g. WaitCoordinator) are unaffected.
+    public bool Wakeable { get; init; } = false;
 }

@@ -204,10 +204,20 @@ public sealed class PerceptionManager
                     $"Snapshotting windows owned by '{procName}' is blocked (credential store).",
                     "snapshot a different, non-sensitive window");
             IReadOnlyList<AutomationElement> popups = PopupFinder.FindOwnerPopups(desktop, win);
-            AutomationElement root = string.IsNullOrEmpty(options.RootRef)
+            bool isFullWindow = string.IsNullOrEmpty(options.RootRef);
+            AutomationElement root = isFullWindow
                 ? win : refs.Resolve(handle.Id, options.RootRef!, PopupFinder.SearchRoots(win, desktop));
             var snapshotId = refs.BeginSnapshot(handle.Id);
             var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id);
+            // Phase 9 §3: wakeable hint is a whole-WINDOW opacity signal, not a subtree one — only computed for
+            // a full-window snapshot (RootRef null). win is the window root (same element the tree was built
+            // from when isFullWindow); read its ClassName defensively (WindowManager.cs idiom).
+            if (isFullWindow)
+            {
+                string? cls;
+                try { cls = win.Properties.ClassName.ValueOrDefault; } catch { cls = null; }
+                model = model with { Wakeable = WakeabilityHint.IsWakeable(cls, model.NodeCount) };
+            }
             return (snapshotId, model);
         });
     }
@@ -314,7 +324,7 @@ public sealed class PerceptionManager
     {
         var (snapshotId, model) = await BuildModelAsync(handle, options, _refs);
         _cache.Put(snapshotId, model);
-        return new SnapshotResult(snapshotId, SnapshotEngine.Render(model, options), model.NodeCount);
+        return new SnapshotResult(snapshotId, SnapshotEngine.Render(model, options), model.NodeCount, model.Wakeable);
     }
 
     public async Task<(string SnapshotId, SnapshotModel Model)> SnapshotModelForWaitAsync(
@@ -418,6 +428,23 @@ public sealed class PerceptionManager
             }
             return new CaptureGeometry(target.BoundingRectangle, pw, false, false, null);
         });
+
+    /// <summary>Phase 9 Task 10 (§6): resolve BOTH the capture rect (the whole window, or a region sub-rect of it)
+    /// AND the full window physical rect, for desktop_find_text. Wraps ResolveWindowCaptureGeometryAsync(handle,
+    /// @ref: null) — which already returns the FULL window rect as CaptureGeometry.Bounds when no @ref is given —
+    /// then crops to `region` (window-relative fractions [xPct,yPct,wPct,hPct] in [0,1]) if supplied. Purely
+    /// additive: no existing caller of ResolveWindowCaptureGeometryAsync is touched.</summary>
+    public async Task<TextCaptureGeometry> ResolveTextCaptureGeometryAsync(WindowHandle handle, double[]? region)
+    {
+        var geo = await ResolveWindowCaptureGeometryAsync(handle, null);
+        if (geo.Denied || geo.Minimized)
+            return new TextCaptureGeometry(geo.Denied, geo.DeniedProcess, geo.Minimized,
+                geo.Bounds, geo.PasswordRects, geo.Bounds.X, geo.Bounds.Y, geo.Bounds.Width, geo.Bounds.Height);
+
+        var win = geo.Bounds; // full window physical rect (target was `win` itself since @ref is null)
+        var capture = TextCaptureGeometry.ComputeCaptureBounds(win, region);
+        return new TextCaptureGeometry(false, null, false, capture, geo.PasswordRects, win.X, win.Y, win.Width, win.Height);
+    }
 
     public async Task<bool> DenylistedWindowsVisibleAsync()
     {

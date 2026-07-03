@@ -332,24 +332,65 @@ Other things to know:
   events too — an event arriving right after your own input is likely self-caused; correlate by
   timing rather than assuming an external change.
 
+### Opaque apps: wake + find_text
+
+Not every window gives up an accessibility tree or visible text for free. Three tiers, cheapest first:
+
+1. **Rich UIA out of the box (WinUI 3 / WPF / WinForms / Qt, most native apps):** `desktop_snapshot`
+   works directly — everything above (patterns, refs, structured reads) applies as-is.
+2. **Opaque Chromium/Electron (VS Code, Slack, Teams, Discord, Chrome):** `desktop_snapshot` returns
+   one big empty `Document` node and — when it detects a Chromium Win32 class with a collapsed tree —
+   sets `wakeable:true`. Call **`desktop_wake_accessibility(window)`** to activate and **HOLD** that
+   window's native UIA tree, then re-`desktop_snapshot` / `desktop_find` / interact as usual. The wake
+   is held until **`desktop_release_accessibility(wakeId)`** or the window closes; Chromium
+   re-collapses the tree **lazily** once idle after release, not necessarily immediately.
+   **`desktop_list_wakes()`** recovers active wakes after a context loss. Even while woken, an
+   editor's **document text body** can stay behind a screen-reader gate — fall through to tier 3 for
+   that residual case.
+3. **Zero-accessibility surfaces (games, canvas apps, Citrix/RDP inners, an editor's text body that
+   stays gated even when woken):** UIA has nothing to offer. Use **`desktop_find_text(query, window,
+   region?, matchMode?, all?)`** — on-box OCR (`Windows.Media.Ocr`) that returns every matching
+   visible text run as `{text, confidence, bounds, center, xPct, yPct}` (both physical screen px and
+   `desktop_click_at` window fractions), fuzzy by default. **`desktop_wait_for_text(query, window,
+   region?, timeoutMs?)`** polls for text to appear (`{satisfied:false}` on timeout, not an error;
+   throttled to ≥750ms between OCR passes). **OCR here is targeting, not reading** — it resolves
+   visible text to click coordinates; the model already reads the screenshot. A fuzzy query can match
+   inside body text (`"Click Submit below"` matching a query for `"submit"`), so inspect each match's
+   `text`/`bounds` before `desktop_click_at`. `OcrUnavailable` if no Windows OCR language pack is
+   installed.
+
+| Tool | Read-only | Description |
+| --- | --- | --- |
+| `DesktopWakeAccessibility` | ✅ | Activate and hold an opaque Chromium/Electron window's native accessibility tree. Returns `{wakeId, window, alreadyAwake}`; idempotent per window; auto-releases when the window closes. Capped at 32 wakes/session (`TooManyWatches`). |
+| `DesktopReleaseAccessibility` | ✅ | Release a held wake. Returns `{ok, wakeId}`; idempotent (unknown/already-released `wakeId` still returns `ok:true`). |
+| `DesktopListWakes` | ✅ | List active wakes: `{wakes:[{wakeId, window}]}`. |
+| `DesktopFindText` | ✅ | OCR a window/region for text matching `query`. Returns `{matches:[{text, confidence, bounds, center, xPct, yPct}]}`, best match first. Fuzzy by default; `all` (default true) returns every occurrence. |
+| `DesktopWaitForText` | ✅ | Poll with OCR until `query` appears or timeout. `{satisfied:false}` on timeout (data, not error); `{satisfied:true, match:{...}}` on success. Throttled to ≥750ms between passes. |
+
+All five tools are `ReadOnly` and lease-exempt (they synthesize no input).
+
 ### Electron / Chromium & other custom-render apps
 
 Not every app exposes a clean accessibility tree. Honestly:
 
 - **Electron / Chromium (VS Code, Slack, Discord, Teams, …):** Chromium keeps its accessibility
-  tree **off by default**, so a snapshot is usually **one opaque `Document` node with no children**.
-  When you see that, don't hunt for inner refs — fall back to the **coordinate path**
-  (`desktop_click_at` / `desktop_drag` by `xPct`/`yPct`) or vision. Typed text into Chromium editors
-  (Monaco, CodeMirror, `contenteditable`) can **garble** like the new Notepad; `desktop_type`'s
-  `verify` flags it, but `desktop_set_value` often **isn't available** there (no `ValuePattern`) —
-  the reliable path is **`desktop_paste_text`** (atomic clipboard-backed Ctrl+V; clipboard restore is
-  best-effort — see [Synthetic input](#synthetic-input)).
+  tree **off by default**, so a snapshot is usually **one opaque `Document` node with no children**
+  (and, when detected, `wakeable:true`). When you see that, call **`desktop_wake_accessibility`**
+  (see [Opaque apps: wake + find_text](#opaque-apps-wake--find_text)) and re-snapshot instead of
+  hunting for inner refs — most Chromium/Electron chrome hydrates fully. Reserve the **coordinate
+  path** (`desktop_click_at` / `desktop_drag` by `xPct`/`yPct`) or `desktop_find_text` for surfaces
+  that stay gated even when woken (a document's own text body, canvas-rendered content). Typed text
+  into Chromium editors (Monaco, CodeMirror, `contenteditable`) can **garble** like the new Notepad;
+  `desktop_type`'s `verify` flags it, but `desktop_set_value` often **isn't available** there (no
+  `ValuePattern`) — the reliable path is **`desktop_paste_text`** (atomic clipboard-backed Ctrl+V;
+  clipboard restore is best-effort — see [Synthetic input](#synthetic-input)).
   - **Escape hatch:** launch the specific app with **`--force-renderer-accessibility`** (edit its
     shortcut / launch args) and Chromium exposes its full UIA tree for that process.
 - **WinUI 3 / WPF / WinForms / Qt:** generally expose **proper UIA peers** out of the box — this
   caveat mostly does **not** apply (a custom-drawn control with no UIA peer is the exception).
-- **Zero-UIA surfaces (games, canvas, Citrix/RDP inners):** the coordinate + screenshot path is the
-  intended route; OCR-assisted targeting is a roadmap item.
+- **Zero-UIA surfaces (games, canvas, Citrix/RDP inners):** the coordinate + screenshot path still
+  works; **`desktop_find_text`** (see [Opaque apps: wake + find_text](#opaque-apps-wake--find_text))
+  resolves visible text to click coordinates via OCR without needing a UIA tree at all.
 
 Everything above degrades **safely** — the foreground/hit-test re-verify, lease, and deny-list mean
 a limited surface **aborts or no-ops**; it never mis-fires into the wrong window.
@@ -420,6 +461,30 @@ what an agent **can do** to your machine.)
 - **Watch event refs are ephemeral.** An event's `ref` lives in a small bounded per-window pool (64,
   shared across all event kinds), so a busy `structure_changed` watch can evict older refs before you
   act on them → `REF_NOT_FOUND`. Re-`desktop_snapshot` for a durable ref. [→ Event streaming](#event-streaming-desktop_watch)
+- **OCR text targeting needs a Windows OCR language pack.** `desktop_find_text`/`desktop_wait_for_text`
+  return `OcrUnavailable` if none is installed (Settings → Time & Language → Language & region → add
+  a language, ensuring its optional OCR component is installed). [→ Opaque apps: wake + find_text](#opaque-apps-wake--find_text)
+- **OCR is targeting, not reading.** `desktop_find_text` resolves visible text to click coordinates;
+  it does not summarize or transcribe text back to the agent as data — the model reads that from the
+  screenshot. A fuzzy query can also match inside unrelated body text, so verify each match's
+  `text`/`bounds` before acting on it. [→ Opaque apps: wake + find_text](#opaque-apps-wake--find_text)
+- **OCR only recognizes installed OCR languages.** `Windows.Media.Ocr` reads only the Windows OCR
+  languages installed on the host; a target window rendering text in a language whose OCR pack isn't
+  installed yields **no matches**, not an error — indistinguishable from "text not present."
+  [→ Opaque apps: wake + find_text](#opaque-apps-wake--find_text)
+- **The process-coarse deny-list can be punched through by OCR into RDP/Citrix wrappers.** The
+  credential-store deny-list matches by process name; a denied app rendered *inside* a remote-desktop
+  window is invisible to it (the visible process is the RDP/Citrix client, not the remote app), so an
+  OCR capture of that window can still surface and target the remote app's on-screen text.
+  [→ Perception safeguards](#perception-safeguards-built-in)
+- **An editor's document text body can stay behind a screen-reader gate even when woken.**
+  `desktop_wake_accessibility` hydrates a Chromium/Electron window's *chrome* tree, but some editors
+  keep the actual document text gated separately — if `desktop_snapshot` still shows an empty text
+  body after waking, fall back to `desktop_find_text`. [→ Opaque apps: wake + find_text](#opaque-apps-wake--find_text)
+- **`desktop_find_text` coordinate mapping is host-limited in CI, not a product limitation.** The
+  screen-px/window-fraction mapping is validated end-to-end on a DPI-aware connected console/server
+  session; the CI xUnit test host runs DPI-virtualized, so the capture-based Desktop test for it is
+  maintainer-run rather than CI-asserted. [→ Building from source](#building-from-source)
 - **Screenshots don't handle occlusion.** A covered window is captured as-is — focus it first.
   [→ Perception safeguards](#perception-safeguards-built-in)
 - **Zero-UIA surfaces need the coordinate path.** Games, canvas apps, and Citrix/RDP inners expose no
@@ -435,6 +500,9 @@ what an agent **can do** to your machine.)
 ## Requirements
 
 - **Windows 10/11, x64.** (FlaUI/UIA is Windows-only.)
+- **v0.9.0+ requires Windows 10 build 19041 (version 2004) or later** — the on-box OCR features
+  (`desktop_find_text`/`desktop_wait_for_text`) depend on the WinRT OCR projection, which raised the
+  minimum supported OS build.
 - **No .NET runtime and no build tools required** for the released binaries — they are
   self-contained, single-file `win-x64` executables.
 - An **interactive desktop session** (the agent drives real windows; it does not work

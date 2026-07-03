@@ -15,7 +15,8 @@ public sealed class SnapshotTools
     { _perception = perception; _wait = wait; }
 
     [McpServerTool(ReadOnly = true), Description("Walk a window's accessibility tree into an indented, ref-tagged snapshot. " +
-        "Each line: [e23] Button \"OK\" @{x,y,w,h} {enabled, focusable} [Invoke]. Use the e-refs with later interaction tools.")]
+        "Each line: [e23] Button \"OK\" @{x,y,w,h} {enabled, focusable} [Invoke]. Use the e-refs with later interaction tools. " +
+        "If the window is an opaque Chromium/Electron app, the result includes wakeable:true — call desktop_wake_accessibility then re-snapshot to see its contents.")]
     public Task<string> DesktopSnapshot(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Optional ref to root the snapshot at (from a prior snapshot of this window).")] string? root = null,
@@ -32,7 +33,9 @@ public sealed class SnapshotTools
                 IncludeOffscreen = includeOffscreen,
             };
             var r = await _perception.SnapshotAsync(new WindowHandle(window), opts);
-            return ToolResponse.Ok(new { snapshotId = r.SnapshotId, nodeCount = r.NodeCount, tree = r.Tree });
+            return r.Wakeable
+                ? ToolResponse.Ok(new { snapshotId = r.SnapshotId, nodeCount = r.NodeCount, tree = r.Tree, wakeable = true })
+                : ToolResponse.Ok(new { snapshotId = r.SnapshotId, nodeCount = r.NodeCount, tree = r.Tree });
         });
 
     [McpServerTool(ReadOnly = true), Description("Diff a window's CURRENT tree against an explicit baseline snapshotId. Returns added/removed/changed (Name/Enabled/Focused) keyed by composite identity (ControlType+AutomationId+RuntimeId, else +Name). Result refs belong to the new currentSnapshotId. Optional scope=<a live ref, typically from the baseline> diffs ONLY that element's subtree (cheap: re-walks just the subtree, slices the baseline in-memory). Note: anonymous virtualized recycled rows (empty AutomationId+Name, recycled RuntimeId) can collide - diff such content by value/text instead.")]
