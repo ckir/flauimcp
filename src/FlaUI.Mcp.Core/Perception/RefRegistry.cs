@@ -13,10 +13,20 @@ public sealed class RefRegistry
 {
     internal sealed record Entry(ElementDescriptor Descriptor, AutomationElement? Cached);
 
+    /// <summary>Bounded cap on the number of live event refs per window (oldest evicted past this).</summary>
+    public const int EventRefCap = 64;
+
     private readonly object _gate = new();
     private readonly Dictionary<string, Dictionary<string, Entry>> _byWindow = new();
     private readonly Dictionary<string, int> _counter = new();
     private readonly Dictionary<string, int> _snapshotSeq = new();
+
+    // Event-ref layer (§16.5): a SEPARATE per-window store from _byWindow so BeginSnapshot — which
+    // replaces _byWindow[windowId] on every snapshot — never wipes refs minted for streamed watch
+    // events. Bounded per window via _eventOrder (oldest-first eviction past EventRefCap) so a
+    // long-lived watch subscription cannot grow this store unboundedly.
+    private readonly Dictionary<string, Dictionary<string, Entry>> _eventByWindow = new();
+    private readonly Dictionary<string, LinkedList<string>> _eventOrder = new();
 
     /// <summary>Clear a window's refs (supersede prior snapshot) and return a new snapshot id.</summary>
     public string BeginSnapshot(string windowId)
@@ -45,6 +55,8 @@ public sealed class RefRegistry
             _byWindow.Remove(windowId);
             _counter.Remove(windowId);
             _snapshotSeq.Remove(windowId);
+            _eventByWindow.Remove(windowId);
+            _eventOrder.Remove(windowId);
         }
     }
 
@@ -64,16 +76,55 @@ public sealed class RefRegistry
     }
 
     /// <summary>Throw REF_NOT_FOUND if the ref isn't live for this window; else return its entry.
-    /// (Element re-resolution is added in Task 6.)</summary>
+    /// (Element re-resolution is added in Task 6.) Falls back to the event-ref layer (§16.5) on a
+    /// durable-layer miss, so refs minted by desktop_watch resolve through the same path normal
+    /// refs use — the durable layer is checked first and unchanged.</summary>
     internal Entry Lookup(string windowId, string @ref)
     {
         lock (_gate)
         {
             if (_byWindow.TryGetValue(windowId, out var map) && map.TryGetValue(@ref, out var e))
                 return e;
+            if (_eventByWindow.TryGetValue(windowId, out var eventMap) && eventMap.TryGetValue(@ref, out var ee))
+                return ee;
             throw new ToolException(ToolErrorCode.RefNotFound,
                 $"Ref '{@ref}' is not in the current snapshot of window '{windowId}'.",
                 "take a fresh desktop_snapshot and use a ref from it");
+        }
+    }
+
+    /// <summary>Convenience accessor returning just the descriptor for a ref (durable or event layer).</summary>
+    public ElementDescriptor LookupDescriptor(string windowId, string @ref) => Lookup(windowId, @ref).Descriptor;
+
+    /// <summary>Register an element in the event-ref layer (§16.5) — used by desktop_watch to mint refs
+    /// for elements named in streamed UIA events. Distinct from <see cref="Register"/>'s durable layer:
+    /// BeginSnapshot replaces _byWindow[windowId] wholesale on every snapshot, so an event ref living
+    /// there would be wiped by any desktop_snapshot the agent takes while watching. Mints from the SAME
+    /// never-reused per-window _counter as Register, so an event ref's id can never alias a durable ref.
+    /// Bounded to EventRefCap per window; the oldest ref is evicted once the cap is exceeded.</summary>
+    public string RegisterEventRef(string windowId, ElementDescriptor descriptor, AutomationElement? cached)
+    {
+        lock (_gate)
+        {
+            if (!_eventByWindow.TryGetValue(windowId, out var map))
+                _eventByWindow[windowId] = map = new Dictionary<string, Entry>();
+            if (!_eventOrder.TryGetValue(windowId, out var order))
+                _eventOrder[windowId] = order = new LinkedList<string>();
+
+            int n = _counter.TryGetValue(windowId, out var c) ? c + 1 : 1;
+            _counter[windowId] = n;
+            var @ref = $"e{n}";
+            map[@ref] = new Entry(descriptor, cached);
+            order.AddLast(@ref);
+
+            if (order.Count > EventRefCap)
+            {
+                var oldest = order.First!.Value;
+                order.RemoveFirst();
+                map.Remove(oldest);
+            }
+
+            return @ref;
         }
     }
 
