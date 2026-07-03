@@ -41,6 +41,17 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 - Instead of looping `desktop_snapshot`/`desktop_find` to notice a change, subscribe once:
   `desktop_watch wN [window_opened,window_closed,focus_changed,structure_changed]` → returns a
   `subscriptionId`. Optional `scope=<ref>` narrows `structure_changed` to one subtree.
+- **Get a handle first — lease-free.** `desktop_watch` needs a `wN` handle; if you don't have one,
+  `desktop_open_window by:pid|title` attaches to an existing window read-only (**no lease**, unlike
+  `desktop_launch_app`). All four watch tools (`desktop_watch`/`desktop_unwatch`/`desktop_list_watches`/
+  `desktop_drain_events`) are ReadOnly + lease-exempt — you can watch, list, and drain while input is
+  locked. Only *triggering* an event via your OWN `desktop_type`/`desktop_click`/launch needs a lease.
+- **What actually fires (empirical, v0.8.0 smoke):** `structure_changed` needs elements ADDED/REMOVED
+  (a menu/dialog opening, a list rebuild) — pure text edits or a terminal printing output fire *text*
+  changes, NOT structure, so watching those yields nothing. A **minimized** target has a root-only tree
+  (`desktop_snapshot` shows one node, bounds `{0,0,0,0}`) and emits NO events — `desktop_window_transform
+  wN restore` it first if you need to observe it. An empty `desktop_drain_events` (`count:0`) usually
+  means "no qualifying event happened," not a failure.
 - **In Claude Code, push notifications aren't surfaced to you** — poll
   `desktop_drain_events(subscriptionId)` instead to fetch the buffered events (push+drain: the
   server buffers every event server-side specifically because some hosts don't surface

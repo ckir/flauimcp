@@ -296,7 +296,7 @@ and lease-exempt (they synthesize no input):
 | `DesktopWatch` | Subscribe to UIA events on a window: `window_opened`, `window_closed` (child dialogs/popups), `focus_changed` (input focus moves within that window's process), `structure_changed` (subtree repopulated — coalesced/debounced). Optional `scope=<ref>` narrows `structure_changed` to a subtree. Returns `{subscriptionId, window, events, scope?}`. |
 | `DesktopUnwatch` | Stop a subscription. Idempotent — an unknown/already-ended `subscriptionId` returns `ok:true`. |
 | `DesktopListWatches` | List your active subscriptions (recover them after a context loss). Returns `watches[{subscriptionId, window, events, scope?, droppedCount}]`. |
-| `DesktopDrainEvents` | Fetch and clear buffered events for a subscription. Returns `{subscriptionId, events:[…], count}`. |
+| `DesktopDrainEvents` | Fetch and clear buffered events for a subscription. Returns `{subscriptionId, events:[…], count, droppedCount}` (`droppedCount` = summed coalescer + buffer evictions for this subscription — `>0` means you missed some state, re-`desktop_snapshot` to resync). |
 
 Events are delivered as MCP server→client notifications (method
 **`notifications/flaui/desktop_event`**) over the existing **stdio** pipe — there is no HTTP/SSE
