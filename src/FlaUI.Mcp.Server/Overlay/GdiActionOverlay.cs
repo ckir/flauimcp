@@ -48,7 +48,7 @@ public sealed class GdiActionOverlay : IActionOverlay, IDisposable
         if (_thread is not null) return;
         lock (_startLock)
         {
-            if (_thread is not null) return;
+            if (_disposed || _thread is not null) return; // don't spin a thread on a disposed instance
             var t = new Thread(PumpThread) { IsBackground = true, Name = "flaui-mcp-overlay" };
             t.SetApartmentState(ApartmentState.STA);
             t.Start();
@@ -58,43 +58,62 @@ public sealed class GdiActionOverlay : IActionOverlay, IDisposable
     }
 
     // ── STA thread: register class, create the layered window, run the pump ──
+    // NOTE: this runs on a background thread — an escaping exception would terminate the whole process.
+    // Everything is wrapped so a GDI/window-creation/paint fault disables the overlay instead of crashing
+    // the server (INV-OV-4: the overlay must never break an act).
     private void PumpThread()
     {
-        _threadId = GetCurrentThreadId();
-        _wndProc = WndProc;
-        var wc = new WNDCLASSEX
+        try
         {
-            cbSize = Marshal.SizeOf<WNDCLASSEX>(),
-            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProc),
-            hInstance = GetModuleHandle(null),
-            hbrBackground = GetStockObject(BLACK_BRUSH),
-            lpszClassName = OverlaySentinel.ClassName, // the sentinel the perception layer filters
-        };
-        RegisterClassEx(ref wc);
+            _threadId = GetCurrentThreadId();
+            _wndProc = WndProc;
+            var wc = new WNDCLASSEX
+            {
+                cbSize = Marshal.SizeOf<WNDCLASSEX>(),
+                lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProc),
+                hInstance = GetModuleHandle(null),
+                hbrBackground = GetStockObject(BLACK_BRUSH),
+                lpszClassName = OverlaySentinel.ClassName, // fixed sentinel — the perception filter matches THIS constant
+            };
+            // DI singleton: one live instance per process. Sequential create/dispose is safe (each Dispose
+            // UnregisterClass-es on the owning thread, so the next instance re-registers cleanly). Concurrent
+            // GdiActionOverlay instances in one process are NOT a supported scenario (the overlay is only built
+            // by the DI factory as a singleton when --overlay is on) — so the shared class name cannot collide.
+            RegisterClassEx(ref wc);
 
-        _hwnd = CreateWindowEx(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-            OverlaySentinel.ClassName, "", WS_POPUP,
-            0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, GetModuleHandle(null), IntPtr.Zero);
+            _hwnd = CreateWindowEx(
+                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                OverlaySentinel.ClassName, "", WS_POPUP,
+                0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, GetModuleHandle(null), IntPtr.Zero);
 
-        if (_hwnd != IntPtr.Zero)
-        {
-            // Color-key: black (the background) becomes fully transparent, so only the red border shows.
-            SetLayeredWindowAttributes(_hwnd, 0x000000 /* RGB black */, 0, LWA_COLORKEY);
-            _pen = CreatePen(PS_SOLID, BorderPx, 0x0000FF /* RGB(255,0,0) is 0x0000FF in COLORREF BGR */);
+            if (_hwnd != IntPtr.Zero)
+            {
+                // Color-key: black (the background) becomes fully transparent, so only the red border shows.
+                SetLayeredWindowAttributes(_hwnd, 0x000000 /* RGB black */, 0, LWA_COLORKEY);
+                _pen = CreatePen(PS_SOLID, BorderPx, 0x0000FF /* RGB(255,0,0) is 0x0000FF in COLORREF BGR */);
+            }
         }
-        _ready.Set(); // unblock EnsureStarted whether or not the window created
+        catch { _hwnd = IntPtr.Zero; } // setup failed -> overlay silently disabled, never crashes the process
+        finally { try { _ready.Set(); } catch { } } // always unblock EnsureStarted; tolerate an already-disposed _ready
 
-        while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+        try
         {
-            TranslateMessage(ref msg);
-            DispatchMessage(ref msg);
+            while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+            {
+                TranslateMessage(ref msg);
+                DispatchMessage(ref msg);
+            }
         }
+        catch { /* a pump/dispatch fault must never crash the process (INV-OV-4) */ }
 
         // Pump exited (WM_QUIT from Dispose): free GDI + window on the SAME thread that owns them.
-        if (_pen != IntPtr.Zero) { DeleteObject(_pen); _pen = IntPtr.Zero; }
-        if (_hwnd != IntPtr.Zero) { DestroyWindow(_hwnd); _hwnd = IntPtr.Zero; }
-        UnregisterClass(OverlaySentinel.ClassName, GetModuleHandle(null));
+        try
+        {
+            if (_pen != IntPtr.Zero) { DeleteObject(_pen); _pen = IntPtr.Zero; }
+            if (_hwnd != IntPtr.Zero) { DestroyWindow(_hwnd); _hwnd = IntPtr.Zero; }
+            UnregisterClass(OverlaySentinel.ClassName, GetModuleHandle(null));
+        }
+        catch { }
     }
 
     private IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -118,14 +137,18 @@ public sealed class GdiActionOverlay : IActionOverlay, IDisposable
                 try
                 {
                     GetClientRect(hwnd, out var cr);
-                    // Background is the class black brush (keyed transparent). Draw a hollow red border:
-                    var oldPen = SelectObject(hdc, _pen);
-                    var oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH)); // hollow interior stays black->transparent
-                    Rectangle(hdc, cr.Left, cr.Top, cr.Right, cr.Bottom);
-                    SelectObject(hdc, oldPen);
-                    SelectObject(hdc, oldBrush);
+                    // Background is the class black brush (keyed transparent). Draw a hollow red border.
+                    if (_pen != IntPtr.Zero) // guard: CreatePen can fail under GDI-handle exhaustion
+                    {
+                        var oldPen = SelectObject(hdc, _pen);
+                        var oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH)); // hollow interior stays black->transparent
+                        Rectangle(hdc, cr.Left, cr.Top, cr.Right, cr.Bottom);
+                        SelectObject(hdc, oldPen);
+                        SelectObject(hdc, oldBrush);
+                    }
                 }
-                finally { EndPaint(hwnd, ref ps); }
+                catch { /* a paint fault must not crash the pump thread */ }
+                finally { EndPaint(hwnd, ref ps); } // always balance BeginPaint
                 return IntPtr.Zero;
             }
         }
@@ -146,9 +169,13 @@ public sealed class GdiActionOverlay : IActionOverlay, IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        var t = _thread;
+        Thread? t;
+        lock (_startLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            t = _thread;
+        }
         if (t is not null && _threadId != 0)
         {
             PostThreadMessage(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
@@ -171,6 +198,7 @@ public sealed class GdiActionOverlay : IActionOverlay, IDisposable
     private static readonly IntPtr HWND_TOPMOST = new(-1);
 
     // ── P/Invoke ──
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate IntPtr WndProcDelegate(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
