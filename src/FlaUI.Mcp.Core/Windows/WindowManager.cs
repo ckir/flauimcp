@@ -23,6 +23,13 @@ public sealed class WindowManager : IDisposable
     private readonly UIA3Automation _automation;
     private readonly ConcurrentDictionary<string, Window> _handles = new();
     private readonly ConcurrentDictionary<string, IntPtr> _hwnds = new();
+    // Exactly-once invalidation gate + recorded pid. Written UNCONDITIONALLY by every mint path
+    // (eager Register AND lazy list-mint) — unlike _handles (a lazy COM cache, absent for a never-read
+    // lazy handle) and _hwnds/_watched (best-effort, inside try/catch). So _ids is the only honest gate.
+    private readonly ConcurrentDictionary<string, int> _ids = new();
+    // Reverse map hwnd -> current wN, so list(includeHandles) polling reuses ids (mint-or-reuse) instead
+    // of leaking a fresh handle per call. Populated/cleaned alongside _hwnds.
+    private readonly ConcurrentDictionary<IntPtr, string> _byHwnd = new();
     private readonly ConcurrentDictionary<string, Process> _watched = new();
     private int _counter;
 
@@ -116,22 +123,25 @@ public sealed class WindowManager : IDisposable
 
     public void Invalidate(WindowHandle handle)
     {
-        // Exactly-once gate. _handles is populated UNCONDITIONALLY by Register for every id, and
-        // ConcurrentDictionary.TryRemove returns true to EXACTLY ONE caller per key — so electing
-        // _handles as the SOLE gate makes WindowInvalidated fire at most once even when two threads
-        // invalidate the same handle concurrently (proc.Exited racing CloseAsync, or a sweep racing
-        // proc.Exited). _hwnds/_watched are best-effort (populated inside try/catch) so they cannot
-        // serve as the gate — remove them unconditionally (still disposing the watched process), but
-        // do NOT let their removal set `removed`.
-        bool removed = _handles.TryRemove(handle.Id, out _);
-        _hwnds.TryRemove(handle.Id, out _);
+        // Exactly-once gate on _ids — the ONLY dict written UNCONDITIONALLY by every mint path (eager
+        // Register AND lazy list-mint). ConcurrentDictionary.TryRemove returns true to EXACTLY ONE caller
+        // per key, so electing _ids as the sole gate makes WindowInvalidated fire at most once even under
+        // concurrent invalidation (proc.Exited racing CloseAsync, or a sweep racing proc.Exited). _handles
+        // is now a lazy COM cache (may be absent for a never-read lazy handle); _hwnds/_watched are
+        // best-effort — none can serve as the gate. Remove all three unconditionally; do NOT let their
+        // removal set `removed`. Capture the hwnd before removing _hwnds so the _byHwnd reverse entry is
+        // cleaned (only if it still points at THIS id — a recycled hwnd may already point elsewhere).
+        bool removed = _ids.TryRemove(handle.Id, out _);
+        _handles.TryRemove(handle.Id, out _);
+        if (_hwnds.TryRemove(handle.Id, out var hwnd))
+            ((System.Collections.Generic.ICollection<System.Collections.Generic.KeyValuePair<IntPtr, string>>)_byHwnd)
+                .Remove(new System.Collections.Generic.KeyValuePair<IntPtr, string>(hwnd, handle.Id));
         if (_watched.TryRemove(handle.Id, out var p))
             try { p.Dispose(); } catch { }
         if (removed)
             // Swallow subscriber faults: this can fire on a raw ThreadPool thread (proc.Exited), where an
             // unhandled exception is process-fatal, and from CloseAsync's finally, where it would mask an
-            // in-flight exception. Invalidation-path robustness > surfacing a subscriber bug here (mirrors
-            // the _watched Dispose guard above).
+            // in-flight exception. Invalidation-path robustness > surfacing a subscriber bug here.
             try { WindowInvalidated?.Invoke(handle.Id); } catch { }
     }
 
@@ -166,8 +176,15 @@ public sealed class WindowManager : IDisposable
     internal WindowHandle Register(Window window, int pid)
     {
         var id = $"w{Interlocked.Increment(ref _counter)}";
+        _ids[id] = pid;                 // unconditional gate/identity write (mirrors the lazy mint site)
         _handles[id] = window;
-        try { _hwnds[id] = window.Properties.NativeWindowHandle.ValueOrDefault; } catch { /* no hwnd */ }
+        try
+        {
+            var hwnd = window.Properties.NativeWindowHandle.ValueOrDefault;
+            _hwnds[id] = hwnd;
+            if (hwnd != IntPtr.Zero) _byHwnd[hwnd] = id;
+        }
+        catch { /* no hwnd */ }
         TryWatchProcessExit(id, pid);
         return new WindowHandle(id);
     }
