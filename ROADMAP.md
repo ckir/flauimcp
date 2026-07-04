@@ -200,11 +200,15 @@ multi-connection server driving one physical desktop is a focus-steal mirage (ag
         `desktop_find(ignoreCase:true)`. Honest limitation: the payoff scales with `automationId`
         coverage — a control with no `automationId` and a non-unique `name` still degrades to
         `AmbiguousMatch`, same as a duplicate-name `desktop_find`; fall back to a `desktop_snapshot`
-        ref for those. *Deferred (0.10.1 fast-follow candidate):* element-identity audit trace
-        (RuntimeId/AutomationId/bounds of the resolved target in the input audit log) — a wire-shape
-        change to the existing window-level audit, not required for the feature to be functional.
-        Spec: [`docs/superpowers/specs/2026-07-04-flaui-mcp-phase10-consumer-ergonomics-design.md`](docs/superpowers/specs/2026-07-04-flaui-mcp-phase10-consumer-ergonomics-design.md);
+        ref for those. Spec: [`docs/superpowers/specs/2026-07-04-flaui-mcp-phase10-consumer-ergonomics-design.md`](docs/superpowers/specs/2026-07-04-flaui-mcp-phase10-consumer-ergonomics-design.md);
         plan: [`docs/superpowers/plans/2026-07-04-flaui-mcp-phase10-selector.md`](docs/superpowers/plans/2026-07-04-flaui-mcp-phase10-selector.md).
+      - **#2-follow (v0.10.1) — Trustworthy Hands: audit trace + intent overlay** ✅ **(shipped v0.10.1).**
+        Element-identity audit trace (RuntimeId/AutomationId/ClassName/ControlType/bounds, never
+        content-bearing properties) for synthetic-input actions that resolve a selector target — so
+        the audit log names exactly what the agent touched. Intent overlay (`--overlay`/`--overlay-ms=N`)
+        draws a red rectangle on the target element ~500 ms before each action, so a human watching sees
+        what the agent is about to do (visibility aid, not a safety gate; lease/deny-list remain the
+        gates).
       - **#1 — Opt-in handle on `desktop_list_windows`** — design fork recorded in the spec above;
         not yet planned/implemented.
       - **#3** — spec treats this as a likely-drop, revisit-after-#2 item; not yet planned/implemented.

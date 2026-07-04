@@ -148,6 +148,33 @@ no launch-time download). Running `flaui-mcp` with **no arguments** starts the s
 running it with a verb (`install`, `uninstall`, `print-config`, `--version`) runs the
 installer instead. See the **[CLI reference](docs/ops-manual.md#cli-reference)**.
 
+## Watching & auditing the agent
+
+Understand what the agent is about to do before it does it:
+
+- **Intent overlay (`--overlay` / `--overlay-ms=N`)** — opt-in visual feedback. When enabled, draws a
+  red rectangle on the target element (or a crosshair at a coordinate pair) for ~500 ms (configurable;
+  `0` disables) **before** each mutative action — so a human watching the screen sees what the agent
+  is about to touch. It is a **visibility aid, not an authorization gate**; the lease/deny-list/read-only-mode
+  safety foundation remains the real gates. Off by default — zero cost when not enabled.
+- **Element-identity audit trace** — when a mutative action (via `desktop_type`, `desktop_click`,
+  `desktop_invoke`, etc.) resolves a `selector` target, the input audit line now names the resolved
+  element's stable identity: an allow-listed set of `RuntimeId`, `AutomationId`, `ClassName`,
+  `ControlType`, and bounds ONLY (never `Name`, `Value`, `HelpText`, or any content-bearing property).
+  The trace is strictly omitted when no element resolves (selector targeting failed), so pre-0.10.1 log
+  parsers still read the unchanged window-level audit fields.
+
+### Known limitations (auditing)
+
+- **Overlay rendering is not CI-verifiable.** The intent overlay's red rectangle is confirmed by a live
+  controller watching the screen; headless and RDP-box test runs (where no GDI overlay is visible) do
+  not validate it — they validate the audit line and the targeting logic instead.
+- **Audit trace is synthetic-input only (for now).** UIA pattern actions (`desktop_invoke`,
+  `desktop_set_value`, `desktop_toggle`, etc.) leave no element-identity audit trace until a future
+  0.10.2 adds audit to the pattern leg.
+- **RuntimeId is per-session.** An element's `RuntimeId` is stable within a session, but not across app
+  restarts — if the app crashes and relaunches, the same logical element gets a new `RuntimeId`.
+
 ## Known limitations
 
 Capability boundaries you'll meet in practice. Each links to the fuller explanation — this
