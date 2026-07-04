@@ -144,6 +144,17 @@ public sealed class InputGuard
     /// Performs no input — the caller runs the TextPattern op on the automation thread after this returns.
     /// Elevation hard-fail does NOT apply here (it gates SendInput; the deny-list already blocks credential/
     /// secure-desktop targets).</summary>
+    /// <summary>Non-auditing deny-list/interlock check for the text-mutation path — the text-path sibling of
+    /// PreflightInput. Lets the overlay fire post-authorization (a denied target flashes nothing) WITHOUT
+    /// emitting a second audit line; the subsequent AuthorizeTextMutation re-checks and audits exactly once.
+    /// Same lease-exempt shells-cap consult as AuthorizeTextMutation.</summary>
+    public void PreflightTextMutation(ActionTarget target)
+    {
+        var lease = _leases.Read(out _);
+        bool hasShellsCap = lease is { } l && l.IsValidNow(_clock(), _currentSid) && l.HasCapability("shells");
+        CheckTarget(target, hasShellsCap); // deny-list/interlock only — NO audit
+    }
+
     public void AuthorizeTextMutation(ActionTarget target, string action)
     {
         var lease = _leases.Read(out _);

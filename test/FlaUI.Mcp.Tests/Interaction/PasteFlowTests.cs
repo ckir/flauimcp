@@ -24,6 +24,7 @@ public class PasteFlowTests
         public Task<(ActionTarget, VerifyRead)> FocusAndBeforeReadAsync(bool verify)
         { Log.Add("focus"); return Task.FromResult((Target, Before)); }
         public void Preflight(ActionTarget t) { Log.Add("preflight"); if (PreflightThrows is { } e) throw e; }
+        public Task PreviewAsync(OverlayRect rect) => Task.CompletedTask;
         public Task<ClipboardSnapshot> SnapshotAsync() { Log.Add("snapshot"); return Task.FromResult(Snap); }
         public Task SetClipboardAsync(string text) { Log.Add("set:" + text); return Task.CompletedTask; }
         public Task PasteAsync(ActionTarget t) { Log.Add("paste"); if (PasteThrows is { } e) throw e; return Task.CompletedTask; }

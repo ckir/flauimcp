@@ -53,7 +53,9 @@ public sealed class InputTools
         => ToolResponse.GuardWrite(_options, async () =>
         {
             SelectorGating.RequireExactlyOne(@ref, selector);
-            Func<AutomationElement, AutomationElement, bool> cb = (win, el) =>
+
+            // Phase-2 (authoritative) callback: resolve identity, authorize (audits ONCE), mutate.
+            Func<AutomationElement, AutomationElement, bool> mutate = (win, el) =>
             {
                 if (offset < 0)
                     throw new ToolException(ToolErrorCode.InvalidArguments, "offset must be >= 0.", "pass a non-negative offset");
@@ -62,13 +64,29 @@ public sealed class InputTools
                 TextRangeInteractor.SetCaret(el, offset);
                 return true;
             };
+
+            // Overlay (enabled only): phase-1 resolve -> non-auditing preflight + bounds -> preview off-STA.
+            if (_overlay.Enabled)
+            {
+                Func<AutomationElement, AutomationElement, (ActionTarget, OverlayRect)> pre = (win, el) =>
+                {
+                    var t = InputTargeting.ResolveElementTarget(win, el);
+                    _guard.PreflightTextMutation(t); // deny-list gate, NO audit
+                    return (t, ElementRectFromElement(el));
+                };
+                OverlayRect prect = selector is { } psel
+                    ? (await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), psel, pre, timeoutMs)).Value.Item2
+                    : (await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, pre, timeoutMs)).Item2;
+                await _overlay.PreviewAsync(prect);
+            }
+
             if (selector is { } sel)
             {
                 sel.Validate();
-                var (_, resolved) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, cb, timeoutMs);
+                var (_, resolved) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, mutate, timeoutMs);
                 return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern", resolvedElement = resolved });
             }
-            await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, cb, timeoutMs);
+            await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, mutate, timeoutMs);
             return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
         });
 
@@ -83,7 +101,8 @@ public sealed class InputTools
         => ToolResponse.GuardWrite(_options, async () =>
         {
             SelectorGating.RequireExactlyOne(@ref, selector);
-            Func<AutomationElement, AutomationElement, bool> cb = (win, el) =>
+
+            Func<AutomationElement, AutomationElement, bool> mutate = (win, el) =>
             {
                 if (start < 0 || length < 0)
                     throw new ToolException(ToolErrorCode.InvalidArguments, "start and length must be >= 0.", "pass non-negative offsets");
@@ -92,13 +111,28 @@ public sealed class InputTools
                 TextRangeInteractor.SelectRange(el, start, length);
                 return true;
             };
+
+            if (_overlay.Enabled)
+            {
+                Func<AutomationElement, AutomationElement, (ActionTarget, OverlayRect)> pre = (win, el) =>
+                {
+                    var t = InputTargeting.ResolveElementTarget(win, el);
+                    _guard.PreflightTextMutation(t);
+                    return (t, ElementRectFromElement(el));
+                };
+                OverlayRect prect = selector is { } psel
+                    ? (await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), psel, pre, timeoutMs)).Value.Item2
+                    : (await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, pre, timeoutMs)).Item2;
+                await _overlay.PreviewAsync(prect);
+            }
+
             if (selector is { } sel)
             {
                 sel.Validate();
-                var (_, resolved) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, cb, timeoutMs);
+                var (_, resolved) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, mutate, timeoutMs);
                 return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern", resolvedElement = resolved });
             }
-            await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, cb, timeoutMs);
+            await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, mutate, timeoutMs);
             return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
         });
 
@@ -154,6 +188,7 @@ public sealed class InputTools
                 effectiveRef = @ref!;
             }
 
+            await PreviewSyntheticAsync(target, ElementRect(target));
             await Task.Run(() => _guard.KeyType(text ?? string.Empty, target, interKeyDelayMs));
 
             if (!verify)
@@ -217,7 +252,7 @@ public sealed class InputTools
             SelectorGating.RequireExactlyOne(@ref, selector);
             if (selector is { } s0) s0.Validate();
 
-            var fx = new PasteEffects(_perception, _guard, new WindowHandle(window), @ref, selector, timeoutMs);
+            var fx = new PasteEffects(_perception, _guard, new WindowHandle(window), @ref, selector, timeoutMs, _overlay);
             var outcome = await PasteFlow.RunAsync(fx, text, verify, forceOverwriteClipboard, ms => Task.Delay(ms));
             return fx.ResolvedRef is null
                 ? ToolResponse.Ok(new { ok = true, pathUsed = "clipboard-paste",
@@ -236,11 +271,12 @@ public sealed class InputTools
         private readonly PerceptionManager _p; private readonly InputGuard _g;
         private readonly WindowHandle _win; private readonly string? _ref; private readonly Selector? _selector;
         private readonly int _timeout;
+        private readonly IActionOverlay _overlay;
         private string? _resolvedRef;
         public string? ResolvedRef => _resolvedRef;
 
-        public PasteEffects(PerceptionManager p, InputGuard g, WindowHandle win, string? @ref, Selector? selector, int timeout)
-        { _p = p; _g = g; _win = win; _ref = @ref; _selector = selector; _timeout = timeout; }
+        public PasteEffects(PerceptionManager p, InputGuard g, WindowHandle win, string? @ref, Selector? selector, int timeout, IActionOverlay overlay)
+        { _p = p; _g = g; _win = win; _ref = @ref; _selector = selector; _timeout = timeout; _overlay = overlay; }
 
         public async Task<(ActionTarget, VerifyRead)> FocusAndBeforeReadAsync(bool verify)
         {
@@ -261,6 +297,10 @@ public sealed class InputTools
         }
 
         public void Preflight(ActionTarget target) => _g.PreflightInput(target);
+        public Task PreviewAsync(OverlayRect rect) =>
+            // Deny-list already ran in Preflight (called just before this); the clipboard is not yet borrowed.
+            // Just show — GdiActionOverlay swallows any failure (INV-OV-4) and no-ops a degenerate/disabled rect.
+            _overlay.Enabled && !rect.IsDegenerate ? _overlay.PreviewAsync(rect) : Task.CompletedTask;
         public Task<ClipboardSnapshot> SnapshotAsync() => ClipboardAccess.Snapshot();
         public Task SetClipboardAsync(string text) => ClipboardAccess.SetTextAsync(text);
         public Task PasteAsync(ActionTarget target) => Task.Run(() => _g.KeyChord(new[] { "Ctrl" }, "V", target));
@@ -312,6 +352,7 @@ public sealed class InputTools
                 target = await ResolveForegroundTargetAsync();
             }
 
+            await PreviewSyntheticAsync(target, ElementRect(target));
             await Task.Run(() => _guard.KeyChord(modNames, keyToken, target));
             return resolved is null
                 ? ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" })
@@ -376,6 +417,7 @@ public sealed class InputTools
             {
                 (target, px, py) = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, cb, timeoutMs);
             }
+            await PreviewSyntheticAsync(target, Crosshair(px, py));
             await Task.Run(() => _guard.MouseClick(px, py, button, count, System.Array.Empty<string>(), target));
             return resolved is null
                 ? ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" })
@@ -395,6 +437,7 @@ public sealed class InputTools
             var (px, py) = await ResolveWindowPctAsync(window, xPct, yPct, timeoutMs);
             var pt = _env.HitTestRoot(px, py);
             var target = new ActionTarget(pt.Root, 0, pt.ProcessName, pt.WindowClass);
+            await PreviewSyntheticAsync(target, Crosshair(px, py));
             await Task.Run(() => _guard.MouseClick(px, py, button, count, System.Array.Empty<string>(), target));
             return ToolResponse.Ok(new { ok = true, pathUsed = "coordinate" });
         });
@@ -416,6 +459,7 @@ public sealed class InputTools
             var ePt = _env.HitTestRoot(ex, ey);
             var startTarget = new ActionTarget(sPt.Root, 0, sPt.ProcessName, sPt.WindowClass);
             var endTarget = new ActionTarget(ePt.Root, 0, ePt.ProcessName, ePt.WindowClass);
+            await PreviewSyntheticAsync(startTarget, Crosshair(sx, sy));
             await Task.Run(() => _guard.MouseDrag(sx, sy, ex, ey, button, startTarget, endTarget));
             return ToolResponse.Ok(new { ok = true, pathUsed = "coordinate" });
         });
@@ -433,5 +477,35 @@ public sealed class InputTools
         var tokens = chord.Split('+', System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries);
         var mods = tokens.Length > 1 ? tokens[..^1] : System.Array.Empty<string>();
         return (mods, tokens[^1]);
+    }
+
+    // Post-authorization, pre-effect overlay preview for the SYNTHETIC path (spec §5.3). Non-consuming
+    // preflight gate FIRST so a refused act flashes nothing (INV-OV-5), then show+delay off the STA. No-op
+    // (and no preflight) when the overlay is off or the rect is degenerate — the effect's own Authorize
+    // still gates the action, so behavior is byte-identical when disabled (INV-OV-1).
+    private async Task PreviewSyntheticAsync(ActionTarget target, OverlayRect rect)
+    {
+        if (!_overlay.Enabled || rect.IsDegenerate) return;
+        _guard.PreflightInput(target);         // throws on refusal -> no flash, effect never runs
+        await _overlay.PreviewAsync(rect);
+    }
+
+    // The overlay rect for an element action = the SAME bounds T8 recorded (spec §1), from the resolved
+    // element's identity. Null (window/foreground) target -> degenerate rect -> skipped.
+    private static OverlayRect ElementRect(ActionTarget target) =>
+        target.Element is { } id ? new OverlayRect(id.Bounds.L, id.Bounds.T, id.Bounds.W, id.Bounds.H) : default;
+
+    // Live-element bounds (the two-phase text path holds the live `el`), best-effort.
+    private static OverlayRect ElementRectFromElement(AutomationElement el)
+    {
+        try { var r = el.BoundingRectangle; return new OverlayRect(r.Left, r.Top, r.Width, r.Height); }
+        catch { return default; }
+    }
+
+    // A small crosshair box centered on a physical point, for coordinate/click actions (no element rect).
+    private static OverlayRect Crosshair(int px, int py)
+    {
+        const int half = 20; // 40x40 box
+        return new OverlayRect(px - half, py - half, 2 * half, 2 * half);
     }
 }
