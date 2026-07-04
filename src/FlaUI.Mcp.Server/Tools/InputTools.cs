@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Threading.Tasks;
+using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
@@ -25,6 +26,22 @@ public sealed class InputTools
         InputGuard guard, IPlatformEnvironment env)
     { _perception = perception; _windows = windows; _options = options; _guard = guard; _env = env; }
 
+    // Phase 10 #2 T6a: the selector path routes through RunOnSelectorForInputAsync (T4), which mirrors
+    // RunOnRefForInputAsync exactly (same offscreen guard, same transient action STA, same WriteMode) —
+    // the only difference is it resolves `sel` to a live element first and mints a descriptor-only ref.
+    // So the deny-list/lease/audit gates fire identically for both paths as long as the ActionTarget is
+    // derived from the resolved `el` INSIDE the callback, exactly as the ref path already does.
+    private static void RequireExactlyOne(string? @ref, Selector? selector)
+    {
+        bool hasRef = !string.IsNullOrEmpty(@ref), hasSel = selector is not null;
+        if (hasRef == hasSel)
+            throw new ToolException(ToolErrorCode.InvalidArguments,
+                "provide exactly one of ref or selector.",
+                hasRef ? "drop one — ref and selector are mutually exclusive" : "pass a ref (from a snapshot) or a selector {automationId|name|controlType}");
+    }
+
+    private const string SelectorDesc = "Stable target {automationId?,name?,nameMatch?,controlType?,scope?,ignoreCase?} resolved at action time. Exactly one of ref | selector. Returns resolvedElement.";
+
     [McpServerTool(ReadOnly = true), Description("Report the synthetic-input lease status WITHOUT firing any input or touching any window. Returns { leaseStatus: \"active\"|\"locked\", secondsRemaining, shells }. Call this BEFORE a multi-step input plan to confirm a human has granted input via `flaui-mcp unlock` (the synthetic-input tools fail InputNotLeased until then), instead of discovering the lock by failing. Always safe / read-only.")]
     public Task<string> DesktopInputStatus()
         => ToolResponse.Guard(() =>
@@ -37,37 +54,61 @@ public sealed class InputTools
     [McpServerTool(Destructive = true), Description("Position the text caret in an element via UIA TextPattern (NO OS input — synthesizes no keystrokes). ref = the text element to act on; offset = UIA character offset for the caret. Routes through the deny-list (TargetDenied for credential/secure windows; interlocked shells need the 'shells' lease cap) but needs NO input lease. PatternUnsupported if the element exposes no TextPattern. Offsets are UIA character units (may differ from raw UTF-16 for emoji/non-BMP text). Blocked in --read-only-mode.")]
     public Task<string> DesktopSetCaret(
         [Description("Window handle, e.g. w1.")] string window,
-        [Description("Text element ref to act on, e.g. e23.")] string @ref,
         [Description("UIA character offset for the caret.")] int offset,
+        [Description("Text element ref to act on, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [Description(SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
-        => ToolResponse.GuardWrite(_options, () =>
-            _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref, (win, el) =>
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            RequireExactlyOne(@ref, selector);
+            Func<AutomationElement, AutomationElement, bool> cb = (win, el) =>
             {
                 if (offset < 0)
                     throw new ToolException(ToolErrorCode.InvalidArguments, "offset must be >= 0.", "pass a non-negative offset");
                 var target = InputTargeting.ResolveElementTarget(win, el); // identity from el, not host win (agy R4 #3)
                 _guard.AuthorizeTextMutation(target, "set_caret"); // deny-list (lease-exempt) on the automation thread
                 TextRangeInteractor.SetCaret(el, offset);
-                return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
-            }, timeoutMs));
+                return true;
+            };
+            if (selector is { } sel)
+            {
+                sel.Validate();
+                var (_, resolved) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, cb, timeoutMs);
+                return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern", resolvedElement = resolved });
+            }
+            await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, cb, timeoutMs);
+            return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
+        });
 
     [McpServerTool(Destructive = true), Description("Select a text range in an element via UIA TextPattern (NO OS input). ref = the text element; start = UIA character start offset; length = character count. Same deny-list gate as desktop_set_caret; NO input lease required. PatternUnsupported if no TextPattern; InvalidArguments for negative start/length. Offsets are UIA character units (may differ from raw UTF-16 for emoji/non-BMP text). Blocked in --read-only-mode.")]
     public Task<string> DesktopSelectTextRange(
         [Description("Window handle, e.g. w1.")] string window,
-        [Description("Text element ref to act on, e.g. e23.")] string @ref,
         [Description("UIA character start offset.")] int start,
         [Description("Character count to select.")] int length,
+        [Description("Text element ref to act on, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [Description(SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
-        => ToolResponse.GuardWrite(_options, () =>
-            _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref, (win, el) =>
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            RequireExactlyOne(@ref, selector);
+            Func<AutomationElement, AutomationElement, bool> cb = (win, el) =>
             {
                 if (start < 0 || length < 0)
                     throw new ToolException(ToolErrorCode.InvalidArguments, "start and length must be >= 0.", "pass non-negative offsets");
                 var target = InputTargeting.ResolveElementTarget(win, el); // identity from el, not host win (agy R4 #3)
                 _guard.AuthorizeTextMutation(target, "select_text_range");
                 TextRangeInteractor.SelectRange(el, start, length);
-                return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
-            }, timeoutMs));
+                return true;
+            };
+            if (selector is { } sel)
+            {
+                sel.Validate();
+                var (_, resolved) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, cb, timeoutMs);
+                return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern", resolvedElement = resolved });
+            }
+            await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, cb, timeoutMs);
+            return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern" });
+        });
 
     [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. By default keystrokes are PACED (interKeyDelayMs=15) so slow/async consumers (e.g. the Win11 Notepad autocomplete pipeline) don't drop or garble fast input; when paced the foreground is re-verified before EACH key, so a mid-type focus-steal still aborts (leaving the partial text already typed). Pass interKeyDelayMs=0 for a single atomic blast (fastest; may garble on reactive editors). By default (verify=true) the element is read back after typing and the result carries a `verify` object; on a mismatch it advises desktop_set_value (UIA ValuePattern) — the reliable path for reactive/RichEdit editors (the new Notepad). verify NEVER throws and NEVER converts a successful type into a failure. Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopType(
@@ -196,25 +237,50 @@ public sealed class InputTools
     [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Same lease/deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
     public Task<string> DesktopKey(
         [Description("Chord, e.g. \"Ctrl+S\" or \"Enter\".")] string chord,
-        [Description("Optional element ref to focus first; omit to target the current foreground window.")] string? @ref = null,
-        [Description("Window handle (REQUIRED only when ref is given), e.g. w1.")] string? window = null,
+        [Description("Optional element ref to focus first; omit to target the current foreground window. At most one of ref | selector.")] string? @ref = null,
+        [Description("Window handle (REQUIRED only when ref or selector is given), e.g. w1.")] string? window = null,
+        [Description("Optional selector to focus first; omit to target the current foreground window. At most one of ref | selector. " + SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
             KeyChordParser.Parse(chord); // validate grammar up front -> InvalidArguments (discard result)
             var (modNames, keyToken) = SplitChord(chord);
             bool haveRef = !string.IsNullOrEmpty(@ref);
+            bool haveSel = selector is not null;
+            if (haveRef && haveSel)
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    "provide at most one of ref or selector.", "drop one — they are mutually exclusive; omit both to target the foreground window");
             if (haveRef && string.IsNullOrEmpty(window))
                 throw new ToolException(ToolErrorCode.InvalidArguments,
                     "A ref needs its window handle.", "pass `window` alongside `ref`, or omit both to target the foreground window");
+            if (haveSel && string.IsNullOrEmpty(window))
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    "A selector needs its window handle.", "pass `window` alongside `selector`");
 
-            ActionTarget target = haveRef
-                ? await _perception.RunOnRefForInputAsync(new WindowHandle(window!), @ref!,
-                    (win, el) => { el.Focus(); return InputTargeting.ResolveElementTarget(win, el); }, timeoutMs)
-                : await ResolveForegroundTargetAsync();
+            ActionTarget target;
+            string? resolved = null;
+            if (haveSel)
+            {
+                selector!.Validate();
+                var r = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window!), selector,
+                    (win, el) => { el.Focus(); return InputTargeting.ResolveElementTarget(win, el); }, timeoutMs);
+                target = r.Value;
+                resolved = r.ResolvedRef;
+            }
+            else if (haveRef)
+            {
+                target = await _perception.RunOnRefForInputAsync(new WindowHandle(window!), @ref!,
+                    (win, el) => { el.Focus(); return InputTargeting.ResolveElementTarget(win, el); }, timeoutMs);
+            }
+            else
+            {
+                target = await ResolveForegroundTargetAsync();
+            }
 
             await Task.Run(() => _guard.KeyChord(modNames, keyToken, target));
-            return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" });
+            return resolved is null
+                ? ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" })
+                : ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", resolvedElement = resolved });
         });
 
     // Option A (user-approved 2026-06-30): the no-ref foreground key classifies the FOCUSED element's owner,
@@ -238,12 +304,14 @@ public sealed class InputTools
     [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers optional. Re-hit-tests that the point still maps to the target window immediately before sending. Same lease/deny-list/session gates. Blocked in --read-only-mode.")]
     public Task<string> DesktopClick(
         [Description("Window handle, e.g. w1.")] string window,
-        [Description("Element ref to click, e.g. e23.")] string @ref,
+        [Description("Element ref to click, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [Description(SelectorDesc)] Selector? selector = null,
         [Description("left|right|middle (default left).")] string button = "left",
         [Description("1 or 2 (default 1).")] int count = 1,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
+            RequireExactlyOne(@ref, selector);
             // BLOCKER (agy): the click point may belong to a SEPARATE top-level window — a context menu,
             // tooltip, or WPF Popup is its own HWND, NOT win's root. So derive the ActionTarget from a
             // hit-test of the element's clickable point (the surface actually under the pixel), not from
@@ -251,18 +319,32 @@ public sealed class InputTools
             // HitTestRoot(point)==root re-verify, and the deny-list would classify the wrong window. The
             // leaf re-hit-tests the same point just before send, so the TOCTOU check still holds (two
             // hit-tests at different instants catch an overlay that slides in after resolution).
-            var (target, px, py) = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref,
-                (win, el) =>
-                {
-                    System.Drawing.Point p;
-                    try { p = el.GetClickablePoint(); }
-                    catch (FlaUI.Core.Exceptions.NoClickablePointException) { var b = el.BoundingRectangle; p = new System.Drawing.Point(b.Left + b.Width / 2, b.Top + b.Height / 2); }
-                    var pt = _env.HitTestRoot(p.X, p.Y); // Win32, thread-agnostic — safe on the action STA
-                    var t = new ActionTarget(pt.Root, 0, pt.ProcessName, pt.WindowClass);
-                    return (t, p.X, p.Y);
-                }, timeoutMs);
+            Func<AutomationElement, AutomationElement, (ActionTarget target, int px, int py)> cb = (win, el) =>
+            {
+                System.Drawing.Point p;
+                try { p = el.GetClickablePoint(); }
+                catch (FlaUI.Core.Exceptions.NoClickablePointException) { var b = el.BoundingRectangle; p = new System.Drawing.Point(b.Left + b.Width / 2, b.Top + b.Height / 2); }
+                var pt = _env.HitTestRoot(p.X, p.Y); // Win32, thread-agnostic — safe on the action STA
+                var t = new ActionTarget(pt.Root, 0, pt.ProcessName, pt.WindowClass);
+                return (t, p.X, p.Y);
+            };
+
+            ActionTarget target; int px, py; string? resolved = null;
+            if (selector is { } sel)
+            {
+                sel.Validate();
+                var (val, r) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, cb, timeoutMs);
+                (target, px, py) = val;
+                resolved = r;
+            }
+            else
+            {
+                (target, px, py) = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, cb, timeoutMs);
+            }
             await Task.Run(() => _guard.MouseClick(px, py, button, count, System.Array.Empty<string>(), target));
-            return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" });
+            return resolved is null
+                ? ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" })
+                : ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", resolvedElement = resolved });
         });
 
     [McpServerTool(Destructive = true), Description("Synthetic mouse click at a window-relative point. xPct/yPct in [0,1] relative to the target window's bounding rect (the same fractional space desktop_screenshot/desktop_get_bounds publish). The point is hit-tested + deny-listed in the immediate pre-send instant; an unidentifiable point is refused (TargetDenied). button=left|right|middle, count=1|2. Blocked in --read-only-mode.")]

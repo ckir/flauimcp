@@ -91,7 +91,7 @@ public class InputToolsTests
         var docRef = RefForAid(snap.Tree, "TextDoc");
 
         var tools = BuildTools(mgr, perception);
-        var json = await tools.DesktopSelectTextRange(handle.Id, docRef, start: 0, length: 5, 4000);
+        var json = await tools.DesktopSelectTextRange(handle.Id, start: 0, length: 5, @ref: docRef, timeoutMs: 4000);
         Assert.DoesNotContain("\"error\"", json);
 
         // verify the selection length via TextPattern GetSelection on the element
