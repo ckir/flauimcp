@@ -53,12 +53,16 @@ public sealed class InputTools
         => ToolResponse.GuardWrite(_options, async () =>
         {
             SelectorGating.RequireExactlyOne(@ref, selector);
+            // Validate args + selector BEFORE any resolve — an invalid arg / malformed selector must not
+            // flash the overlay for an action that will then fail (INV-OV-5), and the error code must not
+            // depend on whether --overlay is on.
+            if (offset < 0)
+                throw new ToolException(ToolErrorCode.InvalidArguments, "offset must be >= 0.", "pass a non-negative offset");
+            if (selector is { } s0) s0.Validate();
 
             // Phase-2 (authoritative) callback: resolve identity, authorize (audits ONCE), mutate.
             Func<AutomationElement, AutomationElement, bool> mutate = (win, el) =>
             {
-                if (offset < 0)
-                    throw new ToolException(ToolErrorCode.InvalidArguments, "offset must be >= 0.", "pass a non-negative offset");
                 var target = InputTargeting.ResolveElementTarget(win, el); // identity from el, not host win (agy R4 #3)
                 _guard.AuthorizeTextMutation(target, "set_caret"); // deny-list (lease-exempt) on the automation thread
                 TextRangeInteractor.SetCaret(el, offset);
@@ -82,7 +86,6 @@ public sealed class InputTools
 
             if (selector is { } sel)
             {
-                sel.Validate();
                 var (_, resolved) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, mutate, timeoutMs);
                 return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern", resolvedElement = resolved });
             }
@@ -101,11 +104,15 @@ public sealed class InputTools
         => ToolResponse.GuardWrite(_options, async () =>
         {
             SelectorGating.RequireExactlyOne(@ref, selector);
+            // Validate args + selector BEFORE any resolve — an invalid arg / malformed selector must not
+            // flash the overlay for an action that will then fail (INV-OV-5), and the error code must not
+            // depend on whether --overlay is on.
+            if (start < 0 || length < 0)
+                throw new ToolException(ToolErrorCode.InvalidArguments, "start and length must be >= 0.", "pass non-negative offsets");
+            if (selector is { } s0) s0.Validate();
 
             Func<AutomationElement, AutomationElement, bool> mutate = (win, el) =>
             {
-                if (start < 0 || length < 0)
-                    throw new ToolException(ToolErrorCode.InvalidArguments, "start and length must be >= 0.", "pass non-negative offsets");
                 var target = InputTargeting.ResolveElementTarget(win, el); // identity from el, not host win (agy R4 #3)
                 _guard.AuthorizeTextMutation(target, "select_text_range");
                 TextRangeInteractor.SelectRange(el, start, length);
@@ -128,7 +135,6 @@ public sealed class InputTools
 
             if (selector is { } sel)
             {
-                sel.Validate();
                 var (_, resolved) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, mutate, timeoutMs);
                 return ToolResponse.Ok(new { ok = true, pathUsed = "textpattern", resolvedElement = resolved });
             }

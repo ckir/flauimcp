@@ -134,16 +134,6 @@ public sealed class InputGuard
         _sink.MouseDrag(sx, sy, ex, ey, button, startTarget.Root, endTarget.Root);
     }
 
-    /// <summary>Authorize a UIA TextPattern caret/selection mutation (desktop_set_caret / _select_text_range).
-    /// Spec §4: these synthesize NO OS input, so the lease + session-state + budget gates are EXEMPT — but the
-    /// deny-list / sink-interlock ALWAYS run (selecting text in a denied credential window can exfiltrate it).
-    /// The interlock OVERRIDE still lives in the lease's 'shells' cap, so an optional valid lease is consulted
-    /// purely for that override; no lease is required for an allowed (non-interlocked) target. `target` MUST be
-    /// resolved from the ELEMENT being mutated, not its host window (agy R4 #3 — an embedded cross-process
-    /// interlocked element inside an allowed host must not be classified as the host). Audits event-only (len=0).
-    /// Performs no input — the caller runs the TextPattern op on the automation thread after this returns.
-    /// Elevation hard-fail does NOT apply here (it gates SendInput; the deny-list already blocks credential/
-    /// secure-desktop targets).</summary>
     /// <summary>Non-auditing deny-list/interlock check for the text-mutation path — the text-path sibling of
     /// PreflightInput. Lets the overlay fire post-authorization (a denied target flashes nothing) WITHOUT
     /// emitting a second audit line; the subsequent AuthorizeTextMutation re-checks and audits exactly once.
@@ -155,6 +145,16 @@ public sealed class InputGuard
         CheckTarget(target, hasShellsCap); // deny-list/interlock only — NO audit
     }
 
+    /// <summary>Authorize a UIA TextPattern caret/selection mutation (desktop_set_caret / _select_text_range).
+    /// Spec §4: these synthesize NO OS input, so the lease + session-state + budget gates are EXEMPT — but the
+    /// deny-list / sink-interlock ALWAYS run (selecting text in a denied credential window can exfiltrate it).
+    /// The interlock OVERRIDE still lives in the lease's 'shells' cap, so an optional valid lease is consulted
+    /// purely for that override; no lease is required for an allowed (non-interlocked) target. `target` MUST be
+    /// resolved from the ELEMENT being mutated, not its host window (agy R4 #3 — an embedded cross-process
+    /// interlocked element inside an allowed host must not be classified as the host). Audits event-only (len=0).
+    /// Performs no input — the caller runs the TextPattern op on the automation thread after this returns.
+    /// Elevation hard-fail does NOT apply here (it gates SendInput; the deny-list already blocks credential/
+    /// secure-desktop targets).</summary>
     public void AuthorizeTextMutation(ActionTarget target, string action)
     {
         var lease = _leases.Read(out _);
