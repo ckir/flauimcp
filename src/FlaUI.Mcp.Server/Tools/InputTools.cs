@@ -31,16 +31,6 @@ public sealed class InputTools
     // the only difference is it resolves `sel` to a live element first and mints a descriptor-only ref.
     // So the deny-list/lease/audit gates fire identically for both paths as long as the ActionTarget is
     // derived from the resolved `el` INSIDE the callback, exactly as the ref path already does.
-    private static void RequireExactlyOne(string? @ref, Selector? selector)
-    {
-        bool hasRef = !string.IsNullOrEmpty(@ref), hasSel = selector is not null;
-        if (hasRef == hasSel)
-            throw new ToolException(ToolErrorCode.InvalidArguments,
-                "provide exactly one of ref or selector.",
-                hasRef ? "drop one — ref and selector are mutually exclusive" : "pass a ref (from a snapshot) or a selector {automationId|name|controlType}");
-    }
-
-    private const string SelectorDesc = "Stable target {automationId?,name?,nameMatch?,controlType?,scope?,ignoreCase?} resolved at action time. Exactly one of ref | selector. Returns resolvedElement.";
 
     [McpServerTool(ReadOnly = true), Description("Report the synthetic-input lease status WITHOUT firing any input or touching any window. Returns { leaseStatus: \"active\"|\"locked\", secondsRemaining, shells }. Call this BEFORE a multi-step input plan to confirm a human has granted input via `flaui-mcp unlock` (the synthetic-input tools fail InputNotLeased until then), instead of discovering the lock by failing. Always safe / read-only.")]
     public Task<string> DesktopInputStatus()
@@ -56,11 +46,11 @@ public sealed class InputTools
         [Description("Window handle, e.g. w1.")] string window,
         [Description("UIA character offset for the caret.")] int offset,
         [Description("Text element ref to act on, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
-            RequireExactlyOne(@ref, selector);
+            SelectorGating.RequireExactlyOne(@ref, selector);
             Func<AutomationElement, AutomationElement, bool> cb = (win, el) =>
             {
                 if (offset < 0)
@@ -86,11 +76,11 @@ public sealed class InputTools
         [Description("UIA character start offset.")] int start,
         [Description("Character count to select.")] int length,
         [Description("Text element ref to act on, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
-            RequireExactlyOne(@ref, selector);
+            SelectorGating.RequireExactlyOne(@ref, selector);
             Func<AutomationElement, AutomationElement, bool> cb = (win, el) =>
             {
                 if (start < 0 || length < 0)
@@ -115,7 +105,7 @@ public sealed class InputTools
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Text to type (<=4096 UTF-16 units).")] string text,
         [Description("Element ref to focus and type into, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
         [Description("Delay in ms BETWEEN keystrokes (default 15). Paces synthetic typing so slow/async editors keep up; the foreground is re-verified before each key (abort-on-steal preserved). 0 = one atomic blast (fastest, may garble reactive editors). Negative -> InvalidArguments.")] int interKeyDelayMs = 15,
         [Description("Read the element back after typing and report whether the committed text matches (default true). Soft advisory only — NEVER throws on mismatch and never fails a successful type; on mismatch it recommends desktop_set_value. Pass false for old fire-and-forget speed (skips a ~100ms settle + two reads).")] bool verify = true)
@@ -127,7 +117,7 @@ public sealed class InputTools
             if (interKeyDelayMs < 0)
                 throw new ToolException(ToolErrorCode.InvalidArguments,
                     "interKeyDelayMs must be >= 0.", "pass 0 for a single atomic blast, or a positive per-key delay");
-            RequireExactlyOne(@ref, selector);
+            SelectorGating.RequireExactlyOne(@ref, selector);
             if (selector is { } s0) s0.Validate();
 
             // Local response helper: the selector path additionally surfaces the minted ref as
@@ -210,7 +200,7 @@ public sealed class InputTools
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Text to paste (<=1,000,000 UTF-16 units).")] string text,
         [Description("Element ref to focus and paste into, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
         [Description("Read the element back and report whether the paste landed (default true). Soft — never throws. ALSO gates clipboard restore: with verify=false the prior clipboard is not restored (clipboardRestored:\"abandoned\").")] bool verify = true,
         [Description("Proceed even if the clipboard holds NON-text content (image/files) that cannot be preserved. Default false = refuse with ClipboardHoldsNonText before any mutation.")] bool forceOverwriteClipboard = false)
@@ -222,7 +212,7 @@ public sealed class InputTools
             if (text.Length > MaxPasteUnits)
                 throw new ToolException(ToolErrorCode.InvalidArguments,
                     $"Text exceeds the {MaxPasteUnits} UTF-16 unit per-call cap.", "split the paste across calls on a whole-character boundary");
-            RequireExactlyOne(@ref, selector);
+            SelectorGating.RequireExactlyOne(@ref, selector);
             if (selector is { } s0) s0.Validate();
 
             var fx = new PasteEffects(_perception, _guard, new WindowHandle(window), @ref, selector, timeoutMs);
@@ -282,7 +272,7 @@ public sealed class InputTools
         [Description("Chord, e.g. \"Ctrl+S\" or \"Enter\".")] string chord,
         [Description("Optional element ref to focus first; omit to target the current foreground window. At most one of ref | selector.")] string? @ref = null,
         [Description("Window handle (REQUIRED only when ref or selector is given), e.g. w1.")] string? window = null,
-        [Description("Optional selector to focus first; omit to target the current foreground window. At most one of ref | selector. " + SelectorDesc)] Selector? selector = null,
+        [Description("Optional selector to focus first; omit to target the current foreground window. At most one of ref | selector. " + SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
@@ -348,13 +338,13 @@ public sealed class InputTools
     public Task<string> DesktopClick(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Element ref to click, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("left|right|middle (default left).")] string button = "left",
         [Description("1 or 2 (default 1).")] int count = 1,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
-            RequireExactlyOne(@ref, selector);
+            SelectorGating.RequireExactlyOne(@ref, selector);
             // BLOCKER (agy): the click point may belong to a SEPARATE top-level window — a context menu,
             // tooltip, or WPF Popup is its own HWND, NOT win's root. So derive the ActionTarget from a
             // hit-test of the element's clickable point (the surface actually under the pixel), not from

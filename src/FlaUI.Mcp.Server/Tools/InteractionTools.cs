@@ -23,7 +23,7 @@ public sealed class InteractionTools
         Action<FlaUI.Core.AutomationElements.AutomationElement> act, int timeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
-            RequireExactlyOne(@ref, selector);
+            SelectorGating.RequireExactlyOne(@ref, selector);
             if (selector is { } sel)
             {
                 sel.Validate();
@@ -36,23 +36,13 @@ public sealed class InteractionTools
             return ToolResponse.Ok(new { ok = true, pathUsed = "pattern" });
         });
 
-    private static void RequireExactlyOne(string? @ref, Selector? selector)
-    {
-        bool hasRef = !string.IsNullOrEmpty(@ref), hasSel = selector is not null;
-        if (hasRef == hasSel)
-            throw new ToolException(ToolErrorCode.InvalidArguments,
-                "provide exactly one of ref or selector.",
-                hasRef ? "drop one — ref and selector are mutually exclusive" : "pass a ref (from a snapshot) or a selector {automationId|name|controlType}");
-    }
-
     private const string RefDesc = "Element ref from a snapshot, e.g. e23. Exactly one of ref | selector.";
-    private const string SelectorDesc = "Stable target {automationId?,name?,nameMatch?,controlType?,scope?,ignoreCase?} resolved at action time. Exactly one of ref | selector. Returns resolvedElement.";
 
     [McpServerTool(Destructive = true), Description("Invoke (activate) an element by ref via its UIA InvokePattern (e.g. click a button). If it opens a modal you get ActionBlockedPending — snapshot to see the dialog, then act on it.")]
     public Task<string> DesktopInvoke(
         [Description("Window handle, e.g. w1.")] string window,
         [Description(RefDesc)] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, selector, Interactor.Invoke, timeoutMs);
 
@@ -60,7 +50,7 @@ public sealed class InteractionTools
     public Task<string> DesktopSetFocus(
         [Description("Window handle, e.g. w1.")] string window,
         [Description(RefDesc)] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, selector, Interactor.SetFocus, timeoutMs);
 
@@ -69,7 +59,7 @@ public sealed class InteractionTools
         [Description("Window handle, e.g. w1.")] string window,
         [Description("The value to set.")] string value,
         [Description("Element ref, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, selector, el => Interactor.SetValue(el, value), timeoutMs);
 
@@ -77,7 +67,7 @@ public sealed class InteractionTools
     public Task<string> DesktopToggle(
         [Description("Window handle.")] string window,
         [Description(RefDesc)] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, selector, Interactor.Toggle, timeoutMs);
 
@@ -85,7 +75,7 @@ public sealed class InteractionTools
     public Task<string> DesktopExpand(
         [Description("Window handle.")] string window,
         [Description(RefDesc)] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, selector, Interactor.Expand, timeoutMs);
 
@@ -93,7 +83,7 @@ public sealed class InteractionTools
     public Task<string> DesktopSelect(
         [Description("Window handle.")] string window,
         [Description(RefDesc)] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, selector, Interactor.Select, timeoutMs);
 
@@ -101,7 +91,7 @@ public sealed class InteractionTools
     public Task<string> DesktopScrollIntoView(
         [Description("Window handle.")] string window,
         [Description(RefDesc)] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, selector, Interactor.ScrollIntoView, timeoutMs);
 
@@ -110,7 +100,7 @@ public sealed class InteractionTools
         [Description("Window handle.")] string window,
         [Description("up|down|left|right")] string direction,
         [Description("Container element ref. Exactly one of ref | selector.")] string? @ref = null,
-        [Description(SelectorDesc)] Selector? selector = null,
+        [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Number of small scroll steps (default 1).")] double amount = 1,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => Act(window, @ref, selector, el => Interactor.Scroll(el, direction, amount), timeoutMs);
