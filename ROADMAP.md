@@ -43,7 +43,7 @@ that bug is one instance of a broader class. Specs:
   `desktop_window_transform minimize` orphans the foreground window (twin of the close bug) — plus one
   low-severity observability gap (`desktop_focus_window` can silently no-op under foreground-lock);
   modifier-teardown and clipboard surfaces are already sound.
-- **SP2 — Harden the gap** ▶ NEXT (scope A / minimal chosen; ~v0.11.2): extract a shared
+- **SP2 — Harden the gap** ✅ (v0.11.2): extract a shared
   `SessionForegroundGuard` (generalize the v0.11.1 close healer), fix the minimize orphan, add a
   `focus_window` foreground-gain signal, and one Desktop test. Line-level plan via writing-plans.
 - **SP3 — Session-delta snapshot + chaos test harness** ⏸ deferred until a *second* hygiene gap

@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.2] - 2026-07-05
+
+### Fixed
+- **`desktop_window_transform minimize` no longer orphans the keyboard** when it minimizes the
+  foreground window. Like closing the foreground window (fixed in 0.11.1), minimizing it left keyboard
+  focus nowhere under the background-process foreground-lock; it now restores foreground to the next
+  visible top-level window. The close healer was generalized so close and minimize share it.
+
+### Added
+- **`desktop_focus_window` now returns `foregroundGained`** — whether it actually acquired the OS
+  foreground (a background process's request can silently no-op under the foreground-lock), so the agent
+  sees the ceiling instead of assuming success.
+
 ## [0.11.1] - 2026-07-05
 
 ### Fixed
