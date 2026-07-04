@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
 using FlaUI.Core.AutomationElements;
 
 namespace FlaUI.Mcp.Core.Interaction;
@@ -32,6 +34,28 @@ public static class InputTargeting
         if (pid >= 0) { try { using var p = Process.GetProcessById(pid); proc = p.ProcessName; } catch { } }
         string? cls = null;
         try { cls = el.Properties.ClassName.ValueOrDefault; } catch { } // null/empty if the element has no class
-        return new ActionTarget(win.Properties.NativeWindowHandle.ValueOrDefault, pid < 0 ? 0 : pid, proc, cls);
+        return new ActionTarget(win.Properties.NativeWindowHandle.ValueOrDefault, pid < 0 ? 0 : pid, proc, cls,
+            ElementIdentityOf(el, cls));
+    }
+
+    /// <summary>T8: read ONLY the allow-listed UIA props off the resolved element, each fail-soft
+    /// (empty on throw/absence — identity capture must never turn a permitted action into a crash,
+    /// INV-T8-3). NEVER touches Name/Value/HelpText/ItemStatus/LegacyIAccessible.</summary>
+    private static ElementIdentity ElementIdentityOf(AutomationElement el, string? className)
+    {
+        string rid = "";
+        try
+        {
+            var raw = el.Properties.RuntimeId.ValueOrDefault;
+            if (raw is not null) rid = string.Join(".", raw.Select(i => i.ToString(CultureInfo.InvariantCulture)));
+        }
+        catch { }
+        string? aid = null;
+        try { aid = el.Properties.AutomationId.ValueOrDefault; } catch { }
+        string? ctype = null;
+        try { ctype = el.Properties.ControlType.ValueOrDefault.ToString(); } catch { }
+        var b = new Bounds(0, 0, 0, 0);
+        try { var r = el.BoundingRectangle; b = new Bounds(r.Left, r.Top, r.Width, r.Height); } catch { }
+        return new ElementIdentity(rid, aid, className, ctype, b);
     }
 }

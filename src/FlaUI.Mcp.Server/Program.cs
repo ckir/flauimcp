@@ -23,6 +23,17 @@ ElevationGuard.WarnIfElevated(ElevationGuard.IsElevated(), Console.Error);
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddSingleton(ServerOptions.FromArgs(args));
 
+// v0.10.1 intent overlay: the real GDI renderer only when --overlay is on AND the delay is non-zero;
+// otherwise the zero-cost NullActionOverlay. Registered as a singleton so container disposal tears down
+// the STA thread + GDI handles (SEAT-F).
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Interaction.IActionOverlay>(sp =>
+{
+    var o = sp.GetRequiredService<ServerOptions>();
+    return (o.Overlay && o.OverlayMs > 0)
+        ? new FlaUI.Mcp.Server.Overlay.GdiActionOverlay(o.OverlayMs)
+        : FlaUI.Mcp.Core.Interaction.NullActionOverlay.Instance;
+});
+
 // Core singletons (one automation context for the whole server in this phase).
 builder.Services.AddSingleton<AutomationDispatcher>();
 builder.Services.AddSingleton<WindowManager>();

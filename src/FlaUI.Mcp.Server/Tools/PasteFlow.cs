@@ -12,6 +12,7 @@ public interface IPasteEffects
 {
     Task<(ActionTarget target, VerifyRead before)> FocusAndBeforeReadAsync(bool verify);
     void Preflight(ActionTarget target);          // throws ToolException on refusal
+    Task PreviewAsync(FlaUI.Mcp.Core.Interaction.OverlayRect rect);
     Task<ClipboardSnapshot> SnapshotAsync();
     Task SetClipboardAsync(string text);
     Task PasteAsync(ActionTarget target);         // Ctrl+V; throws on guard refusal
@@ -35,6 +36,11 @@ public static class PasteFlow
         var (target, before) = await fx.FocusAndBeforeReadAsync(verify);
 
         fx.Preflight(target); // ALL refusal gates BEFORE any clipboard mutation (spec §4 step 3)
+
+        var previewRect = target.Element is { } _id
+            ? new FlaUI.Mcp.Core.Interaction.OverlayRect(_id.Bounds.L, _id.Bounds.T, _id.Bounds.W, _id.Bounds.H)
+            : default;
+        await fx.PreviewAsync(previewRect);
 
         var snap = await fx.SnapshotAsync();
         if (snap.Kind == PriorClipboardKind.NonText && !forceOverwriteClipboard)

@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] - 2026-07-04
+
+### Added
+- **Element-identity audit trace for synthetic input** — when a mutative action resolves a `selector`
+  targeting, the input audit line now names the resolved element's stable identity: an allow-listed set
+  of `RuntimeId`, `AutomationId`, `ClassName`, `ControlType`, and bounds ONLY (never `Name`, `Value`,
+  `HelpText`, or any content-bearing property). The trace is strictly omitted when no element resolves
+  (selector targeting failed), so pre-0.10.1 log parsers still read the unchanged window-level audit fields.
+- **Intent overlay (`--overlay` / `--overlay-ms=N`)** — opt-in visual feedback. When enabled (per-tool via
+  parameter or globally via CLI flag; default off), draws a red rectangle on the target element
+  (or a crosshair at a coordinate pair) for ~500 ms (configurable; `0` disables) BEFORE each mutative
+  action, so a human watching the screen sees what the agent is about to touch. It is a *visibility aid
+  for debugging, not an authorization gate*; the lease/deny-list/read-only-mode safety foundation is
+  unchanged.
+
 ## [0.10.0] - 2026-07-04
 
 ### Added

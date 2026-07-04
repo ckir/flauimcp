@@ -57,9 +57,9 @@ public sealed class InputGuard
                 $"Synthetic-input rate limit exceeded for this window. Retry in ~{_budget.SecondsUntilFreeSlot(primary.Root, now)}s.",
                 "wait for the window to clear, or re-grant the lease with `flaui-mcp unlock` to reset the budget");
 
-        _audit.Record(primary.Root, primary.Pid, primary.ProcessName, action, payloadLength);
+        _audit.Record(primary.Root, primary.Pid, primary.ProcessName, action, payloadLength, primary.Element);
         if (secondary is { } drop)
-            _audit.Record(drop.Root, drop.Pid, drop.ProcessName, action + "-drop", 1);
+            _audit.Record(drop.Root, drop.Pid, drop.ProcessName, action + "-drop", 1, drop.Element);
     }
 
     // was: CheckTarget(ActionTarget target, InputLease lease) — now lease-agnostic; caller resolves the cap.
@@ -134,6 +134,17 @@ public sealed class InputGuard
         _sink.MouseDrag(sx, sy, ex, ey, button, startTarget.Root, endTarget.Root);
     }
 
+    /// <summary>Non-auditing deny-list/interlock check for the text-mutation path — the text-path sibling of
+    /// PreflightInput. Lets the overlay fire post-authorization (a denied target flashes nothing) WITHOUT
+    /// emitting a second audit line; the subsequent AuthorizeTextMutation re-checks and audits exactly once.
+    /// Same lease-exempt shells-cap consult as AuthorizeTextMutation.</summary>
+    public void PreflightTextMutation(ActionTarget target)
+    {
+        var lease = _leases.Read(out _);
+        bool hasShellsCap = lease is { } l && l.IsValidNow(_clock(), _currentSid) && l.HasCapability("shells");
+        CheckTarget(target, hasShellsCap); // deny-list/interlock only — NO audit
+    }
+
     /// <summary>Authorize a UIA TextPattern caret/selection mutation (desktop_set_caret / _select_text_range).
     /// Spec §4: these synthesize NO OS input, so the lease + session-state + budget gates are EXEMPT — but the
     /// deny-list / sink-interlock ALWAYS run (selecting text in a denied credential window can exfiltrate it).
@@ -149,7 +160,7 @@ public sealed class InputGuard
         var lease = _leases.Read(out _);
         bool hasShellsCap = lease is { } l && l.IsValidNow(_clock(), _currentSid) && l.HasCapability("shells");
         CheckTarget(target, hasShellsCap); // shared deny-list/interlock (TargetDenied / SinkInterlocked)
-        _audit.Record(target.Root, target.Pid, target.ProcessName, action, 0);
+        _audit.Record(target.Root, target.Pid, target.ProcessName, action, 0, target.Element);
     }
 
     /// <summary>Read-only lease status for the pre-flight tool — no input, no side effects. Active iff a
@@ -167,8 +178,23 @@ public sealed class InputGuard
 
 /// <summary>The resolved target of a synthetic-input action: its top-level window root + identity for
 /// the deny-list/budget/audit. For the ref path the tool resolves these from the window handle; for the
-/// coordinate path 4b fills them from IPlatformEnvironment.HitTestRoot.</summary>
-public readonly record struct ActionTarget(nint Root, int Pid, string? ProcessName, string? WindowClass);
+/// coordinate path 4b fills them from IPlatformEnvironment.HitTestRoot. v0.10.1 (T8): optionally carries
+/// the resolved ELEMENT's allow-listed identity for the audit trace; null on the window/coordinate paths
+/// (appended with a default so every existing `new ActionTarget(root,pid,proc,cls)` call site is unchanged).</summary>
+public readonly record struct ActionTarget(
+    nint Root, int Pid, string? ProcessName, string? WindowClass,
+    ElementIdentity? Element = null);
+
+/// <summary>Physical screen rectangle L,T,W,H (ints). The audit records it and the overlay draws it —
+/// same numbers, so the on-screen rect and the audit line agree (spec §1).</summary>
+public readonly record struct Bounds(int L, int T, int W, int H);
+
+/// <summary>The audit-safe identity of a resolved element (spec §3 fork D allow-list). Holds ONLY the five
+/// allow-listed UIA properties — it physically cannot carry Name/Value/HelpText/ItemStatus/LegacyIAccessible,
+/// so the allow-list is enforced by the TYPE, not by a runtime filter. RuntimeId is the dotted/CSV string
+/// form (e.g. "42.1376068.4.1").</summary>
+public readonly record struct ElementIdentity(
+    string RuntimeId, string? AutomationId, string? ClassName, string? ControlType, Bounds Bounds);
 
 /// <summary>Read-only lease status surfaced by desktop_input_status (carries no secret content).</summary>
 public readonly record struct LeaseStatus(bool Active, int SecondsRemaining, bool Shells);

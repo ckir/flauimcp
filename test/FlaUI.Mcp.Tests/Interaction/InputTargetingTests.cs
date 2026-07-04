@@ -22,4 +22,25 @@ public class InputTargetingTests
         Assert.False(string.IsNullOrEmpty(target.ProcessName));
         Assert.False(string.IsNullOrEmpty(target.WindowClass));
     }
+
+    [Fact]
+    public async Task ResolveElementTarget_populates_allow_listed_identity_only()
+    {
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var handle = await mgr.OpenByPidAsync(app.Process.Id);
+        var target = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+        {
+            var el = win.FindFirstDescendant(cf => cf.ByAutomationId("OkButton"))!;
+            return InputTargeting.ResolveElementTarget(win, el);
+        });
+
+        Assert.NotNull(target.Element);
+        var id = target.Element!.Value;
+        Assert.False(string.IsNullOrEmpty(id.RuntimeId));
+        Assert.Equal("OkButton", id.AutomationId);
+        Assert.True(id.Bounds.W > 0 && id.Bounds.H > 0);
+        // ElementIdentity structurally has no Name/Value field to leak — the type enforces the allow-list.
+    }
 }

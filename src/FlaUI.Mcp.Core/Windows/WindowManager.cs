@@ -211,6 +211,9 @@ public sealed class WindowManager : IDisposable
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder buffer, int maxCount);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hwnd, StringBuilder buffer, int maxCount);
+
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
 
@@ -222,6 +225,11 @@ public sealed class WindowManager : IDisposable
 
     [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+
+    /// <summary>True for a window that perception must never surface — currently only the intent-overlay's
+    /// sentinel class (spec §5.4). Extracted so the enum filter is unit-testable without a live window.</summary>
+    public static bool ShouldSkipTopLevel(string className) =>
+        string.Equals(className, FlaUI.Mcp.Core.Interaction.OverlaySentinel.ClassName, System.StringComparison.Ordinal);
 
     /// <summary>Enumerate visible, titled top-level windows via pure Win32 — never blocks on an
     /// unresponsive window of another process (unlike a UIA Title read). Mirrors the old filter
@@ -238,6 +246,9 @@ public sealed class WindowManager : IDisposable
             GetWindowTextW(hwnd, sb, sb.Capacity);
             var title = sb.ToString();
             if (string.IsNullOrEmpty(title)) return true;
+            var clsSb = new StringBuilder(64);
+            GetClassNameW(hwnd, clsSb, clsSb.Capacity);
+            if (ShouldSkipTopLevel(clsSb.ToString())) return true; // skip the intent overlay (spec §5.4)
             GetWindowThreadProcessId(hwnd, out uint pid);
             result.Add((hwnd, title, (int)pid));
             return true;

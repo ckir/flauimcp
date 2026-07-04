@@ -20,6 +20,15 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 `desktop_wake_accessibility,desktop_release_accessibility,desktop_list_wakes` (opaque Chromium/Electron);
 `desktop_find_text,desktop_wait_for_text` (OCR targeting).
 
+## Watching the agent (v0.10.1+)
+
+- **Intent overlay** — pass `overlay:true` (or `overlay:<milliseconds>` for custom duration, `0` disables)
+  to any mutative tool to draw a red rect on the target element ~500 ms **before** the action fires —
+  so a human watching sees what the agent is about to touch. It is a visibility aid, not a safety gate.
+- **Audit trace** — when a tool resolves a `selector` targeting, the audit line now names the resolved
+  element's stable identity: `RuntimeId`, `AutomationId`, `ClassName`, `ControlType`, and bounds
+  (never `Name`/`Value`/content). Check the audit log to verify the agent touched the right element.
+
 ## Orientation (read-only, always safe)
 
 1. `desktop_list_windows` — Title/ProcessName/Pid; exactly one `IsForeground:true`. Hang-proof.
