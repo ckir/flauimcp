@@ -43,6 +43,8 @@ public class InputAuditTests
         Assert.Contains("class=\"Edit\"", line);
         Assert.Contains("ctype=\"Edit\"", line);
         Assert.Contains("bounds=-1920,0,500,500", line);
+        // Golden ordered-line pin (wire contract): fields must be adjacent + in order, not merely present.
+        Assert.Contains("len=7 rid=\"42.1376068.4.1\" aid=\"user name\" class=\"Edit\" ctype=\"Edit\" bounds=-1920,0,500,500", line);
     }
 
     [Fact]
@@ -68,6 +70,11 @@ public class InputAuditTests
         Assert.Equal("\"a\\\"b\"", InputAudit.AuditQuote("a\"b"));
         Assert.Equal("\"a\\\\b\"", InputAudit.AuditQuote("a\\b"));
         Assert.Equal("\"a\\nb\"", InputAudit.AuditQuote("a\nb"));
+        Assert.Equal("\"a\\rb\"", InputAudit.AuditQuote("a\rb"));           // bare CR is escaped
+        Assert.Equal("\"a\\r\\nb\"", InputAudit.AuditQuote("a\r\nb"));      // CRLF
+        // Ordering-critical case: raw backslash immediately followed by a quote. Backslash-first escaping
+        // must yield \\ then \" (three backslashes + quote), not a double-escaped/under-escaped result.
+        Assert.Equal("\"a\\\\\\\"b\"", InputAudit.AuditQuote("a\\\"b"));
         Assert.Equal("\"\"", InputAudit.AuditQuote(null));
         Assert.Equal("\"\"", InputAudit.AuditQuote(""));
     }
