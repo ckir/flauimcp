@@ -55,7 +55,7 @@ public class InteractionToolsTests
         {
             var snap = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
 
-            Assert.DoesNotContain("error", await tools.DesktopSetValue(handle.Id, RefFor(snap.Tree, "Input"), "typed"));
+            Assert.DoesNotContain("error", await tools.DesktopSetValue(handle.Id, "typed", RefFor(snap.Tree, "Input")));
             Assert.Equal("typed", await p.RunOnRefAsync(handle, RefFor(snap.Tree, "Input"), el => el.AsTextBox().Text));
 
             Assert.DoesNotContain("error", await tools.DesktopToggle(handle.Id, RefFor(snap.Tree, "Check")));
@@ -72,7 +72,7 @@ public class InteractionToolsTests
         {
             var snap = await p.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
             Assert.DoesNotContain("error", await tools.DesktopScrollIntoView(handle.Id, RefFor(snap.Tree, "ItemC")));
-            Assert.DoesNotContain("error", await tools.DesktopScroll(handle.Id, RefFor(snap.Tree, "ItemList"), "down", 1));
+            Assert.DoesNotContain("error", await tools.DesktopScroll(handle.Id, "down", RefFor(snap.Tree, "ItemList"), amount: 1));
         }
     }
 
@@ -138,13 +138,62 @@ public class InteractionToolsReadOnlyTests
     {
         var tools = new InteractionTools(perception: null!, windows: null!, new ServerOptions(ReadOnly: true, AllowElevation: false));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopInvoke("w1", "e1"));
-        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopSetValue("w1", "e1", "x"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopSetValue("w1", "x", "e1"));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopToggle("w1", "e1"));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopExpand("w1", "e1"));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopSelect("w1", "e1"));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopScrollIntoView("w1", "e1"));
-        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopScroll("w1", "e1", "down"));
+        Assert.Contains("WriteBlockedReadOnly", await tools.DesktopScroll("w1", "down", "e1"));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopSetFocus("w1", "e1"));
         Assert.Contains("WriteBlockedReadOnly", await tools.DesktopWindowTransform("w1", "maximize"));
+    }
+}
+
+// Non-Desktop: RequireExactlyOne fires BEFORE any UIA/perception work, so null! deps prove the
+// gate — not the underlying tool — produced the error. ReadOnly:false so the read-only short
+// circuit (tested above) doesn't mask this gate.
+public class InteractionToolsSelectorGateTests
+{
+    private static InteractionTools Make() =>
+        new(perception: null!, windows: null!, new ServerOptions(ReadOnly: false, AllowElevation: false));
+
+    [Fact]
+    public async Task Neither_ref_nor_selector_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopInvoke("w1");
+        Assert.Contains("InvalidArguments", result);
+    }
+
+    [Fact]
+    public async Task Both_ref_and_selector_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopInvoke("w1", @ref: "e1", selector: new Selector(AutomationId: "Ok"));
+        Assert.Contains("InvalidArguments", result);
+    }
+
+    [Fact]
+    public async Task SetValue_neither_ref_nor_selector_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopSetValue("w1", "typed");
+        Assert.Contains("InvalidArguments", result);
+    }
+
+    [Fact]
+    public async Task Scroll_both_ref_and_selector_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopScroll("w1", "down", @ref: "e1", selector: new Selector(AutomationId: "List"));
+        Assert.Contains("InvalidArguments", result);
+    }
+
+    [Fact]
+    public async Task Invalid_selector_with_no_material_field_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopInvoke("w1", selector: new Selector());
+        Assert.Contains("InvalidArguments", result);
     }
 }
