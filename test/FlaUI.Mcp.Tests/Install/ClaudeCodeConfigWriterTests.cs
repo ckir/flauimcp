@@ -6,17 +6,36 @@ namespace FlaUI.Mcp.Tests.Install;
 public class ClaudeCodeConfigWriterTests
 {
     [Fact]
-    public void Install_invokes_claude_mcp_add_with_the_exe()
+    public void Install_invokes_claude_mcp_remove_then_add_with_the_exe()
     {
+        // Install is remove-then-add so re-registration is idempotent and can change the args of
+        // an existing entry (`claude mcp add` fails on a duplicate name). The remove is best-effort.
         var calls = new List<(string file, string[] args)>();
         var w = new ClaudeCodeConfigWriter((file, args) => { calls.Add((file, args)); return 0; });
 
         var r = w.Install(@"C:\x\flaui-mcp.exe");
 
         Assert.Equal(AgentChange.Created, r.Change);
-        var (file, args) = Assert.Single(calls);
-        Assert.Equal("claude", file);
-        Assert.Equal(new[] { "mcp", "add", "--scope", "user", "flaui-mcp", "--", @"C:\x\flaui-mcp.exe" }, args);
+        Assert.Equal(2, calls.Count);
+        Assert.Equal("claude", calls[0].file);
+        Assert.Equal(new[] { "mcp", "remove", "--scope", "user", "flaui-mcp" }, calls[0].args);
+        Assert.Equal("claude", calls[1].file);
+        Assert.Equal(new[] { "mcp", "add", "--scope", "user", "flaui-mcp", "--", @"C:\x\flaui-mcp.exe" }, calls[1].args);
+    }
+
+    [Fact]
+    public void Install_with_args_appends_them_to_the_add_command()
+    {
+        var calls = new List<(string file, string[] args)>();
+        var w = new ClaudeCodeConfigWriter((file, args) => { calls.Add((file, args)); return 0; });
+
+        var r = w.Install(@"C:\x\flaui-mcp.exe", new[] { "--overlay", "--overlay-ms=800" });
+
+        Assert.Equal(AgentChange.Created, r.Change);
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(
+            new[] { "mcp", "add", "--scope", "user", "flaui-mcp", "--", @"C:\x\flaui-mcp.exe", "--overlay", "--overlay-ms=800" },
+            calls[1].args);
     }
 
     [Fact]

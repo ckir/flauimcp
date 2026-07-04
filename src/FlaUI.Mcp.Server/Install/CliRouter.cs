@@ -4,7 +4,7 @@ namespace FlaUI.Mcp.Server.Install;
 public static class CliRouter
 {
     private static readonly HashSet<string> Verbs =
-        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "--version", "-v", "--help", "-h" };
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "overlay", "--version", "-v", "--help", "-h" };
 
     public static bool IsInstallerVerb(string[] args) => args.Length > 0 && Verbs.Contains(args[0]);
 
@@ -31,9 +31,24 @@ public static class CliRouter
                 foreach (var r in Apply(agent, paths, install: true, exePath))
                     outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
                 outp.WriteLine("If you configured agy, restart it to load the new tools.");
-                outp.WriteLine("Tip: to watch the agent act on screen, add \"--overlay\" to the server args " +
-                    "(off by default, no overhead) — see the README's \"Watching & auditing the agent\" section.");
+                outp.WriteLine("Tip: to WATCH the agent act on screen, run  flaui-mcp overlay on  (off by default; " +
+                    "flaui-mcp overlay off to disable), then reconnect. See the README's \"Watching & auditing the agent\" section.");
                 return 0;
+
+            case "overlay":
+            {
+                var mode = args.Length > 1 ? args[1].ToLowerInvariant() : "";
+                if (mode != "on" && mode != "off")
+                {
+                    outp.WriteLine("usage: flaui-mcp overlay on|off [--agent agy|claude|generic|all]");
+                    return 2;
+                }
+                var extra = mode == "on" ? McpServerEntry.OverlayArgs : System.Array.Empty<string>();
+                foreach (var r in Apply(agent, paths, install: true, exePath, extra))
+                    outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
+                outp.WriteLine($"Intent overlay {mode.ToUpperInvariant()}. Reconnect the MCP client (/mcp) to apply; restart agy if you use it.");
+                return 0;
+            }
 
             case "uninstall":
                 foreach (var r in Apply(agent, paths, install: false, exePath))
@@ -61,7 +76,7 @@ public static class CliRouter
                 return 0;
 
             default:
-                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells]|lock] [--agent agy|generic|claude|all] [--config <path>]");
+                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells]|lock|overlay on|off] [--agent agy|generic|claude|all] [--config <path>]");
                 return 0;
         }
     }
@@ -83,7 +98,7 @@ public static class CliRouter
         return new Paths(agyServers, agyPerms, genericPath, dataDir);
     }
 
-    private static IEnumerable<AgentResult> Apply(string agent, Paths paths, bool install, string exePath)
+    private static IEnumerable<AgentResult> Apply(string agent, Paths paths, bool install, string exePath, IReadOnlyList<string>? extraArgs = null)
     {
         var results = new List<AgentResult>();
         bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
@@ -91,17 +106,17 @@ public static class CliRouter
         if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
         {
             var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms);
-            results.Add(install ? w.Install(exePath) : w.Uninstall());
+            results.Add(install ? w.Install(exePath, extraArgs) : w.Uninstall());
         }
         if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
         {
             var w = new ClaudeCodeConfigWriter();
-            results.Add(install ? w.Install(exePath) : w.Uninstall());
+            results.Add(install ? w.Install(exePath, extraArgs) : w.Uninstall());
         }
         if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
         {
             var w = new GenericMcpConfigWriter();
-            results.Add(install ? w.Install(paths.GenericPath, exePath) : w.Uninstall(paths.GenericPath));
+            results.Add(install ? w.Install(paths.GenericPath, exePath, extraArgs) : w.Uninstall(paths.GenericPath));
         }
         return results;
     }

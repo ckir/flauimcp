@@ -29,3 +29,6 @@ Write-Host "Running installer (silent)..."
 $p = Start-Process -FilePath $dest -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
 if ($p.ExitCode -ne 0) { throw "Installer exited with code $($p.ExitCode)." }
 Write-Host "FlaUI.Mcp installed. Restart agy if you use it, so it loads the new tools."
+Write-Host ""
+Write-Host "Tip: to WATCH the agent act on screen, enable the intent overlay (off by default, no overhead)."
+Write-Host "  Run  flaui-mcp overlay on  to enable it (flaui-mcp overlay off to disable), then reconnect your MCP client."

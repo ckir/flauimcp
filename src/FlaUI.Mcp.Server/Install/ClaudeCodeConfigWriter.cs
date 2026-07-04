@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 
 namespace FlaUI.Mcp.Server.Install;
 
@@ -13,11 +15,16 @@ public sealed class ClaudeCodeConfigWriter
     public ClaudeCodeConfigWriter(Func<string, string[], int>? runner = null)
         => _run = runner ?? DefaultRunner;
 
-    public AgentResult Install(string exePath)
+    public AgentResult Install(string exePath, IReadOnlyList<string>? args = null)
     {
         // --scope user: register globally for the user, NOT at the default "local" scope (which
         // binds to the installer's working dir, making the server invisible in every other project).
-        var code = _run("claude", new[] { "mcp", "add", "--scope", "user", McpServerEntry.ServerName, "--", exePath });
+        // Remove-then-add so re-registration is idempotent and can change the args of an existing entry
+        // (`claude mcp add` fails on a duplicate name). The remove is best-effort (no-op if absent).
+        _run("claude", new[] { "mcp", "remove", "--scope", "user", McpServerEntry.ServerName });
+        var addArgs = new List<string> { "mcp", "add", "--scope", "user", McpServerEntry.ServerName, "--", exePath };
+        if (args is not null) addArgs.AddRange(args);
+        var code = _run("claude", addArgs.ToArray());
         return code switch
         {
             0  => new AgentResult("claude", AgentChange.Created, "claude mcp add"),

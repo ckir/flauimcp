@@ -86,18 +86,62 @@ public class CliRouterTests
     [Fact]
     public void Install_output_hints_at_the_overlay_flag()
     {
-        // Discoverability: the post-install message must surface the opt-in --overlay flag.
+        // Discoverability: the post-install message must surface the opt-in overlay toggle.
         var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
         try
         {
             var sb = new StringWriter();
             var code = CliRouter.Run(new[] { "install", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", sb);
             Assert.Equal(0, code);
-            Assert.Contains("--overlay", sb.ToString());
+            Assert.Contains("flaui-mcp overlay on", sb.ToString());
         }
         finally
         {
             foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f);
         }
     }
+
+    [Fact]
+    public void Overlay_on_registers_the_generic_entry_with_the_overlay_args()
+    {
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        try
+        {
+            var sb = new StringWriter();
+            var code = CliRouter.Run(new[] { "overlay", "on", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", sb);
+            Assert.Equal(0, code);
+            var json = File.ReadAllText(cfg);
+            Assert.Contains("--overlay", json);
+            Assert.Contains("--overlay-ms=800", json);
+        }
+        finally { foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f); }
+    }
+
+    [Fact]
+    public void Overlay_off_registers_the_generic_entry_without_overlay_args()
+    {
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        try
+        {
+            CliRouter.Run(new[] { "overlay", "on", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            var code = CliRouter.Run(new[] { "overlay", "off", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            Assert.Equal(0, code);
+            var json = File.ReadAllText(cfg);
+            Assert.DoesNotContain("--overlay", json);
+        }
+        finally { foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f); }
+    }
+
+    [Fact]
+    public void Overlay_bad_mode_prints_usage_and_returns_nonzero()
+    {
+        var sb = new StringWriter();
+        var code = CliRouter.Run(new[] { "overlay", "sideways" }, @"C:\x\flaui-mcp.exe", sb);
+        Assert.Equal(2, code);
+        Assert.Contains("usage", sb.ToString());
+    }
+
+    [Fact]
+    public void Overlay_is_a_recognized_installer_verb()
+        => Assert.True(CliRouter.IsInstallerVerb(new[] { "overlay", "on" }));
 }

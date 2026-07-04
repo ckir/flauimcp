@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.Json.Nodes;
 
 namespace FlaUI.Mcp.Server.Install;
@@ -20,14 +21,14 @@ public sealed class AgyConfigWriter
         _permsPath = permissionsPath;
     }
 
-    public AgentResult Install(string exePath)
+    public AgentResult Install(string exePath, IReadOnlyList<string>? args = null)
     {
         // Edit 1: mcpServers (servers file).
         var sObj = JsoncFile.Load(_serversPath);
         var servers = sObj["mcpServers"] as JsonObject;
         if (servers is null) { servers = new JsonObject(); sObj["mcpServers"] = servers; }
         var existing = servers[McpServerEntry.ServerName] as JsonObject;
-        var desired = McpServerEntry.ForExe(exePath).ToJsonNode();
+        var desired = McpServerEntry.ForExe(exePath, args).ToJsonNode();
         bool serversChanged = existing is null || existing.ToJsonString() != desired.ToJsonString();
         if (serversChanged) { servers[McpServerEntry.ServerName] = desired; JsoncFile.Save(_serversPath, sObj); }
 
