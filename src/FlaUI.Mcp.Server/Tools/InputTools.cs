@@ -113,8 +113,9 @@ public sealed class InputTools
     [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. By default keystrokes are PACED (interKeyDelayMs=15) so slow/async consumers (e.g. the Win11 Notepad autocomplete pipeline) don't drop or garble fast input; when paced the foreground is re-verified before EACH key, so a mid-type focus-steal still aborts (leaving the partial text already typed). Pass interKeyDelayMs=0 for a single atomic blast (fastest; may garble on reactive editors). By default (verify=true) the element is read back after typing and the result carries a `verify` object; on a mismatch it advises desktop_set_value (UIA ValuePattern) — the reliable path for reactive/RichEdit editors (the new Notepad). verify NEVER throws and NEVER converts a successful type into a failure. Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopType(
         [Description("Window handle, e.g. w1.")] string window,
-        [Description("Element ref to focus and type into, e.g. e23.")] string @ref,
         [Description("Text to type (<=4096 UTF-16 units).")] string text,
+        [Description("Element ref to focus and type into, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [Description(SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
         [Description("Delay in ms BETWEEN keystrokes (default 15). Paces synthetic typing so slow/async editors keep up; the foreground is re-verified before each key (abort-on-steal preserved). 0 = one atomic blast (fastest, may garble reactive editors). Negative -> InvalidArguments.")] int interKeyDelayMs = 15,
         [Description("Read the element back after typing and report whether the committed text matches (default true). Soft advisory only — NEVER throws on mismatch and never fails a successful type; on mismatch it recommends desktop_set_value. Pass false for old fire-and-forget speed (skips a ~100ms settle + two reads).")] bool verify = true)
@@ -126,52 +127,72 @@ public sealed class InputTools
             if (interKeyDelayMs < 0)
                 throw new ToolException(ToolErrorCode.InvalidArguments,
                     "interKeyDelayMs must be >= 0.", "pass 0 for a single atomic blast, or a positive per-key delay");
+            RequireExactlyOne(@ref, selector);
+            if (selector is { } s0) s0.Validate();
+
+            // Local response helper: the selector path additionally surfaces the minted ref as
+            // `resolvedElement` on EVERY return; the ref path's shape stays byte-identical to before T6b.
+            string? resolved = null;
+            string Reply(object verifyValue) => resolved is null
+                ? ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = verifyValue })
+                : ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = verifyValue, resolvedElement = resolved });
 
             // Focus + resolve the action target; when verifying, also read the RAW baseline text on the
             // SAME transient STA (before-read sits between Focus and the SendInput's pre-send re-verify,
             // which still aborts on a focus-steal — the before-read cannot blast the wrong window).
-            var (target, before) = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref,
-                (win, el) =>
-                {
-                    el.Focus();
-                    var t = InputTargeting.ResolveElementTarget(win, el);
-                    var b = verify ? VerifyReader.FromElement(el) : default;
-                    return (t, b);
-                }, timeoutMs);
+            Func<AutomationElement, AutomationElement, (ActionTarget, VerifyRead)> cb = (win, el) =>
+            {
+                el.Focus();
+                var t = InputTargeting.ResolveElementTarget(win, el);
+                var b = verify ? VerifyReader.FromElement(el) : default;
+                return (t, b);
+            };
+
+            ActionTarget target; VerifyRead before; string effectiveRef;
+            if (selector is { } sel)
+            {
+                var (val, r) = await _perception.RunOnSelectorForInputAsync(new WindowHandle(window), sel, cb, timeoutMs);
+                (target, before) = val;
+                effectiveRef = r;
+                resolved = r;
+            }
+            else
+            {
+                (target, before) = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, cb, timeoutMs);
+                effectiveRef = @ref!;
+            }
 
             await Task.Run(() => _guard.KeyType(text ?? string.Empty, target, interKeyDelayMs));
 
             if (!verify)
-                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = VerifyResult.Disabled });
+                return Reply(VerifyResult.Disabled);
 
             // Short-circuit on the BEFORE state before paying the settle + after-read. If the baseline
             // already disqualifies an assertion, the after-read is wasted AND (if it later threw) would
             // MISCLASSIFY the skip as "read-failed" — masking the true reason. So decide from `before`
             // first; only the empty-field precondition proceeds to read back. (agy AGY-AFTER finding #1.)
             if (before.Redacted)
-                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic",
-                    verify = VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "redacted", null, null)) });
+                return Reply(VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "redacted", null, null)));
             if (before.Text is null)
-                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic",
-                    verify = VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "no-textpattern", null, null)) });
+                return Reply(VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "no-textpattern", null, null)));
             if (before.Text.Length != 0)
-                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic",
-                    verify = VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "field-not-empty", null, null)) });
+                return Reply(VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "field-not-empty", null, null)));
 
             // before.Text == "" : the ONLY path that asserts. Verification latency is NOT charged against
             // the caller's type timeout — settle, then read-after on a fresh independent resolution with
-            // its own timeout. A failed read stays soft (never fails a successful type).
+            // its own timeout. A failed read stays soft (never fails a successful type). Reuse the SAME
+            // minted ref (effectiveRef) for the after-read — a second selector walk could match a
+            // different element or re-mint a fresh ref (Phase 10 #2 T6b).
             await Task.Delay(VerifySettleMs);
             VerifyRead after;
             try
             {
-                after = await _perception.RunOnRefReadAsync(new WindowHandle(window), @ref,
+                after = await _perception.RunOnRefReadAsync(new WindowHandle(window), effectiveRef,
                     el => VerifyReader.FromElement(el, readCapability: true), timeoutMs);
             }
             catch
             {
-                return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic",
-                    verify = VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "read-failed", null, null)) });
+                return Reply(VerifyResult.From(new VerifyOutcome(VerifyStatus.Skipped, "read-failed", null, null)));
             }
 
             VerifyOutcome outcome =
@@ -181,14 +202,15 @@ public sealed class InputTools
                     ? new VerifyOutcome(VerifyStatus.Skipped, "read-failed", null, null)
                     : TypedTextVerifier.Check(before.Text, after.Text, text ?? string.Empty);
 
-            return ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", verify = VerifyResult.From(outcome, after.CanSetValue) });
+            return Reply(VerifyResult.From(outcome, after.CanSetValue));
         });
 
     [McpServerTool(Destructive = true), Description("Paste text into the focused element via an atomic clipboard-backed Ctrl+V — the reliable path for reactive editors (new Win11 Notepad, Chromium contenteditable) that garble desktop_type keystrokes. ref = the element to focus. Up to 1,000,000 UTF-16 units. ALL input gates (lease/deny-list/budget/session) are checked BEFORE the clipboard is touched. By default (verify=true) the element is read back and a soft `verify` object is returned; the prior clipboard is restored ONLY when the paste is confirmed to have landed (else `clipboardRestored:\"abandoned\"`, leaving your text on the clipboard — expect this in reactive editors that transform pasted text, and whenever verify=false). A NON-text clipboard (image/files) is refused (ClipboardHoldsNonText) unless forceOverwriteClipboard=true. Mixed text+rich clipboards restore as plain text (`clipboardRestored:\"text-degraded\"`). Requires an active input lease; InputNotLeased/TargetDenied/etc. otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopPasteText(
         [Description("Window handle, e.g. w1.")] string window,
-        [Description("Element ref to focus and paste into, e.g. e23.")] string @ref,
         [Description("Text to paste (<=1,000,000 UTF-16 units).")] string text,
+        [Description("Element ref to focus and paste into, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [Description(SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
         [Description("Read the element back and report whether the paste landed (default true). Soft — never throws. ALSO gates clipboard restore: with verify=false the prior clipboard is not restored (clipboardRestored:\"abandoned\").")] bool verify = true,
         [Description("Proceed even if the clipboard holds NON-text content (image/files) that cannot be preserved. Default false = refuse with ClipboardHoldsNonText before any mutation.")] bool forceOverwriteClipboard = false)
@@ -200,30 +222,51 @@ public sealed class InputTools
             if (text.Length > MaxPasteUnits)
                 throw new ToolException(ToolErrorCode.InvalidArguments,
                     $"Text exceeds the {MaxPasteUnits} UTF-16 unit per-call cap.", "split the paste across calls on a whole-character boundary");
+            RequireExactlyOne(@ref, selector);
+            if (selector is { } s0) s0.Validate();
 
-            var fx = new PasteEffects(_perception, _guard, new WindowHandle(window), @ref, timeoutMs);
+            var fx = new PasteEffects(_perception, _guard, new WindowHandle(window), @ref, selector, timeoutMs);
             var outcome = await PasteFlow.RunAsync(fx, text, verify, forceOverwriteClipboard, ms => Task.Delay(ms));
-            return ToolResponse.Ok(new { ok = true, pathUsed = "clipboard-paste",
-                clipboardRestored = outcome.ClipboardRestored, verify = outcome.Verify });
+            return fx.ResolvedRef is null
+                ? ToolResponse.Ok(new { ok = true, pathUsed = "clipboard-paste",
+                    clipboardRestored = outcome.ClipboardRestored, verify = outcome.Verify })
+                : ToolResponse.Ok(new { ok = true, pathUsed = "clipboard-paste",
+                    clipboardRestored = outcome.ClipboardRestored, verify = outcome.Verify, resolvedElement = fx.ResolvedRef });
         });
 
     /// <summary>Production IPasteEffects: focus/read via the perception STA, gate via InputGuard, and
-    /// borrow the clipboard via ClipboardAccess. Effect ORDER + gating live in PasteFlow (tested headless).</summary>
+    /// borrow the clipboard via ClipboardAccess. Effect ORDER + gating live in PasteFlow (tested headless).
+    /// Phase 10 #2 T6b: the selector path resolves ONCE (atomic focus+before via RunOnSelectorForInputAsync)
+    /// and captures the minted ref in `_resolvedRef`; ReadAfterAsync reuses that SAME ref instead of
+    /// re-walking the selector, so it can't match a different element or re-mint on the after-read.</summary>
     private sealed class PasteEffects : IPasteEffects
     {
         private readonly PerceptionManager _p; private readonly InputGuard _g;
-        private readonly WindowHandle _win; private readonly string _ref; private readonly int _timeout;
-        public PasteEffects(PerceptionManager p, InputGuard g, WindowHandle win, string @ref, int timeout)
-        { _p = p; _g = g; _win = win; _ref = @ref; _timeout = timeout; }
+        private readonly WindowHandle _win; private readonly string? _ref; private readonly Selector? _selector;
+        private readonly int _timeout;
+        private string? _resolvedRef;
+        public string? ResolvedRef => _resolvedRef;
 
-        public Task<(ActionTarget, VerifyRead)> FocusAndBeforeReadAsync(bool verify) =>
-            _p.RunOnRefForInputAsync(_win, _ref, (win, el) =>
+        public PasteEffects(PerceptionManager p, InputGuard g, WindowHandle win, string? @ref, Selector? selector, int timeout)
+        { _p = p; _g = g; _win = win; _ref = @ref; _selector = selector; _timeout = timeout; }
+
+        public async Task<(ActionTarget, VerifyRead)> FocusAndBeforeReadAsync(bool verify)
+        {
+            Func<AutomationElement, AutomationElement, (ActionTarget, VerifyRead)> cb = (win, el) =>
             {
                 el.Focus();
                 var t = InputTargeting.ResolveElementTarget(win, el);
                 var b = verify ? VerifyReader.FromElement(el) : default;
                 return (t, b);
-            }, _timeout);
+            };
+            if (_selector is { } sel)
+            {
+                var (val, r) = await _p.RunOnSelectorForInputAsync(_win, sel, cb, _timeout);
+                _resolvedRef = r;
+                return val;
+            }
+            return await _p.RunOnRefForInputAsync(_win, _ref!, cb, _timeout);
+        }
 
         public void Preflight(ActionTarget target) => _g.PreflightInput(target);
         public Task<ClipboardSnapshot> SnapshotAsync() => ClipboardAccess.Snapshot();
@@ -231,7 +274,7 @@ public sealed class InputTools
         public Task PasteAsync(ActionTarget target) => Task.Run(() => _g.KeyChord(new[] { "Ctrl" }, "V", target));
         public void AuditForceOverwrite() => System.Console.Error.WriteLine("[audit] desktop_paste_text: force-overwrite of a non-text clipboard.");
         public Task<VerifyRead> ReadAfterAsync() =>
-            _p.RunOnRefReadAsync(_win, _ref, el => VerifyReader.FromElement(el, readCapability: true), _timeout);
+            _p.RunOnRefReadAsync(_win, _resolvedRef ?? _ref!, el => VerifyReader.FromElement(el, readCapability: true), _timeout);
     }
 
     [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Same lease/deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]

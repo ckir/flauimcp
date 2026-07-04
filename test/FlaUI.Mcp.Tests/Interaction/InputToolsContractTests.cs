@@ -101,4 +101,36 @@ public class InputToolsSelectorGateTests
         var result = await tools.DesktopKey("Enter", selector: new Selector(AutomationId: "Ok"));
         Assert.Contains("InvalidArguments", result);
     }
+
+    [Fact]
+    public async Task Type_neither_ref_nor_selector_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopType("w1", "hello");
+        Assert.Contains("InvalidArguments", result);
+    }
+
+    [Fact]
+    public async Task Type_both_ref_and_selector_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopType("w1", "hello", @ref: "e1", selector: new Selector(AutomationId: "Input"));
+        Assert.Contains("InvalidArguments", result);
+    }
+
+    [Fact]
+    public async Task PasteText_neither_ref_nor_selector_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopPasteText("w1", "hello");
+        Assert.Contains("InvalidArguments", result);
+    }
+
+    [Fact]
+    public async Task PasteText_both_ref_and_selector_is_InvalidArguments()
+    {
+        var tools = Make();
+        var result = await tools.DesktopPasteText("w1", "hello", @ref: "e1", selector: new Selector(AutomationId: "Input"));
+        Assert.Contains("InvalidArguments", result);
+    }
 }

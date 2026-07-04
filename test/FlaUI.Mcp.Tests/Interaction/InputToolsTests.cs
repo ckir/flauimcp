@@ -53,7 +53,7 @@ public class InputToolsTests
         var inputRef = RefForAid(snap.Tree, "Input");
 
         var tools = BuildTools(mgr, perception);
-        var json = await tools.DesktopType(handle.Id, inputRef, "hello-4b", 4000);
+        var json = await tools.DesktopType(handle.Id, "hello-4b", inputRef, timeoutMs: 4000);
         Assert.DoesNotContain("\"error\"", json);
 
         var val = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
@@ -118,7 +118,7 @@ public class InputToolsTests
         var inputRef = RefForAid(snap.Tree, "Input");
 
         var tools = BuildTools(mgr, perception);
-        var json = await tools.DesktopPasteText(handle.Id, inputRef, "pasted-hello", 4000);
+        var json = await tools.DesktopPasteText(handle.Id, "pasted-hello", inputRef, timeoutMs: 4000);
         Assert.DoesNotContain("\"error\"", json);
         Assert.Contains("clipboard-paste", json);
 
