@@ -26,17 +26,37 @@ public sealed class InteractionTools
         => ToolResponse.GuardWrite(_options, async () =>
         {
             SelectorGating.RequireExactlyOne(@ref, selector);
+            var handle = new WindowHandle(window);
             if (selector is { } sel)
             {
                 sel.Validate();
+                // Overlay (post-authorization = after GuardWrite + a successful resolve; pre-effect):
+                // phase-1 read bounds off the fresh selector walk, preview off-STA, then the atomic act.
+                if (_overlay.Enabled)
+                {
+                    var (rect, _) = await _perception.RunOnSelectorReadAsync(handle, sel, BoundsOf, timeoutMs);
+                    await _overlay.PreviewAsync(rect);
+                }
                 var (_, resolved) = await _perception.RunOnSelectorActionAsync(
-                    new WindowHandle(window), sel, el => { act(el); return true; }, timeoutMs);
+                    handle, sel, el => { act(el); return true; }, timeoutMs);
                 return ToolResponse.Ok(new { ok = true, pathUsed = "pattern", resolvedElement = resolved });
             }
-            await _perception.RunOnRefActionAsync(new WindowHandle(window), @ref!,
-                el => { act(el); return true; }, timeoutMs);
+            if (_overlay.Enabled)
+            {
+                var rect = await _perception.RunOnRefReadAsync(handle, @ref!, BoundsOf, timeoutMs);
+                await _overlay.PreviewAsync(rect);
+            }
+            await _perception.RunOnRefActionAsync(handle, @ref!, el => { act(el); return true; }, timeoutMs);
             return ToolResponse.Ok(new { ok = true, pathUsed = "pattern" });
         });
+
+    // Read an element's physical bounds as an OverlayRect on the STA (best-effort — a throw degrades to a
+    // degenerate rect the overlay skips; INV-OV-4).
+    private static OverlayRect BoundsOf(FlaUI.Core.AutomationElements.AutomationElement el)
+    {
+        try { var r = el.BoundingRectangle; return new OverlayRect(r.Left, r.Top, r.Width, r.Height); }
+        catch { return default; }
+    }
 
     private const string RefDesc = "Element ref from a snapshot, e.g. e23. Exactly one of ref | selector.";
 
