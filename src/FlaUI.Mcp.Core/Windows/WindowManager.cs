@@ -300,6 +300,9 @@ public sealed class WindowManager : IDisposable
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hwnd);
+
     [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     private const uint GA_ROOT = 2;
 
@@ -495,9 +498,54 @@ public sealed class WindowManager : IDisposable
 
     public async Task CloseAsync(WindowHandle handle)
     {
-        try { await RunOnWindowAsync(handle, w => { w.Close(); return true; }); }
+        try
+        {
+            await RunOnWindowAsync(handle, w =>
+            {
+                // Capture the target's hwnd + whether it OWNS the OS foreground BEFORE closing it, so we
+                // can heal the keyboard-focus orphan that closing the foreground window causes: this server
+                // is a BACKGROUND process, so Windows' auto-activation of the next window is unreliable
+                // under foreground-lock and the human's keystrokes land nowhere until they click a window.
+                IntPtr hwnd = IntPtr.Zero;
+                try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+                bool wasForeground = hwnd != IntPtr.Zero && GetForegroundWindow() == hwnd;
+                w.Close();
+                if (wasForeground) RestoreForegroundAfterClose(hwnd);
+                return true;
+            });
+        }
         catch (ToolException) { /* already gone */ }
         finally { Invalidate(handle); }
+    }
+
+    /// <summary>Best-effort keyboard-focus restoration after closing the OS-foreground window. The Win32
+    /// foreground-lock (which defeats a background process's SetForegroundWindow) only relaxes once the
+    /// closed window is actually DESTROYED — and UIA <c>Window.Close()</c> is async, returning before
+    /// destruction — so spin-wait (bounded) for <c>!IsWindow</c> before claiming foreground for the next
+    /// Z-ordered top-level. Runs on the query STA; uses pure Win32 (no UIA). NEVER throws: the close has
+    /// already succeeded, so a failed refocus must not surface as an error to the agent. Deliberately does
+    /// NOT use AttachThreadInput (deadlock-prone against a thread hanging during shutdown).</summary>
+    private void RestoreForegroundAfterClose(IntPtr closedHwnd)
+    {
+        try
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(500);
+            while (IsWindow(closedHwnd) && DateTime.UtcNow < deadline) Thread.Sleep(25);
+            var next = PickForegroundFallback(EnumTopLevel(), closedHwnd);
+            if (next != IntPtr.Zero) SetForegroundWindow(next);
+        }
+        catch { /* focus restoration is best-effort; the window is already closed */ }
+    }
+
+    /// <summary>Pick the window to give foreground after a close: the first Z-ordered top-level that is
+    /// NOT the one we just closed. <see cref="EnumTopLevel"/> already filters to visible, titled,
+    /// non-sentinel windows in Z-order (Alt+Tab parity), so this only has to drop the closed hwnd. Pure
+    /// over its input (no Win32) -> headless-testable.</summary>
+    internal static IntPtr PickForegroundFallback(IReadOnlyList<(IntPtr Hwnd, string Title, int Pid)> zorder, IntPtr closedHwnd)
+    {
+        foreach (var w in zorder)
+            if (w.Hwnd != closedHwnd) return w.Hwnd;
+        return IntPtr.Zero;
     }
 
     public void Dispose()

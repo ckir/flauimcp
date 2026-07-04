@@ -67,4 +67,37 @@ public class WindowLivenessTests
     [Fact]
     public void HwndStillOwnedBy_false_for_a_dead_hwnd_zero_pid()
         => Assert.False(WindowManager.HwndStillOwnedBy(recordedPid: 42, currentPidForHwnd: 0));
+
+    // ── Foreground-restoration fallback (type-then-close keyboard-orphan fix) ──────────────
+    // EnumTopLevel already yields visible, titled, non-sentinel windows in Z-order, so the pure
+    // decision is only "first Z-ordered window that isn't the one we just closed". Live SetForeground
+    // is Category=Desktop; this covers the selection.
+    private static (IntPtr Hwnd, string Title, int Pid) Win(int hwnd, string title = "app", int pid = 100)
+        => (new IntPtr(hwnd), title, pid);
+
+    [Fact]
+    public void PickForegroundFallback_returns_first_zorder_window_when_closed_hwnd_absent()
+    {
+        var z = new[] { Win(10), Win(20), Win(30) };
+        Assert.Equal(new IntPtr(10), WindowManager.PickForegroundFallback(z, new IntPtr(999)));
+    }
+
+    [Fact]
+    public void PickForegroundFallback_skips_the_closed_hwnd_and_returns_the_next_in_zorder()
+    {
+        var z = new[] { Win(10), Win(20), Win(30) };
+        Assert.Equal(new IntPtr(20), WindowManager.PickForegroundFallback(z, new IntPtr(10)));
+    }
+
+    [Fact]
+    public void PickForegroundFallback_returns_zero_when_only_the_closed_window_remains()
+    {
+        var z = new[] { Win(10) };
+        Assert.Equal(IntPtr.Zero, WindowManager.PickForegroundFallback(z, new IntPtr(10)));
+    }
+
+    [Fact]
+    public void PickForegroundFallback_returns_zero_for_an_empty_desktop()
+        => Assert.Equal(IntPtr.Zero,
+            WindowManager.PickForegroundFallback(Array.Empty<(IntPtr, string, int)>(), new IntPtr(10)));
 }
