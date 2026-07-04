@@ -254,6 +254,44 @@ not assumed:
 - *Ambiguity is real:* an earlier `desktop_find name="Selection"` returned **3** matches — the exact
   case the `count != 1` fail-closed invariant exists to catch.
 
+**Second live smoke (2026-07-04, session 2, Calculator) — findings folded into the plan requirements.**
+Re-drove the tool to pressure-test #2's contract against today's `desktop_find` (which already implements
+the resolution #2 reuses). Four findings:
+- *Under-constrained walk is real, not hypothetical.* `desktop_find` with **no material field** returned
+  **52 matches (truncated)** — today's `find` has no guard and does the full `TrueCondition` tree walk.
+  This **empirically earns** the fold "selector MUST require ≥1 material field and fast-fail
+  `InvalidArguments` at the tool layer before UIA" — it is a real gate today's `find` lacks (plan should
+  decide whether to also retrofit `find`, or scope the gate to the selector resolver only).
+- *Ambiguity is easy to hit; `count==1` is well-earned.* `controlType=Button` → **36**; `name="Memory"
+  nameMatch=contains` → **5**; but `name="Five" + controlType=Button` → **exactly 1**. Confirms the
+  no-`automationId` fallback (name+controlType) CAN be unique, and that broad selectors correctly land in
+  `AMBIGUOUS_MATCH` territory (fail closed) — validating the recovery-string design.
+- *NEW — `nameMatch=contains` is CASE-SENSITIVE (Ordinal).* `contains "Memory"` matched the five
+  capital-**M** controls but **missed** "Clear all **m**emory" and "Open **m**emory flyout". Since the
+  selector reuses this matcher, an agent querying `"memory"` would silently miss half the controls — a
+  quiet foot-gun. **DECIDED (user, 2026-07-04): case-INSENSITIVE.** The selector's `name` matching is
+  case-insensitive (both `eq` and `contains`), so an agent that doesn't know exact casing still resolves
+  the target. **Mechanism (AGY-AFTER R5 — the "playground-divergence" fix, folded):** expose an explicit
+  **`ignoreCase: bool` on the shared `FindQuery` wire shape**, ONE mechanism for both tools —
+  `desktop_find` defaults it **`false`** (preserves shipped Ordinal back-compat), the selector defaults
+  it **`true`** (the ergonomic call above). This closes a real trap agy caught: if the selector were
+  silently case-insensitive while `desktop_find` stayed Ordinal, an agent would *test* a query with
+  `desktop_find` (1 match → "unique/safe"), embed it as a selector, and have it widen to `AMBIGUOUS_MATCH`
+  only at action time — the testing tool disagreeing with the executing tool. With a shared `ignoreCase`,
+  the agent previews selector matching via `desktop_find(ignoreCase:true)` BEFORE committing, and can set
+  `ignoreCase:false` on a selector to disambiguate a genuine `Submit`/`submit` collision (else it's forced
+  off the selector path onto snapshots). The `AMBIGUOUS_MATCH` recovery string MUST name the
+  `ignoreCase:false` escape. Matching is **culture-invariant** (`OrdinalIgnoreCase` for the managed
+  `contains` post-filter; native `PropertyConditionFlags.IgnoreCase` for the `eq` pushdown — plan-time
+  verify FlaUI's `ConditionFactory` wires this flag) so it stays deterministic across machines and does
+  NOT break the R3 native-pushdown requirement. Case-insensitivity **widens** the match set, so it
+  interacts with `count==1`: it can turn a previously-unique `name` into `AMBIGUOUS_MATCH` — correct
+  fail-closed behavior, covered by the (now `ignoreCase`-aware) recovery string.
+- *Coordinate space is consistent (non-finding, cleared).* A `find` vs snapshot bounds gap for `num5Button`
+  (`[627,535]` vs `{191,529}`) was purely the **window having moved** (same +436px x-offset on the window
+  itself); width/height identical. `find` and `snapshot` share one physical-px space, so `resolvedElement`
+  bounds are consistent with snapshot bounds — no wire concern.
+
 ### #3 — Composite `desktop_orient(pid|title)` (deferred, may be dropped)
 
 **Intent.** One call returns `{handle, snapshot}` and, when the window is `wakeable`, *optionally*
@@ -320,3 +358,15 @@ R1 framing) + 3 more; R3 folded 3 plan-time hardening items; R4 clean. Spec is d
 plan-time requirements are captured — ready to drive the #1 line-level plan once the user picks the
 forks below. (Forks remain the USER's call: #1 1a-vs-1b, #2 selector-alongside-ref shape, #3
 keep-deferred-or-drop.)
+
+**AGY-AFTER panel — rounds 5–6 (post-second-smoke fold).** After a second live Calculator smoke
+(session 2) I folded four findings under #2 (under-constrained walk confirmed real; ambiguity/count==1
+confirmed; `nameMatch=contains` found CASE-SENSITIVE; bounds coordinate space cleared as a non-finding)
+and the USER decided the selector's `name` matching is **case-insensitive**. R5 (focused delta panel)
+caught the "playground-divergence trap" — a selector silently case-insensitive while `desktop_find`
+stayed Ordinal would make the agent's *testing* tool disagree with its *executing* tool → surprise
+`AMBIGUOUS_MATCH` at action time. Folded the fix: an explicit **`ignoreCase: bool` on the shared
+`FindQuery`** (find defaults false / selector defaults true; previewable + escapable; native
+`PropertyConditionFlags.IgnoreCase` pushdown verified feasible). **R6 confirmation = clean GO**, no new
+flaw introduced by the fix. Spec re-converged; #2's line-level plan is the next step (user chose to
+build the automationId selector).
