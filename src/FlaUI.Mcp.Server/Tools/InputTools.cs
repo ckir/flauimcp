@@ -21,10 +21,12 @@ public sealed class InputTools
     private readonly ServerOptions _options;
     private readonly InputGuard _guard;
     private readonly IPlatformEnvironment _env;
+    private readonly IActionOverlay _overlay;
 
     public InputTools(PerceptionManager perception, WindowManager windows, ServerOptions options,
-        InputGuard guard, IPlatformEnvironment env)
-    { _perception = perception; _windows = windows; _options = options; _guard = guard; _env = env; }
+        InputGuard guard, IPlatformEnvironment env, IActionOverlay? overlay = null)
+    { _perception = perception; _windows = windows; _options = options; _guard = guard; _env = env;
+      _overlay = overlay ?? NullActionOverlay.Instance; }
 
     // Phase 10 #2 T6a: the selector path routes through RunOnSelectorForInputAsync (T4), which mirrors
     // RunOnRefForInputAsync exactly (same offscreen guard, same transient action STA, same WriteMode) —

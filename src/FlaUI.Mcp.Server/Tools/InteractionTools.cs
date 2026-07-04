@@ -15,9 +15,11 @@ public sealed class InteractionTools
     private readonly PerceptionManager _perception;
     private readonly WindowManager _windows;
     private readonly ServerOptions _options;
+    private readonly IActionOverlay _overlay;
 
-    public InteractionTools(PerceptionManager perception, WindowManager windows, ServerOptions options)
-    { _perception = perception; _windows = windows; _options = options; }
+    public InteractionTools(PerceptionManager perception, WindowManager windows, ServerOptions options,
+        IActionOverlay? overlay = null)
+    { _perception = perception; _windows = windows; _options = options; _overlay = overlay ?? NullActionOverlay.Instance; }
 
     private Task<string> Act(string window, string? @ref, Selector? selector,
         Action<FlaUI.Core.AutomationElements.AutomationElement> act, int timeoutMs)
