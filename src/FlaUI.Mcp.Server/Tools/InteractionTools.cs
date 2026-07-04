@@ -134,8 +134,7 @@ public sealed class InteractionTools
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
-            await _windows.RunOnWindowActionAsync(new WindowHandle(window),
-                (win, _) => { Interactor.WindowTransform(win.AsWindow(), action); return true; }, timeoutMs);
+            await _windows.WindowTransformAsync(new WindowHandle(window), action, timeoutMs);
             return ToolResponse.Ok(new { ok = true, action });
         });
 }
