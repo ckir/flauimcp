@@ -32,6 +32,20 @@ Code reconnaissance corrected four assumptions — all reflected in the tasks be
 - **Three sibling wrappers** exist and must each get a selector twin: `RunOnRefActionAsync` (InteractionTools), `RunOnRefForInputAsync` (InputTools — derives the `ActionTarget` for audit/lease), `RunOnRefReadAsync` (ContentTools reads, `RefResolveMode.Lenient`). A shared on-STA `ResolveSelectorOnSta` core feeds all three. There is **no** cheap off-STA existence pre-check for a selector (unlike ref's `Lookup`), so 0-match is detected on-STA.
 - **The audit sink is window-identity-shaped** (`InputAudit.Record(nint window,int pid,string? process,string action,int len)` via `ActionTarget{Root,Pid,ProcessName,WindowClass}`) — recording the resolved element's RuntimeId/bounds is a **wire-shape change** (Task 8, candidate to defer).
 
+## Desktop-test infrastructure correction (2026-07-04, exposed during T2 execution)
+
+**There is NO Calculator automation and NO `test/FlaUI.Mcp.Tests/Desktop/` directory.** All `[Trait("Category","Desktop")]` tests drive an **in-repo WPF fixture, `TestAppFixture`**, and live under `test/FlaUI.Mcp.Tests/Perception/` (e.g. `FindTests.cs`). Any task step below that says "launch Calculator" / `num5Button` / `DesktopSelectorTests.cs` / `DesktopSelectorActionTests.cs` is a **false premise from the plan-authoring phase** — use `TestAppFixture` instead. Real controls available (verified in `FindTests.cs`): `OkButton` (Name "OK", unique — good for count==1), `RebuildItemsButton` ("Rebuild Items") + `ClearItemsButton` ("Clear Items") + `OkButton` (≥3 Buttons total — `ControlType:"Button"` → `AmbiguousMatch`), `ItemA`/`ItemB` (ListItems), `Secret` (PasswordBox, value redacted). Standard Desktop-test harness:
+```csharp
+using var app = new TestAppFixture();
+using var dispatcher = new AutomationDispatcher();
+var mgr = new WindowManager(dispatcher);
+var refs = new RefRegistry();
+var perception = new PerceptionManager(mgr, refs, new SnapshotCache());
+var handle = await mgr.OpenByPidAsync(app.Process.Id);
+using (mgr) { /* perception.FindAsync / RunOnSelector... */ }
+```
+Ref reads in tests use `perception.RunOnRefAsync(handle, ref, el => …)` (verify the exact selector-wrapper names at T4 Step-0 — the ref trio may be named `RunOnRefActionAsync`/…; `RunOnRefAsync` is the generic used by existing tests). Desktop tests are still **controller-run** (authored by the subagent, executed by the orchestrator).
+
 ---
 
 ## File Structure (verified touchpoints)
