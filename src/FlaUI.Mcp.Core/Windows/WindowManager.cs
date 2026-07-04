@@ -461,8 +461,16 @@ public sealed class WindowManager : IDisposable
         }, timeoutMs);
     }
 
-    public Task FocusAsync(WindowHandle handle) =>
-        RunOnWindowAsync(handle, w => { w.Focus(); w.SetForeground(); return true; });
+    public Task<bool> FocusAsync(WindowHandle handle) =>
+        RunOnWindowAsync(handle, w =>
+        {
+            w.Focus(); w.SetForeground();
+            IntPtr hwnd = IntPtr.Zero;
+            try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+            // Under the foreground-lock a background process's SetForeground can silently no-op; report the
+            // truth so the agent sees the ceiling instead of assuming success.
+            return hwnd != IntPtr.Zero && GetForegroundWindow() == hwnd;
+        });
 
     public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowAsync() =>
         _dispatcher.RunQueryAsync<(WindowHandle, string, int)?>(() =>

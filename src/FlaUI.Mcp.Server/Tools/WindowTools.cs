@@ -50,7 +50,11 @@ public sealed class WindowTools
 
     [McpServerTool(Destructive = true), Description("Bring a window to the foreground. Blocked in --read-only-mode.")]
     public Task<string> DesktopFocusWindow([Description("Window handle, e.g. w1.")] string window)
-        => ToolResponse.GuardWrite(_options, async () => { await _windows.FocusAsync(new WindowHandle(window)); return ToolResponse.Ok(new { ok = true }); });
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            var gained = await _windows.FocusAsync(new WindowHandle(window));
+            return ToolResponse.Ok(new { ok = true, foregroundGained = gained });
+        });
 
     [McpServerTool(Destructive = true), Description("Close a window and free its handle. Blocked in --read-only-mode.")]
     public Task<string> DesktopCloseWindow([Description("Window handle, e.g. w1.")] string window)
