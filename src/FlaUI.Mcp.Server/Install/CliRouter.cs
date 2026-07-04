@@ -75,10 +75,50 @@ public static class CliRouter
                 outp.WriteLine(Lease.LeaseWriter.Revoke());
                 return 0;
 
+            case "--help":
+            case "-h":
+                PrintHelp(outp);
+                return 0;
+
             default:
                 outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells]|lock|overlay on|off] [--agent agy|generic|claude|all] [--config <path>]");
                 return 0;
         }
+    }
+
+    /// <summary>Structured multi-line help for `flaui-mcp --help`/`-h` (and the no-arg default).</summary>
+    private static void PrintHelp(TextWriter outp)
+    {
+        outp.WriteLine("flaui-mcp — an MCP server that gives an AI agent eyes & hands on the Windows desktop.");
+        outp.WriteLine();
+        outp.WriteLine("Run with NO verb to start the stdio MCP server (how MCP clients launch it). The verbs");
+        outp.WriteLine("below configure and manage the installation.");
+        outp.WriteLine();
+        outp.WriteLine("USAGE:");
+        outp.WriteLine("  flaui-mcp <verb> [options]");
+        outp.WriteLine();
+        outp.WriteLine("VERBS:");
+        outp.WriteLine("  install                    Register flaui-mcp in every detected MCP client config.");
+        outp.WriteLine("  uninstall [--purge-data]   Remove the registration (and the data dir with --purge-data).");
+        outp.WriteLine("  overlay on|off             Enable/disable the intent overlay — a red rectangle drawn on");
+        outp.WriteLine("                             the target ~0.5s before each mutative action. Off by default.");
+        outp.WriteLine("  unlock [--minutes N]       Grant a time-bounded synthetic-input lease (default 5 min).");
+        outp.WriteLine("          [--allow-shells]   Also permit input into interlocked shells/terminals.");
+        outp.WriteLine("  lock                       Revoke the synthetic-input lease immediately.");
+        outp.WriteLine("  print-config               Print the generic mcpServers JSON snippet for manual setup.");
+        outp.WriteLine("  --version, -v              Print the version.");
+        outp.WriteLine("  --help, -h                 Show this help.");
+        outp.WriteLine();
+        outp.WriteLine("COMMON OPTIONS:");
+        outp.WriteLine("  --agent agy|claude|generic|all   Target specific client(s) (default: all). Applies to");
+        outp.WriteLine("                                   install / uninstall / overlay.");
+        outp.WriteLine("  --config <path>                  Override the config file path.");
+        outp.WriteLine();
+        outp.WriteLine("EXAMPLES:");
+        outp.WriteLine("  flaui-mcp install");
+        outp.WriteLine("  flaui-mcp overlay on               # watch the agent act (red rect before each action)");
+        outp.WriteLine("  flaui-mcp unlock --minutes 30      # allow synthetic input for 30 minutes");
+        outp.WriteLine("  flaui-mcp uninstall --purge-data");
     }
 
     private readonly record struct Paths(string AgyServers, string AgyPerms, string GenericPath, string DataDir);

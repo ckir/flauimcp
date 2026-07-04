@@ -144,4 +144,30 @@ public class CliRouterTests
     [Fact]
     public void Overlay_is_a_recognized_installer_verb()
         => Assert.True(CliRouter.IsInstallerVerb(new[] { "overlay", "on" }));
+
+    [Fact]
+    public void Help_documents_all_the_verbs()
+    {
+        var sb = new StringWriter();
+        var code = CliRouter.Run(new[] { "--help" }, @"C:\x\flaui-mcp.exe", sb);
+        Assert.Equal(0, code);
+        var s = sb.ToString();
+        Assert.Contains("USAGE:", s);
+        Assert.Contains("install", s);
+        Assert.Contains("overlay on|off", s);
+        Assert.Contains("unlock", s);
+        Assert.Contains("--version", s);
+    }
+
+    [Fact]
+    public void No_args_and_dash_h_both_show_the_full_help()
+    {
+        var noArgs = new StringWriter();
+        Assert.Equal(0, CliRouter.Run(System.Array.Empty<string>(), @"C:\x\flaui-mcp.exe", noArgs));
+        Assert.Contains("VERBS:", noArgs.ToString());
+
+        var dashH = new StringWriter();
+        Assert.Equal(0, CliRouter.Run(new[] { "-h" }, @"C:\x\flaui-mcp.exe", dashH));
+        Assert.Contains("VERBS:", dashH.ToString());
+    }
 }
