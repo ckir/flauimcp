@@ -53,8 +53,10 @@ flaui-mcp unlock --minutes N [--allow-shells]  # grant a time-bounded synthetic-
 flaui-mcp lock                              # revoke the synthetic-input lease immediately
 flaui-mcp install   --agent agy|generic|claude|all
 flaui-mcp uninstall --agent agy|generic|claude|all
+flaui-mcp overlay on|off --agent agy|generic|claude|all   # toggle the intent overlay (re-registers with/without --overlay)
 flaui-mcp print-config --agent generic      # print the JSON snippet to stdout
 flaui-mcp --version
+flaui-mcp --help                            # structured help: all verbs, options, examples
 ```
 
 `--config <path>` overrides the target config file (useful for testing without touching your

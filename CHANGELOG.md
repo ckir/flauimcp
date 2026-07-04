@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`flaui-mcp overlay on|off`** — a one-command toggle that enables/disables the intent overlay by
+  re-registering the `flaui-mcp` server with (or without) `--overlay --overlay-ms=800` across every detected
+  client config (`claude mcp` for Claude Code; the JSON writers for agy/generic). Off by default.
+- **Overlay discoverability** — the post-install message and the README now point at `flaui-mcp overlay on`
+  instead of leaving users to hand-edit config args.
+- **Structured `flaui-mcp --help` / `-h`** — replaces the terse one-line usage with multi-line help: every verb
+  with a description, common options, and examples. A no-argument invocation shows it too.
+
+### Changed
+- `flaui-mcp install` for Claude Code now re-registers idempotently (remove-then-add), so re-running install or
+  toggling the overlay never fails on a duplicate server name.
+
 ## [0.10.1] - 2026-07-04
 
 ### Added
