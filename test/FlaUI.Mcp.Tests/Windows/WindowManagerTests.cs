@@ -1,5 +1,6 @@
 using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
 using Xunit;
@@ -143,5 +144,28 @@ public class WindowManagerTests : IClassFixture<TestAppFixture>
         var h1 = first.First(w => w.Pid == _app.Process.Id).Handle;
         var h2 = second.First(w => w.Pid == _app.Process.Id).Handle;
         Assert.Equal(h1, h2); // mint-or-reuse keyed by hwnd — no fresh id per poll
+    }
+
+    [Fact]
+    public async Task Minimize_ForegroundWindow_RestoresFocus_ToAnotherWindow()
+    {
+        // GUARANTEE a fallback exists: a second TestApp window (self-disposing), mirroring the
+        // `An_action_primitive...` test's pattern. Without it, PickForegroundFallback could return Zero
+        // on a pristine one-window desktop and the assertion below would be meaningless/flaky.
+        using var fallbackApp = new FlaUI.Mcp.Tests.TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        await mgr.FocusAsync(handle);              // make the primary TestApp the OS foreground
+        var hwndBefore = Win32Interop.GetForegroundWindow();
+
+        // Act
+        await mgr.WindowTransformAsync(handle, "minimize", 4000);
+
+        // Assert: foreground was handed off — the minimized window no longer owns it (no orphan).
+        var hwndAfter = Win32Interop.GetForegroundWindow();
+        Assert.NotEqual(hwndBefore, hwndAfter);
+        Assert.NotEqual(IntPtr.Zero, hwndAfter);
     }
 }
