@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] - 2026-07-05
+
+### Fixed
+- **Keyboard focus is no longer orphaned after closing a focused window.** Closing the OS-foreground
+  window (e.g. `desktop_type` into a field, then `desktop_close_window`) previously left keyboard focus
+  nowhere — because the server is a background process, Windows' foreground-lock made the OS's normal
+  auto-activation of the next window unreliable, so the user's physical keystrokes landed nowhere until
+  they clicked a window. `desktop_close_window` now restores foreground to the next visible top-level
+  window (Alt+Tab parity) when it closes the foreground window, waiting for the closed window to actually
+  be destroyed (which releases the foreground-lock) before claiming foreground. Best-effort: a successful
+  close never fails because of focus restoration.
+
 ## [0.11.0] - 2026-07-04
 
 ### Added
