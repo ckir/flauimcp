@@ -118,4 +118,30 @@ public class WindowManagerTests : IClassFixture<TestAppFixture>
         var ex = Assert.Throws<ToolException>(() => refs.Lookup(handle.Id, elRef));
         Assert.Equal(ToolErrorCode.RefNotFound, ex.Code); // evicted through the wiring
     }
+
+    // A lazily-minted handle (via ListWindowsAsync includeHandles) resolves to a live window on first read
+    // WITHOUT a prior desktop_open_window (deferred here from Task 4; needs the 2-arg overload).
+    [Fact]
+    public async Task Lazy_handle_from_list_resolves_on_first_read()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var list = await mgr.ListWindowsAsync(includeBounds: false, includeHandles: true);
+        var mine = list.First(w => w.Pid == _app.Process.Id);
+        Assert.NotNull(mine.Handle);
+        var title = await mgr.RunOnWindowAsync(new WindowHandle(mine.Handle!), w => w.Title);
+        Assert.False(string.IsNullOrEmpty(title));
+    }
+
+    [Fact]
+    public async Task ListWindows_includeHandles_reuses_the_same_wN_across_calls()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var first = await mgr.ListWindowsAsync(false, includeHandles: true);
+        var second = await mgr.ListWindowsAsync(false, includeHandles: true);
+        var h1 = first.First(w => w.Pid == _app.Process.Id).Handle;
+        var h2 = second.First(w => w.Pid == _app.Process.Id).Handle;
+        Assert.Equal(h1, h2); // mint-or-reuse keyed by hwnd — no fresh id per poll
+    }
 }

@@ -47,14 +47,17 @@ public sealed class WindowManager : IDisposable
         _automation = _dispatcher.RunQueryAsync(() => new UIA3Automation()).GetAwaiter().GetResult();
     }
 
-    public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync() => ListWindowsAsync(false);
+    public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync() => ListWindowsAsync(false, false);
 
-    public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync(bool includeBounds) =>
+    public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync(bool includeBounds) => ListWindowsAsync(includeBounds, false);
+
+    public Task<IReadOnlyList<WindowInfo>> ListWindowsAsync(bool includeBounds, bool includeHandles) =>
         _dispatcher.RunQueryAsync<IReadOnlyList<WindowInfo>>(() =>
         {
             PruneClosedWindows(); // Phase 6 backstop: reclaim windows closed w/o a process exit
             // PURE Win32 — no UIA. A UIA Title/ProcessId read on the query STA blocks with no
             // timeout on ANY momentarily-unresponsive desktop window; Win32 GetWindowText does not.
+            // includeHandles mints via LazyHandleFor (pure Win32 + dict writes) — still no UIA touch.
             var foreground = GetForegroundWindow();
             var list = new List<WindowInfo>(); int z = 0;
             foreach (var (hwnd, title, pid) in EnumTopLevel())
@@ -62,7 +65,9 @@ public sealed class WindowManager : IDisposable
                 WindowBounds? b = null;
                 if (includeBounds && GetWindowRect(hwnd, out var r))
                     b = new WindowBounds(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
-                list.Add(new WindowInfo(title, SafeProcessName(pid), pid, hwnd == foreground, b, includeBounds ? z : (int?)null));
+                string? handle = includeHandles ? LazyHandleFor(hwnd, pid) : null;
+                list.Add(new WindowInfo(title, SafeProcessName(pid), pid, hwnd == foreground, b,
+                    includeBounds ? z : (int?)null, handle));
                 z++;
             }
             return list;
