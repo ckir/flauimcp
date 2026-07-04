@@ -31,6 +31,8 @@ public static class CliRouter
                 foreach (var r in Apply(agent, paths, install: true, exePath))
                     outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
                 outp.WriteLine("If you configured agy, restart it to load the new tools.");
+                outp.WriteLine("Tip: to watch the agent act on screen, add \"--overlay\" to the server args " +
+                    "(off by default, no overhead) — see the README's \"Watching & auditing the agent\" section.");
                 return 0;
 
             case "uninstall":

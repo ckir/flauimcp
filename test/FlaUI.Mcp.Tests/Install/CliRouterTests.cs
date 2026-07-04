@@ -82,4 +82,22 @@ public class CliRouterTests
             foreach (var f in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(cfg) + "*")) File.Delete(f);
         }
     }
+
+    [Fact]
+    public void Install_output_hints_at_the_overlay_flag()
+    {
+        // Discoverability: the post-install message must surface the opt-in --overlay flag.
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        try
+        {
+            var sb = new StringWriter();
+            var code = CliRouter.Run(new[] { "install", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", sb);
+            Assert.Equal(0, code);
+            Assert.Contains("--overlay", sb.ToString());
+        }
+        finally
+        {
+            foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f);
+        }
+    }
 }

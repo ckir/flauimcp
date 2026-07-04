@@ -156,7 +156,8 @@ Understand what the agent is about to do before it does it:
   red rectangle on the target element (or a crosshair at a coordinate pair) for ~500 ms (configurable;
   `0` disables) **before** each mutative action — so a human watching the screen sees what the agent
   is about to touch. It is a **visibility aid, not an authorization gate**; the lease/deny-list/read-only-mode
-  safety foundation remains the real gates. Off by default — zero cost when not enabled.
+  safety foundation remains the real gates. Off by default — zero cost when not enabled. To turn it on,
+  add `--overlay` (optionally `--overlay-ms=800`) to the server's `args` in your MCP client config, then reconnect.
 - **Element-identity audit trace** — when a mutative action (via `desktop_type`, `desktop_click`,
   `desktop_invoke`, etc.) resolves a `selector` target, the input audit line now names the resolved
   element's stable identity: an allow-listed set of `RuntimeId`, `AutomationId`, `ClassName`,
