@@ -14,7 +14,8 @@ public sealed record WindowBounds(int X, int Y, int W, int H);
 public sealed record WindowInfo(
     string Title, string ProcessName, int Pid, bool IsForeground,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WindowBounds? Bounds = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ZOrder = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ZOrder = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Handle = null);
 
 public sealed class WindowManager : IDisposable
 {
