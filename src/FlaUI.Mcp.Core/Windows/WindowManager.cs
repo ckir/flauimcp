@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json.Serialization;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.UIA3;
 
@@ -517,6 +518,30 @@ public sealed class WindowManager : IDisposable
         catch (ToolException) { /* already gone */ }
         finally { Invalidate(handle); }
     }
+
+    /// <summary>Run a window transform (maximize|minimize|restore) with session hygiene: minimizing the
+    /// OS-foreground window orphans keyboard focus the same way closing it does (background process +
+    /// foreground-lock), so capture foreground ownership BEFORE and restore it AFTER via the shared healer.
+    /// maximize/restore keep the window foreground, so they are pass-through.</summary>
+    public Task<bool> WindowTransformAsync(WindowHandle handle, string action, int timeoutMs) =>
+        RunOnWindowActionAsync(handle, (winEl, _) =>
+        {
+            var w = winEl.AsWindow();
+            bool minimizing = string.Equals(action?.Trim(), "minimize", StringComparison.OrdinalIgnoreCase);
+            IntPtr hwnd = IntPtr.Zero;
+            bool wasForeground = false;
+            if (minimizing)
+            {
+                try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+                wasForeground = hwnd != IntPtr.Zero && GetForegroundWindow() == hwnd;
+            }
+            Interactor.WindowTransform(w, action!);
+            // A minimized window still exists (IsWindow stays true), so the "collapsed" tell is that it has
+            // yielded the foreground — NOT !IsWindow.
+            if (minimizing && wasForeground)
+                RestoreForegroundAfterCollapse(hwnd, () => GetForegroundWindow() != hwnd);
+            return true;
+        }, timeoutMs);
 
     /// <summary>Best-effort keyboard-focus restoration after the OS-foreground window COLLAPSES (is closed
     /// or minimized). The Win32 foreground-lock only relaxes once the window stops being a valid foreground,
