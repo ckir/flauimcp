@@ -186,7 +186,7 @@ multi-connection server driving one physical desktop is a focus-steal mirage (ag
       plan:
       [`docs/superpowers/plans/2026-07-03-flaui-mcp-phase9-vision-opaque-access.md`](docs/superpowers/plans/2026-07-03-flaui-mcp-phase9-vision-opaque-access.md).
     - **Phase 10 — Consumer ergonomics.** Three consumer-prioritized changes from a single design
-      spec; **#2 shipped (v0.10.0)**, #1 and #3 not yet done.
+      spec; **#2 shipped (v0.10.0)**, **#1 shipped (v0.11.0)**, #3 not yet done.
       - **#2 — First-class `selector` targeting** ✅ **(shipped v0.10.0), the main feature.** An
         optional `selector` (`{automationId?, name?, nameMatch?, controlType?, scope?, ignoreCase?}`)
         alongside the existing `@ref` param on 17 interaction/input/content-read tools, resolved
@@ -209,8 +209,14 @@ multi-connection server driving one physical desktop is a focus-steal mirage (ag
         draws a red rectangle on the target element ~500 ms before each action, so a human watching sees
         what the agent is about to do (visibility aid, not a safety gate; lease/deny-list remain the
         gates).
-      - **#1 — Opt-in handle on `desktop_list_windows`** — design fork recorded in the spec above;
-        not yet planned/implemented.
+      - **#1 — Opt-in handle on `desktop_list_windows`** ✅ **(shipped v0.11.0).** `includeHandles:true`
+        mints a reusable `wN` handle inline per window (fork 1a, lazy), so you can snapshot/find/
+        interact directly, skipping the separate `desktop_open_window` round-trip. Minting stays
+        pure-Win32 (never blocks on an unresponsive window) and reuses the same `wN` across polls; the
+        UIA binding is deferred to first use and guarded by a HWND-recycle pid-reverify (read and write
+        paths), so a recycled handle fails `WindowHandleStale` rather than acting on a different
+        process. Plan:
+        [`docs/superpowers/plans/2026-07-04-flaui-mcp-phase10-window-handles.md`](docs/superpowers/plans/2026-07-04-flaui-mcp-phase10-window-handles.md).
       - **#3** — spec treats this as a likely-drop, revisit-after-#2 item; not yet planned/implemented.
 
 ## Consumer-lens hardening backlog (v0.7.3 release-capstone review, 2026-07-02)
