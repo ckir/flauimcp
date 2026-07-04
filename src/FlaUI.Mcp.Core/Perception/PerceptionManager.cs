@@ -121,18 +121,44 @@ public sealed class PerceptionManager
     /// subtree collecting every hit, then fails closed unless exactly one was found. Mints a
     /// DESCRIPTOR-ONLY ref (cached: null) — unlike a snapshot/find ref there is no query-STA cached
     /// element to reuse; the descriptor is the only durable handle. Must be called ON the action STA
-    /// (it takes no STA dependency itself - it only walks the AutomationElement tree it's given).</summary>
+    /// (it takes no STA dependency itself - it only walks the AutomationElement tree it's given).
+    /// BOUNDING (honest residual): the visited cap PLUS the per-node fan-out guard below (each
+    /// FindAllChildren result must fit the remaining scan budget) bound the aggregate walk and fail
+    /// closed. One FindAllChildren() call still marshals a single node's direct-child array atomically
+    /// (unavoidable through this API); this is an accepted narrow residual because UIA direct-child
+    /// fan-out is virtualization-bounded in practice, unlike the transitive FindAllDescendants this
+    /// design replaces. A TreeWalker is deliberately NOT used — its control-view vs raw-view children
+    /// could differ from FindAllChildren and silently change which nodes the count==1 guarantee sees.</summary>
     private (AutomationElement El, string Ref) ResolveSelectorOnSta(string windowId, AutomationElement root, Selector sel)
     {
         var q = sel.ToFindQuery();
         var spec = new FindQuerySpec(q);
         bool hasCtConstraint = FindQuerySpec.TryParseControlType(q.ControlType, out var wantedCt);
 
-        var hits = new List<AutomationElement>();
-        var queue = new Queue<AutomationElement>(
-            SafeRead(() => root.FindAllChildren(), System.Array.Empty<AutomationElement>()));
+        // A matched node carries its already-read primitives (read ONCE, reused for the descriptor
+        // mint) — mirrors FindAsync's "Read each primitive ONCE; reuse for BOTH" idiom and closes the
+        // TOCTOU where a live-updating control's Name/ControlType could differ between match and mint.
+        var hits = new List<(AutomationElement El, int[] Rid, FlaUI.Core.Definitions.ControlType Ct,
+            string Aid, string RawName, bool HasFocus)>();
 
         int visited = 0;
+
+        // Fail-closed if a single node's direct-child array exceeds the REMAINING scan budget: one
+        // FindAllChildren() marshals that whole array atomically, so a huge direct-child set could
+        // spike memory / block the action STA before the per-node visited check fires. Budget shrinks
+        // as the walk proceeds (MaxSelectorNodes - visited).
+        void GuardFanOut(AutomationElement[] children)
+        {
+            if (children.Length > MaxSelectorNodes - visited)
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    "selector too broad — a node exposes more direct children than the remaining scan budget.",
+                    "narrow it: add automationId, a scope, or a more specific controlType");
+        }
+
+        var seed = SafeRead(() => root.FindAllChildren(), System.Array.Empty<AutomationElement>());
+        GuardFanOut(seed);
+        var queue = new Queue<AutomationElement>(seed);
+
         while (queue.Count > 0)
         {
             var el = queue.Dequeue();
@@ -144,10 +170,10 @@ public sealed class PerceptionManager
 
             // Managed match, entirely in-process — no native ConditionBase for this walk.
             string aid = SafeRead(() => el.AutomationId, "") ?? string.Empty;
+            var ctEnum = SafeRead(() => el.ControlType, FlaUI.Core.Definitions.ControlType.Custom);
             bool aidOk = string.IsNullOrEmpty(q.AutomationId)
                 || string.Equals(aid, q.AutomationId, System.StringComparison.Ordinal);
-            bool ctOk = !hasCtConstraint
-                || SafeRead(() => el.ControlType, FlaUI.Core.Definitions.ControlType.Custom) == wantedCt;
+            bool ctOk = !hasCtConstraint || ctEnum == wantedCt;
             if (aidOk && ctOk)
             {
                 // INV-5: redact BEFORE the match decision, matching FindAsync (PerceptionManager.cs:281-292)
@@ -157,10 +183,19 @@ public sealed class PerceptionManager
                 string name = isPwd ? "[REDACTED]" : rawName;
                 bool enabled = SafeRead(() => el.IsEnabled, false);
                 if (spec.MatchesPostFilter(name, enabled))
-                    hits.Add(el);
+                {
+                    // Read the remaining descriptor primitives HERE (only on a match) and capture them
+                    // with the element — no second read of the winner after the loop (no double-read,
+                    // no TOCTOU). Descriptor keeps the RAW name for re-resolution.
+                    int[] rid = SafeRead(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? System.Array.Empty<int>();
+                    bool hasFocus = SafeRead(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
+                    hits.Add((el, rid, ctEnum, aid, rawName, hasFocus));
+                }
             }
 
-            foreach (var child in SafeRead(() => el.FindAllChildren(), System.Array.Empty<AutomationElement>()))
+            var children = SafeRead(() => el.FindAllChildren(), System.Array.Empty<AutomationElement>());
+            GuardFanOut(children);
+            foreach (var child in children)
                 queue.Enqueue(child);
         }
 
@@ -173,16 +208,11 @@ public sealed class PerceptionManager
                 $"selector matched {hits.Count} elements; cannot safely pick one.",
                 "refine: add controlType/automationId, add a scope, set ignoreCase:false for an exact-case name, or desktop_snapshot and target a unique eN");
 
-        var hit = hits[0];
-        int[] rid = SafeRead(() => hit.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? System.Array.Empty<int>();
-        var ctEnum = SafeRead(() => hit.ControlType, FlaUI.Core.Definitions.ControlType.Custom);
-        string hitAid = SafeRead(() => hit.AutomationId, "") ?? string.Empty;
-        string hitRawName = SafeRead(() => hit.Name, "") ?? string.Empty;
-        bool hasFocus = SafeRead(() => hit.Properties.HasKeyboardFocus.ValueOrDefault, false);
-        var descriptor = new ElementDescriptor(rid, ctEnum, hitAid, hitRawName,
-            SnapshotEngine.NearestAncestorAutomationId(hit), System.Array.Empty<int>(), hasFocus);
+        var h = hits[0];
+        var descriptor = new ElementDescriptor(h.Rid, h.Ct, h.Aid, h.RawName,
+            SnapshotEngine.NearestAncestorAutomationId(h.El), System.Array.Empty<int>(), h.HasFocus);
         var mintedRef = _refs.Register(windowId, descriptor, cached: null); // descriptor-only mint (Selector, Task 4)
-        return (hit, mintedRef);
+        return (h.El, mintedRef);
     }
 
     /// <summary>Selector counterpart to RunOnRefActionAsync: resolve sel.Scope (if set) cache-free
