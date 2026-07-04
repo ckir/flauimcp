@@ -101,25 +101,47 @@ public sealed class WindowManager : IDisposable
         });
 
     public Task<T> RunOnWindowAsync<T>(WindowHandle handle, Func<Window, T> func) =>
-        _dispatcher.RunQueryAsync(() =>
-        {
-            if (!_handles.TryGetValue(handle.Id, out var w))
-                throw new ToolException(ToolErrorCode.WindowHandleStale,
-                    $"Handle {handle.Id} is no longer valid.", "re-list windows and re-open");
-            return func(w);
-        });
+        _dispatcher.RunQueryAsync(() => func(ResolveWindow(handle)));
 
     /// <summary>Run a read callback on the query STA with the resolved window AND the Desktop
     /// element (the snapshot engine needs the Desktop to graft owner-process popups, which are
     /// children of the Desktop — not the target window). Reuses the stale-handle guard.</summary>
     public Task<T> RunWithWindowAndDesktopAsync<T>(WindowHandle handle, Func<Window, AutomationElement, T> func) =>
-        _dispatcher.RunQueryAsync(() =>
+        _dispatcher.RunQueryAsync(() => func(ResolveWindow(handle), _automation.GetDesktop()));
+
+    /// <summary>Resolve a handle to its UIA Window ON THE QUERY STA. Eager handles hit the cached
+    /// _handles Window directly (unchanged). A lazily-minted handle (list includeHandles) has no _handles
+    /// entry yet: bind it now from the recorded HWND — but ONLY after the M2 Win32 pid-reverify confirms
+    /// the HWND still belongs to the recorded pid, so a recycled HWND can never inject UIA into a
+    /// different process. Single query STA ⇒ the check-then-bind is race-free and GetOrAdd is safe.</summary>
+    private Window ResolveWindow(WindowHandle handle)
+    {
+        if (_handles.TryGetValue(handle.Id, out var cached)) return cached;
+        if (!_ids.TryGetValue(handle.Id, out var recordedPid)
+            || !_hwnds.TryGetValue(handle.Id, out var hwnd) || hwnd == IntPtr.Zero)
+            throw new ToolException(ToolErrorCode.WindowHandleStale,
+                $"Handle {handle.Id} is no longer valid.", "re-list windows and re-open");
+        GetWindowThreadProcessId(hwnd, out uint curPid);
+        if (!HwndStillOwnedBy(recordedPid, (int)curPid))
+            throw new ToolException(ToolErrorCode.WindowHandleStale,
+                $"Handle {handle.Id} no longer refers to its original window (its HWND was recycled).",
+                "re-list windows and re-open");
+        var bound = _handles.GetOrAdd(handle.Id, _ => _automation.FromHandle(hwnd).AsWindow());
+        // Close the Invalidate-vs-lazy-bind race (AGY-AFTER seat B): a ThreadPool proc.Exited can run
+        // Invalidate BETWEEN the _ids check above and this GetOrAdd — consuming the exactly-once gate and
+        // clearing _hwnds while _handles was still empty. Our GetOrAdd would then insert an ORPHANED COM
+        // wrapper that (a) leaks (the gate is spent, so it is never evicted) AND (b) keeps resolving on the
+        // fast _handles path above with NO pid-reverify, silently defeating the invalidation. Re-check the
+        // gate after binding: if it is gone, evict our own insert and fail closed. (ids are monotonic /
+        // never-reused, so removing our own orphan is unambiguous; TryRemove is idempotent vs Invalidate's.)
+        if (!_ids.ContainsKey(handle.Id))
         {
-            if (!_handles.TryGetValue(handle.Id, out var w))
-                throw new ToolException(ToolErrorCode.WindowHandleStale,
-                    $"Handle {handle.Id} is no longer valid.", "re-list windows and re-open");
-            return func(w, _automation.GetDesktop());
-        });
+            _handles.TryRemove(handle.Id, out _);
+            throw new ToolException(ToolErrorCode.WindowHandleStale,
+                $"Handle {handle.Id} was invalidated during resolution.", "re-list windows and re-open");
+        }
+        return bound;
+    }
 
     public void Invalidate(WindowHandle handle)
     {
@@ -177,6 +199,13 @@ public sealed class WindowManager : IDisposable
     /// equals the currently-enumerated pid. A mismatch means the OS recycled the HWND integer to a
     /// DIFFERENT process, so a fresh id must be minted. Pure/headless.</summary>
     internal static bool CanReuseHandle(int cachedPid, int enumeratedPid) => cachedPid == enumeratedPid;
+
+    /// <summary>M2 pure identity check for lazy resolution: the HWND recorded at mint time must still
+    /// belong to the recorded pid before UIA binds to it (a recycled HWND may now host a different,
+    /// possibly sensitive process). The live GetWindowThreadProcessId read is the caller's; this is the
+    /// pure decision. currentPidForHwnd==0 (dead/invalid hwnd) never matches a real recorded pid.</summary>
+    internal static bool HwndStillOwnedBy(int recordedPid, int currentPidForHwnd) =>
+        currentPidForHwnd == recordedPid;
 
     internal WindowHandle Register(Window window, int pid)
     {

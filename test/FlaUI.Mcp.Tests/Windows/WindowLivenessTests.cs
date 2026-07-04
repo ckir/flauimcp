@@ -55,4 +55,16 @@ public class WindowLivenessTests
     {
         Assert.False(WindowManager.CanReuseHandle(cachedPid: 1234, enumeratedPid: 5678));
     }
+
+    [Fact]
+    public void HwndStillOwnedBy_true_when_current_pid_matches_recorded()
+        => Assert.True(WindowManager.HwndStillOwnedBy(recordedPid: 42, currentPidForHwnd: 42));
+
+    [Fact]
+    public void HwndStillOwnedBy_false_when_hwnd_recycled_to_a_different_pid()
+        => Assert.False(WindowManager.HwndStillOwnedBy(recordedPid: 42, currentPidForHwnd: 99));
+
+    [Fact]
+    public void HwndStillOwnedBy_false_for_a_dead_hwnd_zero_pid()
+        => Assert.False(WindowManager.HwndStillOwnedBy(recordedPid: 42, currentPidForHwnd: 0));
 }
