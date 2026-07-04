@@ -14,7 +14,9 @@
 
 ---
 
-## AGY-AFTER plan-review (relentless-auditor, 2026-07-04) = BLOCK → GO-WITH-FIXES (folded)
+## AGY-AFTER plan-review (relentless-auditor, 2026-07-04) = BLOCK → folded → **GO**
+
+Final verdict **GO** (confirmed after folding). Trajectory: initial BLOCK (3 defects below) → folded → confirmation round accepted the folds + both my corrections but caught a snippet↔mandate contradiction (T4 code still showed unbounded `FindAllDescendants`) → folded (snippet now calls `BoundedDescendants`) → final confirmation = **GO**.
 
 Adversarial plan review caught 3 real defects (folded) + 1 false alarm (rejected on measurement):
 - **[FOLDED — T4] Synchronous COM deadlock:** the action-STA `timeoutMs` cannot interrupt a blocked native `FindAllDescendants`, so a broad selector could hang the single action STA. T4 now MANDATES a node-count-bounded walk (the spec's liveness fold; timeout is not a substitute).
@@ -330,7 +332,13 @@ git commit -m "feat(selector): Selector value type + fail-closed validation (Pha
             && !q.IgnoreCase && !string.IsNullOrEmpty(q.Name))
             cond = cond is null ? cf.ByName(q.Name) : cond.And(cf.ByName(q.Name));
 
-        var candidates = cond is null ? root.FindAllDescendants() : root.FindAllDescendants(_ => cond);
+        // BOUNDED walk — NOT root.FindAllDescendants() (synchronous COM, whole-tree, uncancellable → can hang
+        // the action STA per the mandate block above). BoundedDescendants does a manual TreeWalker BFS from
+        // `root`, evaluating the native `cond` per node, stopping after MaxSelectorNodes VISITED and throwing
+        // InvalidArguments("selector too broad — scanned > N nodes", "narrow it: add automationId, a scope, or a
+        // more specific controlType"). MaxSelectorNodes is env-tunable (mirror FLAUI_MCP_REF_MAXSCOPES). Implement
+        // it as a small helper on PerceptionManager (or a static util); its contract is the mandate block above.
+        var candidates = BoundedDescendants(root, cond, MaxSelectorNodes);
         var hits = new System.Collections.Generic.List<AutomationElement>();
         foreach (var el in candidates)
         {
