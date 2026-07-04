@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json.Serialization;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.UIA3;
 
@@ -460,8 +461,16 @@ public sealed class WindowManager : IDisposable
         }, timeoutMs);
     }
 
-    public Task FocusAsync(WindowHandle handle) =>
-        RunOnWindowAsync(handle, w => { w.Focus(); w.SetForeground(); return true; });
+    public Task<bool> FocusAsync(WindowHandle handle) =>
+        RunOnWindowAsync(handle, w =>
+        {
+            w.Focus(); w.SetForeground();
+            IntPtr hwnd = IntPtr.Zero;
+            try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+            // Under the foreground-lock a background process's SetForeground can silently no-op; report the
+            // truth so the agent sees the ceiling instead of assuming success.
+            return hwnd != IntPtr.Zero && GetForegroundWindow() == hwnd;
+        });
 
     public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowAsync() =>
         _dispatcher.RunQueryAsync<(WindowHandle, string, int)?>(() =>
@@ -510,7 +519,7 @@ public sealed class WindowManager : IDisposable
                 try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
                 bool wasForeground = hwnd != IntPtr.Zero && GetForegroundWindow() == hwnd;
                 w.Close();
-                if (wasForeground) RestoreForegroundAfterClose(hwnd);
+                if (wasForeground) RestoreForegroundAfterCollapse(hwnd, () => !IsWindow(hwnd));
                 return true;
             });
         }
@@ -518,23 +527,52 @@ public sealed class WindowManager : IDisposable
         finally { Invalidate(handle); }
     }
 
-    /// <summary>Best-effort keyboard-focus restoration after closing the OS-foreground window. The Win32
-    /// foreground-lock (which defeats a background process's SetForegroundWindow) only relaxes once the
-    /// closed window is actually DESTROYED — and UIA <c>Window.Close()</c> is async, returning before
-    /// destruction — so spin-wait (bounded) for <c>!IsWindow</c> before claiming foreground for the next
-    /// Z-ordered top-level. Runs on the query STA; uses pure Win32 (no UIA). NEVER throws: the close has
-    /// already succeeded, so a failed refocus must not surface as an error to the agent. Deliberately does
-    /// NOT use AttachThreadInput (deadlock-prone against a thread hanging during shutdown).</summary>
-    private void RestoreForegroundAfterClose(IntPtr closedHwnd)
+    /// <summary>Run a window transform (maximize|minimize|restore) with session hygiene: minimizing the
+    /// OS-foreground window orphans keyboard focus the same way closing it does (background process +
+    /// foreground-lock), so capture foreground ownership BEFORE and restore it AFTER via the shared healer.
+    /// maximize/restore keep the window foreground, so they are pass-through.</summary>
+    public Task<bool> WindowTransformAsync(WindowHandle handle, string action, int timeoutMs) =>
+        RunOnWindowActionAsync(handle, (winEl, _) =>
+        {
+            var w = winEl.AsWindow();
+            bool minimizing = string.Equals(action?.Trim(), "minimize", StringComparison.OrdinalIgnoreCase);
+            IntPtr hwnd = IntPtr.Zero;
+            bool wasForeground = false;
+            if (minimizing)
+            {
+                try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+                wasForeground = hwnd != IntPtr.Zero && GetForegroundWindow() == hwnd;
+            }
+            Interactor.WindowTransform(w, action!);
+            // A minimized window still exists (IsWindow stays true), so the "collapsed" tell is that it has
+            // yielded the foreground — NOT !IsWindow.
+            if (minimizing && wasForeground)
+                RestoreForegroundAfterCollapse(hwnd, () => GetForegroundWindow() != hwnd);
+            return true;
+        }, timeoutMs);
+
+    /// <summary>Best-effort keyboard-focus restoration after the OS-foreground window COLLAPSES (is closed
+    /// or minimized). The Win32 foreground-lock only relaxes once the window stops being a valid foreground,
+    /// so spin-wait (bounded) for <paramref name="hasCollapsed"/> before claiming foreground for the next
+    /// Z-ordered top-level. Runs on the caller's STA; pure Win32 (no UIA). NEVER throws (the transform has
+    /// already succeeded, so a failed refocus must not surface as an error). No AttachThreadInput
+    /// (deadlock-prone against a thread hanging during shutdown).</summary>
+    private void RestoreForegroundAfterCollapse(IntPtr collapsedHwnd, Func<bool> hasCollapsed)
     {
         try
         {
             var deadline = DateTime.UtcNow.AddMilliseconds(500);
-            while (IsWindow(closedHwnd) && DateTime.UtcNow < deadline) Thread.Sleep(25);
-            var next = PickForegroundFallback(EnumTopLevel(), closedHwnd);
+            while (!hasCollapsed() && DateTime.UtcNow < deadline) Thread.Sleep(25);
+            // No-steal guard (AGY-AFTER plan-review): only restore if we are ACTUALLY orphaned — foreground
+            // is null, or still the collapsing window. If some OTHER window already holds it (human clicked
+            // away mid-wait, or the OS reactivated a good window), leave it — never yank focus off the
+            // human's deliberate choice.
+            var current = GetForegroundWindow();
+            if (current != IntPtr.Zero && current != collapsedHwnd) return;
+            var next = PickForegroundFallback(EnumTopLevel(), collapsedHwnd);
             if (next != IntPtr.Zero) SetForegroundWindow(next);
         }
-        catch { /* focus restoration is best-effort; the window is already closed */ }
+        catch { /* focus restoration is best-effort; the window is already collapsed */ }
     }
 
     /// <summary>Pick the window to give foreground after a close: the first Z-ordered top-level that is
