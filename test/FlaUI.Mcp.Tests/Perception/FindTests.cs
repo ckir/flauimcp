@@ -194,8 +194,10 @@ public class FindTests
             // (Task 2) and instead let the managed post-filter (OrdinalIgnoreCase) match it.
             var r = await perception.FindAsync(handle,
                 new FindQuery(null, "ok", "eq", null, false, IgnoreCase: true), max: 20, scopeRef: null);
-            var m = Assert.Single(r.Matches);
-            Assert.Equal("OkButton", m.AutomationId);
+            // "ok" (ignoreCase eq) matches EVERY element Named "OK" — the OkButton AND the Text peer WPF
+            // exposes for its Content="OK" (an ordinal "ok" would match neither). So assert the button is
+            // AMONG the matches, not the sole match (the second "OK" Text is expected, not a bug).
+            Assert.Contains(r.Matches, m => m.AutomationId == "OkButton");
         }
     }
 
