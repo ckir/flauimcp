@@ -28,6 +28,29 @@ See [`docs/superpowers/specs/2026-06-25-flaui-mcp-server-design.md`](docs/superp
 for the full tool semantics and [`project-flaui-mcp-prompt-injection`] memory for the
 safety rationale.
 
+### ▶ TOP PRIORITY — Session Hygiene (SP1–SP4)
+
+**Invariant:** *no tool leaves the human's interactive session (foreground window, keyboard focus,
+input-teardown state) worse than it found it, except for its declared purpose.* Consumer-driven after
+the v0.11.1 keyboard-orphan fix (closing the foreground window orphaned the physical keyboard) —
+that bug is one instance of a broader class. Specs:
+[`SP1 audit`](docs/superpowers/specs/2026-07-05-flaui-mcp-session-hygiene-design.md) ·
+[`SP2`](docs/superpowers/specs/2026-07-05-flaui-mcp-session-hygiene-sp2-harden-design.md) ·
+[`SP3`](docs/superpowers/specs/2026-07-05-flaui-mcp-session-hygiene-sp3-chaos-harness-design.md) ·
+[`SP4`](docs/superpowers/specs/2026-07-05-flaui-mcp-session-hygiene-sp4-sentinel-design.md).
+
+- **SP1 — Audit + invariant + session-delta contract** ✅ (audit complete): exactly ONE live gap —
+  `desktop_window_transform minimize` orphans the foreground window (twin of the close bug) — plus one
+  low-severity observability gap (`desktop_focus_window` can silently no-op under foreground-lock);
+  modifier-teardown and clipboard surfaces are already sound.
+- **SP2 — Harden the gap** ▶ NEXT (scope A / minimal chosen; ~v0.11.2): extract a shared
+  `SessionForegroundGuard` (generalize the v0.11.1 close healer), fix the minimize orphan, add a
+  `focus_window` foreground-gain signal, and one Desktop test. Line-level plan via writing-plans.
+- **SP3 — Session-delta snapshot + chaos test harness** ⏸ deferred until a *second* hygiene gap
+  materializes (Desktop-only; can't be a headless-CI gate).
+- **SP4 — Session Sentinel** (lease-less self-healing watchdog) ⏸ parked/conditional; foreground-orphan
+  healing only (modifier-healing dropped as Win32-unsound — merged physical+synthetic key state).
+
 - **Phase 1 — Foundation** ✅ (v0.1.x): window/session management, split query/action
   STA dispatcher, option-C ref engine, 5 window tools.
 - **Phase 2 — Perception** ✅ (v0.2.0): `desktop_snapshot` (a11y tree + popup grafting),
