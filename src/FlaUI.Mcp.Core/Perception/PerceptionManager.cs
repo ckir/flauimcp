@@ -18,6 +18,12 @@ public sealed class PerceptionManager
     private static readonly RefResolveMode WriteMode =
         RefResolveConfig.WriteMode(System.Environment.GetEnvironmentVariable("FLAUI_MCP_REF_STRICT"));
 
+    // Node cap for the Selector bounded-BFS resolver (Phase 10 #2 T4). No existing traversal/scope-cap
+    // env var fit this (FLAUI_MCP_REF_MAXSCOPES bounds ANCESTOR fan-out in RefRegistry.GatherScopes, a
+    // different axis), so this is a NEW var mirroring that one's parse idiom.
+    private static readonly int MaxSelectorNodes =
+        RefResolveConfig.MaxSelectorNodes(System.Environment.GetEnvironmentVariable("FLAUI_MCP_SELECTOR_MAXNODES"));
+
     public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache)
     {
         _windows = windows;
@@ -98,6 +104,148 @@ public sealed class PerceptionManager
             var roots = PopupFinder.SearchRoots(win, desktop);
             var el = _refs.ResolveDescriptor(descriptor, roots, @ref, RefResolveMode.Lenient); // read: descriptor re-walk (ambiguity-aware)
             return func(el);
+        }, timeoutMs);
+    }
+
+    /// <summary>Phase 10 #2 T4 (the crux): resolve a Selector to EXACTLY ONE live element, INSIDE the
+    /// action-STA callback, against a caller-supplied root (the window, or a scope subtree already
+    /// resolved cache-free by the caller). Deliberately NOT root.FindAllDescendants(...) — that is a
+    /// synchronous native whole-tree COM call the action STA's timeoutMs can time out the AWAIT of but
+    /// cannot interrupt the blocked STA thread itself, so a broad selector would permanently wedge the
+    /// single action STA. Instead this walks a BOUNDED, caller-controlled BFS (FindAllChildren level by
+    /// level) and evaluates the WHOLE match (automationId / controlType / name+enabled via
+    /// FindQuerySpec.MatchesPostFilter, matched on the REDACTED name — mirrors FindAsync's INV-5
+    /// redact-before-match so a selector can never oracle a password field's real name) in managed code
+    /// per node, capped at MaxSelectorNodes visited nodes. count==1 requires finding ALL matches (to
+    /// detect ambiguity), so this cannot early-exit on the first hit — it walks the whole (capped)
+    /// subtree collecting every hit, then fails closed unless exactly one was found. Mints a
+    /// DESCRIPTOR-ONLY ref (cached: null) — unlike a snapshot/find ref there is no query-STA cached
+    /// element to reuse; the descriptor is the only durable handle. Must be called ON the action STA
+    /// (it takes no STA dependency itself - it only walks the AutomationElement tree it's given).</summary>
+    private (AutomationElement El, string Ref) ResolveSelectorOnSta(string windowId, AutomationElement root, Selector sel)
+    {
+        var q = sel.ToFindQuery();
+        var spec = new FindQuerySpec(q);
+        bool hasCtConstraint = FindQuerySpec.TryParseControlType(q.ControlType, out var wantedCt);
+
+        var hits = new List<AutomationElement>();
+        var queue = new Queue<AutomationElement>(
+            SafeRead(() => root.FindAllChildren(), System.Array.Empty<AutomationElement>()));
+
+        int visited = 0;
+        while (queue.Count > 0)
+        {
+            var el = queue.Dequeue();
+            visited++;
+            if (visited > MaxSelectorNodes)
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    "selector too broad — scanned > N nodes without a bounded result.",
+                    "narrow it: add automationId, a scope, or a more specific controlType");
+
+            // Managed match, entirely in-process — no native ConditionBase for this walk.
+            string aid = SafeRead(() => el.AutomationId, "") ?? string.Empty;
+            bool aidOk = string.IsNullOrEmpty(q.AutomationId)
+                || string.Equals(aid, q.AutomationId, System.StringComparison.Ordinal);
+            bool ctOk = !hasCtConstraint
+                || SafeRead(() => el.ControlType, FlaUI.Core.Definitions.ControlType.Custom) == wantedCt;
+            if (aidOk && ctOk)
+            {
+                // INV-5: redact BEFORE the match decision, matching FindAsync (PerceptionManager.cs:281-292)
+                // — a selector must not be usable as a password-field name oracle.
+                bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
+                string rawName = SafeRead(() => el.Name, "") ?? string.Empty;
+                string name = isPwd ? "[REDACTED]" : rawName;
+                bool enabled = SafeRead(() => el.IsEnabled, false);
+                if (spec.MatchesPostFilter(name, enabled))
+                    hits.Add(el);
+            }
+
+            foreach (var child in SafeRead(() => el.FindAllChildren(), System.Array.Empty<AutomationElement>()))
+                queue.Enqueue(child);
+        }
+
+        if (hits.Count == 0)
+            throw new ToolException(ToolErrorCode.SelectorNoMatch,
+                "selector matched no element in this window right now.",
+                "the target may not be present yet — reveal it (act / desktop_wait_for) then retry, or desktop_snapshot to see current state");
+        if (hits.Count > 1)
+            throw new ToolException(ToolErrorCode.AmbiguousMatch,
+                $"selector matched {hits.Count} elements; cannot safely pick one.",
+                "refine: add controlType/automationId, add a scope, set ignoreCase:false for an exact-case name, or desktop_snapshot and target a unique eN");
+
+        var hit = hits[0];
+        int[] rid = SafeRead(() => hit.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? System.Array.Empty<int>();
+        var ctEnum = SafeRead(() => hit.ControlType, FlaUI.Core.Definitions.ControlType.Custom);
+        string hitAid = SafeRead(() => hit.AutomationId, "") ?? string.Empty;
+        string hitRawName = SafeRead(() => hit.Name, "") ?? string.Empty;
+        bool hasFocus = SafeRead(() => hit.Properties.HasKeyboardFocus.ValueOrDefault, false);
+        var descriptor = new ElementDescriptor(rid, ctEnum, hitAid, hitRawName,
+            SnapshotEngine.NearestAncestorAutomationId(hit), System.Array.Empty<int>(), hasFocus);
+        var mintedRef = _refs.Register(windowId, descriptor, cached: null); // descriptor-only mint (Selector, Task 4)
+        return (hit, mintedRef);
+    }
+
+    /// <summary>Selector counterpart to RunOnRefActionAsync: resolve sel.Scope (if set) cache-free
+    /// off-STA to a descriptor, then on the SAME transient action STA re-resolve that scope descriptor
+    /// (or use the window itself), run the bounded selector walk, apply the identical offscreen
+    /// preflight, and run the state-changing action. Threading/gates are byte-for-byte the ref
+    /// sibling's — the only difference is resolution is a fresh bounded walk (no prior descriptor to be
+    /// stale against) and the mint is descriptor-only.</summary>
+    public Task<(T Value, string ResolvedRef)> RunOnSelectorActionAsync<T>(WindowHandle handle, Selector sel,
+        Func<AutomationElement, T> func, int timeoutMs)
+    {
+        var scopeDescriptor = string.IsNullOrEmpty(sel.Scope) ? null : _refs.Lookup(handle.Id, sel.Scope!).Descriptor;
+        return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
+        {
+            var roots = PopupFinder.SearchRoots(win, desktop);
+            AutomationElement root = scopeDescriptor is null
+                ? win
+                : _refs.ResolveDescriptor(scopeDescriptor, roots, sel.Scope!, WriteMode);
+            var (el, r) = ResolveSelectorOnSta(handle.Id, root, sel);
+            if (el.Properties.IsOffscreen.ValueOrDefault)
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
+            return (func(el), r);
+        }, timeoutMs);
+    }
+
+    /// <summary>Like RunOnSelectorActionAsync but the callback also receives the resolved top-level
+    /// WINDOW element (for input targeting, mirroring RunOnRefForInputAsync). Same transient-action-STA,
+    /// scope handling, and offscreen preflight.</summary>
+    public Task<(T Value, string ResolvedRef)> RunOnSelectorForInputAsync<T>(WindowHandle handle, Selector sel,
+        Func<AutomationElement, AutomationElement, T> func, int timeoutMs)
+    {
+        var scopeDescriptor = string.IsNullOrEmpty(sel.Scope) ? null : _refs.Lookup(handle.Id, sel.Scope!).Descriptor;
+        return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
+        {
+            var roots = PopupFinder.SearchRoots(win, desktop);
+            AutomationElement root = scopeDescriptor is null
+                ? win
+                : _refs.ResolveDescriptor(scopeDescriptor, roots, sel.Scope!, WriteMode);
+            var (el, r) = ResolveSelectorOnSta(handle.Id, root, sel);
+            if (el.Properties.IsOffscreen.ValueOrDefault)
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
+            return (func(win, el), r);
+        }, timeoutMs);
+    }
+
+    /// <summary>Like RunOnSelectorActionAsync but for a READ (mirrors RunOnRefReadAsync): scope
+    /// resolution and the walk's own count==1 gate are unchanged, but there is NO offscreen preflight —
+    /// reads are allowed on off-screen elements — and scope resolution uses Lenient (read semantics),
+    /// not WriteMode.</summary>
+    public Task<(T Value, string ResolvedRef)> RunOnSelectorReadAsync<T>(WindowHandle handle, Selector sel,
+        Func<AutomationElement, T> func, int timeoutMs)
+    {
+        var scopeDescriptor = string.IsNullOrEmpty(sel.Scope) ? null : _refs.Lookup(handle.Id, sel.Scope!).Descriptor;
+        return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
+        {
+            var roots = PopupFinder.SearchRoots(win, desktop);
+            AutomationElement root = scopeDescriptor is null
+                ? win
+                : _refs.ResolveDescriptor(scopeDescriptor, roots, sel.Scope!, RefResolveMode.Lenient);
+            var (el, r) = ResolveSelectorOnSta(handle.Id, root, sel);
+            return (func(el), r);
         }, timeoutMs);
     }
 

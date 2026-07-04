@@ -10,6 +10,11 @@ public static class RefResolveConfig
 {
     public const int DefaultMaxScopes = 512;
 
+    /// <summary>Bound on nodes visited by the Selector bounded-BFS resolver (Phase 10 #2 T4) — a
+    /// broad selector cannot hang the single action STA the way an unbounded FindAllDescendants
+    /// walk would (see PerceptionManager.ResolveSelectorOnSta). Tuned via FLAUI_MCP_SELECTOR_MAXNODES.</summary>
+    public const int DefaultMaxSelectorNodes = 5000;
+
     /// <summary>Strict unless the operator explicitly set "off" (case-insensitive, trimmed).</summary>
     public static bool StrictEnabled(string? env) =>
         !string.Equals(env?.Trim(), "off", System.StringComparison.OrdinalIgnoreCase);
@@ -25,4 +30,10 @@ public static class RefResolveConfig
     public static int MaxScopes(string? env) =>
         int.TryParse(env, System.Globalization.NumberStyles.Integer,
             System.Globalization.CultureInfo.InvariantCulture, out var n) && n > 0 ? n : DefaultMaxScopes;
+
+    /// <summary>Positive integer override, else DefaultMaxSelectorNodes. Same invariant-culture parse
+    /// idiom as MaxScopes.</summary>
+    public static int MaxSelectorNodes(string? env) =>
+        int.TryParse(env, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var n) && n > 0 ? n : DefaultMaxSelectorNodes;
 }
