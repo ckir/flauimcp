@@ -167,8 +167,23 @@ public sealed class InputGuard
 
 /// <summary>The resolved target of a synthetic-input action: its top-level window root + identity for
 /// the deny-list/budget/audit. For the ref path the tool resolves these from the window handle; for the
-/// coordinate path 4b fills them from IPlatformEnvironment.HitTestRoot.</summary>
-public readonly record struct ActionTarget(nint Root, int Pid, string? ProcessName, string? WindowClass);
+/// coordinate path 4b fills them from IPlatformEnvironment.HitTestRoot. v0.10.1 (T8): optionally carries
+/// the resolved ELEMENT's allow-listed identity for the audit trace; null on the window/coordinate paths
+/// (appended with a default so every existing `new ActionTarget(root,pid,proc,cls)` call site is unchanged).</summary>
+public readonly record struct ActionTarget(
+    nint Root, int Pid, string? ProcessName, string? WindowClass,
+    ElementIdentity? Element = null);
+
+/// <summary>Physical screen rectangle L,T,W,H (ints). The audit records it and the overlay draws it —
+/// same numbers, so the on-screen rect and the audit line agree (spec §1).</summary>
+public readonly record struct Bounds(int L, int T, int W, int H);
+
+/// <summary>The audit-safe identity of a resolved element (spec §3 fork D allow-list). Holds ONLY the five
+/// allow-listed UIA properties — it physically cannot carry Name/Value/HelpText/ItemStatus/LegacyIAccessible,
+/// so the allow-list is enforced by the TYPE, not by a runtime filter. RuntimeId is the dotted/CSV string
+/// form (e.g. "42.1376068.4.1").</summary>
+public readonly record struct ElementIdentity(
+    string RuntimeId, string? AutomationId, string? ClassName, string? ControlType, Bounds Bounds);
 
 /// <summary>Read-only lease status surfaced by desktop_input_status (carries no secret content).</summary>
 public readonly record struct LeaseStatus(bool Active, int SecondsRemaining, bool Shells);
