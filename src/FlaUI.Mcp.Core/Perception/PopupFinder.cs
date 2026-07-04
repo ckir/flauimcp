@@ -44,6 +44,7 @@ public static class PopupFinder
                 var rect = SafeRect(c);
                 if (rect.Width <= 0 || rect.Height <= 0) continue;
                 var cls = c.Properties.ClassName.ValueOrDefault ?? "";
+                if (cls == FlaUI.Mcp.Core.Interaction.OverlaySentinel.ClassName) continue; // never graft the intent overlay
                 bool looksPopup =
                     cls == "#32768"                                              // Win32 context menu
                     || cls.StartsWith("HwndWrapper", StringComparison.Ordinal)  // older WPF popup host
@@ -68,6 +69,7 @@ public static class PopupFinder
                 var rect = SafeRect(c);
                 if (rect.Width <= 0 || rect.Height <= 0) continue;
                 var cls = c.Properties.ClassName.ValueOrDefault ?? "";
+                if (cls == FlaUI.Mcp.Core.Interaction.OverlaySentinel.ClassName) continue; // never graft the intent overlay
                 bool looksPopup =
                     cls == "Popup"                                               // WPF/.NET 10 popup host
                     || cls.Contains("Popup", StringComparison.OrdinalIgnoreCase)
