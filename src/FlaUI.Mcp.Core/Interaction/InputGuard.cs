@@ -57,9 +57,9 @@ public sealed class InputGuard
                 $"Synthetic-input rate limit exceeded for this window. Retry in ~{_budget.SecondsUntilFreeSlot(primary.Root, now)}s.",
                 "wait for the window to clear, or re-grant the lease with `flaui-mcp unlock` to reset the budget");
 
-        _audit.Record(primary.Root, primary.Pid, primary.ProcessName, action, payloadLength);
+        _audit.Record(primary.Root, primary.Pid, primary.ProcessName, action, payloadLength, primary.Element);
         if (secondary is { } drop)
-            _audit.Record(drop.Root, drop.Pid, drop.ProcessName, action + "-drop", 1);
+            _audit.Record(drop.Root, drop.Pid, drop.ProcessName, action + "-drop", 1, drop.Element);
     }
 
     // was: CheckTarget(ActionTarget target, InputLease lease) — now lease-agnostic; caller resolves the cap.
@@ -149,7 +149,7 @@ public sealed class InputGuard
         var lease = _leases.Read(out _);
         bool hasShellsCap = lease is { } l && l.IsValidNow(_clock(), _currentSid) && l.HasCapability("shells");
         CheckTarget(target, hasShellsCap); // shared deny-list/interlock (TargetDenied / SinkInterlocked)
-        _audit.Record(target.Root, target.Pid, target.ProcessName, action, 0);
+        _audit.Record(target.Root, target.Pid, target.ProcessName, action, 0, target.Element);
     }
 
     /// <summary>Read-only lease status for the pre-flight tool — no input, no side effects. Active iff a
