@@ -5,13 +5,18 @@ using FlaUI.Core.Definitions;
 namespace FlaUI.Mcp.Core.Perception;
 
 /// <summary>Flattened desktop_find query (validated/carried from the tool boundary).
-/// NameMatch is "eq" (ordinal exact) or "contains" (ordinal substring); ignored when Name is null.</summary>
+/// NameMatch is "eq" (ordinal exact) or "contains" (ordinal substring); ignored when Name is null.
+/// IgnoreCase folds Name matching (both eq and contains) with OrdinalIgnoreCase - culture-invariant,
+/// deterministic across machines. desktop_find defaults it false (Ordinal, back-compat); the Phase-10
+/// selector defaults it true. Native eq pushdown honours it via PropertyConditionFlags.IgnoreCase (see
+/// PerceptionManager); this post-filter honours it for contains.</summary>
 public sealed record FindQuery(
     string? AutomationId,
     string? Name,
     string NameMatch,
     string? ControlType,
-    bool EnabledOnly);
+    bool EnabledOnly,
+    bool IgnoreCase = false);
 
 /// <summary>One find hit. Bounds is a physical-pixel rect [x, y, w, h]. Name is "[REDACTED]"
 /// for an IsPassword element (INV-5). Absent UIA strings are empty, never null, on the wire.</summary>
@@ -64,9 +69,10 @@ public sealed class FindQuerySpec
         if (_q.Name is { } wanted)
         {
             var n = name ?? string.Empty; // null == unnamed container; keep the predicate total
+            var cmp = _q.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
             bool ok = string.Equals(_q.NameMatch, "contains", StringComparison.Ordinal)
-                ? n.Contains(wanted, StringComparison.Ordinal)
-                : string.Equals(n, wanted, StringComparison.Ordinal);
+                ? n.Contains(wanted, cmp)
+                : string.Equals(n, wanted, cmp);
             if (!ok) return false;
         }
         return true;
