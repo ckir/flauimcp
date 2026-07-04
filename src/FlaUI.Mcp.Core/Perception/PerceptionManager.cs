@@ -289,76 +289,97 @@ public sealed class PerceptionManager
                 "target a different, non-sensitive element");
     }
 
-    public Task<GridCellInfo> GetGridCellAsync(WindowHandle handle, string @ref, int row, int col, int timeoutMs) =>
-        RunOnRefReadAsync(handle, @ref, el =>
+    // Verbatim-extracted read lambda from GetGridCellAsync (Phase 10 #2 T7): the shared body for both
+    // the ref path (RunOnRefReadAsync) and the selector path (RunOnSelectorReadAsync) — byte-identical
+    // logic, no behavior change; existing GetGridCellAsync tests are the oracle that the extraction
+    // preserved behavior.
+    private static GridCellInfo ReadGridCell(AutomationElement el, int row, int col)
+    {
+        EnsureAllowed(el);
+        try
         {
-            EnsureAllowed(el);
-            try
+            var gp = el.Patterns.Grid.PatternOrDefault
+                ?? throw new ToolException(ToolErrorCode.PatternUnsupported, "Element does not support the Grid pattern.", "pick a grid/table element");
+            int rows = gp.RowCount.ValueOrDefault, cols = gp.ColumnCount.ValueOrDefault;
+            if (row < 0 || col < 0 || row >= rows || col >= cols)
+                throw new ToolException(ToolErrorCode.GridCellOutOfRange, $"Cell ({row},{col}) is outside the {rows}x{cols} grid.", "use in-range 0-based row/col");
+            var cell = gp.GetItem(row, col)
+                ?? throw new ToolException(ToolErrorCode.GridCellOutOfRange, $"Grid has no realized cell at ({row},{col}).", "scroll the grid to realize the row, then retry");
+            // Defensive UIA reads — a dynamically-realized cell from a faulty provider can throw
+            // COMException on a property/pattern access; mirror EvaluateSelectorValueAsync's
+            // try/catch-per-read so a flaky cell degrades gracefully, never leaks as INTERNAL.
+            bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => cell.Properties.IsPassword.ValueOrDefault);
+            string value;
+            if (isPwd) value = "[REDACTED]";
+            else
             {
-                var gp = el.Patterns.Grid.PatternOrDefault
-                    ?? throw new ToolException(ToolErrorCode.PatternUnsupported, "Element does not support the Grid pattern.", "pick a grid/table element");
-                int rows = gp.RowCount.ValueOrDefault, cols = gp.ColumnCount.ValueOrDefault;
-                if (row < 0 || col < 0 || row >= rows || col >= cols)
-                    throw new ToolException(ToolErrorCode.GridCellOutOfRange, $"Cell ({row},{col}) is outside the {rows}x{cols} grid.", "use in-range 0-based row/col");
-                var cell = gp.GetItem(row, col)
-                    ?? throw new ToolException(ToolErrorCode.GridCellOutOfRange, $"Grid has no realized cell at ({row},{col}).", "scroll the grid to realize the row, then retry");
-                // Defensive UIA reads — a dynamically-realized cell from a faulty provider can throw
-                // COMException on a property/pattern access; mirror EvaluateSelectorValueAsync's
-                // try/catch-per-read so a flaky cell degrades gracefully, never leaks as INTERNAL.
-                bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => cell.Properties.IsPassword.ValueOrDefault);
-                string value;
-                if (isPwd) value = "[REDACTED]";
-                else
-                {
-                    string? v = null;
-                    try { v = cell.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault; } catch { }
-                    if (string.IsNullOrEmpty(v)) { try { v = cell.Name; } catch { } }
-                    value = v ?? string.Empty;
-                }
-                string ct = "Unknown", aid = string.Empty;
-                try { ct = cell.ControlType.ToString(); } catch { }
-                try { aid = cell.Properties.AutomationId.ValueOrDefault ?? string.Empty; } catch { }
-                return new GridCellInfo(value, ct, aid, isPwd);
+                string? v = null;
+                try { v = cell.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault; } catch { }
+                if (string.IsNullOrEmpty(v)) { try { v = cell.Name; } catch { } }
+                value = v ?? string.Empty;
             }
-            catch (System.UnauthorizedAccessException)
-            { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
-            catch (System.Runtime.InteropServices.COMException)
-            { throw new ToolException(ToolErrorCode.ElementNotActionable, "The grid provider threw while reporting its cells.", "re-snapshot the grid and retry"); }
-        }, timeoutMs);
+            string ct = "Unknown", aid = string.Empty;
+            try { ct = cell.ControlType.ToString(); } catch { }
+            try { aid = cell.Properties.AutomationId.ValueOrDefault ?? string.Empty; } catch { }
+            return new GridCellInfo(value, ct, aid, isPwd);
+        }
+        catch (System.UnauthorizedAccessException)
+        { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
+        catch (System.Runtime.InteropServices.COMException)
+        { throw new ToolException(ToolErrorCode.ElementNotActionable, "The grid provider threw while reporting its cells.", "re-snapshot the grid and retry"); }
+    }
+
+    public Task<GridCellInfo> GetGridCellAsync(WindowHandle handle, string @ref, int row, int col, int timeoutMs) =>
+        RunOnRefReadAsync(handle, @ref, el => ReadGridCell(el, row, col), timeoutMs);
+
+    /// <summary>Selector twin of GetGridCellAsync (Phase 10 #2 T7): identical ReadGridCell body, resolved
+    /// via the bounded selector walk (RunOnSelectorReadAsync — Lenient, no offscreen guard, mirrors the
+    /// ref read path) instead of a ref lookup.</summary>
+    public Task<(GridCellInfo Value, string ResolvedRef)> GetGridCellBySelectorAsync(WindowHandle handle, Selector sel, int row, int col, int timeoutMs) =>
+        RunOnSelectorReadAsync(handle, sel, el => ReadGridCell(el, row, col), timeoutMs);
+
+    // Verbatim-extracted read lambda from GetTextAsync (Phase 10 #2 T7): byte-identical logic (password
+    // short-circuit, TextPattern read, truncation) shared by the ref and selector read paths.
+    private static TextReadResult ReadText(AutomationElement el, bool selectionOnly, int maxLength)
+    {
+        EnsureAllowed(el);
+        // Password short-circuit FIRST — never ask the provider for a secret's text/selection.
+        // Read IsPassword defensively (a COMException here must not bypass clean handling and
+        // surface as INTERNAL); if it can't be read it's a flaky non-password field → proceed.
+        bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
+        if (isPwd) return new TextReadResult("[REDACTED]", false, true);
+        try
+        {
+            var tp = el.Patterns.Text.PatternOrDefault
+                ?? throw new ToolException(ToolErrorCode.PatternUnsupported, "Element does not support the Text pattern.", "pick a text/document element");
+            int cap = System.Math.Clamp(maxLength, 1, 200000);
+            string raw;
+            if (selectionOnly)
+            {
+                try
+                {
+                    var sel = tp.GetSelection();
+                    raw = (sel is { Length: > 0 }) ? sel[0].GetText(cap + 1) : string.Empty;
+                }
+                catch { raw = string.Empty; } // GetSelection is brittle (throws when no selection)
+            }
+            else raw = tp.DocumentRange.GetText(cap + 1);
+
+            bool truncated = raw.Length > cap;
+            if (truncated) raw = raw.Substring(0, cap);
+            return new TextReadResult(raw, truncated, false);
+        }
+        catch (System.UnauthorizedAccessException)
+        { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
+    }
 
     public Task<TextReadResult> GetTextAsync(WindowHandle handle, string @ref, bool selectionOnly, int maxLength, int timeoutMs) =>
-        RunOnRefReadAsync(handle, @ref, el =>
-        {
-            EnsureAllowed(el);
-            // Password short-circuit FIRST — never ask the provider for a secret's text/selection.
-            // Read IsPassword defensively (a COMException here must not bypass clean handling and
-            // surface as INTERNAL); if it can't be read it's a flaky non-password field → proceed.
-            bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
-            if (isPwd) return new TextReadResult("[REDACTED]", false, true);
-            try
-            {
-                var tp = el.Patterns.Text.PatternOrDefault
-                    ?? throw new ToolException(ToolErrorCode.PatternUnsupported, "Element does not support the Text pattern.", "pick a text/document element");
-                int cap = System.Math.Clamp(maxLength, 1, 200000);
-                string raw;
-                if (selectionOnly)
-                {
-                    try
-                    {
-                        var sel = tp.GetSelection();
-                        raw = (sel is { Length: > 0 }) ? sel[0].GetText(cap + 1) : string.Empty;
-                    }
-                    catch { raw = string.Empty; } // GetSelection is brittle (throws when no selection)
-                }
-                else raw = tp.DocumentRange.GetText(cap + 1);
+        RunOnRefReadAsync(handle, @ref, el => ReadText(el, selectionOnly, maxLength), timeoutMs);
 
-                bool truncated = raw.Length > cap;
-                if (truncated) raw = raw.Substring(0, cap);
-                return new TextReadResult(raw, truncated, false);
-            }
-            catch (System.UnauthorizedAccessException)
-            { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
-        }, timeoutMs);
+    /// <summary>Selector twin of GetTextAsync (Phase 10 #2 T7): identical ReadText body, resolved via the
+    /// bounded selector walk (RunOnSelectorReadAsync).</summary>
+    public Task<(TextReadResult Value, string ResolvedRef)> GetTextBySelectorAsync(WindowHandle handle, Selector sel, bool selectionOnly, int maxLength, int timeoutMs) =>
+        RunOnSelectorReadAsync(handle, sel, el => ReadText(el, selectionOnly, maxLength), timeoutMs);
 
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
