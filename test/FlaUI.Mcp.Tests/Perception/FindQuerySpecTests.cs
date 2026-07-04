@@ -116,4 +116,12 @@ public class FindQuerySpecTests
             null, "memory", "contains", null, false, IgnoreCase: false));
         Assert.False(spec.MatchesPostFilter("Clear all Memory", enabled: true));
     }
+
+    [Fact]
+    public void MatchesPostFilter_eq_ignoreCase_matches_capital_M()
+    {
+        var spec = new FindQuerySpec(new FindQuery(
+            null, "memory", "eq", null, false, IgnoreCase: true));
+        Assert.True(spec.MatchesPostFilter("Memory", enabled: true));
+    }
 }

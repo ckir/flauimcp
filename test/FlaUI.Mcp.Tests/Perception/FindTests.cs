@@ -180,4 +180,40 @@ public class FindTests
             Assert.Equal("ItemB", aid); // find's descriptor is as durable as snapshot's (Task 2 parity)
         }
     }
+
+    [Fact]
+    public async Task Find_ignoreCase_eq_matches_across_case()
+    {
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        var (mgr, perception, handle) = await OpenAsync(app, dispatcher);
+        using (mgr)
+        {
+            // OkButton's Name (from Content="OK") is uppercase; an ordinal eq would reject the
+            // lowercase query. IgnoreCase must NOT push the name into the native UIA condition
+            // (Task 2) and instead let the managed post-filter (OrdinalIgnoreCase) match it.
+            var r = await perception.FindAsync(handle,
+                new FindQuery(null, "ok", "eq", null, false, IgnoreCase: true), max: 20, scopeRef: null);
+            var m = Assert.Single(r.Matches);
+            Assert.Equal("OkButton", m.AutomationId);
+        }
+    }
+
+    [Fact]
+    public async Task Find_ignoreCase_contains_matches_multiple_across_case()
+    {
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        var (mgr, perception, handle) = await OpenAsync(app, dispatcher);
+        using (mgr)
+        {
+            // "Rebuild Items" / "Clear Items" carry uppercase "Items"; an ordinal contains("items")
+            // would miss both. IgnoreCase must catch them via the post-filter.
+            var r = await perception.FindAsync(handle,
+                new FindQuery(null, "items", "contains", null, false, IgnoreCase: true), max: 20, scopeRef: null);
+            Assert.True(r.TotalMatches >= 2);
+            Assert.Contains(r.Matches, m => m.AutomationId == "RebuildItemsButton");
+            Assert.Contains(r.Matches, m => m.AutomationId == "ClearItemsButton");
+        }
+    }
 }

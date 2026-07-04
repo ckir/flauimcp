@@ -257,7 +257,7 @@ public sealed class PerceptionManager
                 FlaUI.Core.Conditions.ConditionBase? c = null;
                 if (!string.IsNullOrEmpty(query.AutomationId)) c = cf.ByAutomationId(query.AutomationId);
                 if (hasCtConstraint) c = c is null ? cf.ByControlType(wantedCt) : c.And(cf.ByControlType(wantedCt));
-                if (!string.IsNullOrEmpty(query.Name) && string.Equals(query.NameMatch, "eq", System.StringComparison.Ordinal))
+                if (!string.IsNullOrEmpty(query.Name) && string.Equals(query.NameMatch, "eq", System.StringComparison.Ordinal) && !query.IgnoreCase)
                     c = c is null ? cf.ByName(query.Name) : c.And(cf.ByName(query.Name));
                 return c;
             }
@@ -266,7 +266,7 @@ public sealed class PerceptionManager
             // When absent, match ALL via the no-arg overload (repo idiom PerceptionManager.cs:226) -
             // NOT a TrueCondition/double-negation surrogate.
             bool hasNative = !string.IsNullOrEmpty(query.AutomationId) || hasCtConstraint
-                || (!string.IsNullOrEmpty(query.Name) && string.Equals(query.NameMatch, "eq", System.StringComparison.Ordinal));
+                || (!string.IsNullOrEmpty(query.Name) && string.Equals(query.NameMatch, "eq", System.StringComparison.Ordinal) && !query.IgnoreCase);
             AutomationElement[] raw;
             try
             {

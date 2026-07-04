@@ -28,10 +28,11 @@ public sealed class FindTools
         [Description("UIA ControlType name, e.g. Button, Edit, ListItem.")] string? controlType = null,
         [Description("Only return enabled elements (default false).")] bool enabledOnly = false,
         [Description("Max matches returned (default 20).")] int max = 20,
-        [Description("Optional live ref to search within (its subtree only).")] string? scope = null)
+        [Description("Optional live ref to search within (its subtree only).")] string? scope = null,
+        [Description("Case-insensitive name match (eq and contains). Default false (exact/ordinal). The Phase-10 selector defaults this true; set it here to preview selector matching.")] bool ignoreCase = false)
         => ToolResponse.Guard(async () =>
         {
-            var query = new FindQuery(automationId, name, nameMatch, controlType, enabledOnly);
+            var query = new FindQuery(automationId, name, nameMatch, controlType, enabledOnly, ignoreCase);
             var r = await _perception.FindAsync(new WindowHandle(window), query, max, scope);
             return ToolResponse.Ok(new
             {
