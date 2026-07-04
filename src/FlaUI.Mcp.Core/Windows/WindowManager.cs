@@ -424,8 +424,27 @@ public sealed class WindowManager : IDisposable
         if (!_hwnds.TryGetValue(handle.Id, out var hwnd) || hwnd == IntPtr.Zero)
             throw new ToolException(ToolErrorCode.WindowHandleStale,
                 $"Handle {handle.Id} is no longer valid.", "re-list windows and re-open");
+        // Capture the pid recorded at mint time for the M2 reverify done on the action STA below. If _ids
+        // has no entry the handle was invalidated (its gate is gone) — fail closed.
+        if (!_ids.TryGetValue(handle.Id, out var recordedPid))
+            throw new ToolException(ToolErrorCode.WindowHandleStale,
+                $"Handle {handle.Id} is no longer valid.", "re-list windows and re-open");
         return _dispatcher.RunActionAsync(() =>
         {
+            // M2 on the WRITE path (mirrors ResolveWindow's read-path guard): reverify the HWND still
+            // belongs to the recorded pid IMMEDIATELY before binding UIA and acting on it. An HWND is
+            // immutably owned by its creating process for the window's lifetime, so a differing current
+            // owner pid proves the OS destroyed the original window and recycled the integer to a DIFFERENT
+            // (possibly sensitive) process — acting on it would be cross-process injection. Lazy handles are
+            // held/reused across long gaps, widening this recycle window, so the action path must guard it
+            // too, not just the read path. Pure-Win32, no false-positive for a live window. A dead hwnd
+            // yields curPid 0, which never matches a real recordedPid → fail closed. Run here (action STA,
+            // right before FromHandle) to minimize the check-to-bind TOCTOU.
+            GetWindowThreadProcessId(hwnd, out uint curPid);
+            if (!HwndStillOwnedBy(recordedPid, (int)curPid))
+                throw new ToolException(ToolErrorCode.WindowHandleStale,
+                    $"Handle {handle.Id} no longer refers to its original window (its HWND was recycled).",
+                    "re-list windows and re-open");
             using var automation = new UIA3Automation();
             var win = automation.FromHandle(hwnd);
             var desktop = automation.GetDesktop();
