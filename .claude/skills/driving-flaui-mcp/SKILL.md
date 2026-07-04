@@ -32,6 +32,10 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 ## Orientation (read-only, always safe)
 
 1. `desktop_list_windows` — Title/ProcessName/Pid; exactly one `IsForeground:true`. Hang-proof.
+   Pass **`includeHandles:true`** to get a reusable `wN` on each window inline — act/read (snapshot,
+   find, interaction) **directly, skipping step 2's `desktop_open_window`**. Handles are minted lazily
+   (the list stays pure-Win32/non-blocking) and reused across polls; the UIA binding happens on first
+   use, guarded so a recycled HWND fails `WindowHandleStale` rather than acting on the wrong window.
 2. `desktop_open_window` by `pid` or exact `title` → returns a handle `wN`.
 3. `desktop_snapshot wN` → indented tree with `[eN] Role "Name" @{x,y,w,h}` refs. Read results
    from **Text** nodes; **refs follow tree order, not value** — read the label before acting on `eN`.

@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.11.0] - 2026-07-04
 
 ### Added
 - **`flaui-mcp overlay on|off`** — a one-command toggle that enables/disables the intent overlay by
@@ -13,6 +13,11 @@ All notable changes to this project are documented here. This project adheres to
   instead of leaving users to hand-edit config args.
 - **Structured `flaui-mcp --help` / `-h`** — replaces the terse one-line usage with multi-line help: every verb
   with a description, common options, and examples. A no-argument invocation shows it too.
+- **Opt-in `desktop_list_windows(includeHandles:true)`** returns a reusable `wN` handle inline on each window,
+  so you can snapshot / find / interact directly without a separate `desktop_open_window` round-trip. Handles
+  are minted lazily (the list stays pure-Win32 and never blocks on an unresponsive window) and reused across
+  polls; the UIA binding is deferred to first use and guarded by a HWND-recycle pid-reverify (on both the read
+  and the write path) so a recycled handle fails `WindowHandleStale` rather than acting on a different process.
 
 ### Changed
 - `flaui-mcp install` for Claude Code now re-registers idempotently (remove-then-add), so re-running install or

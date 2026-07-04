@@ -13,10 +13,11 @@ public sealed class WindowTools
 
     public WindowTools(WindowManager windows, ServerOptions options) { _windows = windows; _options = options; }
 
-    [McpServerTool(ReadOnly = true), Description("List top-level desktop windows (Title, ProcessName, Pid, IsForeground). Opt-in includeBounds adds absolute physical-px Bounds + ZOrder (0=topmost, for occlusion reasoning). Pure Win32 — never blocks on an unresponsive window. For per-window control counts, open a window and call desktop_snapshot_stats.")]
+    [McpServerTool(ReadOnly = true), Description("List top-level desktop windows (Title, ProcessName, Pid, IsForeground). Opt-in includeBounds adds absolute physical-px Bounds + ZOrder (0=topmost, for occlusion reasoning). Opt-in includeHandles adds a reusable handle (e.g. w1) to each window so you can snapshot/find/interact directly, skipping a separate desktop_open_window call. Pure Win32 — never blocks on an unresponsive window. For per-window control counts, open a window and call desktop_snapshot_stats.")]
     public Task<string> DesktopListWindows(
-        [Description("Add Bounds + ZOrder to each window (default false).")] bool includeBounds = false)
-        => ToolResponse.Guard(async () => ToolResponse.Ok(await _windows.ListWindowsAsync(includeBounds)));
+        [Description("Add Bounds + ZOrder to each window (default false).")] bool includeBounds = false,
+        [Description("Add a reusable handle (wN) to each window, so you can act/read without desktop_open_window (default false).")] bool includeHandles = false)
+        => ToolResponse.Guard(async () => ToolResponse.Ok(await _windows.ListWindowsAsync(includeBounds, includeHandles)));
 
     // Read-only of the environment: resolves a handle only (no focus/render/launch). Marked ReadOnly
     // rather than renamed — rename would break the shipped v0.1.x tool name.

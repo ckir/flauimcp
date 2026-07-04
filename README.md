@@ -77,6 +77,9 @@ envelope, and read-only tools are annotated so clients can auto-approve them whi
 for the mutating ones. All synthetic input sits behind a safety foundation — time-lease, deny-list,
 per-window budget, audit, and elevation guard.
 
+`desktop_list_windows(includeHandles:true)` returns a reusable `wN` handle inline on each window, so
+you can snapshot/find/interact directly, skipping the separate `desktop_open_window` round-trip.
+
 ➡ **Full tool tables, the safety model, event streaming, and opaque-app access:
 [docs/features-and-safeguards.md](docs/features-and-safeguards.md).**
 
