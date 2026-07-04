@@ -43,4 +43,16 @@ public class WindowLivenessTests
         var dead = WindowManager.DeadWindowIds(Array.Empty<KeyValuePair<string, IntPtr>>(), _ => false);
         Assert.Empty(dead);
     }
+
+    [Fact]
+    public void CanReuseHandle_reuses_only_when_recorded_pid_matches_the_enumerated_pid()
+    {
+        Assert.True(WindowManager.CanReuseHandle(cachedPid: 1234, enumeratedPid: 1234));
+    }
+
+    [Fact]
+    public void CanReuseHandle_mints_fresh_when_pid_differs_hwnd_recycled_to_a_new_process()
+    {
+        Assert.False(WindowManager.CanReuseHandle(cachedPid: 1234, enumeratedPid: 5678));
+    }
 }

@@ -173,6 +173,11 @@ public sealed class WindowManager : IDisposable
             Invalidate(new WindowHandle(id));
     }
 
+    /// <summary>Reuse a cached handle for an enumerated (hwnd,pid) only when the cached id's recorded pid
+    /// equals the currently-enumerated pid. A mismatch means the OS recycled the HWND integer to a
+    /// DIFFERENT process, so a fresh id must be minted. Pure/headless.</summary>
+    internal static bool CanReuseHandle(int cachedPid, int enumeratedPid) => cachedPid == enumeratedPid;
+
     internal WindowHandle Register(Window window, int pid)
     {
         var id = $"w{Interlocked.Increment(ref _counter)}";
@@ -187,6 +192,29 @@ public sealed class WindowManager : IDisposable
         catch { /* no hwnd */ }
         TryWatchProcessExit(id, pid);
         return new WindowHandle(id);
+    }
+
+    /// <summary>Lazy handle for `list includeHandles` (fork 1a). Reuse the existing wN for this HWND when
+    /// its recorded pid still matches (same live window); else mint a fresh wN — first sight, or the HWND
+    /// was recycled (drop the stale id first so refs/watches/wakes for the gone window are reclaimed).
+    /// PURE Win32 + dict writes, NO UIA touch, so ListWindowsAsync stays non-blocking; the UIA Window is
+    /// bound later, lazily, by ResolveWindow (with the M2 pid-reverify). Populates _hwnds so
+    /// PruneClosedWindows reclaims this handle if its window closes without a process exit. Runs on the
+    /// query STA (called from inside ListWindowsAsync).</summary>
+    private string LazyHandleFor(IntPtr hwnd, int pid)
+    {
+        if (_byHwnd.TryGetValue(hwnd, out var existing)
+            && _ids.TryGetValue(existing, out var cachedPid)
+            && CanReuseHandle(cachedPid, pid))
+            return existing;
+        // Recycled (stale id bound to this hwnd but a different pid): reclaim the gone window's state.
+        if (existing is not null) Invalidate(new WindowHandle(existing));
+        var id = $"w{Interlocked.Increment(ref _counter)}";
+        _ids[id] = pid;
+        _hwnds[id] = hwnd;
+        _byHwnd[hwnd] = id;
+        TryWatchProcessExit(id, pid);
+        return id;
     }
 
     private void TryWatchProcessExit(string id, int pid)
