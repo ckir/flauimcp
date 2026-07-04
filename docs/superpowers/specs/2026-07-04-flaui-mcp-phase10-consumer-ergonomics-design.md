@@ -87,6 +87,35 @@ Options:
 
 Recommendation: **1a**. Fork owner: user (with agy read).
 
+**FORK DECIDED — 1a (lazy handle). USER chose 2026-07-04; AGY-FIRST re-consult cascade `0cb93949`
+firmly re-confirmed 1a ("1b's UIA-per-window cost + partial/timeout-dependent result is far more
+toxic to the API contract than shifting an internal gate"). Two implementation mandates surfaced by
+fresh grounding against the CURRENT `WindowManager.cs`, both folded into the plan:**
+- **(M1) Dedicated always-populated gate/identity record — do NOT re-key the exactly-once
+  `WindowInvalidated` gate onto `_hwnds`.** Today `Invalidate` gates on `_handles.TryRemove` and
+  documents (`WindowManager.cs:118-124`) that `_handles` is populated UNCONDITIONALLY by `Register`
+  while `_hwnds`/`_watched` are best-effort (written inside a try/catch) and *"cannot serve as the
+  gate."* Fork 1a's lazy mint populates `_hwnds` but NOT `_handles` (it defers the UIA `Window`), so
+  the current gate would stop firing for never-read lazy handles. agy proposed re-keying the gate to
+  `_hwnds` — **rejected on measurement**: `_hwnds` is best-effort, so an eager `Register` whose
+  `NativeWindowHandle` read throws would leave `_hwnds[id]` unset and REGRESS the eager path's
+  exactly-once guarantee. Instead introduce a **dedicated record written unconditionally at BOTH the
+  eager `Register` site and the lazy-mint site** (id → `(hwnd, pid)`) that becomes (i) the single
+  exactly-once gate (its `TryRemove` drives `WindowInvalidated`), and (ii) the home for the recorded
+  **pid** that M2 needs. `_handles` degrades to a pure lazy COM-wrapper cache; reads
+  (`RunOnWindowAsync`/`RunWithWindowAndDesktopAsync`) `GetOrAdd` the `Window` from the record's hwnd
+  on first use.
+- **(M2) pid-reverify BEFORE the COM bind (security-ordering, agy-confirmed).** Lazy resolution MUST
+  run the raw Win32 `GetWindowThreadProcessId(hwnd) == recordedPid` check FIRST and bind
+  `FromHandle(hwnd).AsWindow()` only on a match; on mismatch throw `WindowHandleStale` and NEVER call
+  `FromHandle`. Reason: a recycled HWND may now belong to a different, possibly sensitive process, and
+  `FromHandle` would inject UIA into it. The single query-STA serializes lazy resolution, so the
+  ordered check-then-bind is race-free. (This pid-reverify is also worth applying at the shared
+  eager `_hwnds`-action resolution chokepoint per the HWND-recycle note above.)
+- **(fold-in) Dogfood skill update rides this release:** `.claude/skills/driving-flaui-mcp/SKILL.md`
+  gains a short note on `desktop_list_windows(includeHandles:true)` → inline `wN` (skip the
+  `desktop_open_window` round-trip) as a plan task, and the release cut bundles it.
+
 **Plan-vs-spec.** After the fork is chosen, #1 is a **line-level PLAN** (contained to
 `WindowManager` + `WindowTools` + `WindowInfo`). Not before — 1a changes handle lifecycle.
 
