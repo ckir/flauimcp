@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-07-04
+
+### Added
+- **First-class `selector` targeting on 17 interaction/input/content tools** — alongside the
+  existing `@ref` param, an optional `selector` (`{automationId?, name?, nameMatch?, controlType?,
+  scope?, ignoreCase?}`) lets you target a control by stable identity, resolved atomically at
+  action time — eliminating the `eN` re-snapshot churn (every `desktop_snapshot` renumbers refs, so
+  a held `eN` can die `RefNotFound`). **Exactly one of `{ref | selector}`** is required on
+  `desktop_invoke`, `desktop_set_focus`, `desktop_set_value`, `desktop_toggle`, `desktop_expand`,
+  `desktop_select`, `desktop_scroll`, `desktop_scroll_into_view`, `desktop_set_caret`,
+  `desktop_select_text_range`, `desktop_type`, `desktop_paste_text`, `desktop_click`,
+  `desktop_get_text`, `desktop_get_grid_cell`, and `desktop_grid_select`; `desktop_key` takes **at
+  most one** (omitting both targets the current foreground window). Coordinate-only
+  (`desktop_click_at`/`desktop_drag`) and window-level (`desktop_window_transform`) tools were not
+  changed. Resolution requires **exactly one live match**: 0 → `SelectorNoMatch`, >1 →
+  `AmbiguousMatch` (refine with a more specific `controlType`/`automationId`, a `scope`, or
+  `ignoreCase:false`) — never a silent pick. A successful selector call returns
+  `resolvedElement:"eN"`, a freshly minted ref for the resolved element — like any ref, it dies on
+  the next re-walk/snapshot, so reuse it only for an immediate follow-up. An over-broad selector
+  (e.g. bare `controlType` on a huge tree) fails `InvalidArguments` ("selector too broad") rather
+  than walking unbounded. **Honest limitation:** the payoff scales with `automationId` coverage — a
+  control with no `automationId` and a non-unique `name` still degrades to `AmbiguousMatch`, same as
+  duplicate-name `desktop_find`; fall back to a `desktop_snapshot` ref for those.
+- **`desktop_find` gains `ignoreCase`** (default `false`, back-compat) — case-insensitive `name`
+  matching (both `eq` and `contains`), useful to preview how a `selector` (which defaults
+  `ignoreCase:true`) will match before committing to it.
+
+### Deferred
+- Element-identity audit trace (recording a resolved selector target's RuntimeId/AutomationId/
+  bounds in the input audit log, redaction-safe) was scoped but deferred to a 0.10.1 fast-follow —
+  it's a wire-shape change to the existing window-level audit log, not required for the selector
+  feature to be fully functional.
+
 ## [0.9.0] - 2026-07-03
 
 ### Added

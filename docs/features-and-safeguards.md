@@ -56,6 +56,9 @@ never move the real cursor. All are state-changing (annotated `destructive`).
 An action that opens a modal returns `ActionBlockedPending` instead of hanging the server —
 snapshot the window to see the dialog, then act on it.
 
+Every tool in this table also accepts a `selector` as an alternative to `ref` — see
+[Targeting: `ref` or `selector`](#targeting-ref-or-selector) below.
+
 **Structured content & clipboard tools:** read structured data from grid/table
 elements and interact with the system clipboard. Read-only tools are `readOnlyHint`; mutating
 tools are `destructive` and blocked in `--read-only-mode`.
@@ -71,6 +74,9 @@ tools are `destructive` and blocked in `--read-only-mode`.
 `DesktopGetGridCell` and `DesktopGetText` honor the same credential-store denylist and
 `IsPassword` redaction as `DesktopSnapshot` — password cells and fields always surface as
 `[REDACTED]`, and windows owned by known credential stores are denied outright.
+
+`DesktopGetGridCell`, `DesktopGetText`, and `DesktopGridSelect` also accept a `selector` as an
+alternative to `ref` — see [Targeting: `ref` or `selector`](#targeting-ref-or-selector) below.
 
 **Input safety foundation.** The safety infrastructure and seam interfaces landed *before* any
 synthetic input tool could — deliberately *before* the blast radius. No mouse/keyboard tool lives
@@ -143,6 +149,11 @@ Real `SendInput`-backed mouse/keyboard input, built on the safety foundation abo
   still apply (you cannot drive a credential dialog or a shell this way without the `shells`
   capability).
 
+`desktop_set_caret`, `desktop_select_text_range`, `desktop_type`, `desktop_paste_text`,
+`desktop_click`, and `desktop_key` all accept a `selector` as an alternative to `ref` (`desktop_key`
+takes at most one, omitting both targets the foreground window) — see
+[Targeting: `ref` or `selector`](#targeting-ref-or-selector) below.
+
 **The out-of-band lease is the required enabler.** None of the five `SendInput` tools fire
 unless a human has granted a live lease out-of-band:
 
@@ -186,6 +197,57 @@ tools**, **lenient on reads**, and it never silently binds a different control t
 globally as a break-glass for apps with too-volatile UIA identity — this **disables the INV-8 guard**,
 so use it only when strict resolution blocks a legitimate workflow. `FLAUI_MCP_REF_MAXSCOPES` (default
 512) tunes the ancestor fan-out cap.
+
+#### Targeting: `ref` or `selector`
+
+Every state-changing interaction tool above, plus the six ref-taking `InputTools`
+(`desktop_set_caret`, `desktop_select_text_range`, `desktop_type`, `desktop_paste_text`,
+`desktop_click`, `desktop_key`) and the ref-taking `ContentTools` reads (`desktop_get_text`,
+`desktop_get_grid_cell`, `desktop_grid_select`) — 17 tools in all — accept an optional `selector`
+alongside the existing `ref`. **Exactly one of the two is required** (`InvalidArguments` if you
+pass both or neither); `desktop_key` is the one exception, taking **at most one** — omitting both
+targets the current foreground window. Coordinate-only tools (`desktop_click_at`, `desktop_drag`)
+and the window-level `desktop_window_transform` did not gain a selector.
+
+```
+selector: { automationId?, name?, nameMatch?, controlType?, scope?, ignoreCase? }
+```
+
+- `automationId` / `name` (`nameMatch`: `eq` default | `contains`) / `controlType` — the same
+  fields as `desktop_find`; at least one is required (`InvalidArguments` otherwise, checked before
+  any UIA walk).
+- `scope` — an existing `eN` ref narrowing the search to that element's subtree.
+- `ignoreCase` — defaults **true** on `selector` (ergonomic: `"Submit"` matches `"submit"`);
+  defaults **false** on `desktop_find` (back-compat, unchanged ordinal matching). Preview how a
+  selector will match with `desktop_find(ignoreCase:true, ...)` before committing to it; if a
+  selector's name genuinely collides across a `Submit`/`submit` pair, set `ignoreCase:false` on the
+  selector to disambiguate.
+
+A selector is resolved **fresh, on the action thread, at the moment of the call** — there is no
+stale snapshot ref to go bad, and no re-`desktop_snapshot` churn to keep a target valid across
+turns. Resolution requires **exactly one match**:
+
+- **0 matches** → `SelectorNoMatch` — the target isn't present right now (reveal it, or check the
+  selector fields).
+- **>1 matches** → `AmbiguousMatch` — refine with a more specific `controlType`/`automationId`, add
+  `scope`, try `ignoreCase:false`, or fall back to a `desktop_snapshot` ref.
+- Exactly 1 → the tool acts (or reads) and the response includes `resolvedElement:"eN"` — a
+  **freshly minted ref** for the element that was just resolved.
+
+**`resolvedElement` durability caveat:** treat it like any other ref — it dies on the next
+re-walk/snapshot of that window. Reuse it for an *immediate* follow-up call only; don't hold onto
+it across turns the way you might a snapshot ref.
+
+**A selector that's too broad** (e.g. bare `controlType:"Button"` on a large, otherwise
+unconstrained tree) is refused `InvalidArguments` ("selector too broad") rather than allowed to
+walk the tree unbounded — a safety cap on the action thread, not a bug.
+
+**Honest limitation:** a selector's payoff scales directly with `automationId` coverage. A control
+with a stable `automationId` resolves cleanly every time and survives snapshot churn — that's the
+whole point. A control with **no** `automationId` and a **non-unique** `name` degrades to
+`AmbiguousMatch`, exactly like a duplicate-name `desktop_find` would — fall back to
+`desktop_snapshot` + a specific `eN` for those. `selector` is a complement to `ref`, not a strict
+upgrade — use whichever is more stable for the control you're targeting.
 
 ### Read-only mode
 

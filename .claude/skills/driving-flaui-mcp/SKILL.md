@@ -38,6 +38,31 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 - `desktop_snapshot_diff wN <baselineSnapshotId> scope=<ref>` diffs only that element's subtree (cheap
   re-walk + in-memory baseline slice) — added/removed/changed since the baseline.
 
+## Selector vs snapshot ref — pick by what you already know
+
+- **Known control → `selector`, no snapshot needed.** Every state-changing interaction tool, the six
+  ref-taking input tools, and the ref-taking content reads accept a `selector`
+  (`{automationId?, name?, nameMatch?, controlType?, scope?, ignoreCase?}`) as an alternative to `ref`,
+  resolved **fresh at the moment of the call** — no `eN` to go stale, no re-snapshot after every action.
+  If you already know a stable `automationId` (from a prior snapshot or from app knowledge), skip the
+  snapshot and act directly with `selector:{automationId:"..."}`.
+- **Unknown control → `desktop_snapshot`/`desktop_find` first.** A selector still needs *something*
+  material (`automationId`/`name`/`controlType`) to search for — if you don't know any of those yet,
+  discover the control with a snapshot or `desktop_find` (which also lets you preview a name match with
+  `ignoreCase:true` before committing to a selector).
+- **Exactly one of `ref` | `selector`** — passing both or neither is `InvalidArguments`. (`desktop_key`
+  is the one exception: at most one, omitting both targets the current foreground window.)
+- **`ignoreCase` defaults true on `selector`** (ergonomic — `"Submit"` matches `"submit"`), **false on
+  `desktop_find`** (back-compat). If a selector's name collides across a real `Submit`/`submit` pair,
+  add `ignoreCase:false` to disambiguate.
+- **Resolution is fail-closed, count==1 only:** 0 matches → `SelectorNoMatch` (target not present —
+  reveal it first, or re-check the fields); >1 matches → `AmbiguousMatch` — refine by adding
+  `controlType`/`automationId`, a `scope` (an `eN` narrowing to a subtree), `ignoreCase:false`, or just
+  fall back to a `desktop_snapshot` ref for a control with no stable identity.
+- **`resolvedElement` (the freshly minted `eN` returned on a successful selector call) is
+  short-lived** — like any ref, it dies on the next re-walk/snapshot of that window. Reuse it only for
+  an *immediate* follow-up, don't hold onto it across turns.
+
 ## React instead of poll (`desktop_watch`)
 
 - Instead of looping `desktop_snapshot`/`desktop_find` to notice a change, subscribe once:

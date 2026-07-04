@@ -185,6 +185,29 @@ multi-connection server driving one physical desktop is a focus-steal mirage (ag
       [`docs/superpowers/specs/2026-07-03-flaui-mcp-phase9-vision-opaque-access-design.md`](docs/superpowers/specs/2026-07-03-flaui-mcp-phase9-vision-opaque-access-design.md);
       plan:
       [`docs/superpowers/plans/2026-07-03-flaui-mcp-phase9-vision-opaque-access.md`](docs/superpowers/plans/2026-07-03-flaui-mcp-phase9-vision-opaque-access.md).
+    - **Phase 10 — Consumer ergonomics.** Three consumer-prioritized changes from a single design
+      spec; **#2 shipped (v0.10.0)**, #1 and #3 not yet done.
+      - **#2 — First-class `selector` targeting** ✅ **(shipped v0.10.0), the main feature.** An
+        optional `selector` (`{automationId?, name?, nameMatch?, controlType?, scope?, ignoreCase?}`)
+        alongside the existing `@ref` param on 17 interaction/input/content-read tools, resolved
+        atomically on the action thread at call time — eliminating the `eN` re-snapshot churn (every
+        `desktop_snapshot` renumbers refs, so a held `eN` can die `RefNotFound`). **Exactly one of
+        `{ref | selector}`** (`desktop_key`: at most one; omit both → foreground target). Resolution is
+        count==1 fail-closed: `0` → `SelectorNoMatch`, `>1` → `AmbiguousMatch` — never a silent pick. A
+        successful call returns `resolvedElement:"eN"` (a freshly minted, equally ephemeral ref — reuse
+        promptly, don't hoard it). `ignoreCase` is a shared flag defaulting **true** on `selector`
+        (ergonomic) and **false** on `desktop_find` (back-compat); preview a selector's match with
+        `desktop_find(ignoreCase:true)`. Honest limitation: the payoff scales with `automationId`
+        coverage — a control with no `automationId` and a non-unique `name` still degrades to
+        `AmbiguousMatch`, same as a duplicate-name `desktop_find`; fall back to a `desktop_snapshot`
+        ref for those. *Deferred (0.10.1 fast-follow candidate):* element-identity audit trace
+        (RuntimeId/AutomationId/bounds of the resolved target in the input audit log) — a wire-shape
+        change to the existing window-level audit, not required for the feature to be functional.
+        Spec: [`docs/superpowers/specs/2026-07-04-flaui-mcp-phase10-consumer-ergonomics-design.md`](docs/superpowers/specs/2026-07-04-flaui-mcp-phase10-consumer-ergonomics-design.md);
+        plan: [`docs/superpowers/plans/2026-07-04-flaui-mcp-phase10-selector.md`](docs/superpowers/plans/2026-07-04-flaui-mcp-phase10-selector.md).
+      - **#1 — Opt-in handle on `desktop_list_windows`** — design fork recorded in the spec above;
+        not yet planned/implemented.
+      - **#3** — spec treats this as a likely-drop, revisit-after-#2 item; not yet planned/implemented.
 
 ## Consumer-lens hardening backlog (v0.7.3 release-capstone review, 2026-07-02)
 

@@ -80,6 +80,17 @@ per-window budget, audit, and elevation guard.
 ➡ **Full tool tables, the safety model, event streaming, and opaque-app access:
 [docs/features-and-safeguards.md](docs/features-and-safeguards.md).**
 
+### Targeting: `ref` or `selector`
+
+Interaction tools accept either a `ref` from a `desktop_snapshot` **or** a `selector`
+(`{automationId?, name?, nameMatch?, controlType?, scope?, ignoreCase?}`) resolved fresh at action
+time — exactly one of the two, always. A selector with a stable `automationId` survives the
+snapshot churn that would otherwise force a re-`desktop_snapshot`; one with no `automationId` and a
+non-unique `name` still needs a snapshot ref (0 or >1 matches fail closed as `SelectorNoMatch` /
+`AmbiguousMatch`, never a silent guess). Full contract, the `resolvedElement` durability caveat, and
+`ignoreCase` semantics:
+[Targeting: ref or selector](docs/features-and-safeguards.md#targeting-ref-or-selector).
+
 ## Documentation
 
 - **[Features & safeguards](docs/features-and-safeguards.md)** — full tool reference, the safety
