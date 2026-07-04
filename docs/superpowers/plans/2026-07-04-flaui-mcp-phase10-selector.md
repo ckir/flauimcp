@@ -14,6 +14,14 @@
 
 ---
 
+## AGY-AFTER plan-review (relentless-auditor, 2026-07-04) = BLOCK → GO-WITH-FIXES (folded)
+
+Adversarial plan review caught 3 real defects (folded) + 1 false alarm (rejected on measurement):
+- **[FOLDED — T4] Synchronous COM deadlock:** the action-STA `timeoutMs` cannot interrupt a blocked native `FindAllDescendants`, so a broad selector could hang the single action STA. T4 now MANDATES a node-count-bounded walk (the spec's liveness fold; timeout is not a substitute).
+- **[FOLDED — T4] Gate replication:** the selector wrappers must replicate the ref siblings' FULL gate set (offscreen + input-path `ActionTarget`→`InputGuard` deny-list/lease/audit), not just offscreen. (Corrected agy's TOCTOU framing: a selector's fresh action-STA resolve IS the atomicity — no separate RuntimeId re-verify.)
+- **[FOLDED — T7] Read-tool return shape:** read tools must thread `resolvedElement` into their OWN data payload, not reuse `InteractionTools.Act` (which would discard the read data).
+- **[REJECTED] `TryParseControlType` visibility:** agy assumed it might be private; verified `public static` at `FindQuery.cs:47` — no change needed.
+
 ## Recon corrections folded (2026-07-04 session 2)
 
 Code reconnaissance corrected four assumptions — all reflected in the tasks below:
@@ -295,7 +303,11 @@ git commit -m "feat(selector): Selector value type + fail-closed validation (Pha
 - Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` (add `ResolveSelectorOnSta` + `RunOnSelectorActionAsync<T>` / `RunOnSelectorForInputAsync<T>` / `RunOnSelectorReadAsync<T>`)
 - Test: Desktop-category `test/FlaUI.Mcp.Tests/Desktop/DesktopSelectorTests.cs` (controller-run; the resolve is on-STA so it needs real UIA)
 
-**Contract:** A shared on-STA core resolves a `Selector` against a root (window, or its `scope` subtree) to **exactly one** live element, mirroring `FindAsync`'s `Build`+`FindQuerySpec` path — NOT `RefRegistry` descriptor resolution. `0` → `SelectorNoMatch`; `>1` → `AmbiguousMatch` (recovery names the `ignoreCase:false` escape + add controlType/scope); `1` → return it. Three thin wrappers mirror the existing ref trio. The action/input wrappers offscreen-guard (`ElementNotActionable`) exactly like `RunOnRefActionAsync`; the read wrapper does not. Each wrapper mints a **descriptor-only** `eN` (`cached: null`) via the same descriptor construction `FindAsync` uses, and returns it so the tool can surface `resolvedElement`. The action-STA `timeoutMs` (already enforced by `RunOnWindowActionAsync`) bounds the walk — no separate cap needed for the first cut (note it; revisit if a pathological tree is observed).
+**Contract:** A shared on-STA core resolves a `Selector` against a root (window, or its `scope` subtree) to **exactly one** live element, mirroring `FindAsync`'s `Build`+`FindQuerySpec` path — NOT `RefRegistry` descriptor resolution. `0` → `SelectorNoMatch`; `>1` → `AmbiguousMatch` (recovery names the `ignoreCase:false` escape + add controlType/scope); `1` → return it. Three thin wrappers mirror the existing ref trio. The action/input wrappers offscreen-guard (`ElementNotActionable`) exactly like `RunOnRefActionAsync`; the read wrapper does not. Each wrapper mints a **descriptor-only** `eN` (`cached: null`) via the same descriptor construction `FindAsync` uses, and returns it so the tool can surface `resolvedElement`.
+
+> **⚠️ BOUNDED WALK IS MANDATORY (AGY-AFTER plan-review — do NOT skip).** The spec's liveness fold requires a bounded action-STA search. `root.FindAllDescendants(...)` is a **synchronous native COM** call: `RunOnWindowActionAsync`'s `timeoutMs` times out the *await* but **cannot interrupt** the blocked STA thread — a broad-but-material selector (e.g. `controlType:"Button"` on a huge tree) would **permanently hang the single action STA** (deadlocking the whole interaction pipeline). So `ResolveSelectorOnSta` MUST bound the traversal itself: after native narrowing, cap the number of candidates examined (a node-count limit — env-tunable, mirror `FLAUI_MCP_REF_MAXSCOPES`); on exceeding the cap throw `ToolException(InvalidArguments, "selector too broad — matched/scanned > N nodes", "narrow it: add automationId, a scope, or a more specific controlType")`. (`FindAllDescendants` returns the full list before you can count it, so the cap must be applied via a manual bounded descendant walk OR by constraining native `TreeScope`; the timeout is NOT a substitute. Note: `desktop_find` has the same latent unbounded walk today — out of scope to retrofit, but the action STA is the more critical single-thread, so the selector path gets the cap.)
+
+> **⚠️ GATES ARE NOT OPTIONAL (AGY-AFTER plan-review).** The wrappers below must replicate the **exact** gate set of their ref siblings — a selector is NOT a reduced-gate path. `RunOnSelectorActionAsync` mirrors `RunOnRefActionAsync` (offscreen guard shown). `RunOnSelectorForInputAsync` MUST mirror `RunOnRefForInputAsync` — derive the `ActionTarget` from the resolved element so `InputGuard.Authorize`'s deny-list/lease/budget/audit fire exactly as on the ref path. (There is no separate RuntimeId re-verify for a selector — unlike a ref, a selector has no prior snapshot to be stale against; resolving fresh on the action STA IS the TOCTOU-atomic check. That is the ONLY re-verify difference; every other gate is identical.)
 
 - [ ] **Step 1: Implement the shared resolve core** (add to `PerceptionManager`)
 
@@ -464,7 +476,9 @@ For each: make `@ref` nullable (already is on `DesktopKey`), add `Selector? sele
 
 **Contract:** `DesktopGetText` + `DesktopGetGridCell` (ReadOnly, via `RunOnSelectorReadAsync`) and `DesktopGridSelect` (Destructive, via `RunOnSelectorActionAsync`) gain `Selector? selector=null` with the same exactly-one-of gate + `resolvedElement`. Reads use the read wrapper (Lenient, no offscreen guard) but the selector still requires **count==1** (a read whose selector matches >1 fails `AmbiguousMatch`, consistent with today's lenient-but-duplicate-fail-closed reads). Verified signatures: `DesktopGetGridCell(string window, string @ref, int row, int col, int timeoutMs=4000)`; `DesktopGridSelect(string window, string @ref, int row, int col, int timeoutMs=4000)`; `DesktopGetText(string window, string @ref, bool selectionOnly=false, int maxLength=10000, int timeoutMs=4000)`.
 
-- [ ] **Steps:** apply the T5 pattern to the three tools (read tools use `RunOnSelectorReadAsync`; grid-select uses `RunOnSelectorActionAsync`). Build `5/0/0`; headless green. **Commit:** `feat(selector): ContentTools selector-or-ref on ref reads (Phase 10 #2 T7)`.
+> **⚠️ Return-shape (AGY-AFTER plan-review): do NOT reuse `InteractionTools.Act`.** `Act` returns a fixed action response (`{ok,pathUsed,resolvedElement}`); the read tools return DATA (`get_text`→text, `get_grid_cell`→cell). Mechanically applying the T5 helper would **discard the read payload**. Instead, reuse only the T5 *targeting* pattern (the `RequireExactlyOne` gate + `sel.Validate()` + route to `RunOnSelectorReadAsync`), then thread `resolvedElement` into each read tool's **own** JSON shape — e.g. `ToolResponse.Ok(new { text = result.Text, /*…existing fields…*/ resolvedElement = resolved })` when a selector was used (omit `resolvedElement` on the ref path). `desktop_grid_select` (Destructive) uses `RunOnSelectorActionAsync` and its existing response + `resolvedElement`.
+
+- [ ] **Steps:** apply the targeting pattern (not the whole `Act` helper) to the three tools per the note above; read tools use `RunOnSelectorReadAsync`, grid-select uses `RunOnSelectorActionAsync`; each surfaces `resolvedElement` in its own payload. Build `5/0/0`; headless green. **Commit:** `feat(selector): ContentTools selector-or-ref on ref reads (Phase 10 #2 T7)`.
 
 ---
 
