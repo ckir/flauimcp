@@ -109,6 +109,11 @@ builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.WakeTools>();
 // --- Phase 9 OCR text targeting (Prong B) ---
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Vision.IOcrEngine, FlaUI.Mcp.Core.Vision.WindowsMediaOcrEngine>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Vision.TextFinder>();
+
+// --- SP-A T8: desktop_wait_for_foreground blocking resume primitive ---
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Attention.IForegroundWaiter, FlaUI.Mcp.Server.Attention.Win32ForegroundWaiter>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Attention.WaitForForeground.WaiterGate>();
+
 builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.FindTextTools>();
 
 builder.Services

@@ -46,7 +46,11 @@ public class DesktopFindTextTests
             var refs = new RefRegistry();
             var perception = new PerceptionManager(mgr, refs, new SnapshotCache());
             var finder = new TextFinder(new WindowsMediaOcrEngine());
-            var tools = new FindTextTools(perception, finder);
+            var tools = new FindTextTools(perception, finder,
+                new FlaUI.Mcp.Server.Attention.Win32ForegroundWaiter(),
+                new FlaUI.Mcp.Core.Attention.WaitForForeground.WaiterGate(),
+                FlaUI.Mcp.Core.Attention.NullAttentionSignal.Instance,
+                mgr, new FlaUI.Mcp.Core.Interaction.Win32PlatformEnvironment());
 
             var handle = await mgr.OpenByPidAsync(app.Process.Id);
             await mgr.FocusAsync(handle); // must be foreground/unoccluded for the capture to see real pixels

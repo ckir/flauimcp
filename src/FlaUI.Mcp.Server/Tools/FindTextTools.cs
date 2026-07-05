@@ -2,7 +2,9 @@
 using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
+using FlaUI.Mcp.Core.Attention;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Vision;
 using FlaUI.Mcp.Core.Windows;
@@ -11,14 +13,28 @@ using ModelContextProtocol.Server;
 namespace FlaUI.Mcp.Server.Tools;
 
 /// <summary>Prong B MCP surface (§3/§6): OCR a window/region and return every text run matching a query with
-/// coordinates in BOTH physical screen px and desktop_click_at window-fractions. ReadOnly + lease-exempt.</summary>
+/// coordinates in BOTH physical screen px and desktop_click_at window-fractions. ReadOnly + lease-exempt.
+/// Also hosts desktop_wait_for_foreground (SP-A T8) — grouped with the other DesktopWaitFor* siblings for
+/// naming consistency, even though its deps (foreground waiter/attention/window manager) differ from OCR.</summary>
 [McpServerToolType]
 public sealed class FindTextTools
 {
     private readonly PerceptionManager _perception;
     private readonly TextFinder _finder;
-    public FindTextTools(PerceptionManager perception, TextFinder finder)
-    { _perception = perception; _finder = finder; }
+    private readonly IForegroundWaiter _foregroundWaiter;
+    private readonly WaitForForeground.WaiterGate _waiterGate;
+    private readonly IAttentionSignal _attention;
+    private readonly WindowManager _windows;
+    private readonly IPlatformEnvironment _env;
+
+    public FindTextTools(PerceptionManager perception, TextFinder finder,
+        IForegroundWaiter foregroundWaiter, WaitForForeground.WaiterGate waiterGate,
+        IAttentionSignal attention, WindowManager windows, IPlatformEnvironment env)
+    {
+        _perception = perception; _finder = finder;
+        _foregroundWaiter = foregroundWaiter; _waiterGate = waiterGate;
+        _attention = attention; _windows = windows; _env = env;
+    }
 
     [McpServerTool(ReadOnly = true), Description(
         "OCR a window (or a sub-region of it) and return every visible text run matching your query, with click " +
@@ -107,5 +123,36 @@ public sealed class FindTextTools
                     center = new[] { m.CenterX, m.CenterY }, xPct = m.XPct, yPct = m.YPct
                 }
             });
+        });
+
+    [McpServerTool(ReadOnly = true), Description("Block until a window gains the OS foreground (the human clicks it), the window is closed, or timeout. Flashes the window first. Lease-EXEMPT (no synthetic input). timeoutMs is server-capped to 45s — on a \"timeout\" result, CALL THIS TOOL AGAIN to keep waiting (do NOT yield the chat turn). Returns { foregroundGained, reason: \"gained\"|\"timeout\"|\"window-destroyed\", currentForeground }. Use after a targetNotForeground result to let the human bring your target forward.")]
+    public Task<string> DesktopWaitForForeground(
+        [Description("Window handle, e.g. w1.")] string window,
+        [Description("Max ms to block (server-capped to 45000).")] int timeoutMs = 45000)
+        => ToolResponse.Guard(() =>
+        {
+            if (!_windows.TryGetHwnd(new WindowHandle(window), out var hwnd))
+                throw new ToolException(ToolErrorCode.WindowHandleStale, $"Handle {window} is no longer valid.", "re-list windows and re-open");
+            if (!_waiterGate.TryEnter())
+                throw new ToolException(ToolErrorCode.TooManyPendingActions, "Another wait_for_foreground is already in progress.", "wait for it to finish, or retry shortly");
+            try
+            {
+                _attention.Signal(new WindowHandle(window));                 // flash (+ speak if autosound)
+                var r = _foregroundWaiter.Wait(hwnd, WaitForForeground.ClampTimeout(timeoutMs));
+                var fg = _env.GetForegroundRoot();
+                // SEAT-D fold: build currentForeground via the SHARED leak-safe helper so this tool's shape is
+                // IDENTICAL to desktop_type/desktop_focus_window — incl. the owner-modal title rule.
+                var cf = FlaUI.Mcp.Core.Attention.ForegroundGate.DescribeForeground(
+                    foregroundRoot: fg, targetRoot: hwnd,
+                    resolveProcess: h => _env.ResolveRoot(h).ProcessName,
+                    ownerHwnd: _windows.OwnerHwnd, resolveTitle: _windows.WindowTitle);
+                return Task.FromResult(ToolResponse.Ok(new
+                {
+                    foregroundGained = r.ForegroundGained,
+                    reason = r.Reason switch { WaitReason.Gained => "gained", WaitReason.WindowDestroyed => "window-destroyed", _ => "timeout" },
+                    currentForeground = cf,
+                }));
+            }
+            finally { _waiterGate.Exit(); }
         });
 }
