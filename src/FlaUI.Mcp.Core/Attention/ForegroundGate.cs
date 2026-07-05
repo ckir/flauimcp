@@ -1,18 +1,26 @@
 using System;
+using System.Text.Json.Serialization;
 
 namespace FlaUI.Mcp.Core.Attention;
 
 /// <summary>The leak-safe foreground identity surfaced when a keyboard action can't reach its target.
-/// Process name only by default; Title is non-null ONLY for a modal owned by the exact target HWND.</summary>
-public readonly record struct ForegroundIdentity(string Handle, string? Process, string? Title);
+/// Process name only by default; Title is non-null ONLY for a modal owned by the exact target HWND.
+/// camelCase wire contract (spec §4.1) via explicit JsonPropertyName — ToolResponse.Ok applies no naming
+/// policy, so positional records MUST carry [property: JsonPropertyName]. Optional leak-safe fields
+/// (process/title) are omitted when null; title is absent by default (never a bare "title":null leak).</summary>
+public readonly record struct ForegroundIdentity(
+    [property: JsonPropertyName("handle")] string Handle,
+    [property: JsonPropertyName("process"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Process,
+    [property: JsonPropertyName("title"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Title);
 
 /// <summary>The enriched, JSON-serializable not-foreground result (spec §4.1). Replaces the generic
-/// ElementDisappearedDuringAction for the not-foreground cause on the keyboard path.</summary>
+/// ElementDisappearedDuringAction for the not-foreground cause on the keyboard path. camelCase wire
+/// contract via explicit JsonPropertyName (see ForegroundIdentity note).</summary>
 public sealed record TargetNotForeground(
-    string TargetWindow,
-    ForegroundIdentity CurrentForeground,
-    string RecommendedAction,   // "call-wait-for-foreground" | "launch-fresh"
-    string Recovery);
+    [property: JsonPropertyName("targetWindow")] string TargetWindow,
+    [property: JsonPropertyName("currentForeground")] ForegroundIdentity CurrentForeground,
+    [property: JsonPropertyName("recommendedAction")] string RecommendedAction,   // "call-wait-for-foreground" | "launch-fresh"
+    [property: JsonPropertyName("recovery")] string Recovery);
 
 /// <summary>Pure not-foreground decision + leak-safe payload builder. No Win32 here — the caller injects
 /// the live foreground root, a process-name resolver, an owner-HWND resolver, and (only if an owned modal
