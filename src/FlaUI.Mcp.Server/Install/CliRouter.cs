@@ -4,7 +4,7 @@ namespace FlaUI.Mcp.Server.Install;
 public static class CliRouter
 {
     private static readonly HashSet<string> Verbs =
-        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "overlay", "autosound", "--version", "-v", "--help", "-h" };
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "overlay", "autosound", "presence", "--version", "-v", "--help", "-h" };
 
     public static bool IsInstallerVerb(string[] args) => args.Length > 0 && Verbs.Contains(args[0]);
 
@@ -69,6 +69,30 @@ public static class CliRouter
                 return 0;
             }
 
+            case "presence":
+            {
+                var mode = args.Length > 1 ? args[1].ToLowerInvariant() : "";
+                if (mode != "on" && mode != "off")
+                { outp.WriteLine("usage: flaui-mcp presence on|off [--nearby-secs N] [--away-secs N] [--agent agy|claude|generic|all]"); return 2; }
+                int nearby = int.TryParse(OptionValue(args, "--nearby-secs"), out var nn) ? nn : 60;
+                int away = int.TryParse(OptionValue(args, "--away-secs"), out var aa) ? aa : 300;
+                if (mode == "on" && !FlaUI.Mcp.Core.Presence.IdleActivity.IsValidThresholds(nearby, away))
+                { outp.WriteLine($"invalid thresholds: away-secs ({away}) must be greater than nearby-secs ({nearby})."); return 2; }
+
+                // 1) Non-destructive config merge (default via the --presence launch flag group).
+                var add = mode == "on"
+                    ? new[] { "--presence", $"--nearby-secs={nearby}", $"--away-secs={away}" }
+                    : System.Array.Empty<string>();
+                var remove = new[] { "--presence", "--nearby-secs", "--away-secs" };
+                foreach (var r in ApplyMerge(agent, paths, exePath, add, remove))
+                    outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
+
+                // 2) Live state file — makes `off` revoke NOW (no reconnect) and `on` active immediately.
+                outp.WriteLine(FlaUI.Mcp.Server.Presence.PresenceStateWriter.Set(mode == "on", nearby, away));
+                outp.WriteLine($"Presence {mode.ToUpperInvariant()}. The live change is immediate; the launch default applies after the next /mcp reconnect.");
+                return 0;
+            }
+
             case "uninstall":
                 foreach (var r in Apply(agent, paths, install: false, exePath))
                     outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
@@ -119,7 +143,7 @@ public static class CliRouter
                 return 0;
 
             default:
-                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells] [--accept-risk]|lock|overlay on|off|autosound on|off] [--agent agy|generic|claude|all] [--config <path>]");
+                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells] [--accept-risk]|lock|overlay on|off|autosound on|off|presence on|off] [--agent agy|generic|claude|all] [--config <path>]");
                 return 0;
         }
     }
@@ -143,6 +167,9 @@ public static class CliRouter
         outp.WriteLine("  autosound on|off           Enable/disable a spoken cue when a target window needs your");
         outp.WriteLine("                             attention (it's not in the foreground). Off by default; flash");
         outp.WriteLine("                             is always on. Coexists with overlay (independent flag groups).");
+        outp.WriteLine("  presence on|off            Enable/disable a coarse presence sensor (active/nearby/away) for");
+        outp.WriteLine("                             desktop_user_state. Off by default; human-only; never exposes raw");
+        outp.WriteLine("                             idle time. [--nearby-secs N] [--away-secs N] (away must exceed nearby).");
         outp.WriteLine("  unlock [--minutes N]       Grant a time-bounded synthetic-input lease (default 5 min).");
         outp.WriteLine("          [--allow-shells]   Also permit input into interlocked shells/terminals.");
         outp.WriteLine("          [--accept-risk]    Required (non-interactive) to grant leases over 60 minutes;");
@@ -154,7 +181,7 @@ public static class CliRouter
         outp.WriteLine();
         outp.WriteLine("COMMON OPTIONS:");
         outp.WriteLine("  --agent agy|claude|generic|all   Target specific client(s) (default: all). Applies to");
-        outp.WriteLine("                                   install / uninstall / overlay / autosound.");
+        outp.WriteLine("                                   install / uninstall / overlay / autosound / presence.");
         outp.WriteLine("  --config <path>                  Override the config file path.");
         outp.WriteLine();
         outp.WriteLine("EXAMPLES:");

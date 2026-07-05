@@ -1,3 +1,4 @@
+using FlaUI.Mcp.Core.Presence;
 using FlaUI.Mcp.Server.Install;
 using Xunit;
 
@@ -217,5 +218,82 @@ public class CliRouterTests
         var dashH = new StringWriter();
         Assert.Equal(0, CliRouter.Run(new[] { "-h" }, @"C:\x\flaui-mcp.exe", dashH));
         Assert.Contains("VERBS:", dashH.ToString());
+    }
+
+    [Fact]
+    public void Presence_is_a_recognized_installer_verb()
+        => Assert.True(CliRouter.IsInstallerVerb(new[] { "presence", "on" }));
+
+    [Fact]
+    public void Presence_bad_mode_prints_usage_and_returns_nonzero()
+    {
+        var sb = new StringWriter();
+        var code = CliRouter.Run(new[] { "presence", "sideways" }, @"C:\x\flaui-mcp.exe", sb);
+        Assert.Equal(2, code);
+        Assert.Contains("usage", sb.ToString());
+    }
+
+    [Fact]
+    public void Presence_on_registers_flag_and_writes_live_state()
+    {
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        var dataDir = Path.Combine(Path.GetTempPath(), $"flaui-data-{Guid.NewGuid():N}");
+        var prev = Environment.GetEnvironmentVariable("FLAUI_MCP_DATA_DIR");
+        Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", dataDir);
+        try
+        {
+            var code = CliRouter.Run(new[] { "presence", "on", "--nearby-secs", "30", "--away-secs", "200", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            Assert.Equal(0, code);
+            var json = File.ReadAllText(cfg);
+            Assert.Contains("--presence", json);
+            Assert.Contains("--nearby-secs=30", json);
+            Assert.Contains("--away-secs=200", json);
+            Assert.True(PresenceConfig.TryParse(File.ReadAllText(PresenceState.StatePath()), out var c) && c.Enabled);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", prev);
+            if (Directory.Exists(dataDir)) Directory.Delete(dataDir, true);
+            foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f);
+        }
+    }
+
+    [Fact]
+    public void Presence_off_preserves_overlay_and_revokes_live()
+    {
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        var dataDir = Path.Combine(Path.GetTempPath(), $"flaui-data-{Guid.NewGuid():N}");
+        var prev = Environment.GetEnvironmentVariable("FLAUI_MCP_DATA_DIR");
+        Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", dataDir);
+        try
+        {
+            CliRouter.Run(new[] { "overlay", "on", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            CliRouter.Run(new[] { "presence", "on", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            var code = CliRouter.Run(new[] { "presence", "off", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            Assert.Equal(0, code);
+            var json = File.ReadAllText(cfg);
+            Assert.Contains("--overlay", json);          // sibling flag group preserved
+            Assert.DoesNotContain("--presence", json);
+            Assert.True(PresenceConfig.TryParse(File.ReadAllText(PresenceState.StatePath()), out var c) && !c.Enabled);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", prev);
+            if (Directory.Exists(dataDir)) Directory.Delete(dataDir, true);
+            foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f);
+        }
+    }
+
+    [Fact]
+    public void Presence_on_with_invalid_thresholds_refuses()
+    {
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        try
+        {
+            var sb = new StringWriter();
+            var code = CliRouter.Run(new[] { "presence", "on", "--nearby-secs", "60", "--away-secs", "10", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", sb);
+            Assert.Equal(2, code);
+        }
+        finally { foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f); }
     }
 }
