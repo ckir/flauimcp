@@ -15,10 +15,10 @@ load them before use.
 ToolSearch "select:mcp__flaui-mcp__desktop_list_windows,mcp__flaui-mcp__desktop_open_window,mcp__flaui-mcp__desktop_snapshot,mcp__flaui-mcp__desktop_get_text,mcp__flaui-mcp__desktop_input_status"
 ```
 Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste_text` (synthetic input);
-`desktop_set_caret,desktop_select_text_range` (lease-exempt text); `desktop_focus_window,desktop_window_transform` (recovery);
+`desktop_set_caret,desktop_select_text_range` (lease-exempt text); `desktop_focus_window,desktop_wait_for_foreground,desktop_window_transform` (foreground/recovery);
 `desktop_find` (cheap targeting), `desktop_snapshot_diff` (change detection);
 `desktop_wake_accessibility,desktop_release_accessibility,desktop_list_wakes` (opaque Chromium/Electron);
-`desktop_find_text,desktop_wait_for_text` (OCR targeting).
+`desktop_find_text,desktop_wait_for_text` (OCR targeting); `desktop_user_state` (coarse presence — read-only, opt-in).
 
 ## Watching the agent
 
@@ -249,6 +249,14 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   signaling of any kind (dumb sensor by design).
 - Presence is human-only and off by default, same posture as `overlay`/`autosound` — don't assume
   it's enabled; check `enabled` in the reply before trusting `activity`.
+- **Empirical (live smoke):** `desktop_user_state` reads the REAL OS idle clock (`GetLastInputInfo`),
+  and your OWN synthetic input resets it — a `desktop_type`/`desktop_click`/`desktop_key`/mouse move
+  bumps idle straight back to `active`. So you can't observe `nearby`/`away` *while* injecting input; the
+  read itself is lease-exempt and does NOT reset the clock, so poll it while going input-silent. (To smoke
+  the transitions fast, set tiny thresholds: `flaui-mcp presence on --nearby-secs 5 --away-secs 15`.) Any
+  flash + spoken cue you hear during a foreground wait is `desktop_wait_for_foreground` firing the
+  attention signal on a non-foreground target (autosound speaks via a child process — reliable even on a
+  stdio host where in-process System.Speech throws).
 
 ## Etiquette
 
