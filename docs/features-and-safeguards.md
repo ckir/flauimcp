@@ -14,7 +14,7 @@ tools an agent can call.
 | `DesktopOpenWindow` | ✅ | Open a window by `pid` or `title`, returning a handle (e.g. `w1`). |
 | `DesktopSnapshot` | ✅ | Walk a window's UI into an indented, ref-tagged accessibility-tree snapshot. Each line carries an `eN` ref, control type, name, bounds, state (incl. `focused`), and supported patterns. Options: `interactiveOnly` (prune noise, default on), `fullProperties` (add AutomationId/HelpText), `includeOffscreen` (default off), `maxDepth`, and `root` (root the walk at a prior ref). |
 | `DesktopLaunchApp` | — | Launch an executable (with optional args) and return a handle to its main window. |
-| `DesktopFocusWindow` | — | Bring a window to the foreground. |
+| `DesktopFocusWindow` | — | Bring a window to the foreground. Returns `foregroundGained`; when Windows' foreground-lock blocks it, also returns `currentForeground`/`recommendedAction` (`"call-wait-for-foreground"`)/`recovery` — see `desktop_wait_for_foreground` under [Synthetic input](#synthetic-input) below. |
 | `DesktopCloseWindow` | — | Close a window and free its handle. |
 
 **Perception-completion tools (read-only):** screenshot, bounds, snapshot
@@ -101,7 +101,7 @@ What this layer introduces:
 ### Synthetic input
 
 Real `SendInput`-backed mouse/keyboard input, built on the safety foundation above.
-**Nine tools** ship:
+**Ten tools** ship:
 
 - **`desktop_type`** — type Unicode text into the focused element (or a `@ref` target). Capped at
   4096 characters per call (`InvalidArguments` over the cap; split on a surrogate-safe boundary).
@@ -112,6 +112,14 @@ Real `SendInput`-backed mouse/keyboard input, built on the safety foundation abo
   reactive/autocomplete editors prefer a non-keystroke path (`desktop_set_value`, or clipboard paste
   for editors without `ValuePattern`). The garble is now flagged automatically by `desktop_type`'s
   `verify` (below).
+
+  When the target window isn't the OS foreground, `desktop_type` no longer aborts with the generic
+  `ElementDisappearedDuringAction` for that specific cause — it flashes the window and returns (via the
+  normal response, not an error) `targetNotForeground: { targetWindow, currentForeground:{handle,process},
+  recommendedAction:"call-wait-for-foreground", recovery }`. `currentForeground` is leak-safe (process
+  name only; a `title` only for a modal owned by the exact target window). The generic
+  `ElementDisappearedDuringAction` still fires for a genuine mid-send focus steal. See
+  `desktop_wait_for_foreground` below for the recommended recovery.
   
   `desktop_type` takes an optional `verify` (bool, default `true`). When on, it reads the element back after typing and returns a `verify` object:
   - `{ ran, verified, mismatch }` — always present.
@@ -135,7 +143,16 @@ Real `SendInput`-backed mouse/keyboard input, built on the safety foundation abo
   the **safety** (no leak, no wrong text, no clobber on a refused paste) — restore is a courtesy, not
   a promise.
 - **`desktop_key`** — send a key chord (e.g. `ctrl+a`, `enter`, `alt+f4`) to the focused window, or
-  to a `@ref`/`window` target. `ref` without `window` is `InvalidArguments`.
+  to a `@ref`/`window` target. `ref` without `window` is `InvalidArguments`. Shares the same
+  `targetNotForeground` handshake as `desktop_type` above when the target isn't foreground.
+- **`desktop_wait_for_foreground`** — flash a `window` then block (up to `timeoutMs`, default
+  `45000`, server-capped) until it gains OS foreground, is closed, or times out; returns
+  `{ foregroundGained, reason:"gained"|"timeout"|"window-destroyed", currentForeground }`. On a
+  `"timeout"` result, re-invoke rather than yielding the turn. **Lease-exempt** (works even while
+  input is locked) and **single-waiter** (max 1 concurrent wait per server). This is the recommended
+  recovery for the `targetNotForeground` handshake above and for `desktop_focus_window`'s
+  `recommendedAction`. Clicks (`desktop_click`/`desktop_click_at`/`desktop_drag`) are unaffected by
+  the foreground-lock handshake — a click activates the window, so it's a remedy, not a victim of it.
 - **`desktop_click`** — click a `@ref` element by its hit-test point.
 - **`desktop_click_at`** — click an absolute window-relative point (`xPct`/`yPct`).
 - **`desktop_drag`** — press-move-release between two points; **both** endpoints are deny-list
@@ -164,6 +181,12 @@ flaui-mcp lock                                   # revoke it immediately
 
 The agent cannot grant, extend, or read the SID of its own lease; it expires automatically. Use
 `desktop_input_status` to check how much time remains.
+
+**Leases longer than 60 minutes require an explicit risk acknowledgment.** `unlock --minutes N` for
+`N > 60` prints an honest warning that the server provides **no sandboxing** and requires typing
+`'I understand'` interactively, or passing `--accept-risk` (alias `--i-understand`) non-interactively;
+without a TTY and without the flag, a long lease is refused outright. Leases of 60 minutes or less are
+unchanged.
 
 **The session must stay active and unlocked.** `SendInput` cannot reach a locked or
 RDP-disconnected desktop — those calls return `InputDesktopUnavailable` rather than silently
