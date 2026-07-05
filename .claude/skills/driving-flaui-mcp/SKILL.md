@@ -144,6 +144,13 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 ## Synthetic input needs a human lease
 
 - Check first: `desktop_input_status` → `{leaseStatus, secondsRemaining, shells}`.
+- **RDP vs the physical console (empirical, verified live):** read/snapshot/find, UIA-pattern actions,
+  `desktop_user_state`, `desktop_wait_for_foreground`'s flash, autosound TTS (audio is redirected to the
+  RDP client), and the `targetNotForeground` gate itself (`desktop_type`/`desktop_key` return the gate
+  result BEFORE delivering any keystroke) all work over RDP. What does NOT work over RDP is actual
+  `SendInput` keystroke/click **delivery** landing on the desktop — a real type/click into a *foreground*
+  window can silently no-op or fail `InputDesktopUnavailable`. So validate the gate/attention/presence
+  features over RDP freely; a real synthetic-typing smoke needs the physical console.
 - **Pre-flight the target window state (the #1 driving trap):** before an input plan, run
   `desktop_list_windows includeBounds:true` — off-screen bounds like `@{-31992,…}` mean the target is
   **MINIMIZED**. A minimized (or otherwise non-foreground) target makes EVERY synthetic action abort
