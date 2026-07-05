@@ -46,7 +46,9 @@ entire risk. Understand the following before you install:
   time-lease, deny-list, per-window budget, audit, and elevation guard of the safety foundation.
   A human must explicitly unlock a time-bounded window (`flaui-mcp unlock`)
   before any input fires. The permission you grant at install (`mcp(flaui-mcp/*)`) covers these
-  tools.
+  tools. **Leases longer than 60 minutes require an explicit risk acknowledgment** — an interactive
+  `'I understand'` prompt, or `--accept-risk` non-interactively — because the server itself provides
+  **no sandboxing**; short leases (≤60 min) are unaffected.
 - **The released binaries are NOT code-signed.** Windows SmartScreen and antivirus software
   will likely flag the installer and the self-extracting executable. You will have to click
   through "More info → Run anyway." Verify the published SHA-256 checksums before trusting a
@@ -162,12 +164,30 @@ Understand what the agent is about to do before it does it:
   safety foundation remains the real gates. Off by default — zero cost when not enabled. To turn it on, add
   add `--overlay` to the server's launch args — easiest via the built-in toggle: run `flaui-mcp overlay on`
   (and `flaui-mcp overlay off` to disable), then reconnect your MCP client.
+- **Audible attention cue (`flaui-mcp autosound on|off`)** — opt-in spoken cue (off by default) that
+  names only the target app (leak-safe) when a window needs your attention — i.e. it isn't in the OS
+  foreground. The intent-overlay flash above is **always on** regardless of this setting; `autosound`
+  only adds the spoken line. Toggle with `flaui-mcp autosound on` / `flaui-mcp autosound off`, then
+  reconnect your MCP client (`/mcp`) to apply.
 - **Element-identity audit trace** — when a mutative action (via `desktop_type`, `desktop_click`,
   `desktop_invoke`, etc.) resolves a `selector` target, the input audit line now names the resolved
   element's stable identity: an allow-listed set of `RuntimeId`, `AutomationId`, `ClassName`,
   `ControlType`, and bounds ONLY (never `Name`, `Value`, `HelpText`, or any content-bearing property).
   The trace is strictly omitted when no element resolves (selector targeting failed), so pre-0.10.1 log
   parsers still read the unchanged window-level audit fields.
+- **Foreground-lock attention handshake.** A background-process server can't always bring a window to
+  the OS foreground (Windows' foreground-lock), so `desktop_type`/`desktop_key` surface that state
+  instead of guessing: when the target isn't foreground, they flash the window and return
+  `targetNotForeground: { targetWindow, currentForeground: { handle, process }, recommendedAction:
+  "call-wait-for-foreground", recovery }` (via the normal response, not an error). `desktop_focus_window`
+  reports the same shape whenever the lock blocks it, alongside its existing `foregroundGained` boolean.
+  `currentForeground` is leak-safe — only the foreground process's name, never its window title, except
+  a `title` for a modal owned by the exact target window. **Recommended pattern:** on either signal,
+  call **`desktop_wait_for_foreground(window)`** (flashes the window, then blocks up to 45s for it to
+  gain foreground) instead of retyping blind — and if it comes back `reason:"timeout"`, call it again
+  rather than yielding your turn, since the server caps each call at 45s. Clicks (`desktop_click`/
+  `desktop_click_at`/`desktop_drag`) are unaffected — a click activates the window, so it's a remedy,
+  not a victim of the lock.
 
 ### Known limitations (auditing)
 
@@ -179,6 +199,10 @@ Understand what the agent is about to do before it does it:
   0.10.2 adds audit to the pattern leg.
 - **RuntimeId is per-session.** An element's `RuntimeId` is stable within a session, but not across app
   restarts — if the app crashes and relaunches, the same logical element gets a new `RuntimeId`.
+- **`overlay`/`autosound` don't coexist on the `claude` target.** Toggling one for Claude Code
+  re-registers the server through the opaque `claude mcp` CLI, which cannot read back the other flag's
+  existing args — so enabling `autosound` there silently drops a previously-enabled `overlay` (and vice
+  versa). The agy and generic MCP targets merge both flags non-destructively; only `claude` has this gap.
 
 ## Known limitations
 

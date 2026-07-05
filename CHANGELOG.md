@@ -3,6 +3,37 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-07-05
+
+### Added
+- **Enriched `targetNotForeground` result on `desktop_type`/`desktop_key`.** When the target window
+  is not the OS foreground, these tools no longer abort with the generic `ElementDisappearedDuringAction`
+  for that specific cause — they flash the window and return (via the normal `ToolResponse`, not an
+  error) `{ targetNotForeground: { targetWindow, currentForeground:{ handle, process }, recommendedAction:
+  "call-wait-for-foreground", recovery } }`. `currentForeground` is leak-safe: only the process name is
+  named, with a `title` surfaced only for a modal owned by the exact target window. Clicks
+  (`desktop_click`/`desktop_click_at`/`desktop_drag`) are unchanged — a click activates the window, so
+  it's already a remedy, not a victim. The generic `ElementDisappearedDuringAction` still fires for a
+  genuine mid-send focus steal.
+- **`desktop_focus_window` now returns `currentForeground`/`recommendedAction`/`recovery`** when the
+  foreground-lock blocks it, alongside the existing `foregroundGained` (additive, backward compatible).
+- **New tool `desktop_wait_for_foreground(window, timeoutMs=45000)`.** Flashes the window, then blocks
+  until it gains foreground, is closed, or the timeout elapses. Returns `{ foregroundGained, reason:
+  "gained"|"timeout"|"window-destroyed", currentForeground }`. `timeoutMs` is server-capped at 45s — on a
+  `"timeout"` result, call it again rather than yielding the turn. Lease-exempt (works while input is
+  locked); single-waiter.
+- **`flaui-mcp autosound on|off` CLI verb** (off by default) — an opt-in spoken cue naming only the
+  target app (leak-safe, debounced) when a window needs attention. The intent-overlay flash is always
+  on regardless of this setting. Takes effect on the next client reconnect (`/mcp`).
+- **Non-destructive multi-flag config merge for `overlay`/`autosound`** — toggling one no longer drops
+  the other for the agy and generic MCP targets. **Known limitation:** the `claude` target is configured
+  through the opaque `claude mcp` CLI, which cannot read back existing args, so `overlay` and `autosound`
+  do **not** coexist there — toggling one re-registers with only that flag.
+- **Long input leases now require explicit risk acknowledgment.** `unlock --minutes N` for `N > 60`
+  prints an honest warning that the server provides no sandboxing and requires typing `'I understand'`
+  interactively, or passing `--accept-risk` (alias `--i-understand`) non-interactively; without a TTY and
+  without the flag, a long lease is refused. Leases of 60 minutes or less are unchanged.
+
 ## [0.11.2] - 2026-07-05
 
 ### Fixed

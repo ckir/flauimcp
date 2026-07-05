@@ -55,6 +55,34 @@ that bug is one instance of a broader class. Specs:
   spot** on record as the reopen trigger — apps taking **>500 ms** to close can outrun SP2's spin-wait;
   see SP4 spec §6. Modifier-healing was already dropped as Win32-unsound. **Session-hygiene effort ends here.**
 
+### Human-Attention Toolset (SP-A) — foreground-lock legibility
+
+Consumer-driven follow-on to Session Hygiene: the foreground-lock (a background-process server can't
+always bring a window forward) is a Windows fact of life, not a bug — but a *silent* abort left the
+agent guessing. SP-A makes the lock **legible** and gives the agent an explicit attention handshake,
+rather than trying to defeat the OS boundary. **Shipped (v0.12.0):**
+
+- Enriched `targetNotForeground` result on `desktop_type`/`desktop_key` — replaces the generic
+  `ElementDisappearedDuringAction` abort for the not-foreground cause with a structured, leak-safe
+  `{ targetWindow, currentForeground:{handle,process}, recommendedAction, recovery }` plus a window
+  flash; clicks are unaffected (a click is already a remedy, not a victim).
+- `desktop_focus_window` additive `currentForeground`/`recommendedAction`/`recovery` when the lock
+  blocks it (keeps `foregroundGained`).
+- New tool `desktop_wait_for_foreground` — flash + block up to a server-capped 45s for the target to
+  gain foreground; lease-exempt; designed to be re-invoked on `reason:"timeout"` rather than yielding
+  the turn.
+- Attention signals: flash always-on, plus opt-in `flaui-mcp autosound on|off` (leak-safe spoken cue,
+  off by default).
+- Non-destructive multi-flag config merge (`overlay`/`autosound` coexist for agy/generic; known gap on
+  the `claude` target, whose CLI can't read back existing args).
+- Long-lease (`--minutes N > 60`) disclaiming warning + `--accept-risk`/`'I understand'` gate.
+
+Spec: [`SP-A design`](docs/superpowers/specs/2026-07-05-flaui-mcp-human-attention-toolset-design.md).
+**Follow-on (not yet built):** **SP-B — user-state presence** (a coarse, opt-in, agent-orchestrated
+activity enum so an agent can reason about whether a human is even at the keyboard) and **SP-C —
+legitimate raise** (a sanctioned way to actually bring a window to the foreground when that's the
+correct outcome, vs. today's flash-and-wait handshake). Both remain specced/backlog only.
+
 - **Phase 1 — Foundation** ✅ (v0.1.x): window/session management, split query/action
   STA dispatcher, option-C ref engine, 5 window tools.
 - **Phase 2 — Perception** ✅ (v0.2.0): `desktop_snapshot` (a11y tree + popup grafting),

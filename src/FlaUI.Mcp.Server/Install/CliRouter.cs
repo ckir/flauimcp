@@ -140,8 +140,9 @@ public static class CliRouter
         outp.WriteLine("  uninstall [--purge-data]   Remove the registration (and the data dir with --purge-data).");
         outp.WriteLine("  overlay on|off             Enable/disable the intent overlay — a red rectangle drawn on");
         outp.WriteLine("                             the target ~0.5s before each mutative action. Off by default.");
-        outp.WriteLine("  autosound on|off           Enable/disable an audible cue on each mutative action. Off by");
-        outp.WriteLine("                             default. Coexists with overlay (independent flag groups).");
+        outp.WriteLine("  autosound on|off           Enable/disable a spoken cue when a target window needs your");
+        outp.WriteLine("                             attention (it's not in the foreground). Off by default; flash");
+        outp.WriteLine("                             is always on. Coexists with overlay (independent flag groups).");
         outp.WriteLine("  unlock [--minutes N]       Grant a time-bounded synthetic-input lease (default 5 min).");
         outp.WriteLine("          [--allow-shells]   Also permit input into interlocked shells/terminals.");
         outp.WriteLine("          [--accept-risk]    Required (non-interactive) to grant leases over 60 minutes;");
