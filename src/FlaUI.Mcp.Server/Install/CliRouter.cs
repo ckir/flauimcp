@@ -87,6 +87,25 @@ public static class CliRouter
             case "unlock":
             {
                 var minutes = int.TryParse(OptionValue(args, "--minutes"), out var m) ? m : 5;
+                bool acceptFlag = HasFlag(args, "--accept-risk") || HasFlag(args, "--i-understand");
+                bool interactive = !Console.IsInputRedirected; // a real TTY; redirected stdin (CI) is non-interactive
+                switch (Lease.LeaseWarning.Decide(minutes, acceptFlag, interactive))
+                {
+                    case Lease.LeaseWarningDecision.RefuseNeedsAck:
+                        outp.WriteLine(Lease.LeaseWarning.Text(minutes));
+                        outp.WriteLine("Refusing a long lease without acknowledgment. Re-run with --accept-risk (non-interactive) or from a terminal.");
+                        return 2;
+                    case Lease.LeaseWarningDecision.ProceedWithLoggedWarning:
+                        outp.WriteLine(Lease.LeaseWarning.Text(minutes)); // on record in the log
+                        if (interactive && !acceptFlag)
+                        {
+                            var line = Console.ReadLine();
+                            if (!string.Equals(line?.Trim(), "I understand", StringComparison.Ordinal))
+                            { outp.WriteLine("Not acknowledged; lease not granted."); return 2; }
+                        }
+                        break;
+                    case Lease.LeaseWarningDecision.NoWarning: break;
+                }
                 outp.WriteLine(Lease.LeaseWriter.Grant(minutes, HasFlag(args, "--allow-shells")));
                 return 0;
             }
@@ -100,7 +119,7 @@ public static class CliRouter
                 return 0;
 
             default:
-                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells]|lock|overlay on|off|autosound on|off] [--agent agy|generic|claude|all] [--config <path>]");
+                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells] [--accept-risk]|lock|overlay on|off|autosound on|off] [--agent agy|generic|claude|all] [--config <path>]");
                 return 0;
         }
     }
@@ -125,6 +144,8 @@ public static class CliRouter
         outp.WriteLine("                             default. Coexists with overlay (independent flag groups).");
         outp.WriteLine("  unlock [--minutes N]       Grant a time-bounded synthetic-input lease (default 5 min).");
         outp.WriteLine("          [--allow-shells]   Also permit input into interlocked shells/terminals.");
+        outp.WriteLine("          [--accept-risk]    Required (non-interactive) to grant leases over 60 minutes;");
+        outp.WriteLine("                             interactive terminals get an 'I understand' prompt instead.");
         outp.WriteLine("  lock                       Revoke the synthetic-input lease immediately.");
         outp.WriteLine("  print-config               Print the generic mcpServers JSON snippet for manual setup.");
         outp.WriteLine("  --version, -v              Print the version.");
