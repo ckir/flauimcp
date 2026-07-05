@@ -69,6 +69,21 @@ builder.Services.AddSingleton(sp =>
         isElevated: ElevationGuard.IsElevated(),
         allowElevation: opts.AllowElevation);
 });
+// SP-A attention signals: flash is always available; TTS only when --autosound is on. Composite fans out.
+builder.Services.AddSingleton(_ =>
+    new FlaUI.Mcp.Core.Attention.TtsDebounce(capacity: 3, window: System.TimeSpan.FromSeconds(30)));
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Attention.IAttentionSignal>(sp =>
+{
+    var o = sp.GetRequiredService<ServerOptions>();
+    var wm = sp.GetRequiredService<WindowManager>();
+    var channels = new System.Collections.Generic.List<FlaUI.Mcp.Core.Attention.IAttentionSignal>
+        { new FlaUI.Mcp.Server.Attention.FlashSignal(wm) };
+    if (o.Autosound)
+        channels.Add(new FlaUI.Mcp.Server.Attention.TtsSignal(
+            h => wm.TryGetAppName(h),
+            sp.GetRequiredService<FlaUI.Mcp.Core.Attention.TtsDebounce>()));
+    return new FlaUI.Mcp.Core.Attention.CompositeAttentionSignal(channels);
+});
 builder.Services.AddSingleton<InputTools>();
 
 // --- Phase 8 desktop_watch (UIA event streaming over stdio; push+drain) ---
@@ -94,7 +109,17 @@ builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.WakeTools>();
 // --- Phase 9 OCR text targeting (Prong B) ---
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Vision.IOcrEngine, FlaUI.Mcp.Core.Vision.WindowsMediaOcrEngine>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Vision.TextFinder>();
+
+// --- SP-A T8: desktop_wait_for_foreground blocking resume primitive ---
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Attention.IForegroundWaiter, FlaUI.Mcp.Server.Attention.Win32ForegroundWaiter>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Attention.WaitForForeground.WaiterGate>();
+
 builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.FindTextTools>();
+
+// --- SP-B user-state presence (coarse, opt-in, read-only) ---
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Presence.IIdleSource, FlaUI.Mcp.Core.Presence.Win32IdleSource>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Presence.PresenceState>();
+builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.PresenceTools>();
 
 builder.Services
     .AddMcpServer()

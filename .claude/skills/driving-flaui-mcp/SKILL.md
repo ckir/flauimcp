@@ -158,6 +158,18 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   (`desktop_launch_app` grants the new window foreground) and act **immediately**, before it loses it.
   Empirically (console smoke): `desktop_focus_window` on an already-open charmap → `foregroundGained:false`,
   but a *freshly-launched* charmap was foreground and typed/minimized fine.
+- **On a `targetNotForeground` result (or `desktop_focus_window` returning `foregroundGained:false`
+  with a `recommendedAction`), call `desktop_wait_for_foreground(window)` — don't yield your turn.**
+  `desktop_type`/`desktop_key` return this instead of aborting when the target isn't the OS foreground:
+  `{ targetWindow, currentForeground:{handle, process}, recommendedAction:"call-wait-for-foreground",
+  recovery }`. `desktop_wait_for_foreground` flashes the window then blocks (server-capped at 45s) until
+  it gains foreground, is closed, or times out, returning `{foregroundGained, reason:"gained"|"timeout"|
+  "window-destroyed", currentForeground}`. On `reason:"timeout"`, call it again immediately rather than
+  ending your turn — it's designed to be re-invoked. It's lease-exempt (works even while input is
+  locked) and single-waiter (one outstanding wait at a time). `currentForeground` is **leak-safe** —
+  only the foreground process's name, never its window title (a `title` appears only for a modal owned
+  by the exact target window you asked about). Clicks (`desktop_click`/`desktop_click_at`/`desktop_drag`)
+  don't trigger this — a click activates the window itself, so it's a remedy, not a victim.
 - Locked? A human runs on the host: `flaui-mcp unlock --minutes N` (suggest the user type `! flaui-mcp unlock --minutes N`).
 - The lease **expires mid-session** (`InputNotLeased` when it lapses) → re-unlock.
 - **Lease-exempt even while locked:** `desktop_set_caret`, `desktop_select_text_range`, `desktop_get_text`
@@ -215,6 +227,28 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 | `REF_NOT_FOUND` on a ref you "just had", right after a window closed | closing a window (or its process exiting) **evicts that window's refs**; windows closed by hand are caught by an on-access liveness sweep at the next `snapshot`/`find`/`list_windows` | expected, not a bug — take a fresh `desktop_snapshot`; **never reuse a ref across a window close/reopen** (the tell is `REF_NOT_FOUND`, distinct from `WindowHandleStale` on the handle) |
 | Typed text garbled / `verify.mismatch:true` | reactive/RichEdit editor races synthetic keystrokes | Mismatch result includes `canSetValue` (writable ValuePattern presence). **`canSetValue:true`** (snapshot shows `[Value,…]`, e.g. new Notepad Document): `recommendedFallbackTool:"desktop_set_value"` — byte-exact. **`canSetValue:false`** (Electron `contenteditable`, no ValuePattern): `recommendedFallbackTool:"desktop_paste_text"` — `set_value` would return `PatternUnsupported`, so use `desktop_paste_text` (atomic clipboard-backed Ctrl+V; clipboard restore is best-effort, `clipboardRestored:"abandoned"` if the landing can't be confirmed). (`desktop_type`'s `verify` flags the garble automatically.) |
 | Snapshot is one opaque `Document` node, no children (often `wakeable:true`) | Electron/Chromium a11y **off by default** | `desktop_wake_accessibility wN` then re-`desktop_snapshot` — usually hydrates the full tree. Still empty (or a document text body specifically)? Use `desktop_find_text` (OCR) or the **coordinate path** (`desktop_click_at`/`desktop_drag` by `xPct`/`yPct`). Per-app fix: relaunch it with `--force-renderer-accessibility`. WinUI/WPF/Qt expose proper UIA and are fine. |
+| `desktop_type`/`desktop_key` returns `targetNotForeground` (no error thrown) | target window isn't the OS foreground (foreground-lock) — the tool flashed it instead of typing blind | Call `desktop_wait_for_foreground(window)` (don't yield your turn); re-invoke on `reason:"timeout"` (server caps each call at 45s) |
+
+## Combining presence with foreground (watching/working/nearby/away)
+
+- `desktop_user_state` (read-only, lease-exempt) reports a coarse **activity** axis only:
+  `{ enabled, activity: "active"|"nearby"|"away"|null }`. Off by default — a human must run
+  `flaui-mcp presence on` before it returns anything but `{enabled:false, activity:null}`. It never
+  exposes raw idle milliseconds; there is no finer signal to poll for.
+- Cross it with SP-A's **focus** axis (`desktop_focus_window`'s `foregroundGained`, or whether your
+  target window is the one reported by `desktop_list_windows`' `IsForeground:true`) to derive a
+  richer state yourself — the server does not compute this for you:
+  - **watching** — your target is the OS foreground *and* `activity:"active"`.
+  - **working** — `activity:"active"` but your target is *not* the foreground (human is doing
+    something else).
+  - **nearby** — `activity:"nearby"` (idle past the short threshold, default 60s).
+  - **away** — `activity:"away"` (idle past the long threshold, default 300s).
+- Use the derived state to decide how hard to escalate attention: the intent-overlay flash is
+  always-on regardless; add `autosound` (spoken cue) when nearby/away; if you need to reach someone
+  who's away, that's a job for **your own** notification MCP — this server does no outbound
+  signaling of any kind (dumb sensor by design).
+- Presence is human-only and off by default, same posture as `overlay`/`autosound` — don't assume
+  it's enabled; check `enabled` in the reply before trusting `activity`.
 
 ## Etiquette
 

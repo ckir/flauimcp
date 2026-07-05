@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Server;
 
@@ -10,8 +11,14 @@ public sealed class WindowTools
 {
     private readonly WindowManager _windows;
     private readonly ServerOptions _options;
+    private readonly IPlatformEnvironment _env;
 
-    public WindowTools(WindowManager windows, ServerOptions options) { _windows = windows; _options = options; }
+    public WindowTools(WindowManager windows, ServerOptions options, IPlatformEnvironment env)
+    {
+        _windows = windows;
+        _options = options;
+        _env = env;
+    }
 
     [McpServerTool(ReadOnly = true), Description("List top-level desktop windows (Title, ProcessName, Pid, IsForeground). Opt-in includeBounds adds absolute physical-px Bounds + ZOrder (0=topmost, for occlusion reasoning). Opt-in includeHandles adds a reusable handle (e.g. w1) to each window so you can snapshot/find/interact directly, skipping a separate desktop_open_window call. Pure Win32 — never blocks on an unresponsive window. For per-window control counts, open a window and call desktop_snapshot_stats.")]
     public Task<string> DesktopListWindows(
@@ -52,9 +59,29 @@ public sealed class WindowTools
     public Task<string> DesktopFocusWindow([Description("Window handle, e.g. w1.")] string window)
         => ToolResponse.GuardWrite(_options, async () =>
         {
-            var gained = await _windows.FocusAsync(new WindowHandle(window));
-            return ToolResponse.Ok(new { ok = true, foregroundGained = gained });
+            var fr = await _windows.FocusWithWhyNotAsync(new WindowHandle(window));
+            return FocusReply(fr, window,
+                h => _env.ResolveRoot(h).ProcessName, _windows.OwnerHwnd, _windows.WindowTitle);
         });
+
+    // SP-A: build the focus reply. On success just { ok, foregroundGained }. On the foreground-lock ceiling,
+    // ADD the leak-safe currentForeground + recommendedAction (spec §4.1), reusing ForegroundGate.
+    public static string FocusReply(FocusResult fr, string windowId,
+        System.Func<nint, string?> resolveProcess, System.Func<nint, nint> ownerHwnd, System.Func<nint, string?> resolveTitle)
+    {
+        if (fr.ForegroundGained)
+            return ToolResponse.Ok(new { ok = true, foregroundGained = true });
+        var g = FlaUI.Mcp.Core.Attention.ForegroundGate.Evaluate(
+            fr.TargetHwnd, fr.ForegroundHwnd, windowId, resolveProcess, ownerHwnd, resolveTitle);
+        return ToolResponse.Ok(new
+        {
+            ok = true,
+            foregroundGained = false,
+            currentForeground = g!.CurrentForeground,
+            recommendedAction = g.RecommendedAction,
+            recovery = g.Recovery,
+        });
+    }
 
     [McpServerTool(Destructive = true), Description("Close a window and free its handle. Blocked in --read-only-mode.")]
     public Task<string> DesktopCloseWindow([Description("Window handle, e.g. w1.")] string window)

@@ -5,6 +5,7 @@ using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
 using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Tools;
+using FlaUI.Mcp.Tests.Interaction;
 using Xunit;
 
 namespace FlaUI.Mcp.Tests.Perception;
@@ -22,7 +23,7 @@ public class GetBoundsTests : IClassFixture<TestAppFixture>
         using var mgr = new WindowManager(dispatcher);
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var tools = new ScreenshotTools(perception);
-        var window = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false));
+        var window = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false), new FakePlatformEnvironment());
         var opened = await window.DesktopOpenWindow("pid", _app.Process.Id.ToString());
         var handle = JsonDocument.Parse(opened).RootElement.GetProperty("handle").GetString()!;
         var snapJson = await new SnapshotTools(perception, new WaitCoordinator(perception)).DesktopSnapshot(handle, fullProperties: true);

@@ -1,10 +1,12 @@
+using System.Globalization;
+
 namespace FlaUI.Mcp.Server.Install;
 
 /// <summary>Parses the installer CLI verbs and dispatches to the per-agent writers.</summary>
 public static class CliRouter
 {
     private static readonly HashSet<string> Verbs =
-        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "overlay", "--version", "-v", "--help", "-h" };
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "overlay", "autosound", "presence", "--version", "-v", "--help", "-h" };
 
     public static bool IsInstallerVerb(string[] args) => args.Length > 0 && Verbs.Contains(args[0]);
 
@@ -43,10 +45,53 @@ public static class CliRouter
                     outp.WriteLine("usage: flaui-mcp overlay on|off [--agent agy|claude|generic|all]");
                     return 2;
                 }
-                var extra = mode == "on" ? McpServerEntry.OverlayArgs : System.Array.Empty<string>();
-                foreach (var r in Apply(agent, paths, install: true, exePath, extra))
+                var add = mode == "on" ? McpServerEntry.OverlayArgs.ToArray() : System.Array.Empty<string>();
+                // Both group members named so the prefix rule (ConfigArgsMerge) drops the whole group:
+                // "--overlay" alone would NOT also match "--overlay-ms=800" (different prefix).
+                var remove = new[] { "--overlay", "--overlay-ms" };
+                foreach (var r in ApplyMerge(agent, paths, exePath, add, remove))
                     outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
                 outp.WriteLine($"Intent overlay {mode.ToUpperInvariant()}. Reconnect the MCP client (/mcp) to apply; restart agy if you use it.");
+                return 0;
+            }
+
+            case "autosound":
+            {
+                var mode = args.Length > 1 ? args[1].ToLowerInvariant() : "";
+                if (mode != "on" && mode != "off")
+                {
+                    outp.WriteLine("usage: flaui-mcp autosound on|off [--agent agy|claude|generic|all]");
+                    return 2;
+                }
+                var add = mode == "on" ? new[] { "--autosound" } : System.Array.Empty<string>();
+                var remove = new[] { "--autosound" };
+                foreach (var r in ApplyMerge(agent, paths, exePath, add, remove))
+                    outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
+                outp.WriteLine($"Autosound {mode.ToUpperInvariant()}. Reconnect the MCP client (/mcp) to apply; restart agy if you use it.");
+                return 0;
+            }
+
+            case "presence":
+            {
+                var mode = args.Length > 1 ? args[1].ToLowerInvariant() : "";
+                if (mode != "on" && mode != "off")
+                { outp.WriteLine("usage: flaui-mcp presence on|off [--nearby-secs N] [--away-secs N] [--agent agy|claude|generic|all]"); return 2; }
+                int nearby = int.TryParse(OptionValue(args, "--nearby-secs"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var nn) ? nn : 60;
+                int away = int.TryParse(OptionValue(args, "--away-secs"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var aa) ? aa : 300;
+                if (mode == "on" && !FlaUI.Mcp.Core.Presence.IdleActivity.IsValidThresholds(nearby, away))
+                { outp.WriteLine($"invalid thresholds: away-secs ({away}) must be greater than nearby-secs ({nearby})."); return 2; }
+
+                // 1) Non-destructive config merge (default via the --presence launch flag group).
+                var add = mode == "on"
+                    ? new[] { "--presence", $"--nearby-secs={nearby}", $"--away-secs={away}" }
+                    : System.Array.Empty<string>();
+                var remove = new[] { "--presence", "--nearby-secs", "--away-secs" };
+                foreach (var r in ApplyMerge(agent, paths, exePath, add, remove))
+                    outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
+
+                // 2) Live state file — makes `off` revoke NOW (no reconnect) and `on` active immediately.
+                outp.WriteLine(FlaUI.Mcp.Server.Presence.PresenceStateWriter.Set(mode == "on", nearby, away));
+                outp.WriteLine($"Presence {mode.ToUpperInvariant()}. The live change is immediate; the launch default applies after the next /mcp reconnect.");
                 return 0;
             }
 
@@ -68,6 +113,25 @@ public static class CliRouter
             case "unlock":
             {
                 var minutes = int.TryParse(OptionValue(args, "--minutes"), out var m) ? m : 5;
+                bool acceptFlag = HasFlag(args, "--accept-risk") || HasFlag(args, "--i-understand");
+                bool interactive = !Console.IsInputRedirected; // a real TTY; redirected stdin (CI) is non-interactive
+                switch (Lease.LeaseWarning.Decide(minutes, acceptFlag, interactive))
+                {
+                    case Lease.LeaseWarningDecision.RefuseNeedsAck:
+                        outp.WriteLine(Lease.LeaseWarning.Text(minutes));
+                        outp.WriteLine("Refusing a long lease without acknowledgment. Re-run with --accept-risk (non-interactive) or from a terminal.");
+                        return 2;
+                    case Lease.LeaseWarningDecision.ProceedWithLoggedWarning:
+                        outp.WriteLine(Lease.LeaseWarning.Text(minutes)); // on record in the log
+                        if (interactive && !acceptFlag)
+                        {
+                            var line = Console.ReadLine();
+                            if (!string.Equals(line?.Trim(), "I understand", StringComparison.Ordinal))
+                            { outp.WriteLine("Not acknowledged; lease not granted."); return 2; }
+                        }
+                        break;
+                    case Lease.LeaseWarningDecision.NoWarning: break;
+                }
                 outp.WriteLine(Lease.LeaseWriter.Grant(minutes, HasFlag(args, "--allow-shells")));
                 return 0;
             }
@@ -81,7 +145,7 @@ public static class CliRouter
                 return 0;
 
             default:
-                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells]|lock|overlay on|off] [--agent agy|generic|claude|all] [--config <path>]");
+                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells] [--accept-risk]|lock|overlay on|off|autosound on|off|presence on|off] [--agent agy|generic|claude|all] [--config <path>]");
                 return 0;
         }
     }
@@ -102,8 +166,16 @@ public static class CliRouter
         outp.WriteLine("  uninstall [--purge-data]   Remove the registration (and the data dir with --purge-data).");
         outp.WriteLine("  overlay on|off             Enable/disable the intent overlay — a red rectangle drawn on");
         outp.WriteLine("                             the target ~0.5s before each mutative action. Off by default.");
+        outp.WriteLine("  autosound on|off           Enable/disable a spoken cue when a target window needs your");
+        outp.WriteLine("                             attention (it's not in the foreground). Off by default; flash");
+        outp.WriteLine("                             is always on. Coexists with overlay (independent flag groups).");
+        outp.WriteLine("  presence on|off            Enable/disable a coarse presence sensor (active/nearby/away) for");
+        outp.WriteLine("                             desktop_user_state. Off by default; human-only; never exposes raw");
+        outp.WriteLine("                             idle time. [--nearby-secs N] [--away-secs N] (away must exceed nearby).");
         outp.WriteLine("  unlock [--minutes N]       Grant a time-bounded synthetic-input lease (default 5 min).");
         outp.WriteLine("          [--allow-shells]   Also permit input into interlocked shells/terminals.");
+        outp.WriteLine("          [--accept-risk]    Required (non-interactive) to grant leases over 60 minutes;");
+        outp.WriteLine("                             interactive terminals get an 'I understand' prompt instead.");
         outp.WriteLine("  lock                       Revoke the synthetic-input lease immediately.");
         outp.WriteLine("  print-config               Print the generic mcpServers JSON snippet for manual setup.");
         outp.WriteLine("  --version, -v              Print the version.");
@@ -111,7 +183,7 @@ public static class CliRouter
         outp.WriteLine();
         outp.WriteLine("COMMON OPTIONS:");
         outp.WriteLine("  --agent agy|claude|generic|all   Target specific client(s) (default: all). Applies to");
-        outp.WriteLine("                                   install / uninstall / overlay.");
+        outp.WriteLine("                                   install / uninstall / overlay / autosound / presence.");
         outp.WriteLine("  --config <path>                  Override the config file path.");
         outp.WriteLine();
         outp.WriteLine("EXAMPLES:");
@@ -157,6 +229,32 @@ public static class CliRouter
         {
             var w = new GenericMcpConfigWriter();
             results.Add(install ? w.Install(paths.GenericPath, exePath, extraArgs) : w.Uninstall(paths.GenericPath));
+        }
+        return results;
+    }
+
+    /// Non-destructive sibling of <see cref="Apply"/>: dispatches `addArgs`/`removeArgs` to each writer's
+    /// merge overload instead of the full-replace `Install(exePath, extraArgs)`, so a flag verb (overlay,
+    /// autosound, ...) only touches its own flag group and preserves whatever other verbs already set.
+    private static IEnumerable<AgentResult> ApplyMerge(string agent, Paths paths, string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs)
+    {
+        var results = new List<AgentResult>();
+        bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
+
+        if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
+        {
+            var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms);
+            results.Add(w.Install(exePath, addArgs, removeArgs));
+        }
+        if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
+        {
+            var w = new ClaudeCodeConfigWriter();
+            results.Add(w.Install(exePath, addArgs, removeArgs));
+        }
+        if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
+        {
+            var w = new GenericMcpConfigWriter();
+            results.Add(w.Install(paths.GenericPath, exePath, addArgs, removeArgs));
         }
         return results;
     }

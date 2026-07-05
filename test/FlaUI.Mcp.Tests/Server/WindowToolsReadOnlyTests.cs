@@ -8,7 +8,7 @@ public class WindowToolsReadOnlyTests
 {
     // --read-only-mode must block the state-changing window tools (README promises launch/focus/close
     // short-circuit to WriteBlockedReadOnly). GuardWrite fires before touching the (null) WindowManager.
-    private static WindowTools ReadOnly() => new(null!, new ServerOptions(ReadOnly: true, AllowElevation: false));
+    private static WindowTools ReadOnly() => new(null!, new ServerOptions(ReadOnly: true, AllowElevation: false), null!);
 
     [Fact]
     public async Task Launch_is_blocked_in_read_only_mode()

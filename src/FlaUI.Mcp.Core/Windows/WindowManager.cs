@@ -18,7 +18,21 @@ public sealed record WindowInfo(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ZOrder = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Handle = null);
 
-public sealed class WindowManager : IDisposable
+/// <summary>Result of a focus attempt: whether foreground was actually gained (spec §4.1 — a background
+/// process's SetForeground can silently no-op under the foreground-lock), plus the raw target/foreground
+/// HWNDs so the tool layer can build a leak-safe currentForeground via ForegroundGate when it wasn't.</summary>
+public readonly record struct FocusResult(bool ForegroundGained, IntPtr TargetHwnd, IntPtr ForegroundHwnd);
+
+/// <summary>Best-effort HWND lookup seam. Extracted so attention signals (flash / wait-for-foreground)
+/// can depend on just the raw HWND read without a hard dependency on WindowManager itself (WindowManager
+/// is only constructible under the Desktop-category test gate — real UIA/STA setup — so a headless unit
+/// test needs a narrower seam to fake).</summary>
+public interface IHwndSource
+{
+    bool TryGetHwnd(WindowHandle handle, out IntPtr hwnd);
+}
+
+public sealed class WindowManager : IDisposable, IHwndSource
 {
     private readonly AutomationDispatcher _dispatcher;
     private readonly UIA3Automation _automation;
@@ -120,6 +134,43 @@ public sealed class WindowManager : IDisposable
     /// entry yet: bind it now from the recorded HWND — but ONLY after the M2 Win32 pid-reverify confirms
     /// the HWND still belongs to the recorded pid, so a recycled HWND can never inject UIA into a
     /// different process. Single query STA ⇒ the check-then-bind is race-free and GetOrAdd is safe.</summary>
+    /// <summary>Best-effort HWND lookup for a handle WITHOUT binding UIA (pure dict read). Used by the
+    /// attention signals (flash / wait-for-foreground), which need only the raw HWND, never a COM Window.
+    /// Does NOT run the M2 pid-reverify (the signal is a benign flash/observe, not an input write).</summary>
+    public bool TryGetHwnd(WindowHandle handle, out IntPtr hwnd)
+        => _hwnds.TryGetValue(handle.Id, out hwnd) && hwnd != IntPtr.Zero;
+
+    /// <summary>The target handle's own process base-name (the app the agent already chose to act on), for the
+    /// TTS utterance. Null when unknown. Pure Win32 — no UIA, safe off-STA.</summary>
+    public string? TryGetAppName(WindowHandle handle)
+    {
+        if (!_hwnds.TryGetValue(handle.Id, out var hwnd) || hwnd == IntPtr.Zero) return null;
+        GetWindowThreadProcessId(hwnd, out uint pid);
+        try { using var p = Process.GetProcessById((int)pid); return p.ProcessName; } catch { return null; }
+    }
+
+    /// <summary>GW_OWNER of an HWND (0 if none). Used by the leak rule to detect a modal owned by the exact
+    /// target window. Pure Win32.</summary>
+    public IntPtr OwnerHwnd(IntPtr hwnd) { try { return GetWindow(hwnd, GW_OWNER); } catch { return IntPtr.Zero; } }
+    private const uint GW_OWNER = 4;
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    /// <summary>Cached window caption via Win32 GetWindowText (does NOT block on a hung window). Only ever
+    /// consulted for an owner-verified modal (leak rule). Null/empty → null.</summary>
+    public string? WindowTitle(IntPtr hwnd)
+    {
+        try
+        {
+            int len = GetWindowTextLengthW(hwnd);
+            if (len == 0) return null;
+            var sb = new StringBuilder(len + 1);
+            GetWindowTextW(hwnd, sb, sb.Capacity);
+            var s = sb.ToString();
+            return string.IsNullOrEmpty(s) ? null : s;
+        }
+        catch { return null; }
+    }
+
     private Window ResolveWindow(WindowHandle handle)
     {
         if (_handles.TryGetValue(handle.Id, out var cached)) return cached;
@@ -470,6 +521,18 @@ public sealed class WindowManager : IDisposable
             // Under the foreground-lock a background process's SetForeground can silently no-op; report the
             // truth so the agent sees the ceiling instead of assuming success.
             return hwnd != IntPtr.Zero && GetForegroundWindow() == hwnd;
+        });
+
+    /// <summary>Focus + report the truth for the tool layer (spec §4.1): the gained bool PLUS the raw HWNDs so
+    /// the tool can build the leak-safe currentForeground. Runs on the query STA like FocusAsync.</summary>
+    public Task<FocusResult> FocusWithWhyNotAsync(WindowHandle handle) =>
+        RunOnWindowAsync(handle, w =>
+        {
+            w.Focus(); w.SetForeground();
+            IntPtr hwnd = IntPtr.Zero;
+            try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+            var fg = GetForegroundWindow();
+            return new FocusResult(hwnd != IntPtr.Zero && fg == hwnd, hwnd, fg);
         });
 
     public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowAsync() =>
