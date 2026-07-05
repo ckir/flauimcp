@@ -116,6 +116,11 @@ builder.Services.AddSingleton<FlaUI.Mcp.Core.Attention.WaitForForeground.WaiterG
 
 builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.FindTextTools>();
 
+// --- SP-B user-state presence (coarse, opt-in, read-only) ---
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Presence.IIdleSource, FlaUI.Mcp.Core.Presence.Win32IdleSource>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Presence.PresenceState>();
+builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.PresenceTools>();
+
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
