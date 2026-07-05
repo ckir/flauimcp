@@ -18,6 +18,11 @@ public sealed record WindowInfo(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ZOrder = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Handle = null);
 
+/// <summary>Result of a focus attempt: whether foreground was actually gained (spec §4.1 — a background
+/// process's SetForeground can silently no-op under the foreground-lock), plus the raw target/foreground
+/// HWNDs so the tool layer can build a leak-safe currentForeground via ForegroundGate when it wasn't.</summary>
+public readonly record struct FocusResult(bool ForegroundGained, IntPtr TargetHwnd, IntPtr ForegroundHwnd);
+
 /// <summary>Best-effort HWND lookup seam. Extracted so attention signals (flash / wait-for-foreground)
 /// can depend on just the raw HWND read without a hard dependency on WindowManager itself (WindowManager
 /// is only constructible under the Desktop-category test gate — real UIA/STA setup — so a headless unit
@@ -516,6 +521,18 @@ public sealed class WindowManager : IDisposable, IHwndSource
             // Under the foreground-lock a background process's SetForeground can silently no-op; report the
             // truth so the agent sees the ceiling instead of assuming success.
             return hwnd != IntPtr.Zero && GetForegroundWindow() == hwnd;
+        });
+
+    /// <summary>Focus + report the truth for the tool layer (spec §4.1): the gained bool PLUS the raw HWNDs so
+    /// the tool can build the leak-safe currentForeground. Runs on the query STA like FocusAsync.</summary>
+    public Task<FocusResult> FocusWithWhyNotAsync(WindowHandle handle) =>
+        RunOnWindowAsync(handle, w =>
+        {
+            w.Focus(); w.SetForeground();
+            IntPtr hwnd = IntPtr.Zero;
+            try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
+            var fg = GetForegroundWindow();
+            return new FocusResult(hwnd != IntPtr.Zero && fg == hwnd, hwnd, fg);
         });
 
     public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowAsync() =>

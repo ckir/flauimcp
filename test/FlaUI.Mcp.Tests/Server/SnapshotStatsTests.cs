@@ -4,6 +4,7 @@ using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
 using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Tools;
+using FlaUI.Mcp.Tests.Interaction;
 using Xunit;
 
 namespace FlaUI.Mcp.Tests.Server;
@@ -39,7 +40,7 @@ public class SnapshotStatsTests : IClassFixture<TestAppFixture>
         var mgr = new WindowManager(dispatcher);
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var snap = new SnapshotTools(perception, new WaitCoordinator(perception));
-        var window = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false));
+        var window = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false), new FakePlatformEnvironment());
         var opened = await window.DesktopOpenWindow("pid", _app.Process.Id.ToString());
         var handle = JsonDocument.Parse(opened).RootElement.GetProperty("handle").GetString()!;
         return (snap, handle);
