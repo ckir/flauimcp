@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -23,6 +24,30 @@ public sealed class GenericMcpConfigWriter
         JsoncFile.Save(configPath, obj);
         return new AgentResult("generic", change, configPath);
     }
+
+    /// <summary>Non-destructive variant (spec §4.4 ops fold): merges `addArgs`/`removeArgs` into the args
+    /// ALREADY registered for this server, preserving other flag groups instead of replacing `args` wholesale.</summary>
+    public AgentResult Install(string configPath, string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs)
+    {
+        var obj = JsoncFile.Load(configPath);
+        var servers = obj["mcpServers"] as JsonObject;
+        if (servers is null) { servers = new JsonObject(); obj["mcpServers"] = servers; }
+
+        var existing = servers[McpServerEntry.ServerName] as JsonObject;
+        var merged = ConfigArgsMerge.Apply(ReadArgs(existing), addArgs, removeArgs);
+        var desired = McpServerEntry.ForExe(exePath, merged).ToJsonNode();
+        if (existing is not null && existing.ToJsonString() == desired.ToJsonString())
+            return new AgentResult("generic", AgentChange.Unchanged, configPath);
+
+        var change = existing is null ? AgentChange.Created : AgentChange.Updated;
+        servers[McpServerEntry.ServerName] = desired;
+        JsoncFile.Save(configPath, obj);
+        return new AgentResult("generic", change, configPath);
+    }
+
+    /// <summary>Read the currently-registered `args` array off an existing server entry (empty if absent).</summary>
+    private static string[] ReadArgs(JsonObject? entry) =>
+        entry?["args"] is JsonArray arr ? arr.Select(a => (string?)a ?? "").ToArray() : System.Array.Empty<string>();
 
     public AgentResult Uninstall(string configPath)
     {

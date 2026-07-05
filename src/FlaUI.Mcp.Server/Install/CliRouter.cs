@@ -4,7 +4,7 @@ namespace FlaUI.Mcp.Server.Install;
 public static class CliRouter
 {
     private static readonly HashSet<string> Verbs =
-        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "overlay", "--version", "-v", "--help", "-h" };
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "overlay", "autosound", "--version", "-v", "--help", "-h" };
 
     public static bool IsInstallerVerb(string[] args) => args.Length > 0 && Verbs.Contains(args[0]);
 
@@ -43,10 +43,29 @@ public static class CliRouter
                     outp.WriteLine("usage: flaui-mcp overlay on|off [--agent agy|claude|generic|all]");
                     return 2;
                 }
-                var extra = mode == "on" ? McpServerEntry.OverlayArgs : System.Array.Empty<string>();
-                foreach (var r in Apply(agent, paths, install: true, exePath, extra))
+                var add = mode == "on" ? McpServerEntry.OverlayArgs.ToArray() : System.Array.Empty<string>();
+                // Both group members named so the prefix rule (ConfigArgsMerge) drops the whole group:
+                // "--overlay" alone would NOT also match "--overlay-ms=800" (different prefix).
+                var remove = new[] { "--overlay", "--overlay-ms" };
+                foreach (var r in ApplyMerge(agent, paths, exePath, add, remove))
                     outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
                 outp.WriteLine($"Intent overlay {mode.ToUpperInvariant()}. Reconnect the MCP client (/mcp) to apply; restart agy if you use it.");
+                return 0;
+            }
+
+            case "autosound":
+            {
+                var mode = args.Length > 1 ? args[1].ToLowerInvariant() : "";
+                if (mode != "on" && mode != "off")
+                {
+                    outp.WriteLine("usage: flaui-mcp autosound on|off [--agent agy|claude|generic|all]");
+                    return 2;
+                }
+                var add = mode == "on" ? new[] { "--autosound" } : System.Array.Empty<string>();
+                var remove = new[] { "--autosound" };
+                foreach (var r in ApplyMerge(agent, paths, exePath, add, remove))
+                    outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
+                outp.WriteLine($"Autosound {mode.ToUpperInvariant()}. Reconnect the MCP client (/mcp) to apply; restart agy if you use it.");
                 return 0;
             }
 
@@ -81,7 +100,7 @@ public static class CliRouter
                 return 0;
 
             default:
-                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells]|lock|overlay on|off] [--agent agy|generic|claude|all] [--config <path>]");
+                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells]|lock|overlay on|off|autosound on|off] [--agent agy|generic|claude|all] [--config <path>]");
                 return 0;
         }
     }
@@ -102,6 +121,8 @@ public static class CliRouter
         outp.WriteLine("  uninstall [--purge-data]   Remove the registration (and the data dir with --purge-data).");
         outp.WriteLine("  overlay on|off             Enable/disable the intent overlay — a red rectangle drawn on");
         outp.WriteLine("                             the target ~0.5s before each mutative action. Off by default.");
+        outp.WriteLine("  autosound on|off           Enable/disable an audible cue on each mutative action. Off by");
+        outp.WriteLine("                             default. Coexists with overlay (independent flag groups).");
         outp.WriteLine("  unlock [--minutes N]       Grant a time-bounded synthetic-input lease (default 5 min).");
         outp.WriteLine("          [--allow-shells]   Also permit input into interlocked shells/terminals.");
         outp.WriteLine("  lock                       Revoke the synthetic-input lease immediately.");
@@ -111,7 +132,7 @@ public static class CliRouter
         outp.WriteLine();
         outp.WriteLine("COMMON OPTIONS:");
         outp.WriteLine("  --agent agy|claude|generic|all   Target specific client(s) (default: all). Applies to");
-        outp.WriteLine("                                   install / uninstall / overlay.");
+        outp.WriteLine("                                   install / uninstall / overlay / autosound.");
         outp.WriteLine("  --config <path>                  Override the config file path.");
         outp.WriteLine();
         outp.WriteLine("EXAMPLES:");
@@ -157,6 +178,32 @@ public static class CliRouter
         {
             var w = new GenericMcpConfigWriter();
             results.Add(install ? w.Install(paths.GenericPath, exePath, extraArgs) : w.Uninstall(paths.GenericPath));
+        }
+        return results;
+    }
+
+    /// Non-destructive sibling of <see cref="Apply"/>: dispatches `addArgs`/`removeArgs` to each writer's
+    /// merge overload instead of the full-replace `Install(exePath, extraArgs)`, so a flag verb (overlay,
+    /// autosound, ...) only touches its own flag group and preserves whatever other verbs already set.
+    private static IEnumerable<AgentResult> ApplyMerge(string agent, Paths paths, string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs)
+    {
+        var results = new List<AgentResult>();
+        bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
+
+        if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
+        {
+            var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms);
+            results.Add(w.Install(exePath, addArgs, removeArgs));
+        }
+        if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
+        {
+            var w = new ClaudeCodeConfigWriter();
+            results.Add(w.Install(exePath, addArgs, removeArgs));
+        }
+        if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
+        {
+            var w = new GenericMcpConfigWriter();
+            results.Add(w.Install(paths.GenericPath, exePath, addArgs, removeArgs));
         }
         return results;
     }

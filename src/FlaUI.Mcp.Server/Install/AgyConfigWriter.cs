@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json.Nodes;
 
 namespace FlaUI.Mcp.Server.Install;
@@ -32,7 +33,44 @@ public sealed class AgyConfigWriter
         bool serversChanged = existing is null || existing.ToJsonString() != desired.ToJsonString();
         if (serversChanged) { servers[McpServerEntry.ServerName] = desired; JsoncFile.Save(_serversPath, sObj); }
 
-        // Edit 2: permissions.allow (permissions file — reload separately in case it is the same file).
+        bool hasPerm = EnsurePermission();
+
+        var change = (serversChanged || !hasPerm)
+            ? (existing is null ? AgentChange.Created : AgentChange.Updated)
+            : AgentChange.Unchanged;
+        return new AgentResult("agy", change, $"{_serversPath}; {_permsPath}");
+    }
+
+    /// <summary>Non-destructive variant (spec §4.4 ops fold): merges `addArgs`/`removeArgs` into the args
+    /// ALREADY registered for this server, preserving other flag groups (e.g. overlay coexisting with
+    /// autosound) instead of replacing the whole `args` array.</summary>
+    public AgentResult Install(string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs)
+    {
+        var sObj = JsoncFile.Load(_serversPath);
+        var servers = sObj["mcpServers"] as JsonObject;
+        if (servers is null) { servers = new JsonObject(); sObj["mcpServers"] = servers; }
+        var existing = servers[McpServerEntry.ServerName] as JsonObject;
+        var merged = ConfigArgsMerge.Apply(ReadArgs(existing), addArgs, removeArgs);
+        var desired = McpServerEntry.ForExe(exePath, merged).ToJsonNode();
+        bool serversChanged = existing is null || existing.ToJsonString() != desired.ToJsonString();
+        if (serversChanged) { servers[McpServerEntry.ServerName] = desired; JsoncFile.Save(_serversPath, sObj); }
+
+        bool hasPerm = EnsurePermission();
+
+        var change = (serversChanged || !hasPerm)
+            ? (existing is null ? AgentChange.Created : AgentChange.Updated)
+            : AgentChange.Unchanged;
+        return new AgentResult("agy", change, $"{_serversPath}; {_permsPath}");
+    }
+
+    /// <summary>Read the currently-registered `args` array off an existing server entry (empty if absent).</summary>
+    private static string[] ReadArgs(JsonObject? entry) =>
+        entry?["args"] is JsonArray arr ? arr.Select(a => (string?)a ?? "").ToArray() : System.Array.Empty<string>();
+
+    /// <summary>Edit 2: permissions.allow (permissions file — reload separately in case it is the same file
+    /// as the servers file). Returns whether the permission was ALREADY present before this call.</summary>
+    private bool EnsurePermission()
+    {
         var pObj = JsoncFile.Load(_permsPath);
         var permissions = pObj["permissions"] as JsonObject;
         if (permissions is null) { permissions = new JsonObject(); pObj["permissions"] = permissions; }
@@ -40,11 +78,7 @@ public sealed class AgyConfigWriter
         if (allow is null) { allow = new JsonArray(); permissions["allow"] = allow; }
         bool hasPerm = allow.Any(n => (string?)n == Permission);
         if (!hasPerm) { allow.Add(Permission); JsoncFile.Save(_permsPath, pObj); }
-
-        var change = (serversChanged || !hasPerm)
-            ? (existing is null ? AgentChange.Created : AgentChange.Updated)
-            : AgentChange.Unchanged;
-        return new AgentResult("agy", change, $"{_serversPath}; {_permsPath}");
+        return hasPerm;
     }
 
     public AgentResult Uninstall()

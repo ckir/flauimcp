@@ -33,6 +33,15 @@ public sealed class ClaudeCodeConfigWriter
         };
     }
 
+    /// <summary>Non-destructive-merge SHAPE, but NOT non-destructive BEHAVIOR: unlike AgyConfigWriter/
+    /// GenericMcpConfigWriter, this writer has no locally-readable config — the registered args live inside
+    /// the opaque `claude` CLI, and the injected runner returns only an exit code (no stdout), so there is no
+    /// way to read back the previously-registered args to merge against. `removeArgs` is therefore unused;
+    /// `addArgs` is passed through to the existing full-replace `Install(exePath, args)` verbatim, which
+    /// matches this writer's PRE-EXISTING behavior for every verb (no regression — it never merged).</summary>
+    public AgentResult Install(string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs) =>
+        Install(exePath, addArgs);
+
     public AgentResult Uninstall()
     {
         // Must match the install scope (--scope user), else the user-scope entry is left orphaned.

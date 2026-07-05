@@ -133,6 +133,54 @@ public class CliRouterTests
     }
 
     [Fact]
+    public void Overlay_on_then_autosound_on_coexist_non_destructively()
+    {
+        // Pinning test for the SP-A T9 fix: `overlay on` used to REPLACE the whole `args` array, so a
+        // subsequent `autosound on` would drop `--overlay`. ConfigArgsMerge + ApplyMerge must preserve both.
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        try
+        {
+            var overlayCode = CliRouter.Run(new[] { "overlay", "on", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            var autosoundCode = CliRouter.Run(new[] { "autosound", "on", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            Assert.Equal(0, overlayCode);
+            Assert.Equal(0, autosoundCode);
+            var json = File.ReadAllText(cfg);
+            Assert.Contains("--overlay", json);
+            Assert.Contains("--overlay-ms=800", json);
+            Assert.Contains("--autosound", json);
+        }
+        finally { foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f); }
+    }
+
+    [Fact]
+    public void Autosound_off_registers_the_generic_entry_without_autosound_arg()
+    {
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        try
+        {
+            CliRouter.Run(new[] { "autosound", "on", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            var code = CliRouter.Run(new[] { "autosound", "off", "--agent", "generic", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
+            Assert.Equal(0, code);
+            var json = File.ReadAllText(cfg);
+            Assert.DoesNotContain("--autosound", json);
+        }
+        finally { foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f); }
+    }
+
+    [Fact]
+    public void Autosound_bad_mode_prints_usage_and_returns_nonzero()
+    {
+        var sb = new StringWriter();
+        var code = CliRouter.Run(new[] { "autosound", "sideways" }, @"C:\x\flaui-mcp.exe", sb);
+        Assert.Equal(2, code);
+        Assert.Contains("usage", sb.ToString());
+    }
+
+    [Fact]
+    public void Autosound_is_a_recognized_installer_verb()
+        => Assert.True(CliRouter.IsInstallerVerb(new[] { "autosound", "on" }));
+
+    [Fact]
     public void Overlay_bad_mode_prints_usage_and_returns_nonzero()
     {
         var sb = new StringWriter();
