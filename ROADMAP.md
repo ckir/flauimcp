@@ -43,13 +43,17 @@ that bug is one instance of a broader class. Specs:
   `desktop_window_transform minimize` orphans the foreground window (twin of the close bug) — plus one
   low-severity observability gap (`desktop_focus_window` can silently no-op under foreground-lock);
   modifier-teardown and clipboard surfaces are already sound.
-- **SP2 — Harden the gap** ✅ (v0.11.2): extract a shared
-  `SessionForegroundGuard` (generalize the v0.11.1 close healer), fix the minimize orphan, add a
-  `focus_window` foreground-gain signal, and one Desktop test. Line-level plan via writing-plans.
-- **SP3 — Session-delta snapshot + chaos test harness** ⏸ deferred until a *second* hygiene gap
-  materializes (Desktop-only; can't be a headless-CI gate).
-- **SP4 — Session Sentinel** (lease-less self-healing watchdog) ⏸ parked/conditional; foreground-orphan
-  healing only (modifier-healing dropped as Win32-unsound — merged physical+synthetic key state).
+- **SP2 — Harden the gap** ✅ (v0.11.2, shipped + console-smoked): generalized the v0.11.1 close healer
+  into a shared `RestoreForegroundAfterCollapse(hwnd, hasCollapsed)` used by both close and minimize (no
+  new class), fixed the minimize orphan, added the `desktop_focus_window` `foregroundGained` signal, and
+  a Desktop test. All three validated live at a console.
+- **SP3 — Session-delta snapshot + chaos test harness** ⏸ shelved (unbuilt): its YAGNI trigger — a
+  *second* hygiene gap — never fired; the design stays on record. Desktop-only, can't be a headless-CI gate.
+- **SP4 — Session Sentinel** (lease-less self-healing watchdog) ✅ **RETIRED (2026-07-05)**: a disposable
+  spike drove the real close/minimize paths 100× and observed **zero** async re-orphans, so the residual
+  the Sentinel targeted is unobserved and a lease-less healer isn't justified (YAGNI). One **known blind
+  spot** on record as the reopen trigger — apps taking **>500 ms** to close can outrun SP2's spin-wait;
+  see SP4 spec §6. Modifier-healing was already dropped as Win32-unsound. **Session-hygiene effort ends here.**
 
 - **Phase 1 — Foundation** ✅ (v0.1.x): window/session management, split query/action
   STA dispatcher, option-C ref engine, 5 window tools.

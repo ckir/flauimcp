@@ -59,3 +59,47 @@ a direct tension with that promise. It is only defensible under **all** of these
 This spec exists so the design is on record, but the **default outcome is DROP**. Reopen only on the
 SP2 trigger. The user retains the final call; if the async residual never reproduces, SP4 stays parked
 permanently and the effort ends at SP3.
+
+## 6. Outcome — RETIRED (2026-07-05)
+
+**The trigger (§2) was tested and did NOT fire → SP4 is DROPPED.** Rather than build the full SP3 chaos
+harness to answer the one gating question, a **disposable spike** interrogated it directly (user's call;
+agy-concurred): a throwaway console probe referencing `WindowManager` drove the *real* shipped hygiene
+paths and, for **100 operations (50× `CloseAsync`, 50× `WindowTransformAsync(minimize)`)**, sampled
+`GetForegroundWindow()` every 25 ms across a **1500 ms observation window AFTER each tool returned** —
+precisely the async-re-orphan the Sentinel exists to catch (a target that dies ~50 ms late and
+re-orphans focus).
+
+**Result: zero async re-orphans. Not one settled-orphan final state, and not a single transient orphan
+sample, across all 100 trials (0 skipped).** For **fast-dying targets** the SP2 synchronous
+spin-wait-for-collapse healer holds and no residual asynchronous orphan reproduces.
+
+**KNOWN BLIND SPOT — the probe did not exercise SP2's actual defeat condition (AGY-AFTER, folded):**
+`charmap` destroys its HWND almost instantly — well within SP2's **500 ms** spin-wait
+(`RestoreForegroundAfterCollapse`, `deadline = UtcNow.AddMilliseconds(500)`). So these 100 trials proved
+the *common, fast-teardown* case is clean but structurally **could not** reproduce the one scenario the
+Sentinel exists for: an app whose HWND takes **> ~500 ms** to be destroyed on **close**. There the
+spin-wait expires while the closing window still holds the foreground-lock; the healer's
+`SetForegroundWindow(fallback)` can then silently no-op, and when the window finally dies the OS's
+(unreliable, background-process-gated) auto-activation *can* leak an orphan — the exact async residual
+SP4 targets. This is a **real, unmitigated blind spot**, not a proven-safe path. (Minimize is
+near-instant — `SetWindowVisualState` — so the >500 ms concern is specific to slow-closing apps, e.g. a
+heavy Electron app or one doing a long shutdown; an app that pops a "save changes?" dialog is a
+*different* case — the close simply doesn't complete — not this leak.)
+
+**Honest scope of the evidence (not overclaimed):** 100 trials against one fast-dying app (`charmap`) at
+one console with the driver idle. *Strong empirical evidence* that the async residual does not occur for
+ordinary fast-teardown apps — **not** a proof across app types, and explicitly silent on the >500 ms
+slow-close blind spot above.
+
+**Decision — SP4 RETIRED on YAGNI, blind spot on record.** Retiring is still the right call: the leak is
+unobserved in practice and speculatively building a lease-less Sentinel (with its §3 safety tension) for
+it is the YAGNI violation this program set out to avoid. **Reopen ONLY if a real field report shows the
+session re-orphaning *after* a tool returned** — the >500 ms slow-close path above is the *named,
+expected* trigger for that report. If certainty is ever wanted without waiting for the field, the cheaper
+follow-up is not SP4 but a targeted slow-teardown probe, or simply lifting SP2's 500 ms spin-wait ceiling
+for close. The probe was throwaway and has been deleted (never committed to the repo).
+
+**Program close-out:** SP1 (audit) ✅ · SP2 (fix the one gap) ✅ shipped v0.11.2 + console-smoked ·
+SP3 (chaos harness) remains an on-the-shelf design, unbuilt (YAGNI — its trigger, a second hygiene gap,
+never fired) · SP4 (Sentinel) RETIRED here. The session-hygiene effort ends.
