@@ -30,7 +30,10 @@ public sealed class PresenceTools
     /// enabled → the coarse enum only. Never emits raw idle-ms.</summary>
     public static string Reply(PresenceConfig cfg, long idleMs)
     {
-        if (!cfg.Enabled) return ToolResponse.Ok(new { enabled = false, activity = (string?)null });
+        // Fail-closed (defense-in-depth): a hand-edited config/state file with away<=nearby (bypassing the
+        // presence-on CLI guard) would mis-bucket — report disabled rather than emit a wrong coarse signal.
+        if (!cfg.Enabled || !IdleActivity.IsValidThresholds(cfg.NearbySecs, cfg.AwaySecs))
+            return ToolResponse.Ok(new { enabled = false, activity = (string?)null });
         var a = IdleActivity.Bucket(idleMs, cfg.NearbySecs * 1000L, cfg.AwaySecs * 1000L);
         var s = a switch { Activity.Active => "active", Activity.Nearby => "nearby", _ => "away" };
         return ToolResponse.Ok(new { enabled = true, activity = (string?)s });

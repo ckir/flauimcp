@@ -34,4 +34,15 @@ public class PresenceToolsTests
         Assert.True(on.TryGetProperty("enabled", out _) && on.TryGetProperty("activity", out _));
         Assert.True(off.TryGetProperty("enabled", out _) && off.TryGetProperty("activity", out _));
     }
+
+    [Fact]
+    public void Enabled_but_invalid_thresholds_fails_closed_to_disabled()
+    {
+        // Defense-in-depth: a hand-edited config/state file with nearby >= away (bypassing the presence-on
+        // CLI guard) must not mis-bucket — Reply fails closed to the disabled shape rather than emit a signal.
+        var json = PresenceTools.Reply(new PresenceConfig(true, 300, 60), idleMs: 120_000);
+        using var doc = JsonDocument.Parse(json);
+        Assert.False(doc.RootElement.GetProperty("enabled").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("activity").ValueKind);
+    }
 }

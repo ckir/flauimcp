@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace FlaUI.Mcp.Server.Install;
 
 /// <summary>Parses the installer CLI verbs and dispatches to the per-agent writers.</summary>
@@ -74,8 +76,8 @@ public static class CliRouter
                 var mode = args.Length > 1 ? args[1].ToLowerInvariant() : "";
                 if (mode != "on" && mode != "off")
                 { outp.WriteLine("usage: flaui-mcp presence on|off [--nearby-secs N] [--away-secs N] [--agent agy|claude|generic|all]"); return 2; }
-                int nearby = int.TryParse(OptionValue(args, "--nearby-secs"), out var nn) ? nn : 60;
-                int away = int.TryParse(OptionValue(args, "--away-secs"), out var aa) ? aa : 300;
+                int nearby = int.TryParse(OptionValue(args, "--nearby-secs"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var nn) ? nn : 60;
+                int away = int.TryParse(OptionValue(args, "--away-secs"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var aa) ? aa : 300;
                 if (mode == "on" && !FlaUI.Mcp.Core.Presence.IdleActivity.IsValidThresholds(nearby, away))
                 { outp.WriteLine($"invalid thresholds: away-secs ({away}) must be greater than nearby-secs ({nearby})."); return 2; }
 
