@@ -307,6 +307,28 @@ privacy and safety floors — defense in depth, not a substitute for supervising
 occlusion-aware capture (PrintWindow), AOT/trim to shrink the self-contained executable, and an
 HTTP transport.
 
+### User-state presence (opt-in, coarse)
+
+`desktop_user_state` (read-only, **lease-exempt**) reports a coarse **presence** signal so an agent
+can reason about whether a human is even at the keyboard — without the server ever exposing a
+behavioral-biometric stream:
+
+- **Coarse enum only, never raw idle time.** Returns `{ enabled, activity:
+  "active"|"nearby"|"away"|null }`. `active` = recent input; `nearby` = idle past a short threshold
+  (default 60s); `away` = idle past a longer one (default 300s). Raw idle-milliseconds (keystroke
+  cadence, mouse hesitation) are **never** returned — only the bucket.
+- **Off by default; human-only to enable.** A default deployment exposes **zero** presence
+  telemetry. A human opts in out-of-band with `flaui-mcp presence on [--nearby-secs N]
+  [--away-secs N]` (`away-secs` must exceed `nearby-secs`); `flaui-mcp presence off` revokes it. The
+  **agent cannot enable it** — presence is the human's own consent, so a prompt-injected agent can't
+  switch the sensor on. When off, the tool returns `{ enabled:false, activity:null }`.
+- **Off takes effect immediately.** The enabled-state is read live from a small state file each call
+  (like the input lease), so `presence off` stops telemetry on the next query — no `/mcp` reconnect.
+  Coexists with `overlay`/`autosound` via the same non-destructive config merge.
+- **The server is a dumb sensor.** It exposes only the `active/nearby/away` axis and makes **no
+  outbound calls**. Deriving richer states (watching/working) by combining this with foreground
+  signals, and any escalation to a remote channel, are the agent's job — not the server's.
+
 ### Event streaming (`desktop_watch`)
 
 React to desktop changes instead of polling snapshots in a loop. **Four tools**, all `ReadOnly`
