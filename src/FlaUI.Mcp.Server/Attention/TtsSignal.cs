@@ -43,22 +43,37 @@ public sealed class TtsSignal : IAttentionSignal
                     // speech in a short-lived CHILD process that gets clean COM state. The utterance is passed via an
                     // environment variable (no command injection), and all std streams are redirected so the child
                     // never inherits — or corrupts — this server's JSON-RPC stdio.
+                    // Absolute System32 path (NOT unqualified "powershell.exe") denies a PATH-hijack
+                    // (merge-gate panel, security seat). Windows PowerShell 5.1 is always present here.
+                    var psh = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
                     var psi = new ProcessStartInfo
                     {
-                        FileName = "powershell.exe",   // Windows PowerShell 5.1 (always present); speaks reliably
+                        FileName = psh,
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         RedirectStandardInput = true,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
                     };
+                    psi.ArgumentList.Add("-NoLogo");
                     psi.ArgumentList.Add("-NoProfile");
                     psi.ArgumentList.Add("-NonInteractive");
                     psi.ArgumentList.Add("-Command");
                     psi.ArgumentList.Add("Add-Type -AssemblyName System.Speech;(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak($env:FLAUI_TTS_TEXT)");
                     psi.Environment["FLAUI_TTS_TEXT"] = line;
-                    var p = Process.Start(psi);
-                    if (p != null) { p.EnableRaisingEvents = true; p.Exited += (_, __) => { try { p.Dispose(); } catch { } }; }
+                    using var p = Process.Start(psi);
+                    if (p != null)
+                    {
+                        // Drain the redirected pipes (else a chatty/erroring child fills the ~4KB OS pipe buffer
+                        // and hangs forever) and bound the wait so a hung SAPI child can't leak a zombie
+                        // (merge-gate panel, adversarial seat). Runs on the dedicated TTS thread, off the request path.
+                        p.OutputDataReceived += static (_, __) => { };
+                        p.ErrorDataReceived += static (_, __) => { };
+                        p.BeginOutputReadLine();
+                        p.BeginErrorReadLine();
+                        if (!p.WaitForExit(8000)) { try { p.Kill(entireProcessTree: true); } catch { } }
+                    }
                 }
                 catch (Exception ex)
                 {
