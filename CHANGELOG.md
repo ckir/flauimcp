@@ -6,6 +6,8 @@ All notable changes to this project are documented here. This project adheres to
 ## [0.12.0] - 2026-07-05
 
 ### Added
+
+#### Human-Attention Toolset (SP-A)
 - **Enriched `targetNotForeground` result on `desktop_type`/`desktop_key`.** When the target window
   is not the OS foreground, these tools no longer abort with the generic `ElementDisappearedDuringAction`
   for that specific cause — they flash the window and return (via the normal `ToolResponse`, not an
@@ -33,6 +35,21 @@ All notable changes to this project are documented here. This project adheres to
   prints an honest warning that the server provides no sandboxing and requires typing `'I understand'`
   interactively, or passing `--accept-risk` (alias `--i-understand`) non-interactively; without a TTY and
   without the flag, a long lease is refused. Leases of 60 minutes or less are unchanged.
+
+#### User-State Presence (SP-B)
+- **New read-only, lease-exempt tool `desktop_user_state`.** Returns `{ enabled, activity:
+  "active"|"nearby"|"away"|null }` — a coarse presence enum only. Off by default (`{enabled:false,
+  activity:null}`) until a human opts in with `flaui-mcp presence on`. Raw idle milliseconds are never
+  exposed (privacy). The agent combines the `activity` axis with SP-A's foreground signals
+  (`desktop_focus_window`/`desktop_wait_for_foreground`) to derive richer states (e.g. watching, working)
+  and to decide how far to escalate its attention signaling — the server itself is a dumb sensor and
+  makes no outbound calls.
+- **`flaui-mcp presence on|off [--nearby-secs N] [--away-secs N]` CLI verb** (human-only, off by
+  default). `on` re-registers the server with `--presence` plus the threshold flags via the same
+  non-destructive config merge used by `overlay`/`autosound`, so it coexists with both; `away-secs` must
+  exceed `nearby-secs` or the command is refused. Defaults: `nearby-secs=60`, `away-secs=300`. Both `on`
+  and `off` take effect immediately through a live state file — no `/mcp` reconnect required — while the
+  merged launch flags become the default for the next reconnect/relaunch.
 
 ## [0.11.2] - 2026-07-05
 

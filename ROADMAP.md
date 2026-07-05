@@ -78,10 +78,27 @@ rather than trying to defeat the OS boundary. **Shipped (v0.12.0):**
 - Long-lease (`--minutes N > 60`) disclaiming warning + `--accept-risk`/`'I understand'` gate.
 
 Spec: [`SP-A design`](docs/superpowers/specs/2026-07-05-flaui-mcp-human-attention-toolset-design.md).
-**Follow-on (not yet built):** **SP-B — user-state presence** (a coarse, opt-in, agent-orchestrated
-activity enum so an agent can reason about whether a human is even at the keyboard) and **SP-C —
-legitimate raise** (a sanctioned way to actually bring a window to the foreground when that's the
-correct outcome, vs. today's flash-and-wait handshake). Both remain specced/backlog only.
+
+### User-State Presence (SP-B) — coarse, opt-in activity sensor
+
+Landed on this branch (v0.12.0, folded into the same unreleased entry as SP-A): a coarse, opt-in,
+agent-orchestrated activity axis so an agent can reason about whether a human is even at the
+keyboard, without the server ever exposing raw idle time.
+
+- New read-only, lease-exempt tool `desktop_user_state` — `{ enabled, activity:
+  "active"|"nearby"|"away"|null }`. Off by default; never raw idle-ms.
+- `flaui-mcp presence on|off [--nearby-secs N] [--away-secs N]` CLI verb — human-only, off by
+  default, coexists with `overlay`/`autosound` via the same non-destructive config merge; both `on`
+  and `off` apply immediately through a live state file.
+- Agent-side derivation (combining this activity axis with SP-A's foreground signals into
+  watching/working/nearby/away, and escalation policy) is explicitly **out of scope** here — it
+  belongs to the agent layer (`/autogoal`). This server remains a dumb sensor with no outbound calls.
+
+Spec: [`SP-B design`](docs/superpowers/specs/2026-07-05-flaui-mcp-user-state-presence-design.md).
+
+**Follow-on (not yet built):** **SP-C — legitimate raise** (a sanctioned way to actually bring a
+window to the foreground when that's the correct outcome, vs. today's flash-and-wait handshake).
+Remains specced/backlog only.
 
 - **Phase 1 — Foundation** ✅ (v0.1.x): window/session management, split query/action
   STA dispatcher, option-C ref engine, 5 window tools.

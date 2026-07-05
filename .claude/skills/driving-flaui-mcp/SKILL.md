@@ -229,6 +229,27 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 | Snapshot is one opaque `Document` node, no children (often `wakeable:true`) | Electron/Chromium a11y **off by default** | `desktop_wake_accessibility wN` then re-`desktop_snapshot` — usually hydrates the full tree. Still empty (or a document text body specifically)? Use `desktop_find_text` (OCR) or the **coordinate path** (`desktop_click_at`/`desktop_drag` by `xPct`/`yPct`). Per-app fix: relaunch it with `--force-renderer-accessibility`. WinUI/WPF/Qt expose proper UIA and are fine. |
 | `desktop_type`/`desktop_key` returns `targetNotForeground` (no error thrown) | target window isn't the OS foreground (foreground-lock) — the tool flashed it instead of typing blind | Call `desktop_wait_for_foreground(window)` (don't yield your turn); re-invoke on `reason:"timeout"` (server caps each call at 45s) |
 
+## Combining presence with foreground (watching/working/nearby/away)
+
+- `desktop_user_state` (read-only, lease-exempt) reports a coarse **activity** axis only:
+  `{ enabled, activity: "active"|"nearby"|"away"|null }`. Off by default — a human must run
+  `flaui-mcp presence on` before it returns anything but `{enabled:false, activity:null}`. It never
+  exposes raw idle milliseconds; there is no finer signal to poll for.
+- Cross it with SP-A's **focus** axis (`desktop_focus_window`'s `foregroundGained`, or whether your
+  target window is the one reported by `desktop_list_windows`' `IsForeground:true`) to derive a
+  richer state yourself — the server does not compute this for you:
+  - **watching** — your target is the OS foreground *and* `activity:"active"`.
+  - **working** — `activity:"active"` but your target is *not* the foreground (human is doing
+    something else).
+  - **nearby** — `activity:"nearby"` (idle past the short threshold, default 60s).
+  - **away** — `activity:"away"` (idle past the long threshold, default 300s).
+- Use the derived state to decide how hard to escalate attention: the intent-overlay flash is
+  always-on regardless; add `autosound` (spoken cue) when nearby/away; if you need to reach someone
+  who's away, that's a job for **your own** notification MCP — this server does no outbound
+  signaling of any kind (dumb sensor by design).
+- Presence is human-only and off by default, same posture as `overlay`/`autosound` — don't assume
+  it's enabled; check `enabled` in the reply before trusting `activity`.
+
 ## Etiquette
 
 Leave apps as found (clear text you added; `Ctrl+A`→`Delete`). Close dialogs with **Esc**, never

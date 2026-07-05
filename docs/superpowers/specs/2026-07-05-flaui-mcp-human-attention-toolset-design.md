@@ -264,8 +264,11 @@ Solves the **resumption trap**: after a `TargetNotForeground`, the agent shouldn
    server cannot reliably gate action semantics (coordinate clicks bypass name-gates; audit is post-hoc; a
    kill-switch is useless if the human is away). An unattended desktop lease is an uncontainable machine
    compromise; the only real containment is OS-level isolation, owned by the operator.
-3. **`userIdleMs` presence sensor — DROPPED.** It is a "wait-for-the-guard" evasion sensor for a
-   prompt-injected agent; the `wait_for_foreground` timeout supplies the present/absent fork without it.
+3. **`userIdleMs` presence sensor — reconsidered and re-added in SP-B, in a safe form.** The concern
+   here (a "wait-for-the-guard" evasion sensor for a prompt-injected agent) was addressed rather than
+   left unaddressed: SP-B ships a coarse `active`/`nearby`/`away` enum only (never raw idle-ms),
+   opt-in and off by default, human-only to enable, with the agent orchestrating any escalation. See
+   [`SP-B design`](2026-07-05-flaui-mcp-user-state-presence-design.md).
 4. **A long lease is a time-scoped blank check** (a mid-lease injection inherits the remainder). Accepted
    as the operator's OS-contained risk; the §4.6 warning discloses it.
 

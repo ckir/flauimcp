@@ -169,6 +169,15 @@ Understand what the agent is about to do before it does it:
   foreground. The intent-overlay flash above is **always on** regardless of this setting; `autosound`
   only adds the spoken line. Toggle with `flaui-mcp autosound on` / `flaui-mcp autosound off`, then
   reconnect your MCP client (`/mcp`) to apply.
+- **Coarse user-state presence (`desktop_user_state`, `flaui-mcp presence on|off`)** — an opt-in,
+  human-only presence sensor (off by default). The read-only, lease-exempt `desktop_user_state` tool
+  returns `{ enabled, activity: "active"|"nearby"|"away"|null }` — never raw idle time — so the agent
+  can reason about whether a human is even at the keyboard and orchestrate its own escalation; the
+  server does no outbound signaling itself. Enable with `flaui-mcp presence on [--nearby-secs N]
+  [--away-secs N]` (defaults 60/300; `away-secs` must exceed `nearby-secs`), disable with `flaui-mcp
+  presence off`. Coexists with `overlay`/`autosound` via the same non-destructive config merge; both
+  `on` and `off` take effect immediately via a live state file (no `/mcp` reconnect needed for the
+  toggle itself, though the merged launch flags apply on the next reconnect).
 - **Element-identity audit trace** — when a mutative action (via `desktop_type`, `desktop_click`,
   `desktop_invoke`, etc.) resolves a `selector` target, the input audit line now names the resolved
   element's stable identity: an allow-listed set of `RuntimeId`, `AutomationId`, `ClassName`,
