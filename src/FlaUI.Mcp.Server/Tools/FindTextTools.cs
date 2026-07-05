@@ -129,7 +129,7 @@ public sealed class FindTextTools
     public Task<string> DesktopWaitForForeground(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Max ms to block (server-capped to 45000).")] int timeoutMs = 45000)
-        => ToolResponse.Guard(() =>
+        => ToolResponse.Guard(async () =>
         {
             if (!_windows.TryGetHwnd(new WindowHandle(window), out var hwnd))
                 throw new ToolException(ToolErrorCode.WindowHandleStale, $"Handle {window} is no longer valid.", "re-list windows and re-open");
@@ -138,7 +138,10 @@ public sealed class FindTextTools
             try
             {
                 _attention.Signal(new WindowHandle(window));                 // flash (+ speak if autosound)
-                var r = _foregroundWaiter.Wait(hwnd, WaitForForeground.ClampTimeout(timeoutMs));
+                // Run the blocking Win32 message-pump wait off the request thread (matches the codebase
+                // convention of wrapping blocking work in Task.Run); the single-slot WaiterGate still caps
+                // this at one in-flight wait, so at most one pool thread is ever occupied.
+                var r = await Task.Run(() => _foregroundWaiter.Wait(hwnd, WaitForForeground.ClampTimeout(timeoutMs)));
                 var fg = _env.GetForegroundRoot();
                 // SEAT-D fold: build currentForeground via the SHARED leak-safe helper so this tool's shape is
                 // IDENTICAL to desktop_type/desktop_focus_window — incl. the owner-modal title rule.
@@ -146,12 +149,12 @@ public sealed class FindTextTools
                     foregroundRoot: fg, targetRoot: hwnd,
                     resolveProcess: h => _env.ResolveRoot(h).ProcessName,
                     ownerHwnd: _windows.OwnerHwnd, resolveTitle: _windows.WindowTitle);
-                return Task.FromResult(ToolResponse.Ok(new
+                return ToolResponse.Ok(new
                 {
                     foregroundGained = r.ForegroundGained,
                     reason = r.Reason switch { WaitReason.Gained => "gained", WaitReason.WindowDestroyed => "window-destroyed", _ => "timeout" },
                     currentForeground = cf,
-                }));
+                });
             }
             finally { _waiterGate.Exit(); }
         });

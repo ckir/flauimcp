@@ -35,14 +35,21 @@ public sealed class Win32ForegroundWaiter : IForegroundWaiter
             else
             {
                 var timer = SetTimer(IntPtr.Zero, IntPtr.Zero, (uint)timeoutMs, IntPtr.Zero);
-                while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+                if (timer != IntPtr.Zero)
                 {
-                    // Match OUR timer id (SEAT-C fold): STA initializes COM, which can post its own
-                    // WM_TIMER to this thread's queue; accepting any WM_TIMER could abort the wait early.
-                    if (msg.message == WM_TIMER && msg.wParam == timer) break;   // our timeout only
-                    TranslateMessage(ref msg); DispatchMessage(ref msg);
+                    while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+                    {
+                        // Match OUR timer id (SEAT-C fold): STA initializes COM, which can post its own
+                        // WM_TIMER to this thread's queue; accepting any WM_TIMER could abort the wait early.
+                        if (msg.message == WM_TIMER && msg.wParam == timer) break;   // our timeout only
+                        TranslateMessage(ref msg); DispatchMessage(ref msg);
+                    }
+                    KillTimer(IntPtr.Zero, timer);
                 }
-                if (timer != IntPtr.Zero) KillTimer(IntPtr.Zero, timer);
+                // SetTimer failed (returned 0) → do NOT enter an unbounded GetMessage loop: if the hooks
+                // also failed to fire there would be no escape and this dedicated STA thread would leak for
+                // the process lifetime. Leave `result` at its Timeout default; the caller re-invokes
+                // (slow-poll design) so there is no functional harm — just no thread leak on resource failure.
             }
             if (hFg != IntPtr.Zero) UnhookWinEvent(hFg);
             if (hDes != IntPtr.Zero) UnhookWinEvent(hDes);
