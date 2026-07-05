@@ -20,7 +20,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 `desktop_wake_accessibility,desktop_release_accessibility,desktop_list_wakes` (opaque Chromium/Electron);
 `desktop_find_text,desktop_wait_for_text` (OCR targeting).
 
-## Watching the agent (v0.10.1+)
+## Watching the agent
 
 - **Intent overlay** — pass `overlay:true` (or `overlay:<milliseconds>` for custom duration, `0` disables)
   to any mutative tool to draw a red rect on the target element ~500 ms **before** the action fires —
@@ -86,7 +86,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   `desktop_launch_app`). All four watch tools (`desktop_watch`/`desktop_unwatch`/`desktop_list_watches`/
   `desktop_drain_events`) are ReadOnly + lease-exempt — you can watch, list, and drain while input is
   locked. Only *triggering* an event via your OWN `desktop_type`/`desktop_click`/launch needs a lease.
-- **What actually fires (empirical, v0.8.0 smoke):** `structure_changed` needs elements ADDED/REMOVED
+- **What actually fires (empirical):** `structure_changed` needs elements ADDED/REMOVED
   (a menu/dialog opening, a list rebuild) — pure text edits or a terminal printing output fire *text*
   changes, NOT structure, so watching those yields nothing. A **minimized** target has a root-only tree
   (`desktop_snapshot` shows one node, bounds `{0,0,0,0}`) and emits NO events — `desktop_window_transform
@@ -120,7 +120,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   done with it, but don't expect the tree to collapse immediately: Chromium re-collapses it **lazily**
   once idle, not on release itself. `desktop_list_wakes` recovers your active wakes after a context
   loss. All three wake tools are ReadOnly + lease-exempt (no lease needed, even while input is locked).
-  *(Verified live v0.9.0, 2026-07-04: VS Code snapshot went **14→131 nodes** on wake, exposing the
+  *(Verified live: VS Code snapshot went **14→131 nodes** on wake, exposing the
   full menu/activity-bar/status-bar tree; re-wake returned the same `wakeId` with `alreadyAwake:true`;
   release, then `desktop_list_wakes` empty, then a second release were all idempotent.)*
 - **A wake doesn't always reach the document body.** Some editors gate their actual document text
@@ -136,7 +136,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   pack is installed.
 - **When a surface is both woken and OCR-able, the two coordinate systems agree** — `find_text`
   bounds land within a few px of the matching UIA element's bounds, and crisp large UI text OCRs at
-  `confidence:1.0` (v0.9.0 smoke: "Show All Commands" → `find_text` `[927,679,157,12]` vs UIA
+  `confidence:1.0` (smoke: "Show All Commands" → `find_text` `[927,679,157,12]` vs UIA
   `@{926,673,160,23}`; menu "Selection" → OCR `[205,16,64,12]` vs UIA `[194,0,86,43]`, centers align).
   Useful as a sanity cross-check that OCR resolved the right thing before `desktop_click_at` — but the
   fuzzy-match caution above still holds for small/dense/anti-aliased text.
@@ -147,12 +147,17 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 - **Pre-flight the target window state (the #1 driving trap):** before an input plan, run
   `desktop_list_windows includeBounds:true` — off-screen bounds like `@{-31992,…}` mean the target is
   **MINIMIZED**. A minimized (or otherwise non-foreground) target makes EVERY synthetic action abort
-  `ElementDisappearedDuringAction` (the TOCTOU guard). Fix: `desktop_window_transform wN restore` →
-  re-`desktop_find`/snapshot (**refs change!**) → THEN type. Tell: if `desktop_focus_window wN` returns
-  `ok:true` but `desktop_list_windows` STILL shows another window `IsForeground:true`, the target is
-  almost certainly minimized — restore it. Do NOT theorize a "background-process foreground-lock" and
-  retry the keystroke; check window state instead (a background process genuinely can't `SetForegroundWindow`
-  past the active driving terminal, but that is NOT what an abort-after-`focus:ok` is telling you).
+  `ElementDisappearedDuringAction` (the TOCTOU guard). Fix a minimized target: `desktop_window_transform
+  wN restore` → re-`desktop_find`/snapshot (**refs change!**) → THEN type.
+- **`desktop_focus_window` returns `{ok, foregroundGained}` — read the bool, don't assume.**
+  `foregroundGained:false` means the focus did NOT actually land; two causes, **different fixes**:
+  (a) target **minimized** (`includeBounds` shows off-screen `@{-31992,…}`) → `restore` it, re-snapshot, act;
+  (b) target is a normal visible window but you're driving from a foreground terminal → the real
+  **foreground-lock**: a background-process server genuinely cannot `SetForegroundWindow` an *existing*
+  window past the active one. You can't focus your way out of (b) — instead **launch the target fresh**
+  (`desktop_launch_app` grants the new window foreground) and act **immediately**, before it loses it.
+  Empirically (console smoke): `desktop_focus_window` on an already-open charmap → `foregroundGained:false`,
+  but a *freshly-launched* charmap was foreground and typed/minimized fine.
 - Locked? A human runs on the host: `flaui-mcp unlock --minutes N` (suggest the user type `! flaui-mcp unlock --minutes N`).
 - The lease **expires mid-session** (`InputNotLeased` when it lapses) → re-unlock.
 - **Lease-exempt even while locked:** `desktop_set_caret`, `desktop_select_text_range`, `desktop_get_text`
@@ -202,7 +207,7 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
 |---|---|---|
 | `ElementDisappearedDuringAction` on type/key | foreground changed / target not truly focused (TOCTOU guard) — most often the target is **MINIMIZED** (esp. if `focus_window` returned `ok:true` yet `list_windows` still shows another window `IsForeground`) | Check `desktop_list_windows includeBounds:true`; if off-screen (`@{-31992,…}`) → `desktop_window_transform wN restore` → **re-snapshot (refs change!)** → retry. Otherwise `desktop_focus_window wN` → re-snapshot → retry ONCE (don't retry-loop). |
 | Window at `@{-31992,…}`, focus won't take | window is **minimized** (won't come forward) | `desktop_window_transform wN restore` → **re-snapshot (refs change!)** → act |
-| Keys go nowhere after closing a dialog | prior window lost foreground | `desktop_focus_window` before the next key |
+| Keys go nowhere after closing/minimizing a window | the foreground window collapsed and orphaned keyboard focus | The server's **own** `desktop_close_window` and `desktop_window_transform minimize` **auto-restore** foreground to the next visible top-level window — so those won't orphan the keyboard. Only an *app-internal* dialog dismissed via synthetic `Esc`/`Enter` (not a `desktop_close_window`) can still orphan it → `desktop_focus_window` (check `foregroundGained`) before the next key. Best-effort under the foreground-lock. |
 | `desktop_launch_app` LaunchTimeout ("started but showed no titled window") | UWP/Store stub hands the window to ApplicationFrameHost, **or** a slow-showing app (the new Win11 Notepad) paints its titled window *after* the 10s timeout | recover via `desktop_list_windows` → `desktop_open_window by:title` — the window is usually there a moment later (bump `timeoutMs` to avoid the miss next time) |
 | `InputDesktopUnavailable` | session locked/disconnected (RDP dropped) | reconnect + unlock the session |
 | `REF_STALE_UNRESOLVABLE` / `AMBIGUOUS_MATCH` on invoke/click/type/set_value | held ref's exact element (RuntimeId) is gone or duplicated — **state-changing** tools resolve refs **strictly**: no silent retarget to a recycled `AutomationId` under virtualization | re-`desktop_snapshot` or `desktop_find` to mint a fresh ref, then act (reads stay lenient). Break-glass: env `FLAUI_MCP_REF_STRICT=off` disables the guard globally |
