@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Threading.Tasks;
 using FlaUI.Core.AutomationElements;
+using FlaUI.Mcp.Core.Attention;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
@@ -22,11 +23,13 @@ public sealed class InputTools
     private readonly InputGuard _guard;
     private readonly IPlatformEnvironment _env;
     private readonly IActionOverlay _overlay;
+    private readonly IAttentionSignal _attention;
 
     public InputTools(PerceptionManager perception, WindowManager windows, ServerOptions options,
-        InputGuard guard, IPlatformEnvironment env, IActionOverlay? overlay = null)
+        InputGuard guard, IPlatformEnvironment env, IActionOverlay? overlay = null,
+        IAttentionSignal? attention = null)
     { _perception = perception; _windows = windows; _options = options; _guard = guard; _env = env;
-      _overlay = overlay ?? NullActionOverlay.Instance; }
+      _overlay = overlay ?? NullActionOverlay.Instance; _attention = attention ?? NullAttentionSignal.Instance; }
 
     // Phase 10 #2 T6a: the selector path routes through RunOnSelectorForInputAsync (T4), which mirrors
     // RunOnRefForInputAsync exactly (same offscreen guard, same transient action STA, same WriteMode) —
@@ -194,6 +197,11 @@ public sealed class InputTools
                 effectiveRef = @ref!;
             }
 
+            // SP-A not-foreground gate (keyboard path): if the resolved target isn't the OS foreground, return the
+            // enriched TargetNotForeground + flash — instead of the generic mid-send abort.
+            var fgReply = ForegroundGateReply(target, window);
+            if (fgReply is not null) return fgReply;
+
             await PreviewSyntheticAsync(target, ElementRect(target));
             await Task.Run(() => _guard.KeyType(text ?? string.Empty, target, interKeyDelayMs));
 
@@ -358,6 +366,16 @@ public sealed class InputTools
                 target = await ResolveForegroundTargetAsync();
             }
 
+            // SP-A gate for the ref/selector keyboard path. The no-ref foreground path targets the foreground by
+            // construction, so the gate is a no-op there (Evaluate returns null); guard for clarity.
+            // `window!` is SAFE here: the earlier DesktopKey guards already THROW InvalidArguments when haveRef/haveSel
+            // and window is null/empty, so inside this branch `window` is guaranteed non-null.
+            if (haveRef || haveSel)
+            {
+                var fgReply = ForegroundGateReply(target, window!);
+                if (fgReply is not null) return fgReply;
+            }
+
             await PreviewSyntheticAsync(target, ElementRect(target));
             await Task.Run(() => _guard.KeyChord(modNames, keyToken, target));
             return resolved is null
@@ -494,6 +512,24 @@ public sealed class InputTools
         if (!_overlay.Enabled || rect.IsDegenerate) return;
         _guard.PreflightInput(target);         // throws on refusal -> no flash, effect never runs
         await _overlay.PreviewAsync(rect);
+    }
+
+    // SP-A: the leak-safe not-foreground gate for the KEYBOARD path only (desktop_type/desktop_key).
+    // target.Root is the resolved target window's root; compare to the live OS foreground. On a mismatch,
+    // fire the attention signal and return the enriched result — do NOT attempt the send that would throw
+    // the generic ElementDisappearedDuringAction. Returns null when the target holds foreground (proceed).
+    private string? ForegroundGateReply(ActionTarget target, string windowId)
+    {
+        var result = ForegroundGate.Evaluate(
+            targetRoot: target.Root,
+            foregroundRoot: _env.GetForegroundRoot(),
+            targetWindowId: windowId,
+            resolveProcess: h => _env.ResolveRoot(h).ProcessName,
+            ownerHwnd: h => _windows.OwnerHwnd(h),
+            resolveTitle: h => _windows.WindowTitle(h));
+        if (result is null) return null;
+        _attention.Signal(new WindowHandle(windowId));       // flash (+ speak if autosound) — best-effort
+        return ToolResponse.Ok(new { targetNotForeground = result });
     }
 
     // The overlay rect for an element action = the SAME bounds T8 recorded (spec §1), from the resolved

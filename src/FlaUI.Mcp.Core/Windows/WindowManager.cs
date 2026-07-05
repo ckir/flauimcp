@@ -135,6 +135,37 @@ public sealed class WindowManager : IDisposable, IHwndSource
     public bool TryGetHwnd(WindowHandle handle, out IntPtr hwnd)
         => _hwnds.TryGetValue(handle.Id, out hwnd) && hwnd != IntPtr.Zero;
 
+    /// <summary>The target handle's own process base-name (the app the agent already chose to act on), for the
+    /// TTS utterance. Null when unknown. Pure Win32 — no UIA, safe off-STA.</summary>
+    public string? TryGetAppName(WindowHandle handle)
+    {
+        if (!_hwnds.TryGetValue(handle.Id, out var hwnd) || hwnd == IntPtr.Zero) return null;
+        GetWindowThreadProcessId(hwnd, out uint pid);
+        try { using var p = Process.GetProcessById((int)pid); return p.ProcessName; } catch { return null; }
+    }
+
+    /// <summary>GW_OWNER of an HWND (0 if none). Used by the leak rule to detect a modal owned by the exact
+    /// target window. Pure Win32.</summary>
+    public IntPtr OwnerHwnd(IntPtr hwnd) { try { return GetWindow(hwnd, GW_OWNER); } catch { return IntPtr.Zero; } }
+    private const uint GW_OWNER = 4;
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    /// <summary>Cached window caption via Win32 GetWindowText (does NOT block on a hung window). Only ever
+    /// consulted for an owner-verified modal (leak rule). Null/empty → null.</summary>
+    public string? WindowTitle(IntPtr hwnd)
+    {
+        try
+        {
+            int len = GetWindowTextLengthW(hwnd);
+            if (len == 0) return null;
+            var sb = new StringBuilder(len + 1);
+            GetWindowTextW(hwnd, sb, sb.Capacity);
+            var s = sb.ToString();
+            return string.IsNullOrEmpty(s) ? null : s;
+        }
+        catch { return null; }
+    }
+
     private Window ResolveWindow(WindowHandle handle)
     {
         if (_handles.TryGetValue(handle.Id, out var cached)) return cached;

@@ -69,6 +69,21 @@ builder.Services.AddSingleton(sp =>
         isElevated: ElevationGuard.IsElevated(),
         allowElevation: opts.AllowElevation);
 });
+// SP-A attention signals: flash is always available; TTS only when --autosound is on. Composite fans out.
+builder.Services.AddSingleton(_ =>
+    new FlaUI.Mcp.Core.Attention.TtsDebounce(capacity: 3, window: System.TimeSpan.FromSeconds(30)));
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Attention.IAttentionSignal>(sp =>
+{
+    var o = sp.GetRequiredService<ServerOptions>();
+    var wm = sp.GetRequiredService<WindowManager>();
+    var channels = new System.Collections.Generic.List<FlaUI.Mcp.Core.Attention.IAttentionSignal>
+        { new FlaUI.Mcp.Server.Attention.FlashSignal(wm) };
+    if (o.Autosound)
+        channels.Add(new FlaUI.Mcp.Server.Attention.TtsSignal(
+            h => wm.TryGetAppName(h),
+            sp.GetRequiredService<FlaUI.Mcp.Core.Attention.TtsDebounce>()));
+    return new FlaUI.Mcp.Core.Attention.CompositeAttentionSignal(channels);
+});
 builder.Services.AddSingleton<InputTools>();
 
 // --- Phase 8 desktop_watch (UIA event streaming over stdio; push+drain) ---
