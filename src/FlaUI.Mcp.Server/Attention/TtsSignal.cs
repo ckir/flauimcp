@@ -1,6 +1,6 @@
 using System;
 using System.Speech.Synthesis;
-using System.Threading.Tasks;
+using System.Threading;
 using FlaUI.Mcp.Core.Attention;
 using FlaUI.Mcp.Core.Windows;
 
@@ -30,11 +30,18 @@ public sealed class TtsSignal : IAttentionSignal
         {
             if (!_debounce.TryTake(_clock())) return;   // channel-wide rate cap
             var line = Utterance(_appNameOf(target));
-            _ = Task.Run(() =>
+            // Speak on a DEDICATED STA thread. System.Speech wraps SAPI (COM); Speak invoked from an MTA
+            // thread-pool thread (Task.Run) can render no audio in a console/stdio host with no message pump.
+            // A background STA thread (mirroring Win32ForegroundWaiter) reliably produces the utterance.
+            // Best-effort — never throws.
+            var t = new Thread(() =>
             {
                 try { using var s = new SpeechSynthesizer(); s.Speak(line); }
                 catch { /* no audio device / synth failure → silent */ }
-            });
+            })
+            { IsBackground = true, Name = "flaui-mcp-tts" };
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
         }
         catch { /* never throw from the signal path */ }
     }
