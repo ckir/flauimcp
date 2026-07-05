@@ -18,7 +18,16 @@ public sealed record WindowInfo(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ZOrder = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Handle = null);
 
-public sealed class WindowManager : IDisposable
+/// <summary>Best-effort HWND lookup seam. Extracted so attention signals (flash / wait-for-foreground)
+/// can depend on just the raw HWND read without a hard dependency on WindowManager itself (WindowManager
+/// is only constructible under the Desktop-category test gate — real UIA/STA setup — so a headless unit
+/// test needs a narrower seam to fake).</summary>
+public interface IHwndSource
+{
+    bool TryGetHwnd(WindowHandle handle, out IntPtr hwnd);
+}
+
+public sealed class WindowManager : IDisposable, IHwndSource
 {
     private readonly AutomationDispatcher _dispatcher;
     private readonly UIA3Automation _automation;
@@ -120,6 +129,12 @@ public sealed class WindowManager : IDisposable
     /// entry yet: bind it now from the recorded HWND — but ONLY after the M2 Win32 pid-reverify confirms
     /// the HWND still belongs to the recorded pid, so a recycled HWND can never inject UIA into a
     /// different process. Single query STA ⇒ the check-then-bind is race-free and GetOrAdd is safe.</summary>
+    /// <summary>Best-effort HWND lookup for a handle WITHOUT binding UIA (pure dict read). Used by the
+    /// attention signals (flash / wait-for-foreground), which need only the raw HWND, never a COM Window.
+    /// Does NOT run the M2 pid-reverify (the signal is a benign flash/observe, not an input write).</summary>
+    public bool TryGetHwnd(WindowHandle handle, out IntPtr hwnd)
+        => _hwnds.TryGetValue(handle.Id, out hwnd) && hwnd != IntPtr.Zero;
+
     private Window ResolveWindow(WindowHandle handle)
     {
         if (_handles.TryGetValue(handle.Id, out var cached)) return cached;
