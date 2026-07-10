@@ -55,9 +55,32 @@ whole `Category=Desktop` suite runs reliably green on a connected+leased dev con
   hard-asserted after only a 5s bound on WT's async caption repaint; widened to the discovery poll's
   proven 15s so the async-settle tail can't flake it under load.
 
-#### A1b — Unattended interactive runner (infra) — spec once A1a is green
+#### A1b — Unattended interactive runner (infra) — **DEFERRED pending a ~$150 mini-PC** (decided 2026-07-11)
 
-The **sound** unattended approach (feasibility validated 2026-07-03): `SendInput` works in any
+**Decision (agy-consulted divergent pass + user, 2026-07-11):** the maintainer has only a daily-driver
+machine. Forcing a focus-stealing `Category=Desktop` suite onto a working box is a path of endless
+friction, so A1b is **deferred until a cheap dedicated box exists** (~$150 mini-PC). At that point the
+plan-of-record below applies as-is. **v1.0 consequence:** completing Track A stamps v1.0, so v1.0 is now
+gated on this hardware — reconsider whether A1b must block v1.0 or can move to a v1.0.x follow-on (open).
+
+<details><summary>Daily-driver alternatives considered and parked (so a future session need not re-derive)</summary>
+
+- **V2 — GHA self-hosted runner + manual `workflow_dispatch`** (leanest, ~15 min): runner on the daily
+  driver, Desktop job runs only when manually dispatched against a **fresh clone**; you trigger it when
+  stepping away. Tests the *committed* tree (PR = source of truth). Not auto-continuous; risk of an
+  accidental mid-work input seize if left armed.
+- **V1 — Hyper-V VM in *Basic* Session Mode** (true continuous, ~2 h + perpetual 4–8 GB RAM): a runner
+  inside a local VM. **Key fact:** *Basic* (not *Enhanced*/RDP) session keeps a **synthetic physical
+  console** (virtual framebuffer), so `SendInput` inside the VM works fully, decoupled from the host
+  input even when minimized. This is the one way to get continuous gating on a single machine — costs a
+  second OS running forever.
+- **Rejected — local script gating** (agy's challenge, correct): a local `dotnet test` script tests the
+  **dirty working tree, not the commit** → you pass locally, tag, then find an un-`git add`ed file.
+  Whatever ships MUST run via a GHA runner against a fresh clone, never a working-tree script.
+
+</details>
+
+When the box exists — the **sound** unattended approach (feasibility validated 2026-07-03): `SendInput` works in any
 *connected, unlocked* session, so a local connected+leased run is already a legitimate pre-tag gate.
 For unattended: Sysinternals **Autologon → box boots into an unlocked physical console → run the CI agent
 as an interactive startup app** (never a Session-0 Windows service). `tscon /dest:console` is **not**
