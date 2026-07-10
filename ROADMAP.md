@@ -38,15 +38,47 @@ Today the green CI badge proves only the *headless* half; the `Category=Desktop`
 in real interaction behavior is not caught continuously. This is the single biggest correctness blind
 spot, and it gates everything else: sign and ship only a tool that CI proves works.
 
-- **Feasibility validated (2026-07-03).** `SendInput` works in any *connected, unlocked* session, so a
-  local connected+leased run is already a legitimate pre-tag gate. The **sound** unattended approach:
-  Sysinternals **Autologon → box boots into an unlocked physical console → run the CI agent as an
-  interactive startup app** (never a Session-0 Windows service). `tscon /dest:console` is **not** sound
-  (resolution collapse breaks bounds/visibility tests; WS2022/Win11 harden against `tscon` hijacking).
-- **Prerequisite hygiene:** the real end-to-end `SendInput` test (`InputToolsTests`) must first be made
-  reliably runnable (see the known-broken harness note in the Phase 7 spec §9). Also fold in the
-  Desktop-only **e2e title-settle flake** in `TerminalTabE2ETests` (WT tab title settles async after
-  launch) so the interactive suite is green before it becomes a gate.
+**Split (agy-consulted, user-decided 2026-07-11): A1a before A1b** — ship the test hygiene as its own
+green-locally increment first, then stand up the runner. Fixing flakes *inside* the runner work creates a
+"two variables" problem: a red build is then ambiguous between a bad test and a bad runner environment.
+
+#### A1a — Desktop suite reliably green **locally** (test hygiene) — the increment to build first
+
+Pure test-harness work against code that exists today; no infra, no hardware. Definition of done: the
+whole `Category=Desktop` suite runs reliably green on a connected+leased dev console.
+
+- **`InputToolsTests` harness — ALREADY FIXED (`d84fedf`, 2026-07-03).** The Phase 7 §9 "known-broken
+  harness" note is stale: the `RefForAid` failure was resolved same-day by snapshotting with
+  `FullProperties=true` (which emits the `aid=` tokens `RefForAid` scans). Remaining A1a work here is
+  only to *validate* it green on a connected+leased console (needs the physical console + a lease).
+- **`TerminalTabE2ETests` title-settle flake — FIXED (this increment).** The independent restore-verify
+  hard-asserted after only a 5s bound on WT's async caption repaint; widened to the discovery poll's
+  proven 15s so the async-settle tail can't flake it under load.
+
+#### A1b — Unattended interactive runner (infra) — spec once A1a is green
+
+The **sound** unattended approach (feasibility validated 2026-07-03): `SendInput` works in any
+*connected, unlocked* session, so a local connected+leased run is already a legitimate pre-tag gate.
+For unattended: Sysinternals **Autologon → box boots into an unlocked physical console → run the CI agent
+as an interactive startup app** (never a Session-0 Windows service). `tscon /dest:console` is **not**
+sound (resolution collapse breaks bounds/visibility tests; WS2022/Win11 harden against `tscon` hijacking).
+
+Plan-of-record for the A1b spec (agy-consulted 2026-07-11):
+- **Runner model:** self-hosted **GitHub Actions** runner launched via the **startup folder**
+  (`shell:startup`, *not* a service — so it inherits the Autologon unlocked session), labeled e.g.
+  `[self-hosted, windows-desktop-automation]` so existing workflows fan a `Category=Desktop` job onto it.
+  Keeps all signal on the PR ("PR is source of truth"), vs. an out-of-band nightly task hiding failures
+  in local logs.
+- **Gating posture:** **informational first** (runs on PRs, non-blocking), promote to a *required* check
+  only after a few weeks of proven-green — real-`SendInput` UI tests are inherently flake-prone (focus
+  theft, update reboots, timing jitter), so day-one blocking self-inflicts merge blocks.
+- **Host:** a **dedicated box/VM, not the maintainer's daily driver** (a push would seize the mouse
+  mid-work; an RDP disconnect locks the session → `SendInput` silently drops). Physical headless box
+  needs an **HDMI dummy plug** (else Windows collapses to 640×480 and breaks bounds tests); manage a VM
+  via the Hyper-V console, never RDP.
+- **Host hardening (runner reliability):** disable screen-sleep + lock-on-idle (or PowerToys Awake) — an
+  idle lock after ~15 min fails all subsequent jobs; and debloat / disable notifications (Windows Update,
+  Edge "make default", AV scans steal focus mid-test).
 - Complements the deferred "Full DPI × OS × integrity test matrix in CI" (kept in v2 — CI runners are
   single-DPI/non-elevated; the DPI matrix stays a documented manual gate).
 
