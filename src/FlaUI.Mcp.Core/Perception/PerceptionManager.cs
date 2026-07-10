@@ -388,6 +388,17 @@ public sealed class PerceptionManager
     public Task<(TextReadResult Value, string ResolvedRef)> GetTextBySelectorAsync(WindowHandle handle, Selector sel, bool selectionOnly, int maxLength, bool fromEnd, int timeoutMs) =>
         RunOnSelectorReadAsync(handle, sel, el => ReadText(el, selectionOnly, maxLength, fromEnd), timeoutMs);
 
+    /// <summary>Composite terminal-tab read (spec §5.5): select tabIndex → settle → read the sibling
+    /// buffer (fromEnd/maxLength) → restore the originally-active tab in a finally. Runs entirely on one
+    /// transient action STA (refs change on every switch, so it must be atomic and in-process).
+    /// Destructive at the tool layer; the pattern actions themselves are lease-exempt (spec §3.1).</summary>
+    public Task<TerminalTabReader.Result> ReadTerminalTabAsync(
+        WindowHandle handle, int tabIndex, bool restoreFocus, bool fromEnd, int maxLength, int timeoutMs) =>
+        _windows.RunOnWindowActionAsync(handle,
+            (win, _) => TerminalTabReader.Run(win, tabIndex, restoreFocus, fromEnd, maxLength,
+                buf => ReadText(buf, selectionOnly: false, maxLength, fromEnd)),
+            timeoutMs);
+
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
     {

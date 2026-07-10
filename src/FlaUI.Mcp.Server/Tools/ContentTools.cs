@@ -82,4 +82,23 @@ public sealed class ContentTools
             var t2 = await _perception.GetTextAsync(new WindowHandle(window), @ref!, selectionOnly, maxLength, fromEnd, timeoutMs);
             return ToolResponse.Ok(new { text = t2.Text, truncated = t2.Truncated, truncatedFrom = t2.TruncatedFrom, isPassword = t2.IsPassword });
         });
+
+    [McpServerTool(Destructive = true), Description("Read a background Windows Terminal tab in one call: selects the tab at tabIndex (0-based ordinal, over the Tab→List→TabItem structure), settles, reads its buffer, and restores the originally-active tab. tabIndex only (no ref/title — refs go stale on switch, titles are ambiguous); enumerate tabs with desktop_snapshot first. fromEnd (default true) reads the latest output; maxLength caps it. Returns { text, truncated, truncatedFrom, tabTitle, restored, restoreConfidence, activeTabIndex } — restored=false + the now-active tab when restore couldn't complete confidently (e.g. the original tab was closed). Errors without switching on an out-of-range tabIndex; \"unrecognized terminal layout\" if the tree isn't a WT tab strip. Blocked in --read-only-mode.")]
+    public Task<string> DesktopReadTerminalTab(
+        [Description("Window handle of the Windows Terminal window, e.g. w1.")] string window,
+        [Description("0-based tab ordinal (from a desktop_snapshot of the tab strip).")] int tabIndex,
+        [Description("Re-select the originally-active tab afterward (default true).")] bool restoreFocus = true,
+        [Description("Read the latest output (tail) rather than the head (default true).")] bool fromEnd = true,
+        [Description("Max chars of buffer text to return (default 10000).")] int maxLength = 10000,
+        [Description("Block timeout ms (default 8000 — includes the settle).")] int timeoutMs = 8000)
+        => ToolResponse.GuardWrite(_options, async () =>
+        {
+            var r = await _perception.ReadTerminalTabAsync(new WindowHandle(window), tabIndex, restoreFocus, fromEnd, maxLength, timeoutMs);
+            return ToolResponse.Ok(new
+            {
+                text = r.Text, truncated = r.Truncated, truncatedFrom = r.TruncatedFrom,
+                tabTitle = r.TabTitle, restored = r.Restored, restoreConfidence = r.RestoreConfidence,
+                activeTabIndex = r.ActiveTabIndex,
+            });
+        });
 }
