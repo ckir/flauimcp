@@ -86,18 +86,50 @@ public class ContentToolsTests : IClassFixture<TestAppFixture>
         var snap = await mgr.SnapshotAsync(handle, new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true, FullProperties = true });
         string RefFor(string aid) => RefForAid(snap.Tree, aid);
 
-        var doc = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 10000, 4000);
+        var doc = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 10000, fromEnd: false, 4000);
         Assert.Contains("line one", doc.Text);
         Assert.False(doc.Truncated);
         Assert.False(doc.IsPassword);
+        Assert.Null(doc.TruncatedFrom);
 
-        var trunc = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 4, 4000);
+        var trunc = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 4, fromEnd: false, 4000);
         Assert.True(trunc.Truncated);
         Assert.Equal(4, trunc.Text.Length);
+        Assert.Equal("tail", trunc.TruncatedFrom);
 
-        var pwd = await mgr.GetTextAsync(handle, RefFor("Secret"), selectionOnly: false, maxLength: 10000, 4000);
+        var pwd = await mgr.GetTextAsync(handle, RefFor("Secret"), selectionOnly: false, maxLength: 10000, fromEnd: false, 4000);
         Assert.Equal("[REDACTED]", pwd.Text);
         Assert.True(pwd.IsPassword);
         Assert.DoesNotContain("hunter2", pwd.Text);
+        Assert.Null(pwd.TruncatedFrom);
+    }
+
+    [Fact]
+    public async Task Get_text_fromEnd_reads_tail_and_reports_truncatedFrom()
+    {
+        using var d = new AutomationDispatcher();
+        using var w = new WindowManager(d);
+        var refs = new RefRegistry();
+        var mgr = new PerceptionManager(w, refs, new SnapshotCache());
+        var handle = await w.OpenByPidAsync(_app.Process.Id);
+        var snap = await mgr.SnapshotAsync(handle, new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true, FullProperties = true });
+        string RefFor(string aid) => RefForAid(snap.Tree, aid);
+
+        // TestApp's TextDoc is "line one\nline two\nline three" (28 chars) — see MainWindow.xaml.
+        var head = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 4, fromEnd: false, 4000);
+        Assert.True(head.Truncated);
+        Assert.Equal("tail", head.TruncatedFrom);
+        Assert.Equal("line", head.Text); // byte-identical to today's default head read
+
+        var tail = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 4, fromEnd: true, 4000);
+        Assert.True(tail.Truncated);
+        Assert.Equal("head", tail.TruncatedFrom);
+        Assert.Equal("hree", tail.Text); // last 4 chars of "...line three"
+
+        // Full-length reads (no truncation) are equivalent regardless of fromEnd.
+        var full = await mgr.GetTextAsync(handle, RefFor("TextDoc"), selectionOnly: false, maxLength: 10000, fromEnd: true, 4000);
+        Assert.False(full.Truncated);
+        Assert.Null(full.TruncatedFrom);
+        Assert.Contains("line three", full.Text);
     }
 }

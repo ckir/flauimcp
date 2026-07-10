@@ -61,13 +61,14 @@ public sealed class ContentTools
             return ToolResponse.Ok(new { ok = true, pathUsed = "pattern" });
         });
 
-    [McpServerTool(ReadOnly = true), Description("Read an element's text via UIA TextPattern. selectionOnly=true reads the current selection (empty if none). maxLength caps output (default 10000, 1..200000); truncated=true if the text exceeded it. A password field returns text=\"[REDACTED]\", isPassword=true. Off-screen targets ARE readable. PatternUnsupported if no TextPattern.")]
+    [McpServerTool(ReadOnly = true), Description("Read an element's text via UIA TextPattern. selectionOnly=true reads the current selection (empty if none). maxLength caps output (default 10000, 1..200000); truncated=true if the text exceeded it, and truncatedFrom tells which end was dropped (\"tail\" for the default head-keeping read, \"head\" for a fromEnd read, null when not truncated). fromEnd=true returns the LAST maxLength chars (the latest output, e.g. a terminal's most-recent lines) instead of the first. NOTE: TextPattern returns roughly the visible viewport — text scrolled above it is not recoverable. A password field returns text=\"[REDACTED]\", isPassword=true. Off-screen targets ARE readable. PatternUnsupported if no TextPattern.")]
     public Task<string> DesktopGetText(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Element ref from a snapshot, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
         [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Read only the current selection (default false = full text).")] bool selectionOnly = false,
         [Description("Max chars (default 10000).")] int maxLength = 10000,
+        [Description("Return the LAST maxLength chars instead of the first (default false).")] bool fromEnd = false,
         [Description("Read timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.Guard(async () =>
         {
@@ -75,10 +76,10 @@ public sealed class ContentTools
             if (selector is { } sel)
             {
                 sel.Validate();
-                var (t, resolved) = await _perception.GetTextBySelectorAsync(new WindowHandle(window), sel, selectionOnly, maxLength, timeoutMs);
-                return ToolResponse.Ok(new { text = t.Text, truncated = t.Truncated, isPassword = t.IsPassword, resolvedElement = resolved });
+                var (t, resolved) = await _perception.GetTextBySelectorAsync(new WindowHandle(window), sel, selectionOnly, maxLength, fromEnd, timeoutMs);
+                return ToolResponse.Ok(new { text = t.Text, truncated = t.Truncated, truncatedFrom = t.TruncatedFrom, isPassword = t.IsPassword, resolvedElement = resolved });
             }
-            var t2 = await _perception.GetTextAsync(new WindowHandle(window), @ref!, selectionOnly, maxLength, timeoutMs);
-            return ToolResponse.Ok(new { text = t2.Text, truncated = t2.Truncated, isPassword = t2.IsPassword });
+            var t2 = await _perception.GetTextAsync(new WindowHandle(window), @ref!, selectionOnly, maxLength, fromEnd, timeoutMs);
+            return ToolResponse.Ok(new { text = t2.Text, truncated = t2.Truncated, truncatedFrom = t2.TruncatedFrom, isPassword = t2.IsPassword });
         });
 }

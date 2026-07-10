@@ -340,7 +340,7 @@ public sealed class PerceptionManager
 
     // Verbatim-extracted read lambda from GetTextAsync (Phase 10 #2 T7): byte-identical logic (password
     // short-circuit, TextPattern read, truncation) shared by the ref and selector read paths.
-    private static TextReadResult ReadText(AutomationElement el, bool selectionOnly, int maxLength)
+    private static TextReadResult ReadText(AutomationElement el, bool selectionOnly, int maxLength, bool fromEnd)
     {
         EnsureAllowed(el);
         // Password short-circuit FIRST — never ask the provider for a secret's text/selection.
@@ -359,27 +359,34 @@ public sealed class PerceptionManager
                 try
                 {
                     var sel = tp.GetSelection();
-                    raw = (sel is { Length: > 0 }) ? sel[0].GetText(cap + 1) : string.Empty;
+                    // fromEnd on a selection: fetch the whole selection (-1) so the tail is real, not the head.
+                    raw = (sel is { Length: > 0 }) ? sel[0].GetText(fromEnd ? -1 : cap + 1) : string.Empty;
                 }
                 catch { raw = string.Empty; } // GetSelection is brittle (throws when no selection)
             }
-            else raw = tp.DocumentRange.GetText(cap + 1);
+            // fromEnd needs the FULL text (GetText(-1)) because GetText(cap+1) returns the HEAD; the head
+            // read keeps the cheap cap+1 fetch (spec §5.4: default byte-identical to today).
+            else raw = tp.DocumentRange.GetText(fromEnd ? -1 : cap + 1);
 
             bool truncated = raw.Length > cap;
-            if (truncated) raw = raw.Substring(0, cap);
-            return new TextReadResult(raw, truncated, false);
+            string? truncatedFrom = null;
+            if (truncated)
+            {
+                if (fromEnd) { raw = TextTail.Slice(raw, cap); truncatedFrom = "head"; } // kept tail, dropped head
+                else         { raw = raw.Substring(0, cap);     truncatedFrom = "tail"; } // kept head, dropped tail
+            }
+            return new TextReadResult(raw, truncated, false, truncatedFrom);
         }
         catch (System.UnauthorizedAccessException)
         { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
     }
 
-    public Task<TextReadResult> GetTextAsync(WindowHandle handle, string @ref, bool selectionOnly, int maxLength, int timeoutMs) =>
-        RunOnRefReadAsync(handle, @ref, el => ReadText(el, selectionOnly, maxLength), timeoutMs);
+    public Task<TextReadResult> GetTextAsync(WindowHandle handle, string @ref, bool selectionOnly, int maxLength, bool fromEnd, int timeoutMs) =>
+        RunOnRefReadAsync(handle, @ref, el => ReadText(el, selectionOnly, maxLength, fromEnd), timeoutMs);
 
-    /// <summary>Selector twin of GetTextAsync (Phase 10 #2 T7): identical ReadText body, resolved via the
-    /// bounded selector walk (RunOnSelectorReadAsync).</summary>
-    public Task<(TextReadResult Value, string ResolvedRef)> GetTextBySelectorAsync(WindowHandle handle, Selector sel, bool selectionOnly, int maxLength, int timeoutMs) =>
-        RunOnSelectorReadAsync(handle, sel, el => ReadText(el, selectionOnly, maxLength), timeoutMs);
+    /// <summary>Selector twin of GetTextAsync: identical ReadText body, resolved via the bounded selector walk.</summary>
+    public Task<(TextReadResult Value, string ResolvedRef)> GetTextBySelectorAsync(WindowHandle handle, Selector sel, bool selectionOnly, int maxLength, bool fromEnd, int timeoutMs) =>
+        RunOnSelectorReadAsync(handle, sel, el => ReadText(el, selectionOnly, maxLength, fromEnd), timeoutMs);
 
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
@@ -675,4 +682,4 @@ public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyL
 
 public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword);
 
-public sealed record TextReadResult(string Text, bool Truncated, bool IsPassword);
+public sealed record TextReadResult(string Text, bool Truncated, bool IsPassword, string? TruncatedFrom = null);
