@@ -18,16 +18,25 @@ public class TextTailTests
     [Fact]
     public void Slice_never_starts_on_an_unpaired_low_surrogate()
     {
-        // "A" + one emoji (a surrogate PAIR). Length is 3 chars: 'A', high, low.
-        // A naive last-2 slice would start on the LOW surrogate => unpaired => corruption.
-        var s = "A\U0001F600";                 // 'A' + emoji
-        var tail = TextTail.Slice(s, 2);
-        // Must back off to the code-point boundary: either the full pair (2 valid) or drop it entirely.
-        Assert.False(char.IsLowSurrogate(tail[0]), "tail must not begin on an unpaired low surrogate");
-        // And it must round-trip through System.Text.Json without throwing or emitting U+FFFD.
+        // "A" + one emoji (a surrogate PAIR): 3 chars — 'A', high, low.
+        // cap=1 makes the naive cut land on the LOW surrogate (start = 2). Slice MUST back off
+        // past it (start -> 3, yielding "") rather than return a lone low surrogate. This is the
+        // case that actually discriminates the IsLowSurrogate correction line.
+        var s = "A\U0001F600";
+        var tail = TextTail.Slice(s, 1);
+        Assert.True(tail.Length == 0 || !char.IsLowSurrogate(tail[0]),
+            "tail must not begin on an unpaired low surrogate");
+        // Round-trips through System.Text.Json without corruption (no replacement char).
         var json = JsonSerializer.Serialize(new { text = tail });
         Assert.DoesNotContain("\\uFFFD", json);
         Assert.DoesNotContain("�", json);
+    }
+
+    [Fact]
+    public void Slice_returns_empty_for_nonpositive_cap()
+    {
+        Assert.Equal("", TextTail.Slice("abc", 0));
+        Assert.Equal("", TextTail.Slice("abc", -5));
     }
 
     [Fact]
