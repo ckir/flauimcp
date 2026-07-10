@@ -95,13 +95,15 @@ These were observed live and are the reason the design takes the shape it does.
 When a listed window's `ProcessName == "WindowsTerminal"`, attach a **short static** hint string to that
 window's entry — a *pointer*, not the recipe. e.g.:
 
-> `"Multiplexed terminal — only the active tab is shown. Snapshot to see tabs; see skill driving-flaui-mcp."`
+> `"Multiplexed terminal — this shows ONLY the active tab; a WT window is NOT evidence a program is absent/headless. Snapshot to enumerate tabs; see skill driving-flaui-mcp."`
 
-**Keep it short (change #1 from consumer review):** `desktop_list_windows` is called frequently, and a
-verbose recipe string repeated on every listing is token-noise in the caller's context. The full recipe lives
-in the skill (§5.2), not in the tool output. The hint is one short sentence that points there. (Both consumers
-— Claude and agy — flagged this; agy: "verbose hints in a top-level enumeration tool destroy context windows
-with redundant token noise.")
+**Keep it short, but carry the anti-pattern nugget (change #1, refined by panel round 2: Mechanism Gamer).**
+`desktop_list_windows` is called frequently, so the hint must stay to roughly one sentence — a verbose recipe
+repeated on every listing is token-noise (agy: "verbose hints in a top-level enumeration tool destroy context
+windows"). **But** the hint is the *only* code-side nudge an agent that never opens the skill will see, and the
+original incident was exactly such an agent. So the hint must still carry the one load-bearing warning — *this
+is only the active tab; a WT window is not evidence of "headless"* — not merely a bare "see the skill" pointer.
+The full recipe still lives in the skill (§5.2), not in the tool output.
 
 **Contracts / constraints:**
 
@@ -115,8 +117,12 @@ with redundant token noise.")
   (`[property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]`). Suggested name: `Hint`. It is
   emitted only for recognized multiplexer processes and is `null` (omitted from JSON) for every other window,
   so existing output is unchanged for non-WT windows.
-- **Recognition set.** Start with exactly `WindowsTerminal`. Generalizing to other multiplexers (WezTerm,
-  etc.) is deferred until a second real case appears (scope-creep guard).
+- **Recognition set (agy panel: Activation Auditor).** Match a **set**, not one literal: `WindowsTerminal`
+  **and** `WindowsTerminalPreview` (the Preview channel is a distinct process). Measured on the current build:
+  `.NET Process.ProcessName` returns `"WindowsTerminal"` with **no** `.exe` suffix, so exact-match on the bare
+  name is correct today — but treat the recognition set as a small, documented, easily-extended list (a future
+  rename or a new multiplexer just adds an entry). Generalizing to non-WT multiplexers (WezTerm, etc.) stays
+  deferred until a second real case appears (scope-creep guard).
 - **Tool description.** Extend the `desktop_list_windows` tool description (`WindowTools.cs`) to mention that a
   `Hint` may accompany multiplexer windows.
 
@@ -147,22 +153,46 @@ Rewrite the **"Terminals & reading another agent's TUI"** section of
    TUIs with **no** API. State this at the top of the recipe so agents don't tab-flip when a clean channel
    exists. (Both consumers agreed; agy: "documented as a fallback only when programmatic channels are
    unavailable.")
-7. **Prune candidates via `fullProperties` before activating (change #4).** Before defaulting to
-   activate-and-read every tab to disambiguate, run `desktop_snapshot fullProperties:true` and check whether
-   the `TabItem`s carry a distinguishing `AutomationId` / `HelpText` (tooltip). If a stabler discriminator
-   exists, use it to narrow candidates and avoid O(N) disruptive tab switches. Only fall back to
-   activate-and-read for tabs that remain ambiguous. *(The implementation plan must verify empirically whether
-   WT's `TabItem`s actually expose a usable `AutomationId`/`HelpText`; if they don't, the recipe says so and
-   activate-and-read stays the only path.)*
-8. **Mandatory restore-on-failure — treat restore as `finally` (change #5, from agy).** Record the
-   originally-active `TabItem` up front, and **always** re-select it when done — **including on any error or
-   timeout mid-enumeration** (e.g. a parse failure or an `ActionBlockedPending` on tab 2). The recipe must
-   never leave the user stranded on a tab they weren't on. Restore is non-negotiable cleanup, not a
-   happy-path step.
-9. **Read the LATEST output, not the head (change #2).** `desktop_get_text` truncation keeps the head and the
-   pane returns ~the viewport (§3.5), so to capture a peer's most-recent reply, read from the **end** — use
-   `desktop_get_text ... fromEnd:true` (§5.4) or pass a viewport-sized `maxLength` and use the tail of the
-   result.
+7. **No cheap tab discriminator exists — verified (change #4, resolved).** Live inspection with
+   `fullProperties:true` showed WT `TabItem`s carry **no `AutomationId` and no `HelpText`** (both empty). So
+   there is **no** stabler discriminator to prune candidates with: **activate-and-read is the only way to tell
+   which tab hosts which program**, and a tab's only reasonably-stable identity is its **ordinal index** in the
+   tab strip (with the caveats in item 8).
+8. **Enumerate/anchor by CONTROL-TYPE structure, not WinUI ids (agy round 2: Dependency Cynic).** Do **not**
+   mandate anchoring on `automationId:"TabView"/"TabListView"` — those are WinUI-internal ids subject to the
+   very cross-version drift §4 rejected Option A for. Anchor on the **UIA control-type structure**
+   (`Tab → List → TabItem[]`), which is drift-resistant; the container `AutomationId`s may be used as an
+   *optional accelerator* only. If the expected control-type structure isn't found (an unrecognized WT/WinUI
+   layout), the recipe must **report "unrecognized terminal layout"** and stop — never mis-act on a guessed
+   tree.
+9. **Restore identity: ordinal + verification, best-effort — treat restore as `finally` (change #5; agy
+   round 1: FATAL fix; agy round 2: Axiom Breaker).** You **cannot** restore by re-using the pre-switch
+   `TabItem` ref (stale after any switch — §3.4), by title alone (ambiguous — §3.2), or by an `AutomationId`
+   (none exists — item 7). Ordinal index is the best identity but is **not** sufficient alone: a concurrent
+   **drag-reorder** or a simultaneous **add+close** shifts ordinals while leaving the count unchanged. So:
+   record the originally-active tab's **ordinal index _and_ its title/identity** up front; on restore,
+   re-snapshot, re-enumerate `TabItem`s, and **verify the tab at the recorded ordinal still matches the
+   recorded identity** before selecting it. Restore runs in a `finally`-equivalent (attempted on **any**
+   mid-enumeration error/timeout) and is **best-effort with honest reporting**: if the count changed, the
+   ordinal no longer matches the recorded identity, or `select`/`snapshot` errors during restore, do **not**
+   silently continue or blindly select the ordinal — **report** which tab is now active and that restore did
+   not confidently complete. Bounded (retry at most once); never an unbounded loop.
+10. **Settle after activating — but NOT via `wait_for_stable` (agy round 2: Mechanism Gamer).** A
+    freshly-activated pane may not have rendered/auto-scrolled to the bottom yet, so an immediate read can
+    catch stale mid-scrollback text. **`desktop_wait_for_stable` is the WRONG tool here** — it keys on
+    *structural* changes, and a terminal repainting its *text* buffer fires no structural event, so the wait
+    returns instantly and "settles" nothing. Instead **re-read the buffer after an adequate delay and compare**
+    (two reads that agree = settled); a sub-frame delay (e.g. <50 ms) will just return the same stale string,
+    so the delay must be large enough for the ConPTY auto-scroll to land. *(The implementation plan must
+    confirm what `desktop_wait_for_stable` actually keys on; if it does detect text changes on some builds,
+    revisit — but do not assume it.)*
+11. **Read the LATEST output, not the head (change #2) — and know its ceiling.** `desktop_get_text` truncation
+    keeps the head and the pane returns ~the viewport (§3.5), so to capture a peer's most-recent reply, read
+    from the **end** — `desktop_get_text ... fromEnd:true` (§5.4) or a viewport-sized `maxLength` sliced at the
+    tail. **Hard limit (agy panel + Claude, verified):** TextPattern returns only ~the visible viewport, so a
+    reply that has **scrolled above the visible region is unrecoverable** via get_text/fromEnd — the scrollback
+    is not in the tree. Read promptly, and prefer the programmatic channel (item 6) precisely because it has no
+    such ceiling.
 
 ### 5.3 Defer dedicated WT tools
 
@@ -183,8 +213,23 @@ to read from the end of the `TextPattern` text:
   option (cheap, zero-disruption: two reads of one active pane at different `maxLength`).
 - **Shape.** Add `fromEnd: bool = false` to `DesktopGetText` (`ContentTools.cs`) and the underlying
   `PerceptionManager` text read. When `true`, return the **last** `maxLength` chars of the pane text instead of
-  the first; `truncated:true` then means content was dropped from the **head**. Default `false` preserves
-  today's behavior exactly (no breaking change).
+  the first. Default `false` preserves today's behavior exactly (no breaking change).
+- **Don't overload `truncated` (agy round 1: Protocol Pedant).** The existing `truncated` bool cannot tell the
+  caller *which* end was dropped. Add an explicit indicator so the contract is self-describing — e.g. a
+  `truncatedFrom: "head" | "tail" | null` field (`null` when not truncated; `"tail"` for the default
+  head-keeping read, `"head"` for a `fromEnd` read). The caller must not have to re-derive the dropped end from
+  its own input argument.
+- **`truncatedFrom` is about `maxLength`, NOT about scrollback completeness (agy round 2: Blindspot Auditor).**
+  `truncatedFrom` describes truncation of the returned text relative to **the pane's TextPattern content
+  (≈ the viewport)** — it does **not** vouch that the returned text is the program's complete recent output. A
+  reply that scrolled above the viewport (§5.2.11 / §6 ceiling) is already gone before `maxLength` is applied,
+  so `truncatedFrom:"head"` on a `fromEnd` read must **not** be read as "I captured the true tail of the
+  program." Document the two as orthogonal so a caller never conflates "not truncated by maxLength" with
+  "complete output captured."
+- **Tail semantics caveat (agy panel: Protocol Pedant).** A `fromEnd` read will begin **mid-line**, and offsets
+  are **UIA character units** (which differ from raw UTF-16 for non-BMP/emoji, per the existing
+  `desktop_select_text_range` note), so the tail may start mid-grapheme. This is acceptable for reading recent
+  output; document it so callers don't treat a mid-line start as corruption.
 - **General, not WT-specific.** This is a plain TextPattern-reading affordance usable for any long text
   element (logs, consoles), not coupled to Windows Terminal. It stays `ReadOnly` / lease-exempt like the rest
   of `desktop_get_text`.
@@ -217,11 +262,19 @@ worked around. The skill recipe must state it.
 6. **Latest-output reads work.** `desktop_get_text ... fromEnd:true` returns the tail of a pane's text (the
    most recent lines); `fromEnd:false`/omitted is byte-identical to today. A peer's most-recent reply is
    retrievable without reading the entire buffer.
-7. **Restore is guaranteed on failure.** If the recipe errors mid-enumeration (e.g. an `ActionBlockedPending`
-   or a read failure on a later tab), the user's originally-active tab is still restored. (Verify by injecting
-   a mid-flow failure and confirming the active tab is unchanged from the start.)
-8. **Hint is short.** The `desktop_list_windows` hint on a `WindowsTerminal` entry is a single short pointer
-   sentence, not the full recipe.
+7. **Restore is guaranteed-attempted on failure, and honest when it can't.** If the recipe errors
+   mid-enumeration, restore is still attempted by **ordinal index** (not a stale ref / ambiguous name). Verify
+   two cases: (a) inject a mid-flow failure (e.g. `desktop_select` a deliberately-invalid index, or fail the
+   read on a later tab) and confirm the original tab is restored; (b) close the original tab mid-recipe and
+   confirm the recipe **reports** that restore could not complete (names the now-active tab) rather than
+   silently leaving the user elsewhere.
+8. **Hint is short and matches the recognition set.** The `desktop_list_windows` hint is a single short
+   pointer sentence (not the full recipe), and fires for both `WindowsTerminal` and `WindowsTerminalPreview`.
+9. **Scrolled-off replies are a documented ceiling.** The skill states that a reply which scrolled above the
+   visible viewport is not retrievable via `desktop_get_text`/`fromEnd` (scrollback isn't in the tree), and
+   that the programmatic channel is preferred for that reason.
+10. **Restore identity is ordinal.** The recipe records and restores the original tab by its tab-strip
+    ordinal index (anchored on the `TabListView` container), never by a pre-switch ref or by title.
 
 ## 8. Out of scope
 
