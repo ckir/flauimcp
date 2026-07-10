@@ -113,7 +113,21 @@ public static class TerminalTabReader
 
         try
         {
-            Select(tabs[tabIndex]);
+            try { Select(tabs[tabIndex]); }
+            catch (ToolException) { throw; }   // genuinely not selectable (no SelectionItem) — a real, non-transient failure
+            catch                              // transient UIA/COM fault — the switch may still have landed
+            {
+                // Don't abort blindly: confirm the target actually became active before reading (else the
+                // settle loop would read the WRONG tab's buffer). Bounded poll; if it never lands, surface
+                // the original fault via rethrow.
+                int a = NowActive(win);
+                for (int i = 0; i < SettleMaxTries && a != tabIndex; i++)
+                {
+                    System.Threading.Thread.Sleep(SettleDelayMs);
+                    a = NowActive(win);
+                }
+                if (a != tabIndex) throw;
+            }
 
             // Settle (spec §5.2.10): sleep-then-read, TOLERATING a not-yet-realized pane (TryFindBuffer may
             // be null for the first frame(s) after Select), and compare consecutive reads. Bounded so a
@@ -161,9 +175,16 @@ public static class TerminalTabReader
                 if (d.SelectIndex is int idx)
                 {
                     Select(fresh[idx]);
+                    // WT applies the selection ASYNCHRONOUSLY — poll the live selection briefly before concluding
+                    // the restore didn't land (an instant read races the async switch → false restored:false under
+                    // load; the settle loop cushions the TARGET select but the restore select had no cushion).
+                    // Bounded, same discipline as the settle loop.
                     int nowActive = NowActive(win);
-                    // Confirm the Select actually took effect (desktop_select can silently no-op). Only
-                    // claim success when the live selection matches the tab we targeted; else degrade honestly.
+                    for (int i = 0; i < SettleMaxTries && nowActive != idx; i++)
+                    {
+                        System.Threading.Thread.Sleep(SettleDelayMs);
+                        nowActive = NowActive(win);
+                    }
                     return nowActive == idx ? (d.Restored, d.Confidence, nowActive) : (false, "none", nowActive);
                 }
                 return (d.Restored, d.Confidence, NowActive(win)); // SelectIndex null => already (false,"none")
