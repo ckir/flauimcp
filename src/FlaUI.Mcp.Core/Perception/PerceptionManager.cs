@@ -389,9 +389,10 @@ public sealed class PerceptionManager
         RunOnSelectorReadAsync(handle, sel, el => ReadText(el, selectionOnly, maxLength, fromEnd), timeoutMs);
 
     /// <summary>Composite terminal-tab read (spec §5.5): select tabIndex → settle → read the sibling
-    /// buffer (fromEnd/maxLength) → restore the originally-active tab in a finally. Runs entirely on one
-    /// transient action STA (refs change on every switch, so it must be atomic and in-process).
-    /// Destructive at the tool layer; the pattern actions themselves are lease-exempt (spec §3.1).</summary>
+    /// buffer (fromEnd/maxLength) → restore the originally-active tab on both the success and error paths
+    /// (finally-equivalent). Runs entirely on one transient action STA (refs change on every switch, so it
+    /// must be atomic and in-process). Destructive at the tool layer; the pattern actions themselves are
+    /// lease-exempt (spec §3.1).</summary>
     public Task<TerminalTabReader.Result> ReadTerminalTabAsync(
         WindowHandle handle, int tabIndex, bool restoreFocus, bool fromEnd, int maxLength, int timeoutMs) =>
         _windows.RunOnWindowActionAsync(handle,

@@ -59,9 +59,15 @@ public static class TerminalTabReader
     /// Select, so it can be absent for the first frame(s); the settle loop retries until it appears
     /// (agy plan-review finding: instant FindBuffer after Select would throw and abort the read).</summary>
     private static AutomationElement? TryFindBuffer(AutomationElement win)
-        => win.FindAllChildren().Where(c => Ct(c) == ControlType.Custom)
-              .SelectMany(c => c.FindAllChildren())
-              .FirstOrDefault(t => Ct(t) == ControlType.Text && t.Patterns.Text.IsSupported);
+    {
+        try
+        {
+            return win.FindAllChildren().Where(c => Ct(c) == ControlType.Custom)
+                      .SelectMany(c => c.FindAllChildren())
+                      .FirstOrDefault(t => Ct(t) == ControlType.Text && t.Patterns.Text.IsSupported);
+        }
+        catch { return null; } // transient stale-element fault mid-realization => treat as not-yet-realized
+    }
 
     /// <summary>Run the whole dance. <paramref name="readText"/> is PerceptionManager.ReadText bound to
     /// (selectionOnly:false, maxLength, fromEnd) so the settle/read reuse the exact §5.4 read path.
@@ -90,7 +96,10 @@ public static class TerminalTabReader
 
             // Settle (spec §5.2.10): sleep-then-read, TOLERATING a not-yet-realized pane (TryFindBuffer may
             // be null for the first frame(s) after Select), and compare consecutive reads. Bounded so a
-            // continuously-streaming pane can't loop forever.
+            // continuously-streaming pane can't loop forever. COST: each readText(buf) re-reads the FULL
+            // buffer (for fromEnd:true a GetText(-1) over the whole scrollback), up to SettleMaxTries times
+            // (the loop usually breaks after 2 equal reads) — so timeoutMs must cover up to SettleMaxTries
+            // full-buffer fetches on a large scrollback.
             TextReadResult? read = null;
             for (int i = 0; i < SettleMaxTries; i++)
             {
@@ -128,8 +137,15 @@ public static class TerminalTabReader
                 var fresh = EnumerateTabs(win);
                 var titles = fresh.Select(NameOf).ToList();
                 var d = RestoreTarget.Resolve(activeTitle, activeIndex, activeTitleUnique, titles);
-                if (d.SelectIndex is int idx) Select(fresh[idx]);
-                return (d.Restored, d.Confidence, NowActive(win));
+                if (d.SelectIndex is int idx)
+                {
+                    Select(fresh[idx]);
+                    int nowActive = NowActive(win);
+                    // Confirm the Select actually took effect (desktop_select can silently no-op). Only
+                    // claim success when the live selection matches the tab we targeted; else degrade honestly.
+                    return nowActive == idx ? (d.Restored, d.Confidence, nowActive) : (false, "none", nowActive);
+                }
+                return (d.Restored, d.Confidence, NowActive(win)); // SelectIndex null => already (false,"none")
             }
             catch { return (false, "none", NowActive(win)); }
         }

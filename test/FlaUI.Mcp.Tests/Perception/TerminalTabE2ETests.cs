@@ -66,6 +66,11 @@ public class TerminalTabE2ETests
         var win = handle!.Value;
         try
         {
+            // The originally-active tab is titleB (WT activates the most-recently-created tab, and the WT
+            // window title reflects the ACTIVE tab). Capture that up front so we can independently confirm
+            // the restore actually reverted the window — not just trust the tool's self-report.
+            var originallyActiveTitle = titleB;
+
             // (a) Reading the NON-active tab (index 0 = titleA) returns its buffer tail and restores the
             // originally-active tab (index 1 = titleB) with high confidence (titles are unique here).
             var jsonA = await tools.DesktopReadTerminalTab(win.Id, tabIndex: 0, restoreFocus: true, fromEnd: true, maxLength: 10000, timeoutMs: 8000);
@@ -73,6 +78,24 @@ public class TerminalTabE2ETests
             Assert.Contains(titleA, jsonA);
             Assert.Contains("\"restored\":true", jsonA);
             Assert.Contains($"\"tabTitle\":\"{titleA}\"", jsonA);
+
+            // INDEPENDENT restore verification (do NOT trust only the self-reported restored:true): the WT
+            // window title reflects the active tab, so a fresh ListWindowsAsync must show the ORIGINALLY-
+            // active tab's title (titleB) back — proving the restore Select actually took effect. Poll
+            // briefly because WT updates its caption asynchronously after the switch. Runs BEFORE step (b)
+            // re-selects any tab.
+            bool reverted = false;
+            var restoreDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < restoreDeadline && !reverted)
+            {
+                var post = await windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
+                var self = post.FirstOrDefault(w => w.Handle == win.Id);
+                if (self?.Title is { } t && t.Contains(originallyActiveTitle, StringComparison.Ordinal)
+                    && !t.Contains(titleA, StringComparison.Ordinal))
+                    reverted = true;
+                else await Task.Delay(250);
+            }
+            Assert.True(reverted, $"restore did not revert the window to the originally-active tab '{originallyActiveTitle}'");
 
             // (b) A second, sequential call off the same window (index 1 = titleB, already active after the
             // restore above) also succeeds and reads titleB's own buffer.
