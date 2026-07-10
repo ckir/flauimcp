@@ -26,13 +26,31 @@ public static class TerminalTabReader
     private static string NameOf(AutomationElement e)
     { try { return e.Name ?? ""; } catch { return ""; } }
 
-    /// <summary>Locate the TabItem list via Window → Tab → List (drift-resistant). Throws
-    /// "unrecognized terminal layout" if the structure isn't found (spec §5.2.8).</summary>
+    /// <summary>Locate the tab strip and its immediate container. WT nests the strip (and the buffer) under
+    /// an intermediate content-wrapper Pane, so on current builds the strip is a GRANDCHILD of the window;
+    /// older builds put it as a direct child. Bounded to depth ≤ 2 from the window — deliberately NOT an
+    /// unbounded FindAllDescendants (which could anchor on an unrelated Tab in a Settings/command-palette
+    /// pane, or hang the single action STA sweeping a large buffer subtree). The Tab strip and the
+    /// Custom→Text buffer are SIBLINGS under the returned container (spec §5.2.13).</summary>
+    private static (AutomationElement Container, AutomationElement Tab) LocateTabStrip(AutomationElement win)
+    {
+        var direct = win.FindAllChildren();
+        var t0 = direct.FirstOrDefault(c => Ct(c) == ControlType.Tab);
+        if (t0 is not null) return (win, t0);               // older WT: strip is a direct child of the window
+        foreach (var c in direct)                            // current WT: strip is one level down, under a content Pane
+        {
+            var t = c.FindAllChildren().FirstOrDefault(g => Ct(g) == ControlType.Tab);
+            if (t is not null) return (c, t);
+        }
+        throw new ToolException(ToolErrorCode.PatternUnsupported,
+            "Unrecognized terminal layout: no Tab strip under the window.", "verify this is a Windows Terminal window");
+    }
+
+    /// <summary>Locate the TabItem list via the tab strip: Tab → List → TabItem[] (spec §5.2.8). Throws
+    /// "unrecognized terminal layout" if the structure isn't found.</summary>
     private static List<AutomationElement> EnumerateTabs(AutomationElement win)
     {
-        var tab = win.FindAllChildren().FirstOrDefault(c => Ct(c) == ControlType.Tab)
-            ?? throw new ToolException(ToolErrorCode.PatternUnsupported,
-                "Unrecognized terminal layout: no Tab strip under the window.", "verify this is a Windows Terminal window");
+        var (_, tab) = LocateTabStrip(win);
         var list = tab.FindAllChildren().FirstOrDefault(c => Ct(c) == ControlType.List) ?? tab;
         var items = list.FindAllChildren().Where(c => Ct(c) == ControlType.TabItem).ToList();
         if (items.Count == 0)
@@ -54,19 +72,22 @@ public static class TerminalTabReader
         p.Select();
     }
 
-    /// <summary>The active buffer pane: a SIBLING Custom → Text with a TextPattern (spec §5.2.13). Returns
-    /// null (does NOT throw) when the pane isn't realized yet — WT realizes it ASYNCHRONOUSLY after a tab
-    /// Select, so it can be absent for the first frame(s); the settle loop retries until it appears
-    /// (agy plan-review finding: instant FindBuffer after Select would throw and abort the read).</summary>
+    /// <summary>The active buffer pane: the Custom → Text (with TextPattern) that is a SIBLING of the tab
+    /// strip under the SAME container (spec §5.2.13). Scoped to the container — NOT a global descendant
+    /// sweep — so a command-palette/Settings Custom→Text elsewhere can't be mistaken for the buffer, and the
+    /// walk stays bounded. Returns null (does NOT throw) when the pane isn't realized yet — WT realizes it
+    /// ASYNCHRONOUSLY after a tab Select, so it can be absent for the first frame(s); the settle loop retries.
+    /// Re-locates the container fresh each call (robust to a stale handle after the switch).</summary>
     private static AutomationElement? TryFindBuffer(AutomationElement win)
     {
         try
         {
-            return win.FindAllChildren().Where(c => Ct(c) == ControlType.Custom)
-                      .SelectMany(c => c.FindAllChildren())
-                      .FirstOrDefault(t => Ct(t) == ControlType.Text && t.Patterns.Text.IsSupported);
+            var (container, _) = LocateTabStrip(win);
+            return container.FindAllChildren().Where(c => Ct(c) == ControlType.Custom)
+                            .SelectMany(c => c.FindAllChildren())
+                            .FirstOrDefault(t => Ct(t) == ControlType.Text && t.Patterns.Text.IsSupported);
         }
-        catch { return null; } // transient stale-element fault mid-realization => treat as not-yet-realized
+        catch { return null; } // transient stale-element fault (or strip not realized yet) => treat as not-yet-realized
     }
 
     /// <summary>Run the whole dance. <paramref name="readText"/> is PerceptionManager.ReadText bound to
