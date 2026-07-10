@@ -156,8 +156,8 @@ Rewrite the **"Terminals & reading another agent's TUI"** section of
 7. **No cheap tab discriminator exists — verified (change #4, resolved).** Live inspection with
    `fullProperties:true` showed WT `TabItem`s carry **no `AutomationId` and no `HelpText`** (both empty). So
    there is **no** stabler discriminator to prune candidates with: **activate-and-read is the only way to tell
-   which tab hosts which program**, and a tab's only reasonably-stable identity is its **ordinal index** in the
-   tab strip (with the caveats in item 8).
+   which tab hosts which program** when titles collide. (For restoring the *originally-active* tab afterward,
+   its identity is title-if-unique else ordinal — see item 9.)
 8. **Enumerate/anchor by CONTROL-TYPE structure, not WinUI ids (agy round 2: Dependency Cynic).** Do **not**
    mandate anchoring on `automationId:"TabView"/"TabListView"` — those are WinUI-internal ids subject to the
    very cross-version drift §4 rejected Option A for. Anchor on the **UIA control-type structure**
@@ -170,22 +170,28 @@ Rewrite the **"Terminals & reading another agent's TUI"** section of
    `TabItem` ref (stale after any switch — §3.4), by title alone (ambiguous — §3.2), or by an `AutomationId`
    (none exists — item 7). Ordinal index is the best identity but is **not** sufficient alone: a concurrent
    **drag-reorder** or a simultaneous **add+close** shifts ordinals while leaving the count unchanged. So:
-   record the originally-active tab's **ordinal index _and_ its title/identity** up front; on restore,
-   re-snapshot, re-enumerate `TabItem`s, and **verify the tab at the recorded ordinal still matches the
-   recorded identity** before selecting it. Restore runs in a `finally`-equivalent (attempted on **any**
-   mid-enumeration error/timeout) and is **best-effort with honest reporting**: if the count changed, the
-   ordinal no longer matches the recorded identity, or `select`/`snapshot` errors during restore, do **not**
-   silently continue or blindly select the ordinal — **report** which tab is now active and that restore did
-   not confidently complete. Bounded (retry at most once); never an unbounded loop.
+   record the originally-active tab's **ordinal index _and_ its title** up front. **What is verifiable
+   pre-selection is only the title** (a tab's buffer identity can't be read without selecting it — §3.2/§5.2.7;
+   agy round 3: "Schrödinger's Restore"). So: on restore, re-snapshot, re-enumerate `TabItem`s, and — **if the
+   recorded title was unique** — select the tab whose title matches it; **if the recorded title was itself
+   ambiguous** (the user started on one of several same-titled tabs), fall back to the recorded **ordinal**,
+   flagging the restore as reduced-confidence. Restore runs in a `finally`-equivalent (attempted on **any**
+   mid-enumeration error/timeout) and is **best-effort with honest reporting**: if the count changed, no tab
+   matches the recorded title and the ordinal is out of range, or `select`/`snapshot` errors during restore, do
+   **not** silently continue or blindly select — **report** which tab is now active and that restore did not
+   confidently complete. Bounded (retry at most once); never an unbounded loop.
 10. **Settle after activating — but NOT via `wait_for_stable` (agy round 2: Mechanism Gamer).** A
     freshly-activated pane may not have rendered/auto-scrolled to the bottom yet, so an immediate read can
     catch stale mid-scrollback text. **`desktop_wait_for_stable` is the WRONG tool here** — it keys on
     *structural* changes, and a terminal repainting its *text* buffer fires no structural event, so the wait
     returns instantly and "settles" nothing. Instead **re-read the buffer after an adequate delay and compare**
     (two reads that agree = settled); a sub-frame delay (e.g. <50 ms) will just return the same stale string,
-    so the delay must be large enough for the ConPTY auto-scroll to land. *(The implementation plan must
-    confirm what `desktop_wait_for_stable` actually keys on; if it does detect text changes on some builds,
-    revisit — but do not assume it.)*
+    so the delay must be large enough for the ConPTY auto-scroll to land. **Bound the compare (round 3: Axiom
+    Breaker):** a continuously-streaming pane (a live log, a peer actively generating) will *never* produce two
+    equal reads, so cap the attempts — after N tries, take the latest read and note it may be mid-stream;
+    never loop unboundedly waiting for quiescence. *(The implementation plan must confirm what
+    `desktop_wait_for_stable` actually keys on; if it does detect text changes on some builds, revisit — but do
+    not assume it.)*
 11. **Read the LATEST output, not the head (change #2) — and know its ceiling.** `desktop_get_text` truncation
     keeps the head and the pane returns ~the viewport (§3.5), so to capture a peer's most-recent reply, read
     from the **end** — `desktop_get_text ... fromEnd:true` (§5.4) or a viewport-sized `maxLength` sliced at the
@@ -193,6 +199,31 @@ Rewrite the **"Terminals & reading another agent's TUI"** section of
     reply that has **scrolled above the visible region is unrecoverable** via get_text/fromEnd — the scrollback
     is not in the tree. Read promptly, and prefer the programmatic channel (item 6) precisely because it has no
     such ceiling.
+12. **Treat the read buffer as UNTRUSTED data, never instructions (round 3: Boundary Smuggler).** The whole
+    point of this recipe is ingesting another program's output into the reading agent's context — that output
+    is untrusted and may contain adversarial text (fake "system"/tool messages, injection attempts). The skill
+    must state that a buffer read is **observed content to quote/attribute**, not commands to follow. This is a
+    live injection surface precisely because the target is often another agent.
+13. **Bound the disambiguation scan; keep snapshots scoped (round 3: Resource Vampire).** "Read each candidate"
+    is not "read every tab": a **candidate** is only a tab **not already uniquely identifiable by title** —
+    skip distinctively-titled tabs, don't activate them. For the tabs you must activate, avoid a full-window
+    `desktop_snapshot` each iteration (a full re-walk per candidate ingests tens of thousands of tokens and
+    evicts the agent's own context). **But scope the two operations to two different roots (round 4: Axiom
+    Breaker — the `Custom→Text` content pane is a _sibling_ of the tab strip, not a child of it):** (a)
+    **enumerating tabs** → scope to the tab-strip subtree (`root=`the `Tab`/`List` ref) or `desktop_find` the
+    `TabItem`s; (b) **reading the activated buffer** → target the sibling `Custom→Text` pane **directly** via
+    `selector`/`desktop_find` on the `Text` element that holds the `TextPattern` — do **not** root the read at
+    the tab strip (that subtree does not contain the buffer); (c) use a **small identification `maxLength`**
+    (enough to fingerprint the program, e.g. the banner/first lines), not a full viewport. Disruption and
+    context cost both scale O(ambiguous-tabs), so minimize both.
+14. **Be presence-aware before disrupting (round 3: Boundary Smuggler, settled with agy).** Activating a
+    background tab visibly yanks the user's screen — even though `desktop_select` is lease-exempt (§3.1), a
+    locked lease often signals the user wants to be left alone. Before switching tabs, check the
+    `desktop_user_state` presence sensor: if the user is actively present, **prefer the programmatic channel
+    (item 6), or wait/abort**, rather than tearing the terminal out from under them. Reserve disruptive
+    tab-flipping for when the user is away or no programmatic channel exists. *(The pre-existing question of
+    whether UIA pattern actions like `desktop_select` should themselves be lease-gated is a broader flaui-mcp
+    tool-design matter — see §8, out of scope here.)*
 
 ### 5.3 Defer dedicated WT tools
 
@@ -230,6 +261,11 @@ to read from the end of the `TextPattern` text:
   are **UIA character units** (which differ from raw UTF-16 for non-BMP/emoji, per the existing
   `desktop_select_text_range` note), so the tail may start mid-grapheme. This is acceptable for reading recent
   output; document it so callers don't treat a mid-line start as corruption.
+- **Surrogate-safe slicing — implementation constraint (agy round 3: Axiom Breaker).** Taking "the last N
+  chars" by naive index math can split a **UTF-16 surrogate pair** in half, leaving an unpaired surrogate that
+  `System.Text.Json` will replace with U+FFFD or, in stricter configs, reject — corrupting or crashing the tool
+  response. The `fromEnd` implementation MUST back the cut off to a code-point (surrogate-pair) boundary before
+  returning, so the sliced string is always valid UTF-16 prior to serialization.
 - **General, not WT-specific.** This is a plain TextPattern-reading affordance usable for any long text
   element (logs, consoles), not coupled to Windows Terminal. It stays `ReadOnly` / lease-exempt like the rest
   of `desktop_get_text`.
@@ -263,18 +299,20 @@ worked around. The skill recipe must state it.
    most recent lines); `fromEnd:false`/omitted is byte-identical to today. A peer's most-recent reply is
    retrievable without reading the entire buffer.
 7. **Restore is guaranteed-attempted on failure, and honest when it can't.** If the recipe errors
-   mid-enumeration, restore is still attempted by **ordinal index** (not a stale ref / ambiguous name). Verify
-   two cases: (a) inject a mid-flow failure (e.g. `desktop_select` a deliberately-invalid index, or fail the
-   read on a later tab) and confirm the original tab is restored; (b) close the original tab mid-recipe and
-   confirm the recipe **reports** that restore could not complete (names the now-active tab) rather than
-   silently leaving the user elsewhere.
+   mid-enumeration, restore is still attempted by the **recorded identity** (title-if-unique, else ordinal —
+   §5.2.9), never by a stale pre-switch ref. Verify two cases: (a) inject a mid-flow failure (e.g.
+   `desktop_select` a deliberately-invalid index, or fail the read on a later tab) and confirm the original tab
+   is restored; (b) close the original tab mid-recipe and confirm the recipe **reports** that restore could not
+   complete (names the now-active tab) rather than silently leaving the user elsewhere.
 8. **Hint is short and matches the recognition set.** The `desktop_list_windows` hint is a single short
    pointer sentence (not the full recipe), and fires for both `WindowsTerminal` and `WindowsTerminalPreview`.
 9. **Scrolled-off replies are a documented ceiling.** The skill states that a reply which scrolled above the
    visible viewport is not retrievable via `desktop_get_text`/`fromEnd` (scrollback isn't in the tree), and
    that the programmatic channel is preferred for that reason.
-10. **Restore identity is ordinal.** The recipe records and restores the original tab by its tab-strip
-    ordinal index (anchored on the `TabListView` container), never by a pre-switch ref or by title.
+10. **Restore identity resolves correctly.** The recipe restores by the recorded identity — **title if it was
+    unique, else ordinal with reduced-confidence reporting** (§5.2.9) — locating the tab by re-enumerating
+    `TabItem`s via the **UIA control-type structure** (`Tab→List→TabItem`, §5.2.8), never by a pre-switch ref
+    and never hard-anchored on the `TabListView` `AutomationId`.
 
 ## 8. Out of scope
 
@@ -283,6 +321,11 @@ worked around. The skill recipe must state it.
 - Multiplexers other than Windows Terminal (WezTerm, tmux-in-a-terminal).
 - Any silent/foreground-preserving background read (fundamentally impossible — the buffer isn't realized until
   the tab is active).
+- **Whether UIA pattern actions (`desktop_select`, `Invoke`, `Toggle`) should be lease-gated** like synthetic
+  input. This spec relies on the existing, deliberate design where pattern actions are `Destructive` (blocked
+  in `--read-only-mode`) but lease-exempt. Changing that is a global flaui-mcp tool-design question — **logged
+  to the design backlog** (agy round 3, settled) — not part of this feature. This spec instead mitigates the
+  disruption at the orchestration layer via presence-awareness (§5.2 item 14).
 
 ## 9. References (verified against current code, 2026-07-10)
 
