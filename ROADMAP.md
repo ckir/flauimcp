@@ -100,6 +100,24 @@ Spec: [`SP-B design`](docs/superpowers/specs/2026-07-05-flaui-mcp-user-state-pre
 window to the foreground when that's the correct outcome, vs. today's flash-and-wait handshake).
 Remains specced/backlog only.
 
+### Background-tab terminal reading — **Shipped (v0.13.0)**
+
+Incident-driven: a peer `agy` CLI running in a *non-active* Windows Terminal tab was misdiagnosed as
+"headless" because there was no way to read a background tab's buffer. Design = Hybrid (a composite
+read tool plus lightweight enabling primitives), agy-consulted twice.
+
+- New composite tool `desktop_read_terminal_tab(window, tabIndex, restoreFocus, fromEnd, maxLength)` —
+  selects the target tab, settles, reads the sibling `Custom→Text` buffer pane, and restores the
+  originally-active tab (restore runs exactly once, never throws; `restored` degrades honestly).
+  **Destructive** (tab select visibly mutates state) — blocked in `--read-only-mode`.
+- `desktop_get_text` gains `fromEnd`/`truncatedFrom` — read the **tail** of a long buffer, surrogate-safe.
+- `desktop_list_windows` surfaces a multiplexer `Hint` for Windows Terminal windows (pure Win32, no UIA/
+  tab enumeration — the tool's non-blocking guarantee is preserved).
+- Rewrote the `driving-flaui-mcp` skill's "reading another agent's TUI" recipe around the composite tool
+  (`desktop_select` is the correct lease-exempt activation primitive, not a lease-gated click).
+
+Spec: [`WT tab-reading design`](docs/superpowers/specs/2026-07-10-windows-terminal-tab-reading-design.md).
+
 - **Phase 1 — Foundation** ✅ (v0.1.x): window/session management, split query/action
   STA dispatcher, option-C ref engine, 5 window tools.
 - **Phase 2 — Perception** ✅ (v0.2.0): `desktop_snapshot` (a11y tree + popup grafting),

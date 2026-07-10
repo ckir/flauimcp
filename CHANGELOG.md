@@ -3,6 +3,32 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-07-11
+
+### Added
+
+#### Reading a program in a background terminal tab
+- **New tool `desktop_read_terminal_tab(window, tabIndex, restoreFocus=true, fromEnd=false, maxLength)`.**
+  A composite that reads the scrollback of a program running in a **non-active** Windows Terminal tab —
+  the case a background `agy`/CLI peer was previously misdiagnosed as "headless". It selects the target
+  tab (`Window→Tab→List→TabItem`), waits for the buffer to settle, reads the sibling `Custom→Text` pane,
+  and then restores the originally-active tab (finally-equivalent — restore runs exactly once and never
+  throws). Restore identity is title-if-unique-else-ordinal, with a `restored` flag that degrades honestly
+  to `false` if the switch-back can't be confirmed. Marked **Destructive** (tab selection visibly mutates
+  desktop state), so it is refused in `--read-only-mode`.
+- **`desktop_get_text` gains `fromEnd` (bool, default `false`) and a `truncatedFrom` result field.** With
+  `fromEnd:true` the last `maxLength` characters are returned instead of the first (surrogate-safe — a cut
+  never lands on an unpaired low surrogate); `truncatedFrom` reports which end was dropped. Default
+  behavior is unchanged.
+- **`desktop_list_windows` now surfaces a multiplexer `Hint`** for `WindowsTerminal`/`WindowsTerminalPreview`
+  windows (pure Win32, no UIA, no tab enumeration — the tool's non-blocking guarantee is preserved). The
+  hint flags that a window may host multiple background tabs worth reading with `desktop_read_terminal_tab`.
+
+### Changed
+- **Rewrote the `driving-flaui-mcp` skill's "reading another agent's TUI" recipe** around the new composite
+  tool. The prior recipe wrongly instructed clicking the `TabItem` (needing the shells lease);
+  `desktop_select` is the correct, lease-exempt activation primitive.
+
 ## [0.12.0] - 2026-07-05
 
 ### Added

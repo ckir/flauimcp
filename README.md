@@ -80,7 +80,13 @@ for the mutating ones. All synthetic input sits behind a safety foundation — t
 per-window budget, audit, and elevation guard.
 
 `desktop_list_windows(includeHandles:true)` returns a reusable `wN` handle inline on each window, so
-you can snapshot/find/interact directly, skipping the separate `desktop_open_window` round-trip.
+you can snapshot/find/interact directly, skipping the separate `desktop_open_window` round-trip. It also
+tags Windows Terminal windows with a multiplexer `Hint` flagging that they may host background tabs.
+
+`desktop_read_terminal_tab(window, tabIndex)` reads the scrollback of a program running in a
+**non-active** Windows Terminal tab — a background CLI/agent peer that would otherwise look "headless" —
+selecting the tab, reading its buffer, and restoring the originally-active tab. `desktop_get_text` also
+gained `fromEnd`/`truncatedFrom` to read the tail of a long buffer.
 
 ➡ **Full tool tables, the safety model, event streaming, and opaque-app access:
 [docs/features-and-safeguards.md](docs/features-and-safeguards.md).**

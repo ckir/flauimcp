@@ -10,7 +10,7 @@ tools an agent can call.
 
 | Tool | Read-only | Description |
 | --- | --- | --- |
-| `DesktopListWindows` | ✅ | List top-level windows with title, process name, and PID. Opt-in `includeBounds` adds absolute physical-pixel `Bounds` + `ZOrder` (0 = topmost) for occlusion reasoning. |
+| `DesktopListWindows` | ✅ | List top-level windows with title, process name, and PID. Opt-in `includeBounds` adds absolute physical-pixel `Bounds` + `ZOrder` (0 = topmost) for occlusion reasoning. Windows Terminal windows carry a multiplexer `Hint` (pure Win32, no UIA/tab enumeration) flagging that they may host background tabs readable with `DesktopReadTerminalTab`. |
 | `DesktopOpenWindow` | ✅ | Open a window by `pid` or `title`, returning a handle (e.g. `w1`). |
 | `DesktopSnapshot` | ✅ | Walk a window's UI into an indented, ref-tagged accessibility-tree snapshot. Each line carries an `eN` ref, control type, name, bounds, state (incl. `focused`), and supported patterns. Options: `interactiveOnly` (prune noise, default on), `fullProperties` (add AutomationId/HelpText), `includeOffscreen` (default off), `maxDepth`, and `root` (root the walk at a prior ref). |
 | `DesktopLaunchApp` | — | Launch an executable (with optional args) and return a handle to its main window. |
@@ -66,8 +66,9 @@ tools are `destructive` and blocked in `--read-only-mode`.
 | Tool | Description |
 | --- | --- |
 | `DesktopGetGridCell` | ✅ Read-only. Read one grid/table cell by 0-based `(row, col)`. Returns `{value, controlType, automationId, isPassword}`. Password cells are masked as `[REDACTED]`/`isPassword:true`; credential-store windows are denied outright (`TargetDenied`). `GridCellOutOfRange` if out of bounds; `PatternUnsupported` if the element is not a grid. |
-| `DesktopGetText` | ✅ Read-only. Read an element's text via UIA TextPattern. `selectionOnly` reads only the current selection; `maxLength` caps output (default 10 000 chars, returns `truncated:true` if hit). Password fields return `[REDACTED]`/`isPassword:true`. Off-screen targets are readable. `PatternUnsupported` if no TextPattern. |
+| `DesktopGetText` | ✅ Read-only. Read an element's text via UIA TextPattern. `selectionOnly` reads only the current selection; `maxLength` caps output (default 10 000 chars, returns `truncated:true` if hit). `fromEnd:true` returns the **last** `maxLength` characters instead of the first (surrogate-safe — a cut never lands on an unpaired low surrogate), with `truncatedFrom` reporting which end was dropped. Password fields return `[REDACTED]`/`isPassword:true`. Off-screen targets are readable. `PatternUnsupported` if no TextPattern. |
 | `DesktopGridSelect` | Select a grid/table cell by `(row, col)` via UIA SelectionItemPattern. Off-screen cells return `ElementNotActionable` — scroll into view first. Blocked in `--read-only-mode`. |
+| `DesktopReadTerminalTab` | Read the scrollback of a program running in a **non-active** Windows Terminal tab. Composite: selects the target tab (`tabIndex`), waits for the buffer to settle, reads the sibling `Custom→Text` pane, then restores the originally-active tab (`restoreFocus`, default `true`; restore runs exactly once and never throws — the `restored` flag degrades to `false` if the switch-back can't be confirmed). Honors `fromEnd`/`maxLength` like `DesktopGetText`. **Destructive** (tab selection visibly mutates desktop state) — blocked in `--read-only-mode`. `InvalidArguments` for an out-of-range `tabIndex`; `PatternUnsupported` if the window is not a Windows Terminal tab host. |
 | `DesktopClipboardGet` | ✅ Read-only. Read the system clipboard as plain text (CF_UNICODETEXT). ⚠ **Clipboard exfil risk:** the clipboard may contain passwords or tokens the user recently copied — no redaction is possible at the clipboard layer. Returns `ClipboardUnavailable` when the clipboard is locked or holds non-text content. |
 | `DesktopClipboardSet` | Write text to the system clipboard. Blocked in `--read-only-mode`. |
 
@@ -275,7 +276,7 @@ upgrade — use whichever is more stable for the control you're targeting.
 ### Read-only mode
 
 Start the server with **`--read-only-mode`** to refuse every state-changing tool — all the
-interaction tools above, `DesktopGridSelect`, `DesktopClipboardSet`, plus launch/focus/close. They short-circuit to `WriteBlockedReadOnly`
+interaction tools above, `DesktopGridSelect`, `DesktopReadTerminalTab`, `DesktopClipboardSet`, plus launch/focus/close. They short-circuit to `WriteBlockedReadOnly`
 without touching the desktop, while perception and enumeration keep working. Use it for an agent
 that may *see* the desktop but not *act* on it.
 
