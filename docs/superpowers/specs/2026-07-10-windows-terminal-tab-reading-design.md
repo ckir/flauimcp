@@ -129,7 +129,16 @@ The full recipe still lives in the skill (§5.2), not in the tool output.
 ### 5.2 Skill — rewrite the "reading another agent's TUI" recipe
 
 Rewrite the **"Terminals & reading another agent's TUI"** section of
-`.claude/skills/driving-flaui-mcp/SKILL.md` to correct and complete it:
+`.claude/skills/driving-flaui-mcp/SKILL.md` to correct and complete it.
+
+**Form constraint (consumer review, both consumers):** the 14 items below are **content requirements, not the
+shape of the deliverable**. The skill section must land in the existing skill's idiom — a **compact quick-path
+(numbered steps) + a traps table**, budget **~40 lines** — not 14 transplanted prose paragraphs. The quick-path
+centers on the composite tool (§5.5): *prefer channel → presence check → 1 scoped snapshot to enumerate tabs →
+`desktop_read_terminal_tab` per candidate*; the manual `desktop_select` dance remains documented as the
+fallback when the composite tool is unavailable.
+
+Content requirements:
 
 1. **Use `desktop_select`, not click; note it is lease-exempt.** Replace the current
    "click its `TabItem` — needs the `shells` lease" text. Activation is `desktop_select` on the target
@@ -225,11 +234,16 @@ Rewrite the **"Terminals & reading another agent's TUI"** section of
     whether UIA pattern actions like `desktop_select` should themselves be lease-gated is a broader flaui-mcp
     tool-design matter — see §8, out of scope here.)*
 
-### 5.3 Defer dedicated WT tools
+### 5.3 Dedicated WT tools — deferral partially reversed (consumer negotiation, approved)
 
-Do **not** build `desktop_list_terminal_tabs` / `desktop_activate_terminal_tab` / `desktop_read_terminal_tab`
-now. Revisit only if the recipe proves too error-prone in practice — and if revisited, any such tool must
-disambiguate by **reading buffers**, not by matching titles.
+The original deferral said: revisit "only if the recipe proves too error-prone in practice." **Both consumers
+(Claude + agy) proved it before shipping:** executing the manual `select → settle → re-read → restore` dance
+over an LLM tool-calling loop burns ~5 sequential calls per candidate tab, and the **settle step is
+near-unexecutable from the loop** (an LLM cannot sleep 200 ms between tool calls without wasting a full turn).
+agy initially proposed an external helper script; rejected in negotiation (it would bypass `--read-only-mode`,
+the audit trail, and the `Destructive` gate, and duplicate the UIA/STA stack). The agreed remedy is **one**
+server-side composite tool (§5.5). Do **not** build `desktop_list_terminal_tabs` / `desktop_activate_terminal_tab`
+— enumeration and disambiguation **policy** stay in the skill; only the mechanical dance moves server-side.
 
 ### 5.4 Code — a minimal `fromEnd` option on `desktop_get_text` (change #2)
 
@@ -272,6 +286,30 @@ to read from the end of the `TextPattern` text:
 - **Rejected alternative:** synthetic `Ctrl+End` to snap the viewport before reading — it would re-introduce
   the `shells` lease requirement that §3.1 eliminated, and is app-specific. Do not use it.
 
+### 5.5 Code — `desktop_read_terminal_tab` composite tool (consumer-negotiated, approved)
+
+`desktop_read_terminal_tab { window, tabIndex, restoreFocus = true, fromEnd = true, maxLength = 10000 }` —
+one call performs, **in-process**: select the `TabItem` at `tabIndex` → settle (millisecond sleeps + bounded
+re-read-compare per §5.2.10 — trivial server-side) → read the sibling `Custom → Text` pane (honoring
+`fromEnd`/`maxLength`/`truncatedFrom` per §5.4) → **restore the originally-active tab in a code-enforced
+`finally`** (title-if-unique-else-ordinal, honest reporting, per §5.2.9).
+
+**Contracts / constraints:**
+
+- **`tabIndex` (ordinal) only — NO `tabRef`, NO `titleMatch` (agy refinement, verified).** A `tabRef` from the
+  caller's snapshot is stale after this tool's own internal switch-and-restore, so a candidate loop would break
+  on the second call; ordinal survives, letting the caller loop N candidates off **one** initial snapshot.
+  No `titleMatch` — §3.2 ambiguity; §4's Option-A rejection stands (that rejected *title-matching macro-tools*
+  and *hard-coded-tree* assumptions; this tool locates tabs by the caller's index over the §5.2.8 control-type
+  structure and reports "unrecognized terminal layout" if the structure isn't found).
+- **Gating.** `Destructive` (blocked in `--read-only-mode` — §6 unchanged), lease-exempt (pattern actions,
+  §3.1), audited like any other tool. Returns `{ text, truncated, truncatedFrom, tabTitle, restored,
+  restoreConfidence, activeTabIndex }` — `restored:false` + the now-active tab when restore couldn't complete
+  confidently (§5.2.9 honest reporting).
+- **Turn economics (the reason it exists):** 1 scoped snapshot + 1 call per candidate, versus ~5 calls per
+  candidate manually. All §5.2 safety items that were "compliance-hoped" in the skill (settle, restore-in-
+  finally, bounded retries) become **code guarantees** inside this tool.
+
 ## 6. Known limitation — `--read-only-mode`
 
 `desktop_select` is `Destructive`, so it is blocked in `--read-only-mode`. Because activating a background tab
@@ -313,6 +351,14 @@ worked around. The skill recipe must state it.
     unique, else ordinal with reduced-confidence reporting** (§5.2.9) — locating the tab by re-enumerating
     `TabItem`s via the **UIA control-type structure** (`Tab→List→TabItem`, §5.2.8), never by a pre-switch ref
     and never hard-anchored on the `TabListView` `AutomationId`.
+11. **Composite tool works end-to-end and loops safely.** `desktop_read_terminal_tab` with `tabIndex` of a
+    **non-active** tab returns that tab's buffer tail and leaves the originally-active tab selected
+    (`restored:true`) — in one call, with the input lease locked. Calling it **N times sequentially** (a
+    candidate loop off one snapshot) works — no stale-ref failure. On an out-of-range `tabIndex` it errors
+    without switching tabs; when restore can't complete confidently it returns `restored:false` + the
+    now-active tab. Blocked in `--read-only-mode`.
+12. **Skill recipe is compact.** The rewritten skill section is ~40 lines in quick-path + traps-table form,
+    centered on the composite tool, with the manual dance as documented fallback.
 
 ## 8. Out of scope
 
