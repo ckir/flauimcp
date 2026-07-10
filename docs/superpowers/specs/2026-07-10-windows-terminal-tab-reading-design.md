@@ -65,6 +65,14 @@ These were observed live and are the reason the design takes the shape it does.
 4. **Refs fully change on every tab switch.** After a `desktop_select`, all prior `eN` refs for that window are
    stale; the active-pane content node is a **new** ref each time. Always re-snapshot after switching.
 
+5. **`desktop_get_text` truncation keeps the HEAD, and TextPattern returns ~the visible viewport.** Validated
+   live: a `maxLength:300` read returned exactly the same **prefix** as a `maxLength:8000` read of the same
+   pane — so truncation keeps the first N chars and **drops the tail**. The pane's `TextPattern` returns
+   roughly the **visible viewport** top-to-bottom (earlier scrollback that had scrolled off was absent), and a
+   live terminal auto-scrolls to the bottom on new output. Consequence for the motivating use case ("read the
+   peer's reply" = read the **latest** output): a small `maxLength` truncates the latest lines away. The
+   consumer needs to read from the **end** of the pane text — see §5.4.
+
 ## 4. Approaches considered
 
 - **A. Dedicated WT-aware tools** (`desktop_list_terminal_tabs` / `desktop_activate_terminal_tab` /
@@ -84,12 +92,16 @@ These were observed live and are the reason the design takes the shape it does.
 
 ### 5.1 Code — a static capability hint on `desktop_list_windows`
 
-When a listed window's `ProcessName == "WindowsTerminal"`, attach a **static** hint string to that window's
-entry, e.g.:
+When a listed window's `ProcessName == "WindowsTerminal"`, attach a **short static** hint string to that
+window's entry — a *pointer*, not the recipe. e.g.:
 
-> `"Multiplexed terminal: desktop_list_windows shows only the ACTIVE tab. Snapshot this window to
-> enumerate TabItems, desktop_select one (lease-exempt), then desktop_get_text its Custom→Text pane.
-> Re-select the original TabItem to restore. Identical tab titles can be DIFFERENT programs — read each."`
+> `"Multiplexed terminal — only the active tab is shown. Snapshot to see tabs; see skill driving-flaui-mcp."`
+
+**Keep it short (change #1 from consumer review):** `desktop_list_windows` is called frequently, and a
+verbose recipe string repeated on every listing is token-noise in the caller's context. The full recipe lives
+in the skill (§5.2), not in the tool output. The hint is one short sentence that points there. (Both consumers
+— Claude and agy — flagged this; agy: "verbose hints in a top-level enumeration tool destroy context windows
+with redundant token noise.")
 
 **Contracts / constraints:**
 
@@ -129,12 +141,55 @@ Rewrite the **"Terminals & reading another agent's TUI"** section of
 5. **Anti-pattern (the fix for the original harm):** *A `WindowsTerminal` window is never evidence that a
    program is "headless" or absent. One visible buffer means one active tab. Enumerate the tabs before
    concluding anything about what is or isn't running.*
+6. **Prefer the programmatic channel; tab-reading is a FALLBACK (change #3).** When a peer exposes a proper
+   channel (e.g. `agy` via clavity / `agy_ask`, or `agentmemory` IPC), use it — it's non-disruptive and
+   unambiguous. Reading a peer by flipping WT tabs **visibly disrupts the user** and should be reserved for
+   TUIs with **no** API. State this at the top of the recipe so agents don't tab-flip when a clean channel
+   exists. (Both consumers agreed; agy: "documented as a fallback only when programmatic channels are
+   unavailable.")
+7. **Prune candidates via `fullProperties` before activating (change #4).** Before defaulting to
+   activate-and-read every tab to disambiguate, run `desktop_snapshot fullProperties:true` and check whether
+   the `TabItem`s carry a distinguishing `AutomationId` / `HelpText` (tooltip). If a stabler discriminator
+   exists, use it to narrow candidates and avoid O(N) disruptive tab switches. Only fall back to
+   activate-and-read for tabs that remain ambiguous. *(The implementation plan must verify empirically whether
+   WT's `TabItem`s actually expose a usable `AutomationId`/`HelpText`; if they don't, the recipe says so and
+   activate-and-read stays the only path.)*
+8. **Mandatory restore-on-failure — treat restore as `finally` (change #5, from agy).** Record the
+   originally-active `TabItem` up front, and **always** re-select it when done — **including on any error or
+   timeout mid-enumeration** (e.g. a parse failure or an `ActionBlockedPending` on tab 2). The recipe must
+   never leave the user stranded on a tab they weren't on. Restore is non-negotiable cleanup, not a
+   happy-path step.
+9. **Read the LATEST output, not the head (change #2).** `desktop_get_text` truncation keeps the head and the
+   pane returns ~the viewport (§3.5), so to capture a peer's most-recent reply, read from the **end** — use
+   `desktop_get_text ... fromEnd:true` (§5.4) or pass a viewport-sized `maxLength` and use the tail of the
+   result.
 
 ### 5.3 Defer dedicated WT tools
 
 Do **not** build `desktop_list_terminal_tabs` / `desktop_activate_terminal_tab` / `desktop_read_terminal_tab`
 now. Revisit only if the recipe proves too error-prone in practice — and if revisited, any such tool must
 disambiguate by **reading buffers**, not by matching titles.
+
+### 5.4 Code — a minimal `fromEnd` option on `desktop_get_text` (change #2)
+
+The core use case is reading a peer's **latest** reply, but `desktop_get_text` truncation keeps the **head**
+(§3.5), so a small `maxLength` drops exactly the recent lines the caller wants. Add a minimal, general option
+to read from the end of the `TextPattern` text:
+
+**Contracts / constraints:**
+
+- **Gate on the empirical finding.** §3.5 already established (live) that truncation keeps the head — so the
+  option is warranted. The implementation plan re-confirms this against the shipped build before adding the
+  option (cheap, zero-disruption: two reads of one active pane at different `maxLength`).
+- **Shape.** Add `fromEnd: bool = false` to `DesktopGetText` (`ContentTools.cs`) and the underlying
+  `PerceptionManager` text read. When `true`, return the **last** `maxLength` chars of the pane text instead of
+  the first; `truncated:true` then means content was dropped from the **head**. Default `false` preserves
+  today's behavior exactly (no breaking change).
+- **General, not WT-specific.** This is a plain TextPattern-reading affordance usable for any long text
+  element (logs, consoles), not coupled to Windows Terminal. It stays `ReadOnly` / lease-exempt like the rest
+  of `desktop_get_text`.
+- **Rejected alternative:** synthetic `Ctrl+End` to snap the viewport before reading — it would re-introduce
+  the `shells` lease requirement that §3.1 eliminated, and is app-specific. Do not use it.
 
 ## 6. Known limitation — `--read-only-mode`
 
@@ -159,6 +214,14 @@ worked around. The skill recipe must state it.
    each buffer (not by title), and the skill text explicitly forbids stopping at the first title match.
 5. **Read-only limitation documented.** The skill states that background-tab reading is unavailable in
    `--read-only-mode` and why.
+6. **Latest-output reads work.** `desktop_get_text ... fromEnd:true` returns the tail of a pane's text (the
+   most recent lines); `fromEnd:false`/omitted is byte-identical to today. A peer's most-recent reply is
+   retrievable without reading the entire buffer.
+7. **Restore is guaranteed on failure.** If the recipe errors mid-enumeration (e.g. an `ActionBlockedPending`
+   or a read failure on a later tab), the user's originally-active tab is still restored. (Verify by injecting
+   a mid-flow failure and confirming the active tab is unchanged from the start.)
+8. **Hint is short.** The `desktop_list_windows` hint on a `WindowsTerminal` entry is a single short pointer
+   sentence, not the full recipe.
 
 ## 8. Out of scope
 
