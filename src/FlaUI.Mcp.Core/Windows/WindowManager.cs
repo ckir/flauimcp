@@ -16,7 +16,8 @@ public sealed record WindowInfo(
     string Title, string ProcessName, int Pid, bool IsForeground,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WindowBounds? Bounds = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ZOrder = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Handle = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Handle = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Hint = null);
 
 /// <summary>Result of a focus attempt: whether foreground was actually gained (spec §4.1 — a background
 /// process's SetForeground can silently no-op under the foreground-lock), plus the raw target/foreground
@@ -81,8 +82,9 @@ public sealed class WindowManager : IDisposable, IHwndSource
                 if (includeBounds && GetWindowRect(hwnd, out var r))
                     b = new WindowBounds(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
                 string? handle = includeHandles ? LazyHandleFor(hwnd, pid) : null;
-                list.Add(new WindowInfo(title, SafeProcessName(pid), pid, hwnd == foreground, b,
-                    includeBounds ? z : (int?)null, handle));
+                var procName = SafeProcessName(pid);
+                list.Add(new WindowInfo(title, procName, pid, hwnd == foreground, b,
+                    includeBounds ? z : (int?)null, handle, MultiplexerHint.For(procName)));
                 z++;
             }
             return list;

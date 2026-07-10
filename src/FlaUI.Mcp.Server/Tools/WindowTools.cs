@@ -20,7 +20,7 @@ public sealed class WindowTools
         _env = env;
     }
 
-    [McpServerTool(ReadOnly = true), Description("List top-level desktop windows (Title, ProcessName, Pid, IsForeground). Opt-in includeBounds adds absolute physical-px Bounds + ZOrder (0=topmost, for occlusion reasoning). Opt-in includeHandles adds a reusable handle (e.g. w1) to each window so you can snapshot/find/interact directly, skipping a separate desktop_open_window call. Pure Win32 — never blocks on an unresponsive window. For per-window control counts, open a window and call desktop_snapshot_stats.")]
+    [McpServerTool(ReadOnly = true), Description("List top-level desktop windows (Title, ProcessName, Pid, IsForeground). Opt-in includeBounds adds absolute physical-px Bounds + ZOrder (0=topmost, for occlusion reasoning). Opt-in includeHandles adds a reusable handle (e.g. w1) to each window so you can snapshot/find/interact directly, skipping a separate desktop_open_window call. Pure Win32 — never blocks on an unresponsive window. For per-window control counts, open a window and call desktop_snapshot_stats. A Hint field may accompany multiplexer windows (e.g. Windows Terminal) noting the listing shows only the active tab.")]
     public Task<string> DesktopListWindows(
         [Description("Add Bounds + ZOrder to each window (default false).")] bool includeBounds = false,
         [Description("Add a reusable handle (wN) to each window, so you can act/read without desktop_open_window (default false).")] bool includeHandles = false)
