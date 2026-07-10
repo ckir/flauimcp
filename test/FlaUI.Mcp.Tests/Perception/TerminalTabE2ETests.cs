@@ -82,10 +82,12 @@ public class TerminalTabE2ETests
             // INDEPENDENT restore verification (do NOT trust only the self-reported restored:true): the WT
             // window title reflects the active tab, so a fresh ListWindowsAsync must show the ORIGINALLY-
             // active tab's title (titleB) back — proving the restore Select actually took effect. Poll
-            // briefly because WT updates its caption asynchronously after the switch. Runs BEFORE step (b)
-            // re-selects any tab.
+            // because WT repaints its caption ASYNCHRONOUSLY after the switch. Runs BEFORE step (b)
+            // re-selects any tab. Bound matches the 15s discovery poll above: a caption settle after a
+            // tab-select is strictly easier than the initial-launch settle, so 15s is a comfortable margin
+            // that keeps this hard Assert from flaking on the async-repaint tail under load (Desktop/CI).
             bool reverted = false;
-            var restoreDeadline = DateTime.UtcNow.AddSeconds(5);
+            var restoreDeadline = DateTime.UtcNow.AddSeconds(15);
             while (DateTime.UtcNow < restoreDeadline && !reverted)
             {
                 var post = await windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
