@@ -303,4 +303,8 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
 
 <!-- AUTOTRAIN:GROWTH:START -->
 <!-- Machine-owned region (flaui-curate). Do not hand-edit. HARD CAP: ≤ 30 lines between the markers. -->
+- **New Win11 Notepad — detect unsaved tabs via the `TabItem` Name suffix.** Each tab's dirty state is
+  encoded in the `TabItem` accessible **Name** as a trailing `". Modified."` (e.g. `"<title>. Modified."`),
+  while the tab's child `Text` node carries the clean title. Find unsaved tabs by that Name suffix (or the
+  window title's leading `*`) — the child `Text` alone does not reveal dirty state. *(verified live 2026-07-15)*
 <!-- AUTOTRAIN:GROWTH:END -->
