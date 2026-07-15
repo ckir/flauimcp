@@ -12,8 +12,8 @@ if [ -t 0 ]; then input="{}"; else input="$(cat)"; fi
 sid="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
 sid="${sid:-nosession}"
 root="${CLAUDE_PROJECT_DIR:-.}"
-inbox="$root/.claude/autotrain/observations.md"
-sentinel="$root/.claude/autotrain/.nudged-$sid"
+inbox="$root/.claude/flaui-mcp/observations.md"
+sentinel="$root/.claude/flaui-mcp/.nudged-$sid"
 [ -f "$sentinel" ] && exit 0                        # already nudged this session
 if [ -f "$inbox" ] && grep -qE '^- ' "$inbox"; then
   touch "$sentinel"
