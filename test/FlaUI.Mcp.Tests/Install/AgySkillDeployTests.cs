@@ -27,6 +27,36 @@ public class AgySkillDeployTests
         Assert.Contains("Driving FlaUI.Mcp", File.ReadAllText(skill)); // seed content marker
     }
 
+    // The seed skill rides along with the registration; it is not the point of it. If the skill
+    // cannot land, the user must still end up with a working, registered server — and must not have
+    // to guess that the skill went missing.
+    [Fact]
+    public void Skill_deploy_failure_warns_but_still_registers_the_server()
+    {
+        var (servers, perms, plugins) = TempPaths();
+        Directory.CreateDirectory(plugins);
+        // A file squatting where the plugin root directory has to go: CreateDirectory cannot win this.
+        File.WriteAllText(Path.Combine(plugins, "flaui-mcp"), "blocker");
+
+        var r = new AgyConfigWriter(servers, perms, plugins).Install(@"C:\flaui-mcp.exe");
+
+        Assert.Equal(AgentChange.Created, r.Change);           // registration succeeded ...
+        Assert.NotNull(r.Warning);                             // ... and the shortfall is reported
+        Assert.Contains("seed driving skill not deployed", r.Warning);
+        Assert.Contains("flaui-mcp", File.ReadAllText(servers));
+    }
+
+    [Fact]
+    public void Successful_install_reports_the_skill_directory()
+    {
+        var (servers, perms, plugins) = TempPaths();
+
+        var r = new AgyConfigWriter(servers, perms, plugins).Install(@"C:\flaui-mcp.exe");
+
+        Assert.Null(r.Warning);
+        Assert.Contains(Path.Combine(plugins, "flaui-mcp"), r.Detail);
+    }
+
     [Fact]
     public void Uninstall_removes_the_agy_plugin_folder()
     {

@@ -41,6 +41,39 @@ public class CliRouterTests
         Assert.Contains("mcpServers", sb.ToString());
     }
 
+    // A corrupt config (e.g. a hand-edited or half-uninstalled agy settings.json) used to throw
+    // straight out of Apply(), and since agy is attempted first, `--agent all` then configured
+    // NOTHING — silently, because Setup runs us runhidden. The failure must now be contained and
+    // recorded instead.
+    [Fact]
+    public void A_failing_agent_is_contained_reported_and_logged()
+    {
+        var cfg = Path.Combine(Path.GetTempPath(), $"flaui-bad-{Guid.NewGuid():N}.json");
+        File.WriteAllText(cfg, "{ this is not json");
+        var dataDir = Path.Combine(Path.GetTempPath(), $"flaui-data-{Guid.NewGuid():N}");
+        var prev = Environment.GetEnvironmentVariable("FLAUI_MCP_DATA_DIR");
+        Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", dataDir);
+        try
+        {
+            var sb = new StringWriter();
+            var code = CliRouter.Run(new[] { "install", "--agent", "agy", "--config", cfg }, @"C:\x\flaui-mcp.exe", sb);
+
+            Assert.Equal(0, code);   // never non-zero: Setup would roll back and delete the exe
+            Assert.Contains("[agy] Failed", sb.ToString());
+
+            var log = Path.Combine(dataDir, "install.log");
+            Assert.True(File.Exists(log), "the failure must outlive a runhidden run");
+            Assert.Contains("[agy] Failed", File.ReadAllText(log));
+            Assert.Contains(log, sb.ToString());   // and the output points at it
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", prev);
+            if (Directory.Exists(dataDir)) Directory.Delete(dataDir, true);
+            foreach (var f in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(cfg) + "*")) File.Delete(f);
+        }
+    }
+
     [Fact]
     public void Uninstall_sweeps_our_backup_files_next_to_the_config()
     {

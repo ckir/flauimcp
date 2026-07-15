@@ -28,23 +28,35 @@ public sealed class AgyConfigWriter
 
     private string PluginRoot => System.IO.Path.Combine(_pluginsDir, PluginName);
 
-    /// <summary>Drop the static seed driving skill into agy's plugin dir (agy has no hooks → skill only).</summary>
-    private void DeploySkill()
+    /// <summary>
+    /// Drop the static seed driving skill into agy's plugin dir (agy has no hooks → skill only).
+    /// Never throws: the skill is a bonus alongside the registration, so a failure here degrades to a
+    /// warning rather than denying the user a working server. Returns null on success, else the reason.
+    /// </summary>
+    private string? DeploySkill()
     {
-        var skillDir = System.IO.Path.Combine(PluginRoot, "skills", "driving-flaui-mcp");
-        System.IO.Directory.CreateDirectory(skillDir);
+        try
+        {
+            var skillDir = System.IO.Path.Combine(PluginRoot, "skills", "driving-flaui-mcp");
+            System.IO.Directory.CreateDirectory(skillDir);
 
-        var av = typeof(AgyConfigWriter).Assembly.GetName().Version;   // 4-part; trim to 3-part semver
-        var version = av is null ? "0.0.0" : $"{av.Major}.{av.Minor}.{av.Build}";
-        var pluginJson =
-            "{\n  \"name\": \"flaui-mcp\",\n  \"version\": \"" + version + "\",\n" +
-            "  \"description\": \"Driving skill (static seed) for the flaui-mcp desktop-automation MCP server.\"\n}\n";
-        System.IO.File.WriteAllText(System.IO.Path.Combine(PluginRoot, "plugin.json"), pluginJson);
+            var av = typeof(AgyConfigWriter).Assembly.GetName().Version;   // 4-part; trim to 3-part semver
+            var version = av is null ? "0.0.0" : $"{av.Major}.{av.Minor}.{av.Build}";
+            var pluginJson =
+                "{\n  \"name\": \"flaui-mcp\",\n  \"version\": \"" + version + "\",\n" +
+                "  \"description\": \"Driving skill (static seed) for the flaui-mcp desktop-automation MCP server.\"\n}\n";
+            System.IO.File.WriteAllText(System.IO.Path.Combine(PluginRoot, "plugin.json"), pluginJson);
 
-        using var res = typeof(AgyConfigWriter).Assembly.GetManifestResourceStream(SkillResource)
-            ?? throw new System.InvalidOperationException($"embedded seed skill '{SkillResource}' missing");
-        using var outFile = System.IO.File.Create(System.IO.Path.Combine(skillDir, "SKILL.md"));
-        res.CopyTo(outFile);
+            using var res = typeof(AgyConfigWriter).Assembly.GetManifestResourceStream(SkillResource)
+                ?? throw new System.InvalidOperationException($"embedded seed skill '{SkillResource}' missing");
+            using var outFile = System.IO.File.Create(System.IO.Path.Combine(skillDir, "SKILL.md"));
+            res.CopyTo(outFile);
+            return null;
+        }
+        catch (System.Exception e)
+        {
+            return $"seed driving skill not deployed to {PluginRoot}: {e.Message}";
+        }
     }
 
     private void RemoveSkill()
@@ -69,8 +81,8 @@ public sealed class AgyConfigWriter
         var change = (serversChanged || !hasPerm)
             ? (existing is null ? AgentChange.Created : AgentChange.Updated)
             : AgentChange.Unchanged;
-        DeploySkill();
-        return new AgentResult("agy", change, $"{_serversPath}; {_permsPath}");
+        var skillWarning = DeploySkill();
+        return new AgentResult("agy", change, Detail(skillWarning), skillWarning);
     }
 
     /// <summary>Non-destructive variant (spec §4.4 ops fold): merges `addArgs`/`removeArgs` into the args
@@ -92,9 +104,16 @@ public sealed class AgyConfigWriter
         var change = (serversChanged || !hasPerm)
             ? (existing is null ? AgentChange.Created : AgentChange.Updated)
             : AgentChange.Unchanged;
-        DeploySkill();
-        return new AgentResult("agy", change, $"{_serversPath}; {_permsPath}");
+        var skillWarning = DeploySkill();
+        return new AgentResult("agy", change, Detail(skillWarning), skillWarning);
     }
+
+    /// <summary>Everything this writer touched — including the skill dir, which the detail line used to
+    /// omit entirely, so the seed skill's whole existence was invisible in the install output.</summary>
+    private string Detail(string? skillWarning) =>
+        skillWarning is null
+            ? $"{_serversPath}; {_permsPath}; {PluginRoot}"
+            : $"{_serversPath}; {_permsPath}";
 
     /// <summary>Read the currently-registered `args` array off an existing server entry (empty if absent).</summary>
     private static string[] ReadArgs(JsonObject? entry) =>

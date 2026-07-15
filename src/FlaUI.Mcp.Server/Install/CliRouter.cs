@@ -30,8 +30,7 @@ public static class CliRouter
                 return 0;
 
             case "install":
-                foreach (var r in Apply(agent, paths, install: true, exePath))
-                    outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
+                Report(Apply(agent, paths, install: true, exePath), "install", paths.DataDir, outp);
                 outp.WriteLine("If you configured agy, restart it to load the new tools.");
                 outp.WriteLine("Tip: to WATCH the agent act on screen, run  flaui-mcp overlay on  (off by default; " +
                     "flaui-mcp overlay off to disable), then reconnect. See the README's \"Watching & auditing the agent\" section.");
@@ -96,8 +95,7 @@ public static class CliRouter
             }
 
             case "uninstall":
-                foreach (var r in Apply(agent, paths, install: false, exePath))
-                    outp.WriteLine($"[{r.Agent}] {r.Change}: {r.Detail}");
+                Report(Apply(agent, paths, install: false, exePath), "uninstall", paths.DataDir, outp);
                 // Leave no leftovers: delete the timestamped backups we wrote next to each config
                 // file we touched. (Backups are a safety net for the live install, not after removal.)
                 foreach (var line in SweepBackups(new[] { paths.AgyServers, paths.AgyPerms, paths.GenericPath }))
@@ -218,21 +216,72 @@ public static class CliRouter
         bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
 
         if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
-        {
-            var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir);
-            results.Add(install ? w.Install(exePath, extraArgs) : w.Uninstall());
-        }
+            results.Add(Isolate("agy", () =>
+            {
+                var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir);
+                return install ? w.Install(exePath, extraArgs) : w.Uninstall();
+            }));
         if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
-        {
-            var w = new ClaudeCodeConfigWriter();
-            results.Add(install ? w.Install(exePath, extraArgs) : w.Uninstall());
-        }
+            results.Add(Isolate("claude", () =>
+            {
+                var w = new ClaudeCodeConfigWriter();
+                return install ? w.Install(exePath, extraArgs) : w.Uninstall();
+            }));
         if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
-        {
-            var w = new GenericMcpConfigWriter();
-            results.Add(install ? w.Install(paths.GenericPath, exePath, extraArgs) : w.Uninstall(paths.GenericPath));
-        }
+            results.Add(Isolate("generic", () =>
+            {
+                var w = new GenericMcpConfigWriter();
+                return install ? w.Install(paths.GenericPath, exePath, extraArgs) : w.Uninstall(paths.GenericPath);
+            }));
         return results;
+    }
+
+    /// The agents are independent targets, so one agent's fault must not deny the others: a throw
+    /// becomes that agent's own <see cref="AgentChange.Failed"/> result and the loop carries on.
+    /// (Without this, `--agent all` on a machine with a corrupt agy config silently configured
+    /// nothing at all — agy is attempted first.)
+    private static AgentResult Isolate(string agent, Func<AgentResult> configure)
+    {
+        try { return configure(); }
+        catch (Exception e) { return new AgentResult(agent, AgentChange.Failed, e.Message); }
+    }
+
+    /// Print each agent's outcome, persist the same lines, and point at the log when something went
+    /// wrong. We never exit non-zero for a partial failure: Setup would roll back and delete the exe,
+    /// leaving the user with nothing over one agent they may not even use.
+    private static void Report(IEnumerable<AgentResult> results, string verb, string dataDir, TextWriter outp)
+    {
+        var lines = new List<string>();
+        bool trouble = false;
+        foreach (var r in results)
+        {
+            lines.Add($"[{r.Agent}] {r.Change}: {r.Detail}");
+            if (r.Warning is not null) lines.Add($"[{r.Agent}] WARNING: {r.Warning}");
+            if (r.Change == AgentChange.Failed || r.Warning is not null) trouble = true;
+        }
+        foreach (var line in lines) outp.WriteLine(line);
+
+        var log = WriteLog(dataDir, verb, lines);
+        if (trouble && log is not null)
+            outp.WriteLine($"Some targets did not complete — see {log}");
+    }
+
+    /// Best-effort durable record of the last install/uninstall. Setup runs us `runhidden`
+    /// (installer/flaui-mcp.iss), so stdout goes nowhere and an exit code could not say WHICH target
+    /// failed anyway — this file is the only channel that outlives the run. Overwritten each time:
+    /// the current state is what matters, and it must not grow without bound.
+    private static string? WriteLog(string dataDir, string verb, IReadOnlyList<string> lines)
+    {
+        try
+        {
+            Directory.CreateDirectory(dataDir);
+            var path = Path.Combine(dataDir, "install.log");
+            var stamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+            var header = $"# flaui-mcp {ThisVersion()} — {verb} at {stamp}";
+            File.WriteAllLines(path, new[] { header }.Concat(lines));
+            return path;
+        }
+        catch { return null; }   // the reporter must never itself become the failure
     }
 
     /// Non-destructive sibling of <see cref="Apply"/>: dispatches `addArgs`/`removeArgs` to each writer's
@@ -244,20 +293,23 @@ public static class CliRouter
         bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
 
         if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
-        {
-            var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir);
-            results.Add(w.Install(exePath, addArgs, removeArgs));
-        }
+            results.Add(Isolate("agy", () =>
+            {
+                var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir);
+                return w.Install(exePath, addArgs, removeArgs);
+            }));
         if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
-        {
-            var w = new ClaudeCodeConfigWriter();
-            results.Add(w.Install(exePath, addArgs, removeArgs));
-        }
+            results.Add(Isolate("claude", () =>
+            {
+                var w = new ClaudeCodeConfigWriter();
+                return w.Install(exePath, addArgs, removeArgs);
+            }));
         if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
-        {
-            var w = new GenericMcpConfigWriter();
-            results.Add(w.Install(paths.GenericPath, exePath, addArgs, removeArgs));
-        }
+            results.Add(Isolate("generic", () =>
+            {
+                var w = new GenericMcpConfigWriter();
+                return w.Install(paths.GenericPath, exePath, addArgs, removeArgs);
+            }));
         return results;
     }
 
