@@ -5,7 +5,7 @@ description: Periodic offline maintenance for flaui-autotrain — drain a bounde
 
 # flaui-curate — drain the flaui-mcp inbox, terminal decision per entry
 
-Deliberate and offline. The inbox `.claude/autotrain/observations.md` is a **flat `## Pending` list** that
+Deliberate and offline. The inbox `.claude/flaui-mcp/observations.md` is a **flat `## Pending` list** that
 **monotonically drains** — there is no retained/parked state, no counts, no cross-run bookkeeping.
 
 ## Mode — detect BEFORE processing (structural, not folder-name)
@@ -50,7 +50,7 @@ alone (that would delete prior wisdom). Do not duplicate a rule already stated i
 
 **HARD CAP: the GROWTH region must stay ≤ 30 lines.** On breach, in order: (1) **compress/merge** related
 rules or supersede an old one; (2) **graduate** — if it's full of distinct proven rules, append the best as a
-one-line entry to `.claude/autotrain/graduation-candidates.md` for a human to fold into the manual floor;
+one-line entry to `.claude/flaui-mcp/graduation-candidates.md` for a human to fold into the manual floor;
 (3) drop only a genuinely low-leverage rule not worth graduating. Never let GROWTH exceed 30 lines.
 
 **Verification is a non-blocking tag, not a gate.** Promote on judgment now. A read-only probe (§ verify) you
