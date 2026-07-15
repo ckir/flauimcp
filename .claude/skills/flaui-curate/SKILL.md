@@ -88,6 +88,14 @@ line, same voice as the seed's GROWTH region.
   the shipped seed) — the file IS its own editable floor.
 - Anti-poisoning gate is unchanged: you are the gate; when in doubt, drop it.
 
+## Promote to GLOBAL (explicit, user-invoked — Hybrid)
+Only when the user explicitly asks to "promote to global" a specific rule. Copy that one rule from a project's
+`local-growth.md` into the machine-wide global growth file at `%USERPROFILE%\.claude\flaui-mcp\global-growth.md`
+(resolve the Windows user-profile directory, e.g. `C:\Users\<you>\.claude\flaui-mcp\global-growth.md`; create
+it with a `# flaui-mcp — global learned driving rules` header if missing). This file is surfaced in EVERY
+project, so promote only genuinely cross-project rules. Same **≤ 30-line HARD CAP** (compress/drop on breach)
+and anti-poisoning gate apply. Never auto-promote — global compounding is an opt-in the user chooses.
+
 ## Verify probes (run by curate only; non-blocking)
 - **Read-only tier (no lease, any time):** `desktop_list_windows` / `desktop_snapshot` / `desktop_find` /
   `desktop_wake_accessibility` on a stable OS surface — prove liveness/schema/IPC.
