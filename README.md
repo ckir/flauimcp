@@ -148,6 +148,23 @@ This downloads the latest `flaui-mcp-setup.exe` and runs it silently
 > **Manual install** (the exe is its own installer), **what the installer changes**, and
 > **uninstall** live in the **[Ops manual](docs/ops-manual.md)**.
 
+### Claude Code plugin (optional)
+
+The MCP server above is required and handles all tool execution. The optional **plugin** adds
+the `driving-flaui-mcp` skill (for crafting robust desktop automation sequences) plus the
+`flaui-learn` / `flaui-curate` self-improvement loop, which learns per-project from your own tasks
+(with an explicit "promote to global" to share a rule across projects).
+
+After the installer has registered the MCP server, install the plugin:
+
+```
+/plugin marketplace add ckir/flauimcp
+/plugin install flaui-mcp@flaui-mcp
+```
+
+The plugin declares **no** MCP server (the installer already registered it) — it adds only the
+driving and self-improvement skills.
+
 ## Usage
 
 Once installed and your agent is restarted, just ask the agent to do desktop work — e.g.
@@ -276,6 +293,20 @@ what an agent **can do** to your machine.)
   SHA-256 checksums. [→ warning](#warning)
 - **It's a guardrail, not a sandbox.** The lease and deny-list constrain an agent driving high-risk
   sinks, but anything running as your user can act as your user. [→ Synthetic input](docs/features-and-safeguards.md#synthetic-input)
+
+## Maintainers
+
+When developing inside this repository with the plugin installed globally, disable the plugin for
+this repo so the repo's local project-scope `driving-flaui-mcp` skill is the single authority
+(the plugin ships a skill of the same name and would conflict).
+
+Add this to `.claude/settings.local.json`:
+
+```json
+{ "enabledPlugins": { "flaui-mcp@flaui-mcp": false } }
+```
+
+End users never encounter this — they have no project-scope copy of the plugin.
 
 ## Contributing
 
