@@ -5,7 +5,7 @@ description: Use the moment you notice something general about driving flaui-mcp
 
 # flaui-learn — capture one flaui-mcp driving observation
 
-Append **one plain-English line** under `## Pending` in `.claude/autotrain/observations.md`:
+Append **one plain-English line** under `## Pending` in `.claude/flaui-mcp/observations.md`:
 
 `- <what you observed, in your own words>  ·  <YYYY-MM-DD>`
 

@@ -43,4 +43,4 @@ publish/
 .clavity/
 
 # flaui-autotrain per-session curate-nudge sentinel (see .claude/hooks/flaui-curate-nudge.sh)
-.claude/autotrain/.nudged-*
+.claude/flaui-mcp/.nudged-*
