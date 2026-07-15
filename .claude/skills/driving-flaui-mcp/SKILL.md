@@ -301,4 +301,6 @@ highlighted before Enter.
 Leave apps as found (clear text you added; `Ctrl+A`→`Delete`). Close dialogs with **Esc**, never
 Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for demos.
 
-Deeper field notes live in the project memory `project-flaui-mcp-driving-notes`.
+<!-- AUTOTRAIN:GROWTH:START -->
+<!-- Machine-owned region (flaui-curate). Do not hand-edit. HARD CAP: ≤ 30 lines between the markers. -->
+<!-- AUTOTRAIN:GROWTH:END -->
