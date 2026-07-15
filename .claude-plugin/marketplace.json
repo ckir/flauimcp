@@ -1,0 +1,11 @@
+{
+  "name": "flaui-mcp",
+  "owner": { "name": "Costas Kirgoussios" },
+  "plugins": [
+    {
+      "name": "flaui-mcp",
+      "source": "./plugins/flaui-mcp",
+      "description": "Driving skill + self-improving autotrain loop for the flaui-mcp desktop-automation MCP server. Install the server via the installer; this plugin adds the Claude Code skills."
+    }
+  ]
+}
