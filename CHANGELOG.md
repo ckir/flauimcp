@@ -3,6 +3,31 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-07-15
+
+### Added
+
+#### Claude Code plugin
+- **New optional `flaui-mcp` plugin** (`plugins/flaui-mcp/`) plus a repo-root marketplace manifest,
+  installable with `/plugin marketplace add ckir/flauimcp` then `/plugin install flaui-mcp@flaui-mcp`.
+  It ships the `driving-flaui-mcp` skill and the `flaui-learn` / `flaui-curate` self-improvement loop.
+  The plugin declares **no** `mcpServers` — the installer already registers the MCP server, which
+  remains the only thing required to execute tools. The plugin adds skills only.
+- **`scripts/build-plugin.ps1`** regenerates the plugin's skills and hook from the `.claude/` sources,
+  so the repo copy stays the single authority and the plugin copy is a snapshot of it.
+
+#### agy (Antigravity) parity
+- **`flaui-mcp install` now deploys the `driving-flaui-mcp` seed skill to agy** as a static plugin under
+  `%USERPROFILE%\.gemini\config\plugins\flaui-mcp\`, and `uninstall` removes it. The skill is an
+  embedded resource in the server binary, so deployment does not depend on the repo being present.
+  agy receives the seed skill only — not the self-improvement loop — since agy has no plugin hooks.
+
+### Changed
+- **Unified the autotrain inbox/queue path to `.claude/flaui-mcp/`** (was `.claude/autotrain/`), and
+  `flaui-curate` is now mode-aware: in MAINTAINER mode it edits the skill's learned-growth region
+  directly, and it gained an explicit **promote-to-global** step so a rule learned in one project can
+  be shared across projects. The `driving-flaui-mcp` skill now loads both project and global growth.
+
 ## [0.13.0] - 2026-07-11
 
 ### Added
