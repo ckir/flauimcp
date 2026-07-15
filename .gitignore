@@ -41,3 +41,6 @@ publish/
 
 # agy (Antigravity) seam transport — internal review briefs, not source
 .clavity/
+
+# flaui-autotrain per-session curate-nudge sentinel (see .claude/hooks/flaui-curate-nudge.sh)
+.claude/autotrain/.nudged-*
