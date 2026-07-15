@@ -193,7 +193,7 @@ public static class CliRouter
         outp.WriteLine("  flaui-mcp uninstall --purge-data");
     }
 
-    private readonly record struct Paths(string AgyServers, string AgyPerms, string GenericPath, string DataDir);
+    private readonly record struct Paths(string AgyServers, string AgyPerms, string GenericPath, string DataDir, string AgyPluginsDir);
 
     /// Resolve every config path the installer touches. The data dir (home of the generic config
     /// and the purge target) honors FLAUI_MCP_DATA_DIR so tests never touch the real `~/.flaui-mcp`.
@@ -207,7 +207,9 @@ public static class CliRouter
         var agyServers = configOverride ?? Path.Combine(home, ".gemini", "settings.json");
         var agyPerms   = configOverride ?? Path.Combine(home, ".gemini", "antigravity-cli", "settings.json");
         var genericPath = configOverride ?? Path.Combine(dataDir, "generic-mcp.json");
-        return new Paths(agyServers, agyPerms, genericPath, dataDir);
+        var agyPlugins = Environment.GetEnvironmentVariable("FLAUI_MCP_AGY_PLUGINS_DIR")
+                         ?? Path.Combine(home, ".gemini", "config", "plugins");
+        return new Paths(agyServers, agyPerms, genericPath, dataDir, agyPlugins);
     }
 
     private static IEnumerable<AgentResult> Apply(string agent, Paths paths, bool install, string exePath, IReadOnlyList<string>? extraArgs = null)
@@ -217,7 +219,7 @@ public static class CliRouter
 
         if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
         {
-            var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms);
+            var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir);
             results.Add(install ? w.Install(exePath, extraArgs) : w.Uninstall());
         }
         if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
@@ -243,7 +245,7 @@ public static class CliRouter
 
         if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
         {
-            var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms);
+            var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir);
             results.Add(w.Install(exePath, addArgs, removeArgs));
         }
         if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))

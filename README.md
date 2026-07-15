@@ -165,6 +165,13 @@ After the installer has registered the MCP server, install the plugin:
 The plugin declares **no** MCP server (the installer already registered it) — it adds only the
 driving and self-improvement skills.
 
+### agy (Antigravity) parity
+
+Running the installer (or `flaui-mcp install --agent all`) also deploys the `driving-flaui-mcp`
+skill to agy (Antigravity) as a static plugin under `%USERPROFILE%\.gemini\config\plugins\flaui-mcp\`.
+Restart agy to load it. agy gets the seed skill only — not the self-improvement loop above — since
+agy has no plugin hooks; Claude Code gets the full self-improving plugin.
+
 ## Usage
 
 Once installed and your agent is restarted, just ask the agent to do desktop work — e.g.

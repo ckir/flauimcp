@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json.Nodes;
 using FlaUI.Mcp.Server.Install;
 using Xunit;
@@ -16,7 +17,8 @@ public class AgyConfigWriterTests
         var perms = TempFile();
         try
         {
-            var r = new AgyConfigWriter(servers, perms).Install(@"C:\x\flaui-mcp.exe");
+            var plugins = Path.Combine(Path.GetTempPath(), "flaui-agy-" + Path.GetRandomFileName());
+            var r = new AgyConfigWriter(servers, perms, plugins).Install(@"C:\x\flaui-mcp.exe");
             Assert.Equal(AgentChange.Created, r.Change);
 
             var s = JsoncFile.Load(servers);
@@ -36,7 +38,8 @@ public class AgyConfigWriterTests
         var perms = TempFile();
         try
         {
-            var w = new AgyConfigWriter(servers, perms);
+            var plugins = Path.Combine(Path.GetTempPath(), "flaui-agy-" + Path.GetRandomFileName());
+            var w = new AgyConfigWriter(servers, perms, plugins);
             w.Install(@"C:\x\flaui-mcp.exe");
             w.Install(@"C:\x\flaui-mcp.exe");
             var allow = JsoncFile.Load(perms)["permissions"]!["allow"]!.AsArray()
@@ -54,7 +57,8 @@ public class AgyConfigWriterTests
         File.WriteAllText(perms, "{ \"permissions\": { \"allow\": [ \"command(git status)\" ] } }");
         try
         {
-            var w = new AgyConfigWriter(servers, perms);
+            var plugins = Path.Combine(Path.GetTempPath(), "flaui-agy-" + Path.GetRandomFileName());
+            var w = new AgyConfigWriter(servers, perms, plugins);
             w.Install(@"C:\x\flaui-mcp.exe");
             w.Uninstall();
 

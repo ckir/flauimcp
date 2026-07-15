@@ -13,13 +13,44 @@ namespace FlaUI.Mcp.Server.Install;
 public sealed class AgyConfigWriter
 {
     private const string Permission = "mcp(flaui-mcp/*)";
+    private const string PluginName = "flaui-mcp";
+    private const string SkillResource = "FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md";
     private readonly string _serversPath;
     private readonly string _permsPath;
+    private readonly string _pluginsDir;
 
-    public AgyConfigWriter(string mcpServersPath, string permissionsPath)
+    public AgyConfigWriter(string mcpServersPath, string permissionsPath, string pluginsDir)
     {
         _serversPath = mcpServersPath;
         _permsPath = permissionsPath;
+        _pluginsDir = pluginsDir;
+    }
+
+    private string PluginRoot => System.IO.Path.Combine(_pluginsDir, PluginName);
+
+    /// <summary>Drop the static seed driving skill into agy's plugin dir (agy has no hooks → skill only).</summary>
+    private void DeploySkill()
+    {
+        var skillDir = System.IO.Path.Combine(PluginRoot, "skills", "driving-flaui-mcp");
+        System.IO.Directory.CreateDirectory(skillDir);
+
+        var av = typeof(AgyConfigWriter).Assembly.GetName().Version;   // 4-part; trim to 3-part semver
+        var version = av is null ? "0.0.0" : $"{av.Major}.{av.Minor}.{av.Build}";
+        var pluginJson =
+            "{\n  \"name\": \"flaui-mcp\",\n  \"version\": \"" + version + "\",\n" +
+            "  \"description\": \"Driving skill (static seed) for the flaui-mcp desktop-automation MCP server.\"\n}\n";
+        System.IO.File.WriteAllText(System.IO.Path.Combine(PluginRoot, "plugin.json"), pluginJson);
+
+        using var res = typeof(AgyConfigWriter).Assembly.GetManifestResourceStream(SkillResource)
+            ?? throw new System.InvalidOperationException($"embedded seed skill '{SkillResource}' missing");
+        using var outFile = System.IO.File.Create(System.IO.Path.Combine(skillDir, "SKILL.md"));
+        res.CopyTo(outFile);
+    }
+
+    private void RemoveSkill()
+    {
+        if (System.IO.Directory.Exists(PluginRoot))
+            System.IO.Directory.Delete(PluginRoot, recursive: true);
     }
 
     public AgentResult Install(string exePath, IReadOnlyList<string>? args = null)
@@ -38,6 +69,7 @@ public sealed class AgyConfigWriter
         var change = (serversChanged || !hasPerm)
             ? (existing is null ? AgentChange.Created : AgentChange.Updated)
             : AgentChange.Unchanged;
+        DeploySkill();
         return new AgentResult("agy", change, $"{_serversPath}; {_permsPath}");
     }
 
@@ -60,6 +92,7 @@ public sealed class AgyConfigWriter
         var change = (serversChanged || !hasPerm)
             ? (existing is null ? AgentChange.Created : AgentChange.Updated)
             : AgentChange.Unchanged;
+        DeploySkill();
         return new AgentResult("agy", change, $"{_serversPath}; {_permsPath}");
     }
 
@@ -96,6 +129,7 @@ public sealed class AgyConfigWriter
             if (removedPerm) JsoncFile.Save(_permsPath, pObj);
         }
 
+        RemoveSkill();
         return new AgentResult("agy",
             removedServer || removedPerm ? AgentChange.Removed : AgentChange.NotFound,
             $"{_serversPath}; {_permsPath}");
