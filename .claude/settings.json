@@ -4,10 +4,6 @@
       { "matcher": "startup|clear|compact",
         "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/flaui-learn-reminder.sh\"" } ] }
     ],
-    "PreCompact": [
-      { "matcher": "manual|auto",
-        "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/flaui-learn-reminder.sh\"" } ] }
-    ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/flaui-curate-nudge.sh\"" } ] }
     ]
