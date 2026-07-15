@@ -40,6 +40,7 @@ Expected: branch `feat/plugin-packaging`; `.claude/autotrain/` contains `observa
 - [ ] **Step 1: Move the data files (preserve git history)**
 
 ```bash
+mkdir -p .claude/flaui-mcp   # git mv fails if the destination dir does not exist
 git mv .claude/autotrain/observations.md .claude/flaui-mcp/observations.md
 git mv .claude/autotrain/graduation-candidates.md .claude/flaui-mcp/graduation-candidates.md
 ```
@@ -534,6 +535,7 @@ targets — no second variant to drift.
 **Files:**
 - Modify: `src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj` (add an `EmbeddedResource`)
 - Modify: `src/FlaUI.Mcp.Server/Install/AgyConfigWriter.cs`
+- Modify: `test/FlaUI.Mcp.Tests/Install/AgyConfigWriterTests.cs` (**existing** — constructs `new AgyConfigWriter(servers, perms)` at lines **19, 39, 57**; the ctor change to 3 args breaks the build unless these are updated)
 - Test: `test/FlaUI.Mcp.Tests/Install/AgySkillDeployTests.cs` (new)
 
 - [ ] **Step 0: State-verify**
@@ -637,7 +639,8 @@ Change the constructor to accept the plugins base dir, deploy in `Install(exePat
         var skillDir = System.IO.Path.Combine(PluginRoot, "skills", "driving-flaui-mcp");
         System.IO.Directory.CreateDirectory(skillDir);
 
-        var version = typeof(AgyConfigWriter).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+        var av = typeof(AgyConfigWriter).Assembly.GetName().Version;   // 4-part; trim to 3-part semver
+        var version = av is null ? "0.0.0" : $"{av.Major}.{av.Minor}.{av.Build}";
         var pluginJson =
             "{\n  \"name\": \"flaui-mcp\",\n  \"version\": \"" + version + "\",\n" +
             "  \"description\": \"Driving skill (static seed) for the flaui-mcp desktop-automation MCP server.\"\n}\n";
@@ -655,8 +658,10 @@ Change the constructor to accept the plugins base dir, deploy in `Install(exePat
             System.IO.Directory.Delete(PluginRoot, recursive: true);
     }
 ```
-Then, at the END of `Install(string exePath, IReadOnlyList<string>? args = null)` (the FIRST overload only —
-NOT the addArgs/removeArgs overload), immediately before `return new AgentResult(...)`, add:
+Then add `DeploySkill();` immediately before the `return new AgentResult(...)` in **BOTH** `Install`
+overloads — the primary `Install(exePath, args?)` AND the `Install(exePath, addArgs, removeArgs)` overlay/
+autosound overload (both create the server entry if absent, so both can be a first-registration path;
+`DeploySkill` is an idempotent overwrite, so calling it from both is safe):
 ```csharp
         DeploySkill();
 ```
@@ -664,12 +669,28 @@ And at the END of `Uninstall()`, immediately before its `return new AgentResult(
 ```csharp
         RemoveSkill();
 ```
+> `RemoveSkill` deletes only OUR managed `<pluginsDir>/flaui-mcp/` folder (the one the exe created) —
+> acceptable for a managed plugin dir. It does not touch other agy plugins.
+
+- [ ] **Step 4b: Fix the existing AgyConfigWriterTests (ctor is now 3-arg — build would break otherwise)**
+
+`test/FlaUI.Mcp.Tests/Install/AgyConfigWriterTests.cs` constructs `new AgyConfigWriter(servers, perms)` at
+lines 19, 39, 57. Update each of the three to pass a temp plugins dir so the file compiles. At the top of each
+test (or via a shared helper), derive a temp dir and pass it, e.g.:
+```csharp
+var plugins = Path.Combine(Path.GetTempPath(), "flaui-agy-" + Path.GetRandomFileName());
+// line 19: new AgyConfigWriter(servers, perms, plugins).Install(@"C:\x\flaui-mcp.exe");
+// lines 39 & 57: var w = new AgyConfigWriter(servers, perms, plugins);
+```
+These tests assert on the servers/perms JSON only; the added skill deploy is a harmless side effect into a
+temp dir. (Add `using System.IO;` if not already present.)
 
 - [ ] **Step 5: Run the test — verify it passes**
 
-Run: `dotnet test -c Debug --filter "FullyQualifiedName~AgySkillDeployTests"`
-Expected: PASS (both tests). If the embedded-resource name mismatches, the InvalidOperationException message
-names the expected resource — reconcile `LogicalName` with `SkillResource`.
+Run: `dotnet test -c Debug --filter "FullyQualifiedName~AgySkillDeployTests|FullyQualifiedName~AgyConfigWriterTests"`
+Expected: PASS (both new tests AND the three updated existing tests compile+pass). If the embedded-resource
+name mismatches, the InvalidOperationException message names the expected resource — reconcile `LogicalName`
+with `SkillResource`.
 
 - [ ] **Step 6: Commit**
 

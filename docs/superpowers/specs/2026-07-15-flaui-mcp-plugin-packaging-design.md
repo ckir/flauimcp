@@ -185,6 +185,25 @@ invoked to drive.
 
 ---
 
+## Component 6 — agy (Antigravity) parity (added post-review, user-approved)
+
+Scope added after the initial (Claude-only) review, at the user's direction. agy has its own native plugin
+system (verified live): a folder in `%USERPROFILE%\.gemini\config\plugins\<name>\` with a root `plugin.json`
+of exactly `{name, version, description}` + `skills/<name>/SKILL.md`. agy has **no** plugin lifecycle hooks.
+
+- **The exe deploys the driving skill to agy automatically.** `flaui-mcp install --agent agy` (hence
+  `--agent all`, hence the installer) — via `AgyConfigWriter` — also writes
+  `%USERPROFILE%\.gemini\config\plugins\flaui-mcp\{plugin.json, skills/driving-flaui-mcp/SKILL.md}`;
+  `uninstall` removes that folder. No `.iss` change (rides `install/uninstall --agent all`).
+- **Static seed only** — agy gets the driving wisdom but NOT the self-improvement loop (no agy plugin hooks
+  to run flaui-learn/flaui-curate). The learned-rules section of the shared skill no-ops on agy (its growth
+  files never exist).
+- **Seed source:** the skill is embedded in the single-file exe as an `EmbeddedResource` (built from the repo's
+  `.claude/skills/driving-flaui-mcp/SKILL.md`), extracted at install time.
+- **Same skill file** as Claude (one source of truth) — no second variant.
+- **Consequence:** the compiled exe now changes (C# in `AgyConfigWriter`/`CliRouter` + an embedded resource),
+  so unlike the pure-Claude packaging, this DOES warrant a product release when shipped.
+
 ## Out of scope for v1 (YAGNI)
 
 - **Re-seed / merge on plugin upgrade.** The seed lives read-only in the plugin and is *always* the current
