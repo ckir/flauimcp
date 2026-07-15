@@ -3,6 +3,5 @@
   "displayName": "flaui-mcp driving",
   "description": "Self-improving driving skill for the flaui-mcp desktop-automation MCP server. The server itself is registered by the flaui-mcp installer (via its absolute path); this plugin ships the driving-flaui-mcp skill (seed) plus the flaui-learn/flaui-curate autotrain loop.",
   "version": "0.14.0",
-  "author": { "name": "Costas Kirgoussios" },
-  "hooks": "./hooks/hooks.json"
+  "author": { "name": "Costas Kirgoussios" }
 }
