@@ -9,6 +9,16 @@ Empirically grounded in live dogfooding. Use the **installed** MCP server's
 `desktop_*` tools to see/act on the real desktop — never `Get-Process`. The tools are **DEFERRED**:
 load them before use.
 
+## Load your learned rules first
+
+Before driving, load your locally-learned rules and treat them as extensions of this manual:
+- **This project:** read `.claude\flaui-mcp\local-growth.md` if it exists (project-relative).
+- **Your global rules:** read `%USERPROFILE%\.claude\flaui-mcp\global-growth.md` if it exists — resolve your
+  Windows user-profile directory (e.g. `C:\Users\<you>\.claude\flaui-mcp\global-growth.md`); do NOT read a
+  literal `~` path.
+Both are small and maintained automatically by `flaui-curate`. If neither exists, proceed — you are on the
+shipped seed only.
+
 ## Step 0 — load tools (one ToolSearch call)
 
 ```
