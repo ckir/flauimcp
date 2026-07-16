@@ -602,9 +602,14 @@ public sealed record ClaudePluginEntry(string Id, string Scope, bool Enabled, st
 /// machine-readable contract, which is why we ask the host for its effective state instead of
 /// re-implementing its scope resolution over its config files.
 ///
-/// MEASURED 2026-07-16: the listing is GLOBAL, not CWD-relative — identical output from any working
-/// directory, backed by `~/.claude/plugins/installed_plugins.json`. Detection is therefore
-/// position-independent even though remediation is not.
+/// MEASURED 2026-07-16: the ROW SET is global — the same ids/scopes/projectPaths from any working
+/// directory, backed by `~/.claude/plugins/installed_plugins.json`. But the `enabled` field of a
+/// `scope=local` row is resolved against the CURRENT working directory, NOT the row's own projectPath:
+/// run from a project whose settings enable the plugin and the row reads enabled; run from anywhere
+/// else (including a hidden installer's cwd) and the SAME row reads disabled. This parser faithfully
+/// transcribes whatever `claude` emitted — so a caller must treat `Enabled` on a non-user row as valid
+/// ONLY when the list was read with the working directory set to that row's projectPath. See
+/// ClaudeCollisionRemedy, which never trusts a global `Enabled` and uses `disable` itself as detector.
 ///
 /// Never throws. It parses foreign output inside a hidden installer; "I know nothing" is a usable
 /// answer, an exception is not.
@@ -1264,6 +1269,8 @@ git commit -m "feat(install): per-entry write-once collision marker outside the 
 
 **Why:** Anyone who followed `README.md:158-163` has `flaui-mcp@flaui-mcp` installed. Upgrading gives them the bundled copy **as well** — two plugins both shipping `driving-flaui-mcp`. **MEASURED: the collision is SILENT** — both report loaded, `claude plugin details` shows each owning the skill, and nothing anywhere reports a conflict. So "do nothing" is out: the user runs a drifted v0.14.0 skill with no indication at all. **Disable, not uninstall** — reversible, and it is what `README.md:306-311` already prescribes for this exact collision.
 
+**Detection is by MUTATION, not by reading `enabled` (amended after Task 2, [Settled decisions](../specs/2026-07-16-skill-distribution-design.md) #4).** MEASURED 2026-07-16: `claude plugin list --json` resolves the `enabled` field of a `scope=local` row against the **current working directory**, not the row's own projectPath. A single global read from Setup's cwd reports every local copy as disabled — so a design that branched on `enabled` would silently skip a live local collision. Instead we enumerate rows by id from the global list (id/scope/projectPath are stable), then **attempt `disable` at each row's own scope+cwd** and read the outcome; `enabled` is re-read only at a row's own projectPath, and only to disambiguate a failed disable from an already-disabled one. This is the `mutation-as-detector` design both models converged on; per-project reads and message-string parsing were both rejected (see the ledger).
+
 **Files:**
 - Create: `src/FlaUI.Mcp.Server/Install/ClaudeCollisionRemedy.cs`
 - Test: `test/FlaUI.Mcp.Tests/Install/ClaudeCollisionRemedyTests.cs`
@@ -1273,6 +1280,7 @@ git commit -m "feat(install): per-entry write-once collision marker outside the 
 Create `test/FlaUI.Mcp.Tests/Install/ClaudeCollisionRemedyTests.cs`:
 
 ```csharp
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -1290,32 +1298,113 @@ public class ClaudeCollisionRemedyTests
         return dir;
     }
 
-    private sealed class FakeCli
+    // A faithful model of the `claude plugin` CLI as MEASURED 2026-07-16. The remedy's correctness
+    // rests on these EXACT semantics, so the fake reproduces them rather than letting a test hand-pick
+    // exit codes it wishes were true:
+    //   - `list --json` from cwd C: every installed row appears (id/scope/projectPath are global), but
+    //     a LOCAL row's `enabled` is resolved against C — it reads its true state ONLY when C is its own
+    //     projectPath, and reads false from anywhere else (THE bug the remedy must survive). A user
+    //     row's `enabled` is global.
+    //   - `disable id --scope s` from cwd: turns the target off and exits 0 if it was on; exits 1
+    //     ("already disabled") and writes nothing if it was already off.
+    //   - `enable id --scope s` from cwd: turns it on and exits 0 even for an id that does not exist
+    //     (measured: enable does not validate), which is why restore must check presence first.
+    private sealed class FakeClaude
     {
-        public string ListJson = "[]";
-        public int ListCode;
-        public int DisableCode;
+        // True per-target state. resolutionDir is "" for user scope, else the projectPath.
+        private readonly Dictionary<string, bool> _state = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<(string id, string scope, string? pp)> _rows = new();
         public readonly List<(string[] args, string? cwd)> Calls = new();
+        public bool ListFails;
+        public string? RawListOverride;
+        // cwd (or "" for null) -> forced disable exit code, WITHOUT mutating state. Models a genuine
+        // failure (permissions, timeout) as distinct from the benign already-disabled exit 1.
+        public readonly Dictionary<string, int> ForceDisableCode = new();
+        // cwds at which `list --json` fails — used to model a re-read that cannot complete, so the
+        // "disable failed AND state unverifiable" branch is reachable. Only the re-read passes a cwd.
+        public readonly HashSet<string> FailListAtCwd = new();
+
+        private static string ResDir(string scope, string? pp) =>
+            scope.Equals("user", StringComparison.OrdinalIgnoreCase) ? "" : (pp ?? "");
+        private static string Key(string id, string scope, string resDir) =>
+            $"{id}|{scope}|{resDir}".ToLowerInvariant();
+
+        public FakeClaude Install(string id, string scope, string? pp, bool enabled)
+        {
+            _rows.Add((id, scope, pp));
+            _state[Key(id, scope, ResDir(scope, pp))] = enabled;
+            return this;
+        }
 
         public RunResult Run(string file, string[] args, string? cwd)
         {
             Calls.Add((args, cwd));
             if (args.Length >= 2 && args[0] == "plugin" && args[1] == "list")
-                return new RunResult(ListCode, ListJson);
-            return new RunResult(DisableCode, "");
+            {
+                if (ListFails) return new RunResult(ProcessRunner.NotFound, "");
+                if (cwd is not null && FailListAtCwd.Contains(cwd)) return new RunResult(ProcessRunner.NotFound, "");
+                if (RawListOverride is not null) return new RunResult(0, RawListOverride);
+                return new RunResult(0, ListJsonFrom(cwd));
+            }
+            if (args.Length >= 5 && args[0] == "plugin" && args[1] == "disable")
+            {
+                if (ForceDisableCode.TryGetValue(cwd ?? "", out var forced)) return new RunResult(forced, "");
+                var key = Key(args[2], args[4], ResDir(args[4], cwd));
+                if (_state.TryGetValue(key, out var on) && on) { _state[key] = false; return new RunResult(0, ""); }
+                return new RunResult(1, $"Plugin \"{args[2]}\" is already disabled");   // message NOT parsed by the remedy
+            }
+            if (args.Length >= 5 && args[0] == "plugin" && args[1] == "enable")
+            {
+                _state[Key(args[2], args[4], ResDir(args[4], cwd))] = true;    // succeeds even for a fictitious id
+                return new RunResult(0, "");
+            }
+            return new RunResult(0, "");
         }
+
+        // `enabled` AS `list --json` would report it from `cwd`: user rows read their global state; a
+        // local row reads its true state only when listed from its own project, else false.
+        private string ListJsonFrom(string? cwd)
+        {
+            var items = _rows.Select(r =>
+            {
+                bool enabled = r.scope.Equals("user", StringComparison.OrdinalIgnoreCase)
+                    ? _state.GetValueOrDefault(Key(r.id, r.scope, ""))
+                    : string.Equals(cwd ?? "", r.pp ?? "", StringComparison.OrdinalIgnoreCase)
+                        && _state.GetValueOrDefault(Key(r.id, r.scope, r.pp ?? ""));
+                var pp = r.pp is null ? "" : $", \"projectPath\": {JsonStr(r.pp)}";
+                return $"{{ \"id\": {JsonStr(r.id)}, \"scope\": {JsonStr(r.scope)}, \"enabled\": {(enabled ? "true" : "false")}{pp} }}";
+            });
+            return "[" + string.Join(",", items) + "]";
+        }
+
+        private static string JsonStr(string s) => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
 
         public IEnumerable<(string[] args, string? cwd)> Disables =>
             Calls.Where(c => c.args.Length >= 2 && c.args[0] == "plugin" && c.args[1] == "disable");
     }
 
+    // dirExists defaults to always-true: the fakes use synthetic projectPaths that do not exist on the
+    // test machine, and only the deleted-project test cares about the guard.
+    private static ClaudeCollisionRemedy Remedy(FakeClaude cli, string state, Func<string, bool>? dirExists = null)
+        => new(cli.Run, state, dirExists ?? (_ => true));
+
+    // Guard the guard: prove the fake actually reproduces the measured CWD-resolution bug, so the
+    // regression test below is not vacuously green against a fake that lists the true state everywhere.
+    [Fact]
+    public void The_fake_reproduces_the_cwd_resolution_bug()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "local", @"C:\Proj", enabled: true);
+        Assert.Contains("\"enabled\": false", cli.Run("claude", new[] { "plugin", "list", "--json" }, null).Output);         // global: WRONG
+        Assert.Contains("\"enabled\": true", cli.Run("claude", new[] { "plugin", "list", "--json" }, @"C:\Proj").Output);    // own cwd: right
+    }
+
     [Fact]
     public void No_marketplace_copy_means_no_disable_and_no_marker()
     {
-        var cli = new FakeCli { ListJson = """[ { "id": "other@thing", "scope": "user", "enabled": true } ]""" };
+        var cli = new FakeClaude().Install("other@thing", "user", null, true);
         var s = TempState();
 
-        var warning = new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        var warning = Remedy(cli, s).Apply();
 
         Assert.Null(warning);
         Assert.Empty(cli.Disables);
@@ -1325,15 +1414,33 @@ public class ClaudeCollisionRemedyTests
     [Fact]
     public void An_enabled_user_scope_copy_is_disabled_at_user_scope_with_no_cwd()
     {
-        var cli = new FakeCli { ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": true } ]""" };
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, true);
         var s = TempState();
 
-        new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        Remedy(cli, s).Apply();
 
         var d = Assert.Single(cli.Disables);
         Assert.Equal(new[] { "plugin", "disable", "flaui-mcp@flaui-mcp", "--scope", "user" }, d.args);
         Assert.Null(d.cwd);
         Assert.Equal(new DisabledEntry("flaui-mcp@flaui-mcp", "user", null), Assert.Single(CollisionMarker.Read(s)));
+    }
+
+    // THE REGRESSION THAT MOTIVATES THE WHOLE MECHANISM. A local copy that is genuinely ENABLED at its
+    // own project reads `enabled: false` from the global list (Setup's cwd has no .claude). A design
+    // that trusted the global `enabled` would skip it and leave the collision live. Mutation-as-detector
+    // disables it anyway, because it acts at the project's own cwd. This test FAILS against the old
+    // read-based Apply and PASSES against the mutation-based one.
+    [Fact]
+    public void A_local_copy_the_global_list_wrongly_reports_disabled_is_still_disabled()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "local", @"C:\Proj", enabled: true);
+        var s = TempState();
+
+        Remedy(cli, s).Apply();
+
+        var d = Assert.Single(cli.Disables);
+        Assert.Equal(@"C:\Proj", d.cwd);
+        Assert.Equal(new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\Proj"), Assert.Single(CollisionMarker.Read(s)));
     }
 
     // THE CWD-BINDING CONTRACT. `claude plugin disable` has no flag to target another project, and
@@ -1342,13 +1449,10 @@ public class ClaudeCollisionRemedyTests
     [Fact]
     public void A_local_scope_copy_is_disabled_from_its_own_project_path()
     {
-        var cli = new FakeCli
-        {
-            ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "local", "enabled": true, "projectPath": "C:\\Projects\\MyCode" } ]"""
-        };
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "local", @"C:\Projects\MyCode", enabled: true);
         var s = TempState();
 
-        new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        Remedy(cli, s).Apply();
 
         var d = Assert.Single(cli.Disables);
         Assert.Equal(new[] { "plugin", "disable", "flaui-mcp@flaui-mcp", "--scope", "local" }, d.args);
@@ -1358,19 +1462,13 @@ public class ClaudeCollisionRemedyTests
     [Fact]
     public void Every_entry_is_disabled_at_its_own_scope_and_its_own_project()
     {
-        var cli = new FakeCli
-        {
-            ListJson = """
-            [
-              { "id": "flaui-mcp@flaui-mcp", "scope": "local",   "enabled": true, "projectPath": "C:\\a" },
-              { "id": "flaui-mcp@flaui-mcp", "scope": "project", "enabled": true, "projectPath": "C:\\b" },
-              { "id": "flaui-mcp@flaui-mcp", "scope": "user",    "enabled": true }
-            ]
-            """
-        };
+        var cli = new FakeClaude()
+            .Install("flaui-mcp@flaui-mcp", "local", @"C:\a", enabled: true)
+            .Install("flaui-mcp@flaui-mcp", "project", @"C:\b", enabled: true)
+            .Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
         var s = TempState();
 
-        new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        Remedy(cli, s).Apply();
 
         var d = cli.Disables.ToList();
         Assert.Equal(3, d.Count);
@@ -1379,72 +1477,64 @@ public class ClaudeCollisionRemedyTests
         Assert.Equal(3, CollisionMarker.Read(s).Count);
     }
 
-    // R1 + R5. Already disabled with no marker => the USER did this. Never touch it, and SAY so:
-    // the correct rule here is an invisible one, and an unreported decision is indistinguishable
-    // from a bug.
+    // R1 + R5. Already disabled with no marker => the USER did this. Never re-record it, and SAY so —
+    // the correct rule here is invisible, and an unreported decision is indistinguishable from a bug.
+    // Note: mutation-as-detector still ATTEMPTS the disable (a no-op exit 1), then re-reads to confirm
+    // it is off; the invariant is "nothing recorded + a warning", not "no disable attempted".
     [Fact]
     public void An_already_disabled_copy_with_no_marker_is_left_alone_and_reported()
     {
-        var cli = new FakeCli { ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": false } ]""" };
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: false);
         var s = TempState();
 
-        var warning = new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        var warning = Remedy(cli, s).Apply();
 
-        Assert.Empty(cli.Disables);
         Assert.Empty(CollisionMarker.Read(s));
         Assert.NotNull(warning);
         Assert.Contains("already disabled", warning);
     }
 
-    // The R1 hazard itself: a repair or minor-version re-install must not rewrite the marker.
+    // The R1 hazard itself: a repair or minor-version re-install must not rewrite the marker. The
+    // entry is already off and we already have its record, so the re-read confirms it and we stay silent.
     [Fact]
     public void A_reinstall_over_our_own_disable_leaves_the_marker_untouched()
     {
-        var cli = new FakeCli { ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": false } ]""" };
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: false);
         var s = TempState();
         CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) });
         var before = File.ReadAllText(CollisionMarker.PathIn(s));
 
-        new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        var warning = Remedy(cli, s).Apply();
 
-        Assert.Empty(cli.Disables);
+        Assert.Null(warning);
         Assert.Equal(before, File.ReadAllText(CollisionMarker.PathIn(s)));
     }
 
     [Fact]
     public void A_newly_enabled_entry_is_merged_into_an_existing_marker()
     {
-        var cli = new FakeCli
-        {
-            ListJson = """
-            [
-              { "id": "flaui-mcp@flaui-mcp", "scope": "local", "enabled": false, "projectPath": "C:\\a" },
-              { "id": "flaui-mcp@flaui-mcp", "scope": "local", "enabled": true,  "projectPath": "C:\\b" }
-            ]
-            """
-        };
+        var cli = new FakeClaude()
+            .Install("flaui-mcp@flaui-mcp", "local", @"C:\a", enabled: false)
+            .Install("flaui-mcp@flaui-mcp", "local", @"C:\b", enabled: true);
         var s = TempState();
         CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\a") });
 
-        new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        Remedy(cli, s).Apply();
 
-        Assert.Single(cli.Disables);
-        Assert.Equal(2, CollisionMarker.Read(s).Count);
+        Assert.Equal(2, CollisionMarker.Read(s).Count);   // C:\a preserved, C:\b merged in
     }
 
-    // We only record what we actually transitioned. Recording a failed disable would make uninstall
-    // "restore" a plugin that was never disabled by us.
+    // We only record what we actually transitioned. A GENUINE disable failure (exit 1 with the entry
+    // still enabled) must be reported and NOT recorded — recording it would make uninstall "restore" a
+    // plugin that was never disabled by us. Distinguished from already-disabled by the re-read.
     [Fact]
-    public void A_failed_disable_is_reported_and_NOT_recorded()
+    public void A_genuinely_failed_disable_is_reported_and_NOT_recorded()
     {
-        var cli = new FakeCli
-        {
-            ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": true } ]""",
-            DisableCode = 1,
-        };
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
+        cli.ForceDisableCode[""] = 1;   // user-scope cwd is "" — fail the disable without turning it off
         var s = TempState();
 
-        var warning = new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        var warning = Remedy(cli, s).Apply();
 
         Assert.NotNull(warning);
         Assert.Contains("could not disable", warning);
@@ -1454,53 +1544,74 @@ public class ClaudeCollisionRemedyTests
     [Fact]
     public void A_timed_out_disable_is_reported_and_NOT_recorded()
     {
-        var cli = new FakeCli
-        {
-            ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": true } ]""",
-            DisableCode = ProcessRunner.TimedOut,
-        };
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
+        cli.ForceDisableCode[""] = ProcessRunner.TimedOut;
         var s = TempState();
 
-        var warning = new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        var warning = Remedy(cli, s).Apply();
 
         Assert.NotNull(warning);
+        Assert.Contains("timed out", warning);
+        Assert.Empty(CollisionMarker.Read(s));
+    }
+
+    // The defensive third branch of the exit-1 handler: disable genuinely fails (exit 1, entry still
+    // enabled) AND the re-read cannot complete. We must warn and record NOTHING — recording an
+    // unconfirmed transition would make uninstall "restore" (enable) a plugin we never disabled.
+    [Fact]
+    public void A_failed_disable_whose_state_cannot_be_reread_is_reported_and_NOT_recorded()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "local", @"C:\p", enabled: true);
+        cli.ForceDisableCode[@"C:\p"] = 1;    // genuine failure, entry stays enabled
+        cli.FailListAtCwd.Add(@"C:\p");        // ...and the re-read at its own cwd cannot complete
+        var s = TempState();
+
+        var warning = Remedy(cli, s).Apply();
+
+        Assert.NotNull(warning);
+        Assert.Contains("could not verify", warning);
         Assert.Empty(CollisionMarker.Read(s));
     }
 
     [Fact]
     public void One_failed_disable_does_not_stop_the_others()
     {
-        var cli = new FakeCli
-        {
-            ListJson = """
-            [
-              { "id": "flaui-mcp@flaui-mcp", "scope": "local", "enabled": true, "projectPath": "C:\\a" },
-              { "id": "flaui-mcp@flaui-mcp", "scope": "user",  "enabled": true }
-            ]
-            """
-        };
+        var cli = new FakeClaude()
+            .Install("flaui-mcp@flaui-mcp", "local", @"C:\a", enabled: true)
+            .Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
+        cli.ForceDisableCode[@"C:\a"] = 1;   // the local one fails; the user one still succeeds
         var s = TempState();
-        var remedy = new ClaudeCollisionRemedy((f, a, c) =>
-        {
-            if (a[0] == "plugin" && a[1] == "list") return new RunResult(0, cli.ListJson);
-            cli.Calls.Add((a, c));
-            return new RunResult(c == @"C:\a" ? 1 : 0, "");    // the first one fails
-        }, s);
 
-        var warning = remedy.Apply();
+        var warning = Remedy(cli, s).Apply();
 
-        Assert.Equal(2, cli.Calls.Count);                                  // both attempted
+        Assert.Equal(2, cli.Disables.Count());                             // both attempted
         Assert.NotNull(warning);
         Assert.Equal(new DisabledEntry("flaui-mcp@flaui-mcp", "user", null), Assert.Single(CollisionMarker.Read(s)));
+    }
+
+    // A non-user entry whose project directory is gone cannot load the plugin, and disable would have
+    // nowhere valid to run from. Skip it — do not attempt the disable, do not record it.
+    [Fact]
+    public void A_row_whose_project_directory_is_gone_is_skipped()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "local", @"C:\gone", enabled: true);
+        var s = TempState();
+
+        var warning = Remedy(cli, s, dirExists: p => p != @"C:\gone").Apply();
+
+        Assert.Empty(cli.Disables);
+        Assert.Empty(CollisionMarker.Read(s));
+        Assert.NotNull(warning);
+        Assert.Contains("no longer exists", warning);
     }
 
     [Fact]
     public void A_missing_claude_cli_is_reported_and_disables_nothing()
     {
-        var cli = new FakeCli { ListCode = ProcessRunner.NotFound };
+        var cli = new FakeClaude { ListFails = true };
         var s = TempState();
 
-        var warning = new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        var warning = Remedy(cli, s).Apply();
 
         Assert.NotNull(warning);
         Assert.Empty(cli.Disables);
@@ -1510,24 +1621,56 @@ public class ClaudeCollisionRemedyTests
     [Fact]
     public void Unparseable_list_output_is_reported_and_disables_nothing()
     {
-        var cli = new FakeCli { ListJson = "<html>not json</html>" };
+        var cli = new FakeClaude { RawListOverride = "<html>not json</html>" };
         var s = TempState();
 
-        var warning = new ClaudeCollisionRemedy(cli.Run, s).Apply();
+        var warning = Remedy(cli, s).Apply();
 
         Assert.NotNull(warning);
         Assert.Empty(cli.Disables);
     }
 
+    // agy panel round 2: a non-empty array that parses to ZERO of our rows (e.g. a future claude
+    // release renames the `id` field) must surface as a warning, NOT be read as "no collisions" and
+    // silently skipped — that would leave a live collision entirely unreported.
     [Fact]
-    public void The_inventory_is_queried_with_json_and_no_cwd()
+    public void A_list_that_parses_to_no_rows_but_is_not_an_empty_array_is_reported_not_skipped()
     {
-        var cli = new FakeCli();
-        new ClaudeCollisionRemedy(cli.Run, TempState()).Apply();
+        var cli = new FakeClaude { RawListOverride = """[ { "pluginId": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": true } ]""" };
+        var s = TempState();
+
+        var warning = Remedy(cli, s).Apply();
+
+        Assert.NotNull(warning);
+        Assert.Empty(cli.Disables);
+    }
+
+    // agy panel round 2: when the marker cannot be written, the summary must NOT promise a restore it
+    // cannot deliver — the record-failure warning already says the opposite, and joining both is
+    // self-contradictory to the one human who reads it.
+    [Fact]
+    public void When_the_marker_cannot_be_written_the_summary_does_not_promise_a_restore()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
+        var s = TempState();
+        Directory.CreateDirectory(CollisionMarker.PathIn(s));   // a DIRECTORY where the marker file must go
+
+        var warning = Remedy(cli, s).Apply();
+
+        Assert.NotNull(warning);
+        Assert.Contains("will not re-enable it automatically", warning);              // the honest part
+        Assert.DoesNotContain("they will be re-enabled if you uninstall", warning);   // the promise is withheld
+    }
+
+    [Fact]
+    public void The_inventory_is_enumerated_with_json_and_no_cwd()
+    {
+        var cli = new FakeClaude();
+        Remedy(cli, TempState()).Apply();
 
         var list = Assert.Single(cli.Calls);
         Assert.Equal(new[] { "plugin", "list", "--json" }, list.args);
-        Assert.Null(list.cwd);          // detection is global; only remediation is CWD-bound
+        Assert.Null(list.cwd);          // enumeration is global; only remediation is CWD-bound
     }
 }
 ```
@@ -1544,6 +1687,7 @@ Create `src/FlaUI.Mcp.Server/Install/ClaudeCollisionRemedy.cs`:
 ```csharp
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Nodes;
 
 namespace FlaUI.Mcp.Server.Install;
 
@@ -1559,6 +1703,16 @@ namespace FlaUI.Mcp.Server.Install;
 /// DISABLE, NOT UNINSTALL: both stop the drifted skill loading, but disable is reversible, and
 /// uninstall would silently destroy something the user installed deliberately because our own README
 /// told them to.
+///
+/// DETECTION IS BY MUTATION, NOT BY READING `enabled`. MEASURED 2026-07-16 (plan Task 2): `claude
+/// plugin list --json` resolves the `enabled` field of a `scope=local` row against the CURRENT working
+/// directory, not the row's own projectPath. A single global read from Setup's cwd (which has no
+/// `.claude`) reports every local copy as disabled — so branching on `enabled` would silently skip a
+/// live local collision, the exact failure this class exists to prevent. Instead we ATTEMPT the
+/// disable at each row's own scope+cwd and read the OUTCOME: `disable` reports exit 0 when it actually
+/// turned an enabled entry off, and exit 1 ("already disabled") when it was already off. The global
+/// list is used only to ENUMERATE rows by id (id/scope/projectPath ARE global and stable); `enabled`
+/// is re-read only at a row's own projectPath, and only to disambiguate a failed disable.
 /// </summary>
 public sealed class ClaudeCollisionRemedy
 {
@@ -1566,11 +1720,17 @@ public sealed class ClaudeCollisionRemedy
 
     private readonly Func<string, string[], string?, RunResult> _run;
     private readonly string _stateDir;
+    private readonly Func<string, bool> _dirExists;
 
-    public ClaudeCollisionRemedy(Func<string, string[], string?, RunResult> run, string stateDir)
+    /// <param name="dirExists">Injected for testability; defaults to <see cref="Directory.Exists"/>.
+    /// A non-user entry whose project directory is gone cannot load the plugin, and `disable` would
+    /// have nowhere valid to run from — such entries are skipped.</param>
+    public ClaudeCollisionRemedy(Func<string, string[], string?, RunResult> run, string stateDir,
+        Func<string, bool>? dirExists = null)
     {
         _run = run;
         _stateDir = stateDir;
+        _dirExists = dirExists ?? Directory.Exists;
     }
 
     /// <summary>Install side: disable each enabled colliding entry and record it. Returns a warning
@@ -1592,26 +1752,61 @@ public sealed class ClaudeCollisionRemedy
         {
             var entry = new DisabledEntry(e.Id, e.Scope, e.ProjectPath);
 
-            if (!e.Enabled)
+            // A non-user entry whose project directory is gone cannot load the plugin (no collision),
+            // and `disable` would have nowhere valid to run from. Skip it; a stale marker record for
+            // it is handled at restore, not here.
+            if (e.ProjectPath is not null && !_dirExists(e.ProjectPath))
             {
-                // R1: no transition to perform. If we have no record of disabling it, the USER did —
-                // leave it alone forever. R5: say so, because this correct decision is invisible.
-                // Case-insensitive: a path that differs only in casing is the SAME entry, and
-                // treating it as new would wrongly blame the user for our own disable.
-                if (!recorded.Any(m => CollisionMarker.SameEntry(m, entry)))
-                    warnings.Add($"{e.Id} ({Where(entry)}) was already disabled and we have no record of disabling it — " +
-                                 "assuming you did, and leaving it alone.");
+                warnings.Add($"a conflicting {e.Id} was listed for {e.ProjectPath}, which no longer exists — skipped it.");
                 continue;
             }
 
-            // The scope is not a free parameter: `claude plugin disable` cannot target another
-            // project, so it must RUN from that entry's projectPath (null = user scope = anywhere).
+            // MUTATION-AS-DETECTOR. We do NOT branch on e.Enabled — it is CWD-resolved and unreliable
+            // for local rows (see class summary). `disable` at the row's own cwd IS the detector, and
+            // the scope is not a free parameter: `claude plugin disable` cannot target another project,
+            // so it must RUN from that entry's projectPath (null = user scope = anywhere).
             var r = _run("claude", new[] { "plugin", "disable", e.Id, "--scope", e.Scope }, e.ProjectPath);
             if (r.Code == 0)
-                justDisabled.Add(entry);
-            else
+            {
+                justDisabled.Add(entry);   // it was enabled; WE transitioned it enabled -> disabled
+                continue;
+            }
+            if (r.Code == ProcessRunner.NotFound || r.Code == ProcessRunner.TimedOut)
+            {
+                warnings.Add($"could not disable the conflicting {e.Id} ({Where(entry)}): claude " +
+                             (r.Code == ProcessRunner.TimedOut ? "timed out." : "was not found.") +
+                             " Two copies of the driving skill may be active.");
+                continue;
+            }
+
+            // Non-zero, non-sentinel: `disable` refuses an already-disabled entry with exit 1, which
+            // is ambiguous with a genuine failure (permissions, corrupt settings). The distinguishing
+            // text is a human-readable message we must NOT parse — re-read the entry's ACTUAL state
+            // from its OWN project directory, the one context where `enabled` is reliable for it.
+            var stillEnabled = ReadEnabledAt(entry);
+            if (stillEnabled == true)
+            {
                 warnings.Add($"could not disable the conflicting {e.Id} ({Where(entry)}): claude exited {r.Code}. " +
                              "Two copies of the driving skill may now be active.");
+            }
+            else if (stillEnabled == false)
+            {
+                // Already disabled. A record of our own means this is a reinstall over our prior
+                // disable — stay silent (R1). No record means the USER disabled it: leave it, and SAY
+                // so (R5), because this correct decision is otherwise invisible. Case-insensitive, so a
+                // path differing only in casing is the SAME entry and we do not blame the user for our
+                // own disable.
+                if (!recorded.Any(m => CollisionMarker.SameEntry(m, entry)))
+                    warnings.Add($"{e.Id} ({Where(entry)}) was already disabled and we have no record of disabling it — " +
+                                 "assuming you did, and leaving it alone.");
+            }
+            else
+            {
+                // disable failed AND the state could not be re-read. Report conservatively; record
+                // nothing, because no transition was ever confirmed.
+                warnings.Add($"could not disable the conflicting {e.Id} ({Where(entry)}) and could not verify its state. " +
+                             "Two copies of the driving skill may be active.");
+            }
         }
 
         // Only entries WE transitioned are recorded; existing records are never rewritten (R1).
@@ -1621,8 +1816,13 @@ public sealed class ClaudeCollisionRemedy
         if (recordWarning is not null) warnings.Add(recordWarning);
 
         if (justDisabled.Count > 0)
-            warnings.Insert(0, $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
-                               "(they will be re-enabled if you uninstall flaui-mcp).");
+            // Only PROMISE a restore if we actually recorded it. If Record failed, recordWarning
+            // already tells the user it will NOT be re-enabled — promising the opposite in the same
+            // concatenated line is worse than saying nothing. (agy panel round 2.)
+            warnings.Insert(0, recordWarning is null
+                ? $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
+                  "(they will be re-enabled if you uninstall flaui-mcp)."
+                : $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill.");
 
         return warnings.Count == 0 ? null : string.Join(" ", warnings);
     }
@@ -1641,18 +1841,41 @@ public sealed class ClaudeCollisionRemedy
         // record anywhere that we were the ones who did it. R7's stale-marker hazard is about a
         // marker surviving a SUCCESSFUL consume, which this is not.
         if (!TryReadInventory(out var entries, out var listWarning))
+        {
+            // Manual recourse, but only for entries we could actually act on: an entry whose project
+            // directory is gone is moot AND a `cd` into a deleted path is impossible, so listing it
+            // would resurrect the same bad-recourse defect the in-loop guard below fixes. (agy panel
+            // round 2 — the early return bypassed that guard.)
+            var recoverable = recorded.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
+            var recourse = recoverable.Count == 0
+                ? "No manual action is possible (the recorded projects no longer exist)."
+                : "To restore manually: " + string.Join("; ", recoverable.Select(e =>
+                    $"claude plugin enable {e.Id} --scope {e.Scope}" +
+                    (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})")));
             return $"{listWarning} Your conflicting plugin(s) are still disabled and were NOT re-enabled. " +
-                   "The record is kept at " + CollisionMarker.PathIn(_stateDir) + ". To restore manually: " +
-                   string.Join("; ", recorded.Select(e =>
-                       $"claude plugin enable {e.Id} --scope {e.Scope}" +
-                       (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})")));
+                   "The record is kept at " + CollisionMarker.PathIn(_stateDir) + ". " + recourse;
+        }
 
         var present = ClaudePluginInventory.Matching(entries, MarketplaceId);
 
         foreach (var e in recorded)
         {
+            // Symmetric to Apply's guard: a project deleted AFTER we disabled the copy but BEFORE
+            // uninstall cannot load the plugin (the collision is moot) and `enable` has nowhere valid
+            // to run from. MEASURED: Process.Start with a missing working directory throws
+            // Win32Exception, which ProcessRunner surfaces as a failed run — so without this guard we
+            // would fall through to the failure branch below and print an impossible "run it from
+            // <deleted path>" recourse. The `present` check does NOT catch this: the inventory can
+            // still LIST a stale row for a deleted project (measured).
+            if (e.ProjectPath is not null && !_dirExists(e.ProjectPath))
+            {
+                warnings.Add($"{e.Id} ({Where(e)}) — its project directory no longer exists, so there was nothing to re-enable.");
+                continue;
+            }
+
             // R2: the user may have uninstalled it themselves after we disabled it. Enabling a
-            // plugin that no longer exists throws or orphans a reference — check first.
+            // plugin that no longer exists writes a phantom {id:true} (measured: enable succeeds for a
+            // nonexistent id) — check the id is still installed first.
             if (!present.Any(p => Same(p, e)))
             {
                 warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, so it was not re-enabled.");
@@ -1675,15 +1898,33 @@ public sealed class ClaudeCollisionRemedy
         return warnings.Count == 0 ? null : string.Join(" ", warnings);
     }
 
+    /// <summary>Re-read one entry's ACTUAL enabled state from its OWN project directory — the only
+    /// context in which `list --json`'s CWD-resolved `enabled` is correct for a local-scope row. Null
+    /// when it cannot be read back. Used ONLY to disambiguate a failed disable, never as the primary
+    /// detector.</summary>
+    private bool? ReadEnabledAt(DisabledEntry e)
+    {
+        var r = _run("claude", new[] { "plugin", "list", "--json" }, e.ProjectPath);
+        if (r.Code != 0) return null;
+        var row = ClaudePluginInventory.Parse(r.Output)
+            .FirstOrDefault(p => CollisionMarker.SameEntry(new DisabledEntry(p.Id, p.Scope, p.ProjectPath), e));
+        return row?.Enabled;
+    }
+
     private bool TryReadInventory(out IReadOnlyList<ClaudePluginEntry> entries, out string? warning)
     {
-        var r = _run("claude", new[] { "plugin", "list", "--json" }, null);   // detection is global
+        var r = _run("claude", new[] { "plugin", "list", "--json" }, null);   // enumeration is global
         if (r.Code != 0)
         {
             entries = System.Array.Empty<ClaudePluginEntry>();
-            warning = r.Code == ProcessRunner.NotFound
-                ? "claude CLI not on PATH — did not check for a conflicting marketplace plugin."
-                : $"`claude plugin list --json` exited {r.Code} — did not check for a conflicting marketplace plugin.";
+            // Translate the sentinels rather than leaking "-1"/"-2" (internal, not OS exit codes) to a
+            // human. (agy panel round 2.)
+            warning = r.Code switch
+            {
+                ProcessRunner.NotFound => "claude CLI not on PATH — did not check for a conflicting marketplace plugin.",
+                ProcessRunner.TimedOut => "`claude plugin list --json` timed out — did not check for a conflicting marketplace plugin.",
+                _ => $"`claude plugin list --json` exited {r.Code} — did not check for a conflicting marketplace plugin.",
+            };
             return false;
         }
         entries = ClaudePluginInventory.Parse(r.Output);
@@ -1696,7 +1937,16 @@ public sealed class ClaudeCollisionRemedy
         return true;
     }
 
-    private static bool LooksLikeEmptyList(string output) => output.Trim().StartsWith("[");
+    // Genuinely empty ONLY when the output parses to an empty JSON array. A non-empty array that
+    // yielded zero entries means the schema drifted (e.g. a renamed `id` field) — that must surface as
+    // a warning, NOT be read as "no collisions" and silently skipped. A bare StartsWith("[") could not
+    // tell those apart. Whitespace variants like "[ ]" parse to Count 0, so they are handled too.
+    // (agy panel round 2 — mechanism corrected: extra fields do NOT break Parse; a renamed field does.)
+    private static bool LooksLikeEmptyList(string output)
+    {
+        try { return JsonNode.Parse(output) is JsonArray { Count: 0 }; }
+        catch { return false; }
+    }
 
     private static bool Same(ClaudePluginEntry p, DisabledEntry e) =>
         CollisionMarker.SameEntry(new DisabledEntry(p.Id, p.Scope, p.ProjectPath), e);
@@ -1708,7 +1958,7 @@ public sealed class ClaudeCollisionRemedy
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `dotnet test test/FlaUI.Mcp.Tests --filter "FullyQualifiedName~ClaudeCollisionRemedyTests"`
-Expected: PASS — 13 passed.
+Expected: PASS — 19 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1910,13 +2160,56 @@ public class ClaudeCollisionRestoreTests
         var s = TempState();
         CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\proj") });
 
-        var warning = new ClaudeCollisionRemedy((_, _, _) => new RunResult(ProcessRunner.NotFound, ""), s).Restore();
+        // dirExists: _ => true so the recorded project counts as present and its recourse line is emitted
+        // (the round-2 fix omits deleted projects from the recourse; here the project still exists).
+        var warning = new ClaudeCollisionRemedy((_, _, _) => new RunResult(ProcessRunner.NotFound, ""), s, _ => true).Restore();
 
         Assert.NotNull(warning);
         Assert.True(File.Exists(CollisionMarker.PathIn(s)), "consuming the marker here loses the record forever");
         Assert.Contains("still disabled", warning);
         Assert.Contains("claude plugin enable flaui-mcp@flaui-mcp --scope local", warning);
         Assert.Contains(@"C:\proj", warning);          // they need to know WHERE to run it
+    }
+
+    // agy panel round 2: the CLI-missing early return must ALSO skip deleted-project entries in its
+    // manual-recourse text — otherwise it tells the user to `cd` into a directory that is gone.
+    [Fact]
+    public void The_manual_recourse_omits_entries_whose_project_directory_is_gone()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\gone") });
+
+        var warning = new ClaudeCollisionRemedy((_, _, _) => new RunResult(ProcessRunner.NotFound, ""), s, p => p != @"C:\gone").Restore();
+
+        Assert.NotNull(warning);
+        Assert.DoesNotContain(@"C:\gone", warning);      // no impossible "run from C:\gone"
+        Assert.Contains("no longer exist", warning);      // says why there is nothing to do
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)), "cannot verify => must KEEP the marker");
+    }
+
+    // Symmetric to Apply's deleted-project guard (agy panel, round 1). A project deleted after we
+    // disabled the copy but before uninstall: we must NOT try to enable at a dead cwd (Process.Start
+    // throws Win32Exception on a missing working directory, which surfaces as a failed run and would
+    // otherwise print an impossible "run it from <deleted path>" recourse), must not crash, and must
+    // still consume the marker. The stale row can still appear in `list --json`, so the presence
+    // check alone does not cover this.
+    [Fact]
+    public void A_recorded_entry_whose_project_directory_is_gone_is_skipped_not_run()
+    {
+        var cli = new FakeCli
+        {
+            ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "local", "enabled": false, "projectPath": "C:\\gone" } ]"""
+        };
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\gone") });
+
+        var warning = new ClaudeCollisionRemedy(cli.Run, s, p => p != @"C:\gone").Restore();
+
+        Assert.Empty(cli.Calls);                                 // never spawned `enable` at a dead cwd
+        Assert.NotNull(warning);
+        Assert.Contains("no longer exists", warning);
+        Assert.DoesNotContain("run it from", warning);           // no impossible recourse
+        Assert.False(File.Exists(CollisionMarker.PathIn(s)));    // R7: marker still consumed
     }
 
     // THE FULL ROUND TRIP — the property that actually matters to a user.
@@ -1931,8 +2224,9 @@ public class ClaudeCollisionRestoreTests
             if (a[0] == "plugin" && a[1] == "list")
                 return new RunResult(0, $$"""[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": {{(enabled ? "true" : "false")}} } ]""");
             calls.Add(a);
-            if (a[1] == "disable") enabled = false;
-            if (a[1] == "enable") enabled = true;
+            // Faithful: disable of an already-off entry is a no-op exit 1 (measured); of an on entry, exit 0.
+            if (a[1] == "disable") { if (!enabled) return new RunResult(1, "already disabled"); enabled = false; return new RunResult(0, ""); }
+            if (a[1] == "enable") { enabled = true; return new RunResult(0, ""); }
             return new RunResult(0, "");
         }
 
@@ -1958,7 +2252,9 @@ public class ClaudeCollisionRestoreTests
             if (a[0] == "plugin" && a[1] == "list")
                 return new RunResult(0, $$"""[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": {{(enabled ? "true" : "false")}} } ]""");
             calls.Add(a);
-            if (a[1] == "enable") enabled = true;
+            // Faithful: the user already disabled it, so our detector's disable is a no-op exit 1.
+            if (a[1] == "disable") { if (!enabled) return new RunResult(1, "already disabled"); enabled = false; return new RunResult(0, ""); }
+            if (a[1] == "enable") { enabled = true; return new RunResult(0, ""); }
             return new RunResult(0, "");
         }
 
@@ -1966,7 +2262,8 @@ public class ClaudeCollisionRestoreTests
         new ClaudeCollisionRemedy(Run, s).Restore();
 
         Assert.False(enabled, "we re-enabled a plugin the USER had disabled");
-        Assert.Empty(calls);
+        Assert.DoesNotContain(calls, c => c[1] == "enable");   // the invariant: never re-enable what we did not disable
+        Assert.Empty(CollisionMarker.Read(s));                 // and nothing was recorded to restore
     }
 }
 ```
@@ -1974,7 +2271,7 @@ public class ClaudeCollisionRestoreTests
 - [ ] **Step 2: Run test to verify it fails, then passes**
 
 Run: `dotnet test test/FlaUI.Mcp.Tests --filter "FullyQualifiedName~ClaudeCollisionRestoreTests"`
-Expected: PASS — 11 passed. `Restore()` already exists from Task 6; if any test fails, fix `ClaudeCollisionRemedy.Restore`, **not** the test.
+Expected: PASS — 13 passed. `Restore()` already exists from Task 6; if any test fails, fix `ClaudeCollisionRemedy.Restore`, **not** the test.
 
 - [ ] **Step 3: Commit**
 
@@ -3167,6 +3464,66 @@ and a fabricated exception, each with a plausible mechanism attached. Both took 
 kill. Neither was dismissed on judgment. The 5 that survived measurement were all real, and 2 of them
 (#3, #6) were paths to **permanently losing a user's plugin** — the exact class of defect this whole
 remedy exists to prevent, reintroduced by the code meant to prevent it.
+
+### Amendment during execution (2026-07-16) — Tasks 3, 6, 7 rewritten after a Task 2 measurement
+
+Executing Task 2 (a pure measurement) **falsified the plan's original detection step.** MEASURED:
+`claude plugin list --json`'s `enabled` field is **CWD-resolved for `scope=local` rows** (proven three
+ways, incl. a planted-and-flipped `settings.local.json`; one affected `projectPath` no longer exists on
+disk). A single global read from Setup's cwd reports every local copy as `enabled=false`, so the
+original "one global read, act on `enabled`" would **silently skip a live local collision** — the exact
+failure this remedy exists to prevent. This retroactively **vindicates round 7's rejected "`--json` is
+CWD-contextual" finding**, which had been dismissed after measuring only the stable fields
+(id/scope/projectPath) and never varying CWD against `enabled`.
+
+**Resolution — AGY-FIRST consult + one negotiation turn (both models converged) + user-decided all
+scopes.** See [Settled decisions](../specs/2026-07-16-skill-distribution-design.md) #4. Changes:
+- **Task 6 `Apply` → mutation-as-detector.** No longer branches on `e.Enabled` (unreliable). Enumerates
+  rows by id from the global list, then attempts `disable` at each row's own scope+cwd; `exit 0` ⇒ we
+  transitioned it (record); `exit 1` ⇒ **re-read `list --json` at cwd=projectPath** (new `ReadEnabledAt`)
+  to tell already-off from a real failure — **never by parsing the message string** (agy proposed the
+  string-match; claude rejected it as UI-text-not-contract; agy conceded). Added a `Directory.Exists`
+  guard (injected, defaults to `Directory.Exists`) skipping rows whose project is gone.
+- **Task 6 tests rewritten** around a *faithful* `FakeClaude` that reproduces the measured semantics
+  (CWD-resolved `enabled`, `disable` exit-1-when-already-off, phantom-`enable`). Includes a **regression
+  test that fails against the old read-based `Apply`** and a meta-test proving the fake reproduces the
+  CWD bug (so the regression is not vacuous). 13 → 16 tests.
+- **Task 3 docstring corrected** — the "identical output from any working directory" claim was false for
+  `enabled`; the parser is now documented as a faithful transcriber whose non-user `Enabled` is valid
+  only when read at the row's own projectPath.
+- **Task 7 `Restore` unchanged** (it never read `enabled` — matches on presence). Its two round-trip
+  fakes were made faithful (model `disable` exit 1 when already-off); one assertion changed from "zero
+  calls" to the real invariant "no `enable` call + nothing recorded", because mutation-as-detector now
+  *attempts* a no-op disable even on a user-already-disabled entry.
+- **Rejected during the consult:** per-project reads (load-bearing on the leaky abstraction),
+  direct settings-JSON writes (couples to Claude's private storage), and user-scope-only (assumes scope
+  instead of responding to inventory).
+
+**Not yet code-verified.** This amendment is plan text. Its build/logic verification happens when the
+Task 6 implementer transcribes and runs it (TDD: tests already written, implement until green). A failed
+transcription is a STOP-and-report signal, not a silent adapt.
+
+**AGY-AFTER panel on the amendment — 2 rounds, 7 findings, all folded.** `relentless-adversarial-auditor`;
+solo floor (Axiom Breaker, Cascade Analyst, State Corruptor, Protocol Pedant, Mechanism Gamer, Literal
+Implementer) + agy escalation, then a rotation round (added Blindspot Auditor, Dependency Cynic).
+- **R1 solo:** `LooksLikeEmptyList` missing `StringComparison` (0-warning-gate risk; measured precedent
+  `ConfigArgsMerge.cs:17`) · the `stillEnabled == null` "could not verify" branch was untested (added
+  `FailListAtCwd` + a test). Verified compilable via `ImplicitUsings enable` in the server csproj.
+- **R1 agy:** `Restore` lacked the `Directory.Exists` guard that `Apply` has ⇒ a project deleted between
+  install and uninstall would print an impossible "run it from <deleted path>". agy framed it as a crash;
+  **measured false** — `Process.Start` on a missing WD throws `Win32Exception`, which `ProcessRunner`
+  catches → the defect is the bad recourse, not a crash. Guard + test added.
+- **R2 agy (rotation):** (1) the CLI-missing early-return in `Restore` bypassed that same guard in its
+  manual-recourse text → same bad recourse, fixed + test; (2) on a marker-write failure `Apply` both
+  promised and rescinded a restore in one concatenated line → banner now withheld when `Record` failed,
+  + test; (3) `TryReadInventory` leaked the raw `-2`/`-1` sentinels to the operator → translated;
+  (4) `LooksLikeEmptyList`'s `StartsWith("[")` treated ANY `[`-prefixed output as empty, so a
+  schema-drift array parsing to zero rows was a **silent skip of a live collision** → now `JsonNode.Parse
+  is JsonArray { Count: 0 }` + test. agy's mechanism for (4) ("a new field breaks Parse") was **wrong**
+  (Parse tolerates unknown fields); the real trigger is a *renamed* field, and the fix is stricter than
+  agy's proposed `== "[]"` (which would false-warn on `[ ]`).
+- Test counts after folding: Task 6 → 19, Task 7 → 13.
+- **Round 3 is the hard cap** — round 2 still found substance, so continuing requires an operator decision.
 
 ## Risks this plan accepts
 
