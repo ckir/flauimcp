@@ -243,10 +243,21 @@ self-contradictory, and was right: the installer is `runhidden` (`installer/flau
 warning in `install.log` is invisible by construction — "warn only" *is* "do nothing" at runtime,
 while the spec's own axiom says a drifted skill must not run. Claude and agy converged on disable.)
 
-- **On install:** if the marketplace copy is present, run
-  `claude plugin disable flaui-mcp@flaui-mcp --scope user`, and report it as a `Warning` on the
-  claude `AgentResult` (the channel `a373265` already built), so it reaches `install.log` and
+- **On install:** if the marketplace copy is present, disable it **at the scope(s) `--json` reports it
+  at** (see below — do NOT hardcode a scope), and report it as a `Warning` on the claude
+  `AgentResult` (the channel `a373265` already built), so it reaches `install.log` and
   `flaui-mcp status`.
+
+⚠ **Do NOT hardcode `--scope user`, and do NOT assume a single entry.** An earlier draft of this
+section did both. **Measured 2026-07-16:** `claude plugin install` takes `--scope user|project|local`,
+and a live `claude plugin list --json` shows `csharp-lsp@claude-plugins-official` **three times, every
+one at `scope=local`** — so a marketplace plugin is neither necessarily user-scoped nor necessarily a
+single row. Failure if hardcoded: a user who installed `flaui-mcp@flaui-mcp` at project or local scope
+gets `disable --scope user`, which **does not disable it** — the silent collision survives, and our
+`install.log` cheerfully records that we handled it. **Contract: read `scope` from each matching
+`--json` entry and disable each one, at its own scope.** The marker (R1) must therefore record *which
+entries at which scopes* we disabled — not a single boolean. *(Found by the panel; the multi-entry
+half was found by measuring its premise.)*
 
 🚩 **BLOCKER — this remedy needs a capability the writer does not have. Round 5's best finding; the
 plan CANNOT be written until it is resolved.** Every branch above requires *reading* Claude's state:
@@ -364,6 +375,18 @@ rewrites shared router semantics (`CliRouter.cs:18`, `:103-110`) which today wip
 design*, and it is a pre-existing behavior unrelated to skill distribution. Fixing it here would be
 scope creep; moving our own marker is the smaller, contained change. If `--purge-data`'s agent-blindness
 is a defect, it is a **separate** one — file it, don't smuggle it.
+
+**R7 — the marker must be DELETED when consumed. Its lifecycle was write-only, and that silently
+violates R1's own axiom.** R1 says when to *write* the marker and R3/R4 say where it lives, but
+nothing said when it dies — and because R4 deliberately moves it out of the `--purge-data` path, it
+now **outlives the uninstall that consumed it**. Failure: install (marker written) → uninstall
+(restore runs, marker survives) → the user *themselves* disables the plugin → install (correctly sees
+"user disabled it", leaves the stale marker alone) → uninstall → **the stale marker fires a restore
+and silently re-enables a plugin the user deliberately disabled.** That is precisely the outcome R1
+exists to prevent, reached through R1's own bookkeeping. **Contract: deleting the marker is part of
+consuming it — restore and marker-deletion succeed or fail together; a restore that cannot clear its
+marker must report a `Warning`, because the next uninstall will otherwise act on it.** *(Found by the
+panel. It is the natural blind spot of a "write-once" rule: write-once says nothing about erasure.)*
 
 **R5 — every restore decision must be logged, including the negative branch.** "Found it disabled
 with no marker → the user did this → don't touch it" is the correct rule and an **invisible** one. A
@@ -584,6 +607,15 @@ bespoke seats aimed at what four rounds of *folding* had done to the document it
 | 5 | Self-Contradiction (bespoke) | "Bundling makes skew **impossible**" — an absolute the R4 live-session fold falsified and never softened | **FOLDED** — now: on-disk lockstep is the guarantee; session-lifetime skew is bounded by a restart and documented, not claimed away. |
 | 6 | Scope Integrity (bespoke) | the runner timeout was framed as required "regardless" — a global framework fix smuggled in | **FOLDED** — justification narrowed to *this spec adds the call whose interactivity is unverified*. Wider benefit is incidental. |
 | 7 | Scope Integrity (bespoke) | making `--purge-data` agent-aware rewrites shared router semantics for a pre-existing, unrelated behavior | **FOLDED — DECIDED**: move the marker instead. If `--purge-data`'s agent-blindness is a defect, it is a separate one. |
+
+**Round 6 — agy audit, 2026-07-16. Verdict: REJECT, 2 findings — BOTH VALID AND FOLDED.** Narrow
+round (the previous round-6 attempt breached review-only and was reset; this payload was rewritten so
+its *body*, not just its banner, was audit-shaped — and the peer touched nothing).
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | the remedy **hardcoded `--scope user`** while `--json` reports each entry's actual `scope` | **FOLDED — and it was worse than reported.** Measured: `claude plugin install` takes `--scope user\|project\|local`, and live `--json` shows `csharp-lsp@claude-plugins-official` **3× at `scope=local`**. So the copy is neither necessarily user-scoped nor a single row. Contract now: disable **each** matching entry **at its own scope**; the marker records which entries at which scopes. |
+| 2 | the marker's lifecycle is **write-only** — nothing deletes it when consumed | **FOLDED as R7.** Verified by reasoning against R1/R3/R4: because R4 moves it out of the purge path, it outlives its uninstall, and a later stale fire **re-enables a plugin the user disabled** — the exact outcome R1 exists to prevent, via R1's own bookkeeping. |
 
 **Method note.** Round 1 was bound to measurement (name the files, cite code `file:line`, and
 *verify the relation, not just the endpoints*). Compared with the peer's 2026-07-15 panel — whose
