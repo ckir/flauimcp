@@ -81,6 +81,11 @@ public class CliRouterTests
         File.WriteAllText(cfg, "{ \"mcpServers\": { \"flaui-mcp\": { \"command\": \"x\", \"args\": [] } } }");
         var bak = cfg + ".bak-20260101000000";
         File.WriteAllText(bak, "{}");
+        // --config redirects the config paths but NOT the data dir, and every run now records itself
+        // there — so this must be redirected too or the test writes into the real ~/.flaui-mcp.
+        var dataDir = Path.Combine(Path.GetTempPath(), $"flaui-data-{Guid.NewGuid():N}");
+        var prev = Environment.GetEnvironmentVariable("FLAUI_MCP_DATA_DIR");
+        Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", dataDir);
         try
         {
             var sb = new StringWriter();
@@ -89,6 +94,8 @@ public class CliRouterTests
         }
         finally
         {
+            Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", prev);
+            if (Directory.Exists(dataDir)) Directory.Delete(dataDir, true);
             foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f);
         }
     }
@@ -122,6 +129,10 @@ public class CliRouterTests
     {
         // Discoverability: the post-install message must surface the opt-in overlay toggle.
         var cfg = Path.Combine(Path.GetTempPath(), $"flaui-cli-{Guid.NewGuid():N}.json");
+        // Redirect the data dir too: install now records its outcome there (see the sweep test).
+        var dataDir = Path.Combine(Path.GetTempPath(), $"flaui-data-{Guid.NewGuid():N}");
+        var prev = Environment.GetEnvironmentVariable("FLAUI_MCP_DATA_DIR");
+        Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", dataDir);
         try
         {
             var sb = new StringWriter();
@@ -131,6 +142,8 @@ public class CliRouterTests
         }
         finally
         {
+            Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", prev);
+            if (Directory.Exists(dataDir)) Directory.Delete(dataDir, true);
             foreach (var f in Directory.GetFiles(Path.GetDirectoryName(cfg)!, Path.GetFileName(cfg) + "*")) File.Delete(f);
         }
     }

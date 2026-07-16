@@ -6,7 +6,7 @@ namespace FlaUI.Mcp.Server.Install;
 public static class CliRouter
 {
     private static readonly HashSet<string> Verbs =
-        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "unlock", "lock", "overlay", "autosound", "presence", "--version", "-v", "--help", "-h" };
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "status", "unlock", "lock", "overlay", "autosound", "presence", "--version", "-v", "--help", "-h" };
 
     public static bool IsInstallerVerb(string[] args) => args.Length > 0 && Verbs.Contains(args[0]);
 
@@ -25,8 +25,14 @@ public static class CliRouter
                 outp.WriteLine($"flaui-mcp {ThisVersion()}");
                 return 0;
 
+            // Pure JSON, meant to be piped/pasted into a client config — keep prose OUT of it.
+            // `status` is where human-readable deployment state lives.
             case "print-config":
                 outp.WriteLine(new GenericMcpConfigWriter().PrintConfig(exePath));
+                return 0;
+
+            case "status":
+                outp.WriteLine(InstallStatus.Describe(exePath, paths.AgyPluginsDir, paths.DataDir));
                 return 0;
 
             case "install":
@@ -143,7 +149,7 @@ public static class CliRouter
                 return 0;
 
             default:
-                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|unlock [--minutes N] [--allow-shells] [--accept-risk]|lock|overlay on|off|autosound on|off|presence on|off] [--agent agy|generic|claude|all] [--config <path>]");
+                outp.WriteLine("usage: flaui-mcp [install|uninstall [--purge-data]|print-config|status|unlock [--minutes N] [--allow-shells] [--accept-risk]|lock|overlay on|off|autosound on|off|presence on|off] [--agent agy|generic|claude|all] [--config <path>]");
                 return 0;
         }
     }
@@ -176,6 +182,9 @@ public static class CliRouter
         outp.WriteLine("                             interactive terminals get an 'I understand' prompt instead.");
         outp.WriteLine("  lock                       Revoke the synthetic-input lease immediately.");
         outp.WriteLine("  print-config               Print the generic mcpServers JSON snippet for manual setup.");
+        outp.WriteLine("  status                     Report what is actually deployed: whether the agy seed");
+        outp.WriteLine("                             driving skill landed, and the outcome of the last install");
+        outp.WriteLine("                             (Setup runs the install hidden, so nothing is shown then).");
         outp.WriteLine("  --version, -v              Print the version.");
         outp.WriteLine("  --help, -h                 Show this help.");
         outp.WriteLine();
@@ -275,7 +284,7 @@ public static class CliRouter
         try
         {
             Directory.CreateDirectory(dataDir);
-            var path = Path.Combine(dataDir, "install.log");
+            var path = Path.Combine(dataDir, InstallStatus.LogName);
             var stamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
             var header = $"# flaui-mcp {ThisVersion()} — {verb} at {stamp}";
             File.WriteAllLines(path, new[] { header }.Concat(lines));
