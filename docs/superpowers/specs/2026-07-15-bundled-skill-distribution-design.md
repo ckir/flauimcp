@@ -1,7 +1,17 @@
 # Spec — bundled driving-skill distribution + global observation inbox
 
+> ## ⛔ SUPERSEDED 2026-07-16 — DO NOT IMPLEMENT
+> Replaced by **`2026-07-16-skill-distribution-design.md`**. Kept only as the review record.
+> This draft is **not green** and contains claims verified false:
+> - "the marketplace has no audience by construction" — false as stated (see the CORRECTION below);
+> - "mirrors `DeploySkill()` exactly" — false (`ClaudeCodeConfigWriter` has no file I/O to extend);
+> - `--contributor` specified with `OptionValue` (valued) shape when it is a boolean (`HasFlag`).
+>
+> Its **global observation inbox** half is **CUT** (7 nails, 2 models — `2026-07-15-panel-findings.md`
+> TIER 3). Read that findings file before reusing anything here.
+
 **Date:** 2026-07-15
-**Status:** design agreed; awaiting implementation plan
+**Status:** ⛔ SUPERSEDED — review record only
 **Supersedes:** the marketplace-only distribution decision (Fork 1B) from `2026-07-15-flaui-mcp-plugin-packaging.md`
 
 ## Problem
