@@ -59,10 +59,24 @@ public sealed class AgyConfigWriter
         }
     }
 
-    private void RemoveSkill()
+    /// <summary>
+    /// Remove the deployed seed. Recursive is safe here: PluginRoot is our own namespace and holds
+    /// only what <see cref="DeploySkill"/> wrote — the curated growth files live outside it, under
+    /// `~/.claude/flaui-mcp/` (see the skill's "Load your learned rules first"). Never throws, for the
+    /// same reason DeploySkill doesn't: a stuck skill dir must not derail the rest of the uninstall.
+    /// </summary>
+    private string? RemoveSkill()
     {
-        if (System.IO.Directory.Exists(PluginRoot))
-            System.IO.Directory.Delete(PluginRoot, recursive: true);
+        try
+        {
+            if (System.IO.Directory.Exists(PluginRoot))
+                System.IO.Directory.Delete(PluginRoot, recursive: true);
+            return null;
+        }
+        catch (System.Exception e)
+        {
+            return $"seed driving skill left behind at {PluginRoot}: {e.Message}";
+        }
     }
 
     public AgentResult Install(string exePath, IReadOnlyList<string>? args = null)
@@ -148,9 +162,9 @@ public sealed class AgyConfigWriter
             if (removedPerm) JsoncFile.Save(_permsPath, pObj);
         }
 
-        RemoveSkill();
+        var skillWarning = RemoveSkill();
         return new AgentResult("agy",
             removedServer || removedPerm ? AgentChange.Removed : AgentChange.NotFound,
-            $"{_serversPath}; {_permsPath}");
+            Detail(skillWarning), skillWarning);
     }
 }

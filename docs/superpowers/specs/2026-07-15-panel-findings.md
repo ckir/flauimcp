@@ -42,15 +42,39 @@ then `GenericMcpConfigWriter.Install`, in a plain loop with no try/catch (also n
   aborts before Claude or generic are configured. Claude gets **nothing** — not even the
   unconditional tier — and Setup still reports success (L2).
 
-### L4. Uninstall ignores "No, keep my settings"
+### L4. Uninstall ignores "No, keep my settings" — ❌ **WITHDRAWN 2026-07-16: NOT A DEFECT**
+> **Verified false.** The prompt (`flaui-mcp.iss:84-87`) scopes itself explicitly to *"the .flaui-mcp
+> folder in your user profile"* — the data dir, which the non-purge variant does preserve. Reverting the
+> registration in both variants is *correct*: the exe is being deleted, and a surviving `mcpServers`
+> entry would point an agent at nothing. The seed skill is a **product artifact** (a version-locked
+> manual for tools that are going away), not a user setting; leaving it would tell the agent to call
+> `desktop_*` tools that no longer exist.
+> The finding assumed user content could live in `PluginRoot`. **Measured: it cannot.** The curated
+> growth files live at `~/.claude/flaui-mcp/global-growth.md` and `.claude\flaui-mcp\local-growth.md`
+> (`driving-flaui-mcp/SKILL.md:15-18`) — a different tree from `~/.gemini/config/plugins/flaui-mcp/`,
+> which holds only the `plugin.json` + `SKILL.md` that `DeploySkill()` writes. The recursive delete is
+> confined to our own namespace. Residual risk: a user's hand-edits to a file regenerated on every
+> install. Not worth gating.
+> The agy peer independently reached the same verdict on the finding — then argued the recursive delete
+> was "a massive footgun" **on this same false premise**, conflating `~/.claude/flaui-mcp/` with the
+> agy plugin dir because both contain the string `flaui-mcp`. Disproven by reading the two paths.
+> *Ledger discipline: both panels shared this assumption, and neither checked it.*
+
+<details><summary>Original (superseded) finding</summary>
 `InitializeUninstall()` (`flaui-mcp.iss:84-89`) prompts, and `ShouldPurge`/`ShouldKeep`
 (`flaui-mcp.iss:91-98`) select between `uninstall --agent all --purge-data` and
 `uninstall --agent all`. **Both** dispatch to `RemoveSkill()` (`AgyConfigWriter.cs:50-54`):
 unconditional `Directory.Delete(PluginRoot, recursive: true)`, no ownership check, no confirmation.
 - **Failure:** user drops a note/symlink/customized SKILL.md into the plugin dir, answers **No**
   expecting preservation, and it is recursively deleted anyway.
+</details>
 
-### L5. Uninstall failure skips post-loop cleanup, silently
+### L5. Uninstall failure skips post-loop cleanup, silently — ✅ **FIXED `a373265`** (in passing)
+> `Isolate()` means a throw can no longer escape `Apply()`, so `SweepBackups`/`PurgeDataDir` always run.
+> `RemoveSkill()` no longer throws at all (it degrades to an `AgentResult.Warning`), so the premise is
+> now structurally impossible rather than incidentally caught. The exit-code half is **void by design**:
+> a non-zero exit makes Inno roll back and delete the exe (see the L2/L3 decision).
+
 `SweepBackups`/`PurgeDataDir` (`CliRouter.cs:103-110`) run only **after** the writer loop. A throw in
 `RemoveSkill()` (e.g. a running agent holds the dir open, AV lock) aborts before backups are swept or
 `--purge-data` is honored — and `[UninstallRun]` is equally un-gated on exit code, so the uninstall
