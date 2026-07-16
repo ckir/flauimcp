@@ -196,18 +196,32 @@ This is **not** theoretical: `~/.claude/plugins/cache/flaui-mcp/flaui-mcp/0.14.0
 maintainer's own machine right now (currently orphaned, with an `.orphaned_at` marker, because the
 marketplace entry was removed by hand during this investigation).
 
-The spec does **not** yet choose the remedy — the plan must, and it interacts with the open
-marketplace decision below. Candidates, none yet verified:
-- the installer detects the marketplace copy and **warns**, printing the exact disable/uninstall command;
-- the installer **removes** it (invasive: uninstalling something the user installed deliberately);
-- **retire the marketplace** and rely on `README` + release notes to tell existing users to remove it;
-- **do nothing** and accept a duplicate skill for upgraders — **rejected**: two same-named skills of
-  possibly different vintages is the drifted-skill failure this whole spec exists to prevent.
+**MEASURED 2026-07-16 — the collision is SILENT.** Two skills-dir plugins, each shipping a skill
+named `driving-dup`, were built in an isolated profile (`CLAUDE_CONFIG_DIR` — see below). Result:
+**both report `Status: ✔ loaded`**, `claude plugin details` shows each owning `Skills (1) driving-dup`,
+and **nothing anywhere reports a conflict, duplicate, shadow, or override.** Claude Code neither
+errors nor warns.
 
-⚠ **UNVERIFIED and blocking the plan:** what Claude Code actually *does* with two loaded plugins each
-shipping a `driving-flaui-mcp` skill — hard error, silent precedence, or duplicate offers? **Measure
-before choosing a remedy.** Also unverified: whether a CLI verb can uninstall a marketplace plugin
-non-interactively (`claude plugin --help` shows `marketplace` and `prune`; not yet confirmed).
+That settles the remedy question in one direction: **"do nothing" is out.** A hard error would at
+least be self-announcing; silence means an upgrader runs a drifted v0.14.0 marketplace skill
+alongside the bundled one **with no indication at all** — precisely the confidently-wrong-skill
+failure this spec exists to prevent, made invisible. *(Which copy wins at invocation time remains
+unmeasured — and does not matter: from the user's side it is silent and undiagnosable either way.)*
+
+**MEASURED — the installer can clean up non-interactively.** `claude plugin uninstall <plugin>`
+exists, takes `--scope user`, and is non-interactive (only its `--prune` option requires `-y`).
+`claude plugin marketplace remove <name>` exists too. So "detect and remove" is mechanically
+available; it is not blocked by tooling.
+
+**Remedy — recommended, owner: user, at plan time.** *Detect and warn*, not auto-remove:
+- **Detect** the marketplace copy during install; if present, report it as a `Warning` on the claude
+  `AgentResult` (the channel `a373265` already built), so it lands in `install.log` and in
+  `flaui-mcp status`, and print the exact `claude plugin uninstall flaui-mcp@flaui-mcp --scope user`.
+- **Do not auto-remove.** The user installed it deliberately by following the README; silently
+  uninstalling a plugin the user chose is a bigger violation than the duplicate it fixes, and it is
+  irreversible from the installer's side.
+- If the marketplace is **retired** (open decision below), the warning is still required for
+  everyone upgrading *from* v0.14.x — retiring it removes the future audience, not the existing one.
 
 **Version.** Bump the manifest version in lockstep with the exe (csproj / iss / plugin.json) — the
 existing release convention.
