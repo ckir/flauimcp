@@ -178,6 +178,28 @@ path to obtaining the server (`setup.exe`, bare `flaui-mcp.exe`, `install.ps1`) 
 registers the exe in `.claude.json` by hand without ever running the install verb. **Whichever way
 #1 goes, the `hooks`-key fix ships** — the marketplace manifest is public and must not stay broken.
 
+> ⚠ **CORRECTION 2026-07-16 — the paragraph above states a FUTURE property in the PRESENT TENSE, and
+> the rewrite must not inherit it.** "every path … runs `flaui-mcp install`, **which bundles the
+> skill**" is true only *once mechanism A exists*. It does not today: `AgyConfigWriter.DeploySkill()`
+> bundles the skill for **agy only**, and `ClaudeCodeConfigWriter` does zero file I/O. So **today the
+> marketplace is the sole documented way a Claude Code user gets the skill** — `README.md:158-163`
+> instructs exactly that (`/plugin marketplace add ckir/flauimcp` → `/plugin install
+> flaui-mcp@flaui-mcp`), and `.claude-plugin/marketplace.json` sources it from `./plugins/flaui-mcp`
+> **in the repo**. Every Claude Code user who follows the README hits the hard load failure.
+> The "no audience" framing made a live, publicly-documented breakage look victimless — it is why the
+> claim propagated into the execution memory as a reason not to worry. **Retiring the marketplace is
+> defensible only AFTER mechanism A ships AND the README is rewritten; the two must land together or
+> the documented path breaks a second time.**
+> Two further measured facts the rewrite needs:
+> - **`.github/workflows/release.yml` has ZERO plugin/marketplace references** — the plugin is
+>   delivered by **git (master)**, never by `setup.exe`. A release does not fix or ship it; a merge
+>   does. Any plan that "ships the plugin fix in the next release" is wrong on the mechanism.
+> - Claude Code caches plugins **by version** (`~/.claude/plugins/cache/flaui-mcp/flaui-mcp/0.14.0/`
+>   observed live), so changing a plugin's content without bumping its version can leave existing
+>   users on the cached broken copy.
+> *Found by the agy peer (2026-07-15 release-scope consult), which read the README while both my own
+> panel and I carried the assumption unchecked. Verified by measurement before folding.*
+
 ## Risks
 
 | Risk | Mitigation |
