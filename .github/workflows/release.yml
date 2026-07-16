@@ -33,7 +33,15 @@ jobs:
         run: choco install innosetup --no-progress -y
 
       - name: Build installer
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\flaui-mcp.iss'
+        shell: pwsh
+        run: |
+          $found = @(Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue)
+          if (-not $found) { throw "ISCC.exe not found under any 'Inno Setup*' directory — is Inno Setup installed?" }
+          $found | ForEach-Object { Write-Host "Found ISCC: $($_.FullName)" }
+          if ($found.Count -gt 1) { Write-Warning "More than one Inno Setup install found; using the first logged. Verify the version above." }
+          $iscc = $found[0].FullName
+          Write-Host "Using $iscc"
+          & $iscc installer\flaui-mcp.iss
 
       - name: Checksums
         shell: pwsh
