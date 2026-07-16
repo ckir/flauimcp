@@ -32,7 +32,7 @@ public static class CliRouter
                 return 0;
 
             case "status":
-                outp.WriteLine(InstallStatus.Describe(exePath, paths.AgyPluginsDir, paths.DataDir));
+                outp.WriteLine(InstallStatus.Describe(exePath, paths.AgyPluginsDir, paths.DataDir, paths.ClaudeConfigDir, paths.StateDir));
                 return 0;
 
             case "install":

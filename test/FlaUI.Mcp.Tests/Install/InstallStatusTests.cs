@@ -6,21 +6,22 @@ namespace FlaUI.Mcp.Tests.Install;
 
 public class InstallStatusTests
 {
-    private static (string plugins, string dataDir) TempPaths()
+    private static (string plugins, string dataDir, string claude, string state) TempPaths()
     {
         var dir = Path.Combine(Path.GetTempPath(), "flaui-status-" + Path.GetRandomFileName());
         Directory.CreateDirectory(dir);
-        return (Path.Combine(dir, "plugins"), Path.Combine(dir, "data"));
+        return (Path.Combine(dir, "plugins"), Path.Combine(dir, "data"), Path.Combine(dir, "claude"), Path.Combine(dir, "state"));
     }
 
     [Fact]
     public void Reports_a_deployed_seed_with_its_version()
     {
-        var (plugins, dataDir) = TempPaths();
+        var (plugins, dataDir, claude, state) = TempPaths();
         new AgyConfigWriter(Path.Combine(dataDir, "s.json"), Path.Combine(dataDir, "p.json"), plugins)
             .Install(@"C:\flaui-mcp.exe");
+        new ClaudeSkillDeployer(claude).Deploy();   // deploy both skills so nothing reads "NOT deployed"
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
 
         Assert.Contains("deployed", s);
         Assert.DoesNotContain("NOT deployed", s);
@@ -32,9 +33,9 @@ public class InstallStatusTests
     [Fact]
     public void Reports_a_missing_seed_plainly()
     {
-        var (plugins, dataDir) = TempPaths();
+        var (plugins, dataDir, claude, state) = TempPaths();
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
 
         Assert.Contains("NOT deployed", s);
         Assert.Contains("no record yet", s);   // no install.log either
@@ -43,7 +44,7 @@ public class InstallStatusTests
     [Fact]
     public void Surfaces_the_last_run_including_a_failure()
     {
-        var (plugins, dataDir) = TempPaths();
+        var (plugins, dataDir, claude, state) = TempPaths();
         Directory.CreateDirectory(dataDir);
         File.WriteAllLines(Path.Combine(dataDir, InstallStatus.LogName), new[]
         {
@@ -52,7 +53,7 @@ public class InstallStatusTests
             "[claude] Created: somewhere",
         });
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
 
         Assert.Contains("[agy] Failed: something broke", s);
         Assert.Contains("[claude] Created: somewhere", s);

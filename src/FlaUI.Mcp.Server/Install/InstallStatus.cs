@@ -18,7 +18,7 @@ public static class InstallStatus
 {
     public const string LogName = "install.log";
 
-    public static string Describe(string exePath, string agyPluginsDir, string dataDir)
+    public static string Describe(string exePath, string agyPluginsDir, string dataDir, string claudeConfigDir, string stateDir)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"flaui-mcp {typeof(InstallStatus).Assembly.GetName().Version}");
@@ -30,9 +30,45 @@ public static class InstallStatus
         sb.AppendLine("  " + DescribeSeed(pluginRoot));
         sb.AppendLine();
 
+        sb.AppendLine("Driving skill (Claude Code):");
+        sb.AppendLine("  " + DescribeClaudeSkill(new ClaudeSkillDeployer(claudeConfigDir).SkillRoot));
+        sb.AppendLine();
+
+        var collisions = DescribeCollisions(stateDir);
+        if (collisions is not null) { sb.AppendLine(collisions); sb.AppendLine(); }
+
         var log = Path.Combine(dataDir, LogName);
         sb.AppendLine("Last install/uninstall run:");
         sb.Append(DescribeLog(log));
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Same shape as the agy seed report, but a different tree and a different manifest
+    /// location — Claude Code's manifest lives in `.claude-plugin/`.</summary>
+    private static string DescribeClaudeSkill(string skillRoot)
+    {
+        var skill = Path.Combine(skillRoot, "skills", "driving-flaui-mcp", "SKILL.md");
+        if (!File.Exists(skill))
+            return $"NOT deployed — nothing at {skillRoot}. If you installed Claude Code after " +
+                   "flaui-mcp, run: flaui-mcp install --agent claude";
+        // ReadDeployedVersion ALREADY EXISTS in this class (InstallStatus.cs:51) and takes the
+        // manifest path as a parameter, so it is location-agnostic — reuse it, do not write a second
+        // JSON parser. (A panel seat called this an undefined symbol; it is defined at :51.)
+        var deployed = ReadDeployedVersion(Path.Combine(skillRoot, ".claude-plugin", "plugin.json"));
+        return $"deployed ({deployed}) at {skillRoot}";
+    }
+
+    /// <summary>The R5 channel: a plugin we disabled on the user's behalf is otherwise invisible —
+    /// Setup ran hidden, so this is where they can find out.</summary>
+    private static string? DescribeCollisions(string stateDir)
+    {
+        var recorded = CollisionMarker.Read(stateDir);
+        if (recorded.Count == 0) return null;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("Conflicting plugins we disabled (they will be re-enabled if you uninstall flaui-mcp):");
+        foreach (var e in recorded)
+            sb.AppendLine($"  {e.Id} — scope {e.Scope}{(e.ProjectPath is null ? "" : $" in {e.ProjectPath}")}");
         return sb.ToString().TrimEnd();
     }
 
