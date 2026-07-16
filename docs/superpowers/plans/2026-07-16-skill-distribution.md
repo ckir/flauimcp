@@ -732,12 +732,18 @@ public class ClaudeSkillDeployerTests
         var d = new ClaudeSkillDeployer(cfg);
         d.Deploy();
         var skill = Path.Combine(cfg, "skills", "flaui-mcp", "skills", "driving-flaui-mcp", "SKILL.md");
-        File.WriteAllText(skill, "STALE v0.14 CONTENT");
+        // Unique sentinel: the real seed legitimately contains "STALE" (the error token
+        // REF_STALE_UNRESOLVABLE), so a "STALE"-absence assertion would false-fail. "QWERTYUIOP" cannot
+        // appear in the seed (verified). We assert both directions: the stale body is gone AND the real
+        // seed is back.
+        File.WriteAllText(skill, "QWERTYUIOP outdated v0.14 skill body");
 
         var warning = d.Deploy();
 
         Assert.Null(warning);
-        Assert.DoesNotContain("STALE", File.ReadAllText(skill));
+        var body = File.ReadAllText(skill);
+        Assert.DoesNotContain("QWERTYUIOP", body);     // the stale body is gone
+        Assert.Contains("Driving FlaUI.Mcp", body);    // ...replaced by the real embedded seed
     }
 
     // Same policy as the agy path: the skill rides along with the registration and must never deny
