@@ -1,7 +1,8 @@
 # Spec — bundled driving-skill distribution (v0.15.0)
 
 **Date:** 2026-07-16
-**Status:** draft — not yet panelled
+**Status:** draft — **round 1 panelled (agy, REJECT / 7 findings); 6 folded, 1 rejected.** See
+[Review ledger](#review-ledger).
 **Supersedes:** `2026-07-15-bundled-skill-distribution-design.md` (that draft bundled a *global
 observation inbox* into the same change; that half is **cut** — see [Out of scope](#out-of-scope)).
 Also supersedes the marketplace-only distribution decision (Fork 1B) in
@@ -86,6 +87,19 @@ that was false and is corrected here:
   A driving-only payload needs **no new embedded resource** — the same resource serves both agents.
   (This was only expensive in the old draft *because* it bundled `flaui-learn` too.)
 
+**Where `.claude-plugin/plugin.json` comes from — must be decided by the plan, not guessed.** The
+`SKILL.md` is embedded; the Claude manifest is not, and no code writes one today. Options: embed it
+as a second resource, or generate it in code as `AgyConfigWriter.DeploySkill()` does for the peer.
+**Prefer generating it** — the version must track the assembly at runtime (`AgyConfigWriter.cs:37-38`
+already derives a 3-part semver from `Assembly.GetName().Version`), which a static embedded file
+cannot do without a build step. Whichever is chosen, it must be **stated**, not inferred.
+
+**Measured — the manifest is minimal.** A working Claude plugin manifest needs no `skills` array:
+`plugins/flaui-mcp/.claude-plugin/plugin.json` carries only `{name, displayName, description,
+version, author}` and its skills are auto-discovered from `skills/`. (The panel asserted a `skills`
+array was required; that is **false** and was rejected — but it was right that the manifest's origin
+was unspecified.)
+
 ### Why not marketplace-driven install (B): version skew
 
 The driving skill names specific tools and contracts (`desktop_read_terminal_tab { window, tabIndex,
@@ -126,7 +140,15 @@ Per-project disable of a `skills-dir` plugin **works**. Mechanism A survives.
 **`README.md:306-311` must change.** It already names the right file (`.claude/settings.local.json`)
 but the wrong identity — `{"enabledPlugins": {"flaui-mcp@flaui-mcp": false}}` is a *marketplace* id.
 Under mechanism A the id is **`flaui-mcp@skills-dir`**, so the documented incantation would silently
-disable nothing.
+disable nothing. Drop-in replacement:
+
+```json
+{ "enabledPlugins": { "flaui-mcp@skills-dir": false } }
+```
+
+Equivalently, from the repo root: `claude plugin disable flaui-mcp@skills-dir --scope local` — which
+writes exactly that file. **Do not document `--scope project`**: it writes the git-tracked
+`.claude/settings.json` and would commit the maintainer's personal disable into the repo.
 
 ## Contracts
 
@@ -134,6 +156,25 @@ disable nothing.
 agy path. Per `a373265`, a deploy failure is a **warning on the agent's result, not a throw**: the
 skill rides along with the registration and must never deny the user a working server. The outcome
 is recorded to `<data-dir>/install.log` and readable back via `flaui-mcp status`.
+
+**Gate the deploy on Claude Code actually being present.** "Unconditional" above means *no
+contributor gate* — it must **not** mean "write regardless of host". `ClaudeCodeConfigWriter.cs:31`
+already distinguishes the case: a missing CLI yields `AgentChange.NotFound` ("claude CLI not on
+PATH") and nothing is written. Since `--agent all` is the installer's default
+(`installer/flaui-mcp.iss:38`), an unguarded write would create an orphaned `~/.claude/skills/flaui-mcp/`
+on **every agy-only machine** — a directory the user never asked for, from a tool they don't run.
+**Contract: if the claude target reports `NotFound`, deploy nothing.** Deploying a skill for a client
+we could not register is pointless by construction.
+*(Found by the panel; the "unconditional payload" phrasing genuinely permitted the wrong reading.)*
+
+**Path resolution — do NOT hardcode `~/.claude`.** **Measured: Claude Code honors `CLAUDE_CONFIG_DIR`**
+— with it pointed at an empty dir, `claude plugin list` reports "No plugins installed" instead of the
+real inventory. A hardcoded `~/.claude` therefore writes to a directory the host is not reading for
+any user who sets it. `CliRouter.ResolvePaths` (`CliRouter.cs:200-213`) already models exactly this
+for the peer via `FLAUI_MCP_AGY_PLUGINS_DIR`; the Claude skills dir needs the same treatment:
+resolve `CLAUDE_CONFIG_DIR` (falling back to `~/.claude`), plus a `FLAUI_MCP_*` override so tests
+never touch the real profile. **This is not hypothetical hygiene:** `81dedd7` had to fix tests that
+wrote into the real `~/.flaui-mcp` precisely because a path lacked a test override.
 
 **Uninstall.** Removes `~/.claude/skills/flaui-mcp/`, matching the agy path (`RemoveSkill`). The
 skill is a **product artifact, not user data** — a version-locked manual for tools that are being
@@ -143,10 +184,44 @@ removed — so it goes on a plain uninstall, and *must*: leaving it would tell t
 
 **Upgrade.** Skill files are overwritten — versioned product, not user state. Re-install is idempotent.
 
-**Version.** The plugin's manifest version must be bumped whenever its content changes: Claude Code
-caches plugins **by version** (`~/.claude/plugins/cache/flaui-mcp/flaui-mcp/0.14.0/`, observed
-live), so shipping different content under an unchanged version can strand users on the cached copy.
-Lockstep with the exe (csproj / iss / plugin.json) is already the release convention.
+**Upgrade from v0.14.x — the existing-marketplace-user collision. ⚑ MUST SOLVE; the panel's strongest
+finding.** Anyone who followed `README.md:158-163` has `flaui-mcp@flaui-mcp` installed from the
+marketplace. Upgrading to v0.15.0 gives them the **bundled** `flaui-mcp@skills-dir` **as well** —
+two plugins, both shipping a skill named `driving-flaui-mcp`. Nothing in the product cleans the old
+one up: `ClaudeCodeConfigWriter.Uninstall()` (`ClaudeCodeConfigWriter.cs:48`) runs only
+`claude mcp remove`; it never touches plugin or marketplace state. The collision is the very thing
+`README.md:306-311` warns maintainers about — but a user has no reason to know the incantation.
+
+This is **not** theoretical: `~/.claude/plugins/cache/flaui-mcp/flaui-mcp/0.14.0/` exists on the
+maintainer's own machine right now (currently orphaned, with an `.orphaned_at` marker, because the
+marketplace entry was removed by hand during this investigation).
+
+The spec does **not** yet choose the remedy — the plan must, and it interacts with the open
+marketplace decision below. Candidates, none yet verified:
+- the installer detects the marketplace copy and **warns**, printing the exact disable/uninstall command;
+- the installer **removes** it (invasive: uninstalling something the user installed deliberately);
+- **retire the marketplace** and rely on `README` + release notes to tell existing users to remove it;
+- **do nothing** and accept a duplicate skill for upgraders — **rejected**: two same-named skills of
+  possibly different vintages is the drifted-skill failure this whole spec exists to prevent.
+
+⚠ **UNVERIFIED and blocking the plan:** what Claude Code actually *does* with two loaded plugins each
+shipping a `driving-flaui-mcp` skill — hard error, silent precedence, or duplicate offers? **Measure
+before choosing a remedy.** Also unverified: whether a CLI verb can uninstall a marketplace plugin
+non-interactively (`claude plugin --help` shows `marketplace` and `prune`; not yet confirmed).
+
+**Version.** Bump the manifest version in lockstep with the exe (csproj / iss / plugin.json) — the
+existing release convention.
+
+> **Corrected (panel, 2026-07-16):** an earlier draft justified this with "Claude Code caches plugins
+> by version, so unchanged versions strand users on a cached copy". **That is a MARKETPLACE property
+> and does not apply to mechanism A.** Measured: `~/.claude/plugins/cache/` contains only
+> *marketplace* names, while the skills-dir plugins on this machine (`learned`,
+> `token-discipline-installer`, `watch-ci`) appear **nowhere** in it — and `claude plugin list`
+> reports a skills-dir plugin's `Path:` as its source directory. A skills-dir plugin loads **live from
+> disk**, so the installer overwriting files IS the update; no version bump is needed to defeat a
+> cache. The stale-cache hazard is real **only for the marketplace copy** (see below), which is
+> exactly the path this spec removes people from. Version bump stays — for lockstep and diagnosis
+> (`flaui-mcp status` reports the deployed version) — but not for that reason.
 
 **No new CLI surface.** The payload is unconditional, so there is no `--contributor` flag and no
 `[Tasks]` checkbox. (The old draft specified `--contributor` with `OptionValue` shape, which was
@@ -211,6 +286,27 @@ mechanism A without rewriting those lines — breaks the documented path a secon
 - ⚠ **CI cannot run any of this.** `ci.yml`/`release.yml` have no Claude Code CLI and no `~/.claude`
   (measured). Any "install and assert loaded" gate is a **local/manual** step, or it needs a
   different mechanism. Do not plan a CI gate that cannot exist.
+
+## Review ledger
+
+**Round 1 — agy panel, 2026-07-16. Verdict: REJECT, 7 findings.** Every finding was checked by
+measurement before folding.
+
+| # | Seat | Finding | Disposition |
+|---|---|---|---|
+| 1 | Axiom Breaker | version-bump justified by a cache that doesn't apply to `skills-dir` | **FOLDED** — verified: skills-dir plugins are absent from `~/.claude/plugins/cache/`; they load from disk. My error. |
+| 2 | Cascade | "unconditional" permits writing to a machine with no Claude Code | **FOLDED** — verified `ClaudeCodeConfigWriter.cs:31`. Now gated on `NotFound`. |
+| 3 | State Corruptor | v0.14.x marketplace users collide with the bundled copy on upgrade | **FOLDED** — the strongest finding. Verified `:48` + an orphaned cache on this machine. Remedy deferred to the plan; a measurement is named. |
+| 4 | Protocol Pedant | Claude manifest origin unspecified | **FOLDED (partial)** — the gap is real. The claim that a `skills` array is *required* is **REJECTED**: measured false against the working manifest. |
+| 5 | Dependency Cynic | hardcoded `~/.claude` | **FOLDED** — verified `CLAUDE_CONFIG_DIR` is honored. Doubles as the test-isolation lever. |
+| 6 | Blindspot | recursive delete wipes out-of-band user files | **REJECTED** — same false premise the peer already conceded once. `PluginRoot` holds only what `DeploySkill()` writes; the growth files live in a different tree (`driving-flaui-mcp/SKILL.md:15-18`). A shared name fragment is not a shared location. |
+| 7 | Literal Implementer | README change named but not written | **FOLDED** — drop-in JSON now given. |
+
+**Method note.** Round 1 was bound to measurement (name the files, cite code `file:line`, and
+*verify the relation, not just the endpoints*). Compared with the peer's 2026-07-15 panel — whose
+every citation pointed at the reviewed document's own line numbers — it returned real code citations
+and found defects that only reading the code exposes. The one rejected finding is the one where it
+again asserted a relation between two paths without reading both.
 
 ## Out of scope
 
