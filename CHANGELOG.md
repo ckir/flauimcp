@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-07-16
+
+### Added
+- Claude Code now gets the driving skill from the installer, versioned with the binary. It no longer
+  has to be installed by hand from the marketplace, and it can no longer drift from your server build.
+- `flaui-mcp status` reports the Claude skill and any conflicting plugin the installer disabled.
+
+### Fixed
+- The v0.14.0 plugin manifest declared a `hooks` key that Claude Code already auto-loads by
+  convention, so the plugin **failed to load entirely**. Everyone who followed the README got no skills.
+- Upgrading from v0.14.x no longer leaves two copies of the driving skill loaded at once. The old
+  marketplace copy is disabled (reversibly — uninstall re-enables it) and reported in `status`.
+- A `claude` CLI that hangs can no longer hang Setup: every invocation is now time-bounded.
+
 ## [0.14.0] - 2026-07-15
 
 ### Added
