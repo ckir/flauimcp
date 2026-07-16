@@ -110,8 +110,54 @@ begin
   RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Path);
 end;
 
+// The CLI wrote any restore warnings here and is about to be deleted along with `flaui-mcp status`,
+// the only thing that could have read them. We are the last actor standing, so we report them.
+function StateDir(): string;
+begin
+  Result := ExpandConstant('{localappdata}\FlaUI.Mcp\state');
+end;
+
+procedure ShowUninstallWarnings();
+var
+  LogPath: string;
+  Contents: AnsiString;
+begin
+  LogPath := StateDir() + '\uninstall-warnings.log';
+  if not FileExists(LogPath) then
+    exit;
+
+  // A silent uninstall suppresses MsgBox and auto-answers the default (this script already relies
+  // on that at InitializeUninstall). Deleting the log here would therefore destroy the warning
+  // having shown it to nobody. Keep the evidence instead: there is no human to honor a purge
+  // prompt for either, because nobody answered one.
+  if UninstallSilent then
+    exit;
+
+  // If we cannot READ it we must not DELETE it: reaping here would destroy the evidence having
+  // shown it to nobody, which is the very failure this procedure exists to prevent. Leave it and
+  // point at it instead — a file the user can still open beats a file we silently ate.
+  if not LoadStringFromFile(LogPath, Contents) then
+  begin
+    MsgBox('FlaUI.Mcp was removed, but some cleanup did not complete and the details could not be read.'
+           + #13#10#13#10 + 'They were left for you at:' + #13#10 + LogPath, mbInformation, MB_OK);
+    exit;
+  end;
+
+  MsgBox('FlaUI.Mcp was removed, but some cleanup did not complete:' + #13#10#13#10 +
+         String(Contents), mbInformation, MB_OK);
+
+  // Reaped ONLY on the path where a human has actually seen the contents — this honors the
+  // "remove my configuration" request without silently swallowing the reason they may need.
+  DeleteFile(LogPath);
+  RemoveDir(StateDir());
+  RemoveDir(ExpandConstant('{localappdata}\FlaUI.Mcp'));
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
+  begin
     RemoveFromUserPath(ExpandConstant('{app}'));
+    ShowUninstallWarnings();
+  end;
 end;
