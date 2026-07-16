@@ -19,12 +19,13 @@ Use `--agent agy|generic|claude` to configure a single agent instead of all.
 ## What the installer changes
 
 The configuration is **idempotent** (safe to re-run), writes **atomically** with a
-timestamped backup of each file it touches, and on uninstall performs **targeted key
-removal** — it only deletes FlaUI.Mcp's own entries and leaves your other settings intact.
+timestamped backup of each file it touches, and on uninstall performs **targeted cleanup and state
+restoration** — it deletes FlaUI.Mcp's own entries and re-enables any conflicting FlaUI.Mcp plugin
+that the installer disabled. It never touches settings that are not ours.
 
 | Agent | File(s) | Change |
 | --- | --- | --- |
-| **Claude Code** | (via `claude mcp add/remove` CLI) | Registers the `flaui-mcp` MCP server. |
+| **Claude Code** | (via `claude mcp add/remove` CLI) + `~/.claude/skills/flaui-mcp/` (honors `CLAUDE_CONFIG_DIR`) | Registers the `flaui-mcp` MCP server **and** deploys the driving skill, which Claude auto-loads as `flaui-mcp@skills-dir`. If a conflicting `flaui-mcp@flaui-mcp` plugin from the old marketplace is present, it is **disabled** (reversibly — uninstall re-enables it) and the fact is recorded in `%LOCALAPPDATA%\FlaUI.Mcp\state\`. Nothing is deployed if the `claude` CLI is not on PATH. |
 | **Antigravity (agy)** | `~/.gemini/settings.json` + `~/.gemini/antigravity-cli/settings.json` | Adds `mcpServers.flaui-mcp` and appends `mcp(flaui-mcp/*)` to `permissions.allow`. |
 | **Generic MCP** | `~/.flaui-mcp/generic-mcp.json` | Writes the standard `{ "mcpServers": { "flaui-mcp": { "command": "<exe>", "args": [] } } }` snippet. |
 
@@ -43,8 +44,10 @@ flag and silently drops the other.
 ## Uninstall
 
 - **Via the installer:** uninstall "FlaUI.Mcp" from **Settings → Apps** (or
-  Add/Remove Programs). The uninstaller reverts every agent's config (targeted removal) and
-  removes the files.
+  Add/Remove Programs). The uninstaller reverts every agent's config (targeted removal), re-enables
+  any conflicting plugin it disabled, and removes the files. If any of that cleanup did not
+  complete, it shows you what failed before it finishes — the executable is deleted, so
+  `flaui-mcp status` cannot tell you afterwards.
 - **Manually:** `flaui-mcp uninstall --agent all`, then delete the executable.
 
 Uninstalling reverts configuration entries but leaves your unrelated settings untouched.

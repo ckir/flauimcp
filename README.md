@@ -148,29 +148,27 @@ This downloads the latest `flaui-mcp-setup.exe` and runs it silently
 > **Manual install** (the exe is its own installer), **what the installer changes**, and
 > **uninstall** live in the **[Ops manual](docs/ops-manual.md)**.
 
-### Claude Code plugin (optional)
+### Claude Code
 
-The MCP server above is required and handles all tool execution. The optional **plugin** adds
-the `driving-flaui-mcp` skill (for crafting robust desktop automation sequences) plus the
-`flaui-learn` / `flaui-curate` self-improvement loop, which learns per-project from your own tasks
-(with an explicit "promote to global" to share a rule across projects).
+The installer does it for you. `flaui-mcp install` registers the MCP server **and** deploys the
+driving skill to `~/.claude/skills/flaui-mcp/`, which Claude Code auto-loads as `flaui-mcp@skills-dir`.
+The skill is versioned with the binary, so it always describes the tools you actually have.
 
-After the installer has registered the MCP server, install the plugin:
+Restart Claude Code after installing — plugins load at session start, so a running session keeps the
+previous skill until it restarts.
 
-```
-/plugin marketplace add ckir/flauimcp
-/plugin install flaui-mcp@flaui-mcp
-```
+**Installed Claude Code after flaui-mcp?** Nothing was deployed then (correctly — there was no client
+to register). Run `flaui-mcp install --agent claude`, and check with `flaui-mcp status`.
 
-The plugin declares **no** MCP server (the installer already registered it) — it adds only the
-driving and self-improvement skills.
+**Upgrading from v0.14.x?** If you installed the plugin from the old marketplace, the installer
+disables that copy so two versions of the driving skill cannot both load. It is reversible: uninstall
+re-enables it. `flaui-mcp status` reports what was disabled.
 
 ### agy (Antigravity) parity
 
 Running the installer (or `flaui-mcp install --agent all`) also deploys the `driving-flaui-mcp`
 skill to agy (Antigravity) as a static plugin under `%USERPROFILE%\.gemini\config\plugins\flaui-mcp\`.
-Restart agy to load it. agy gets the seed skill only — not the self-improvement loop above — since
-agy has no plugin hooks; Claude Code gets the full self-improving plugin.
+Restart agy to load it. Both agents get the same driving skill, versioned with the binary.
 
 ## Usage
 
@@ -303,15 +301,19 @@ what an agent **can do** to your machine.)
 
 ## Maintainers
 
-When developing inside this repository with the plugin installed globally, disable the plugin for
+When developing inside this repository with the skill installed globally, disable it for
 this repo so the repo's local project-scope `driving-flaui-mcp` skill is the single authority
-(the plugin ships a skill of the same name and would conflict).
+(the bundled skill has the same name and would conflict).
 
 Add this to `.claude/settings.local.json`:
 
 ```json
-{ "enabledPlugins": { "flaui-mcp@flaui-mcp": false } }
+{ "enabledPlugins": { "flaui-mcp@skills-dir": false } }
 ```
+
+Equivalently, run `claude plugin disable flaui-mcp@skills-dir --scope local` from the repo root. **Do
+not use `--scope project`** — it writes the git-tracked `.claude/settings.json` and would commit your
+personal disable into the repo for everyone who clones it.
 
 End users never encounter this — they have no project-scope copy of the plugin.
 
