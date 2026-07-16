@@ -2061,7 +2061,10 @@ public class ClaudeCollisionRestoreTests
         var s = TempState();
         CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\Projects\MyCode") });
 
-        new ClaudeCollisionRemedy(cli.Run, s).Restore();
+        // dirExists: _ => true — the synthetic projectPath represents an EXISTING project. The
+        // round-1 deleted-project guard would otherwise skip it, because the fake path is not a real
+        // directory on the test machine (that guard runs the default Directory.Exists).
+        new ClaudeCollisionRemedy(cli.Run, s, _ => true).Restore();
 
         var c = Assert.Single(cli.Calls);
         Assert.Equal(@"C:\Projects\MyCode", c.cwd);
@@ -2088,7 +2091,10 @@ public class ClaudeCollisionRestoreTests
             new DisabledEntry("flaui-mcp@flaui-mcp", "user", null),
         });
 
-        new ClaudeCollisionRemedy(cli.Run, s).Restore();
+        // dirExists: _ => true — C:\a and C:\b are synthetic paths standing in for EXISTING projects;
+        // without this the round-1 deleted-project guard skips them (they are not real directories) and
+        // only the user-scope entry is restored.
+        new ClaudeCollisionRemedy(cli.Run, s, _ => true).Restore();
 
         Assert.Equal(new[] { @"C:\a", @"C:\b", null }, cli.Calls.Select(c => c.cwd).ToArray());
     }
