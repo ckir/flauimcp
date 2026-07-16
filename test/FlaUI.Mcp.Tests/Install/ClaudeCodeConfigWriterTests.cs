@@ -78,4 +78,40 @@ public class ClaudeCodeConfigWriterTests
         var r = w.Install(@"C:\x\flaui-mcp.exe");
         Assert.NotEqual(AgentChange.Created, r.Change);
     }
+
+    // The false-success that made this fix necessary: a killed process must never be reported as a
+    // completed removal. CliRouter.Report only flags trouble on Failed, so anything softer is silent.
+    [Fact]
+    public void Uninstall_reports_Failed_when_the_runner_times_out()
+    {
+        var w = new ClaudeCodeConfigWriter((_, _, _) => new RunResult(ProcessRunner.TimedOut, ""));
+        Assert.Equal(AgentChange.Failed, w.Uninstall().Change);
+    }
+
+    [Fact]
+    public void Uninstall_reports_Failed_when_the_cli_fails()
+    {
+        var w = new ClaudeCodeConfigWriter((_, _, _) => new RunResult(1, "not logged in"));
+        var r = w.Uninstall();
+        Assert.Equal(AgentChange.Failed, r.Change);
+        Assert.Contains("not logged in", r.Detail);   // the reason must survive into the log
+    }
+
+    [Fact]
+    public void Install_reports_Failed_when_the_cli_fails()
+    {
+        var w = new ClaudeCodeConfigWriter((_, _, _) => new RunResult(1, "not logged in"));
+        var r = w.Install(@"C:\x\flaui-mcp.exe");
+        Assert.Equal(AgentChange.Failed, r.Change);
+        Assert.Contains("not logged in", r.Detail);
+    }
+
+    [Fact]
+    public void A_failure_detail_stays_on_one_line_so_it_cannot_break_the_log_format()
+    {
+        var w = new ClaudeCodeConfigWriter((_, _, _) => new RunResult(1, "line one\r\nline two"));
+        var r = w.Install(@"C:\x\flaui-mcp.exe");
+        Assert.DoesNotContain("\n", r.Detail);
+        Assert.DoesNotContain("\r", r.Detail);
+    }
 }

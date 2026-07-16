@@ -52,23 +52,28 @@ public static class ProcessRunner
             // usually on stderr, and our warning would otherwise say only "exited 1".
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
-            p.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
-            p.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
+            // The handlers fire on threadpool threads. On the timeout path we read these builders
+            // right after Kill, which does NOT synchronously stop in-flight pipe data — so every
+            // access is guarded. StringBuilder is not thread-safe.
+            var sync = new object();
+            p.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (sync) stdout.AppendLine(e.Data); };
+            p.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (sync) stderr.AppendLine(e.Data); };
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
 
             if (!p.WaitForExit((int)timeout.TotalMilliseconds))
             {
                 try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
-                return new RunResult(TimedOut, stdout.ToString());
+                lock (sync) return new RunResult(TimedOut, stdout.ToString());
             }
             p.WaitForExit();   // flush the async output handlers (see WaitForExit(int) remarks)
 
             // On success the caller wants clean stdout (it may be JSON). On failure it wants the
             // reason, which lives on stderr.
-            return p.ExitCode == 0
-                ? new RunResult(0, stdout.ToString())
-                : new RunResult(p.ExitCode, (stdout.ToString() + stderr.ToString()).Trim());
+            lock (sync)
+                return p.ExitCode == 0
+                    ? new RunResult(0, stdout.ToString())
+                    : new RunResult(p.ExitCode, (stdout.ToString() + stderr.ToString()).Trim());
         }
         catch (System.ComponentModel.Win32Exception) { return new RunResult(NotFound, ""); }
     }
