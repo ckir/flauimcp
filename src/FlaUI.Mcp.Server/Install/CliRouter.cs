@@ -252,7 +252,8 @@ public static class CliRouter
         if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
             results.Add(Isolate("claude", () =>
             {
-                var runner = ClaudeRunner();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var runner = ClaudeRunner(() => sw.Elapsed, ClaudeBudget);
                 var w = new ClaudeCodeConfigWriter(runner);
                 var r = install ? w.Install(exePath, extraArgs) : w.Uninstall();
                 var deployer = new ClaudeSkillDeployer(paths.ClaudeConfigDir);
@@ -303,9 +304,24 @@ public static class CliRouter
         return results;
     }
 
+    /// Total wall-clock a single install/uninstall claude-branch pass may spend. The per-call 30s
+    /// DefaultTimeout already bounds ONE hang; this caps the (1 + 2N)*30s pile-up when several hang.
+    /// 120s = 4x DefaultTimeout — a full call of grace over the realistic worst case (N<=3 colliding
+    /// copies), so overhead on hung predecessors never squeezes a legitimately slow later call.
+    internal static readonly TimeSpan ClaudeBudget = TimeSpan.FromSeconds(120);
+
+    /// The timeout to hand the next claude call given the elapsed pass time, or null when the budget is
+    /// spent (the caller short-circuits to TimedOut without launching a process). Pure — unit-tested.
+    internal static TimeSpan? BudgetedTimeout(TimeSpan budget, TimeSpan elapsed)
+    {
+        var remaining = budget - elapsed;
+        if (remaining <= TimeSpan.Zero) return null;
+        return remaining < ProcessRunner.DefaultTimeout ? remaining : ProcessRunner.DefaultTimeout;
+    }
+
     /// The claude runner, with a test seam for the "CLI absent" case — the branch that gates the
     /// skill deploy, and the one a machine without Claude Code actually takes.
-    private static Func<string, string[], string?, RunResult> ClaudeRunner()
+    private static Func<string, string[], string?, RunResult> ClaudeRunner(Func<TimeSpan> elapsed, TimeSpan budget)
     {
         if (Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING") == "1")
             return (_, _, _) => new RunResult(ProcessRunner.NotFound, "");
@@ -319,7 +335,12 @@ public static class CliRouter
                 ? new RunResult(0, $"[{{\"id\":\"{collision}\",\"scope\":\"user\",\"enabled\":true}}]")
                 : new RunResult(0, "");
 
-        return (file, args, cwd) => ProcessRunner.Run(file, args, cwd, ProcessRunner.DefaultTimeout);
+        return (file, args, cwd) =>
+        {
+            var timeout = BudgetedTimeout(budget, elapsed());
+            if (timeout is null) return new RunResult(ProcessRunner.TimedOut, "");
+            return ProcessRunner.Run(file, args, cwd, timeout.Value);
+        };
     }
 
     /// The agents are independent targets, so one agent's fault must not deny the others: a throw
