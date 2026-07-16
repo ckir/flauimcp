@@ -503,19 +503,13 @@ shape is insufficient** for this contract. Another reason to mine it rather than
   scope-resolution engine, and it fails SILENTLY when that changes** — see
   [Settled decisions](#settled-decisions-2026-07-16) #1 for the full asymmetry argument.
 
-⚠ **INCONCLUSIVE — do not assert either way:** whether `--json` also lists **skills-dir** plugins. A
-check found no `@skills-dir` ids, but the profile had **none installed at the time**, so the test was
-**vacuous, not negative**. Re-measure with one present. It does not gate the remedy, which needs only
-the *marketplace* id — but `flaui-mcp status` reads the filesystem directly and must not be built on
-the assumption either way.
-
-> **Narrowed 2026-07-16 (round 7):** the backing store is now known — `~/.claude/plugins/installed_plugins.json`,
-> whose records carry `{gitCommitSha, installPath, installedAt, lastUpdated, projectPath, scope, version}`.
-> A `skills-dir` plugin is **not installed through that registry** (it is auto-discovered from disk), which
-> is *consistent with* `--json` omitting it — but consistency is not measurement, and the vacuous test
-> still stands. **The prediction to test:** a skills-dir plugin will be **absent** from `--json`. If that
-> holds, `flaui-mcp status` **cannot** use `--json` to report our own deployed skill and must read the
-> filesystem — which is what it already does. Do not build on the prediction before measuring it.
+✅ **MEASURED 2026-07-16 (M3, Task 12 install-smoke) — `--json` DOES list skills-dir plugins.** With
+our skill deployed to a throwaway `CLAUDE_CONFIG_DIR`, `claude plugin list --json` returned it as an
+`flaui-mcp@*` entry with `enabled == true`. This **falsifies** the round-7 prediction that a skills-dir
+plugin would be *absent* from the registry-backed list: it is auto-discovered from disk yet still
+enumerated by `--json`. Consequences: (a) the collision detect/disable/restore surface sees a deployed
+skills-dir plugin, and (b) `flaui-mcp status` *could* read `--json` for our own skill — it reads the
+filesystem instead, which remains correct and needs no change. The earlier vacuous test is superseded.
 
 ### Prior art — the `agy-attempt` branch (reference only, NOT a plan)
 
