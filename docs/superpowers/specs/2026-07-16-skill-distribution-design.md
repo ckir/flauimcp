@@ -1,7 +1,7 @@
 # Spec — bundled driving-skill distribution (v0.15.0)
 
 **Date:** 2026-07-16
-**Status:** draft — **round 1 panelled (agy, REJECT / 7 findings); 6 folded, 1 rejected.** See
+**Status:** draft — **rounds 1–2 panelled (agy). Round 2: REJECT/4 → 2 folded, 2 rejected on measurement.** Round 3 pending. See [Review ledger](#review-ledger).
 [Review ledger](#review-ledger).
 **Supersedes:** `2026-07-15-bundled-skill-distribution-design.md` (that draft bundled a *global
 observation inbox* into the same change; that half is **cut** — see [Out of scope](#out-of-scope)).
@@ -87,12 +87,12 @@ that was false and is corrected here:
   A driving-only payload needs **no new embedded resource** — the same resource serves both agents.
   (This was only expensive in the old draft *because* it bundled `flaui-learn` too.)
 
-**Where `.claude-plugin/plugin.json` comes from — must be decided by the plan, not guessed.** The
-`SKILL.md` is embedded; the Claude manifest is not, and no code writes one today. Options: embed it
-as a second resource, or generate it in code as `AgyConfigWriter.DeploySkill()` does for the peer.
-**Prefer generating it** — the version must track the assembly at runtime (`AgyConfigWriter.cs:37-38`
-already derives a 3-part semver from `Assembly.GetName().Version`), which a static embedded file
-cannot do without a build step. Whichever is chosen, it must be **stated**, not inferred.
+**Where `.claude-plugin/plugin.json` comes from — DECIDED: generate it in code.** The `SKILL.md` is
+embedded; the Claude manifest is not, and no code writes one today. It is **generated**, not embedded
+as a second resource, because the version must track the assembly at runtime —
+`AgyConfigWriter.cs:37-38` already derives a 3-part semver from `Assembly.GetName().Version` for the
+peer, and a static embedded file cannot do that without a build step. Mirror that. *(Round 2 flagged
+this as hedged; it is now a decision, not a preference.)*
 
 **Measured — the manifest is minimal.** A working Claude plugin manifest needs no `skills` array:
 `plugins/flaui-mcp/.claude-plugin/plugin.json` carries only `{name, displayName, description,
@@ -213,15 +213,36 @@ exists, takes `--scope user`, and is non-interactive (only its `--prune` option 
 `claude plugin marketplace remove <name>` exists too. So "detect and remove" is mechanically
 available; it is not blocked by tooling.
 
-**Remedy — recommended, owner: user, at plan time.** *Detect and warn*, not auto-remove:
-- **Detect** the marketplace copy during install; if present, report it as a `Warning` on the claude
-  `AgentResult` (the channel `a373265` already built), so it lands in `install.log` and in
-  `flaui-mcp status`, and print the exact `claude plugin uninstall flaui-mcp@flaui-mcp --scope user`.
-- **Do not auto-remove.** The user installed it deliberately by following the README; silently
-  uninstalling a plugin the user chose is a bigger violation than the duplicate it fixes, and it is
-  irreversible from the installer's side.
-- If the marketplace is **retired** (open decision below), the warning is still required for
-  everyone upgrading *from* v0.14.x — retiring it removes the future audience, not the existing one.
+**Remedy — DETECT AND DISABLE.** (Panel round 2 rejected an earlier "detect and warn" remedy as
+self-contradictory, and was right: the installer is `runhidden` (`installer/flaui-mcp.iss:38`), so a
+warning in `install.log` is invisible by construction — "warn only" *is* "do nothing" at runtime,
+while the spec's own axiom says a drifted skill must not run. Claude and agy converged on disable.)
+
+- **On install:** if the marketplace copy is present, run
+  `claude plugin disable flaui-mcp@flaui-mcp --scope user`, and report it as a `Warning` on the
+  claude `AgentResult` (the channel `a373265` already built), so it reaches `install.log` and
+  `flaui-mcp status`.
+- **Disable, not uninstall.** Both satisfy the axiom — the drifted skill cannot load either way — but
+  disable is a **reversible** toggle, while uninstall silently destroys something the user installed
+  deliberately *because our own README told them to*. Precedent: `README.md:306-311` already
+  prescribes disable for exactly this collision. A user who digs into their config finds the plugin
+  cleanly disabled rather than mysteriously gone.
+- **Rejected — "don't bundle if the marketplace copy is present":** it looks respectful but is
+  *fatal*. The server upgrades to v0.15.0 while the plugin stays bound to the marketplace, tracking
+  `master`. Skew returns the moment `master` moves — the exact failure this spec exists to close.
+- **Rejected — "do nothing":** the collision is silent (measured above); the user gets no signal at all.
+
+⚠ **Uninstall MUST restore what install disabled — symmetric, or we permanently degrade the user.**
+If `flaui-mcp uninstall` removed the bundled skill but left the marketplace copy disabled, the user
+would end up with **no driving skill at all** and no indication why: we disabled their working plugin
+and then took away the thing that replaced it. **Contract:** the installer records that *it* was the
+one that disabled the plugin, and uninstall re-enables it — but **only if we disabled it**. Never
+re-enable a plugin the user disabled themselves.
+
+⚠ **UNVERIFIED — the plan must measure:** whether `claude plugin disable --scope user` is
+non-interactive (`--scope user` is the documented default for `uninstall`; `disable`'s
+non-interactivity is assumed, not measured), and exactly which file it writes at user scope. The
+`--scope local`/`--scope project` file mapping *was* measured (see above); user scope was not.
 
 **Version.** Bump the manifest version in lockstep with the exe (csproj / iss / plugin.json) — the
 existing release convention.
@@ -315,6 +336,16 @@ measurement before folding.
 | 5 | Dependency Cynic | hardcoded `~/.claude` | **FOLDED** — verified `CLAUDE_CONFIG_DIR` is honored. Doubles as the test-isolation lever. |
 | 6 | Blindspot | recursive delete wipes out-of-band user files | **REJECTED** — same false premise the peer already conceded once. `PluginRoot` holds only what `DeploySkill()` writes; the growth files live in a different tree (`driving-flaui-mcp/SKILL.md:15-18`). A shared name fragment is not a shared location. |
 | 7 | Literal Implementer | README change named but not written | **FOLDED** — drop-in JSON now given. |
+
+**Round 2 — agy panel + one negotiation turn, 2026-07-16. Verdict: REJECT, 4 findings.** Seats
+rotated onto new lenses (Boundary Smuggler, Resource Vampire) plus two re-run on what changed.
+
+| # | Seat | Finding | Disposition |
+|---|---|---|---|
+| 1 | Axiom Breaker | "detect and warn" contradicts the spec's own "a drifted skill must not run" — the installer is `runhidden`, so the warning is invisible and warn-only *is* do-nothing | **CONCEDED — the sharpest finding of the review.** Remedy changed to detect-and-**disable**. Peer's option space was binary (remove/warn); pushing back surfaced disable (reversible) and "don't bundle" — the peer then independently called disable, and killed "don't bundle" as *fatal*: the server upgrades while the plugin keeps tracking `master`, so skew returns. Folding it also exposed the **symmetric-restore** hole neither of us had named. |
+| 2 | Resource Vampire | user-scope deploy "will permanently bloat the context window" of every session | **REJECTED — measured false.** `claude plugin details` on the real plugin: `driving-flaui-mcp always-on ~80 tok / on-invoke ~7.2k`. Always-on is the frontmatter description; the 29KB body is lazy-loaded on invoke. Peer conceded: "my axiom falsely assumed Claude Code injects the entire SKILL.md into the standing system prompt". |
+| 3 | Boundary Smuggler | shipping one `SKILL.md` to both agents makes the peer read Claude's profile namespace | **REJECTED as a blocker; recorded as a wart.** Citation was wrong (`AgyConfigWriter.cs:64` holds no such instruction; it is `driving-flaui-mcp/SKILL.md:16-18`). The observation is real but: pre-existing in v0.14.0, both agents run as the **same OS user** (no boundary crossed), the read is conditional ("if it exists … proceed"), and the growth files belong to the **cut** autotrain scope. Peer conceded: "a wart, not a blocking defect". |
+| 4 | Literal Implementer | deferred decisions with no owner | **PARTIALLY ACCEPTED.** The manifest origin was genuinely hedged → now **decided** (generate in code). The rest — marketplace disposition, curator USER mode — are **user-owned with a named owner**, which is not a defect. |
 
 **Method note.** Round 1 was bound to measurement (name the files, cite code `file:line`, and
 *verify the relation, not just the endpoints*). Compared with the peer's 2026-07-15 panel — whose
