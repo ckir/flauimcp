@@ -109,7 +109,7 @@ public static class CliRouter
                     uninstallResults.Where(r => r.Warning is not null).Select(r => $"[{r.Agent}] {r.Warning}").ToList());
                 // Leave no leftovers: delete the timestamped backups we wrote next to each config
                 // file we touched. (Backups are a safety net for the live install, not after removal.)
-                foreach (var line in SweepBackups(new[] { paths.AgyServers, paths.AgyPerms, paths.GenericPath }))
+                foreach (var line in SweepBackups(PathsForAgent(agent, paths)))
                     outp.WriteLine(line);
                 // --purge-data: also remove our own data dir (the generic config + anything under it).
                 if (purgeData)
@@ -397,6 +397,20 @@ public static class CliRouter
                 return w.Install(paths.GenericPath, exePath, addArgs, removeArgs);
             }));
         return results;
+    }
+
+    /// The backup paths to sweep for a given `--agent`, mirroring the Apply() dispatch. Claude has no
+    /// local config file (opaque `claude mcp` CLI) → no paths → the sweep is a no-op for it. "all" (also
+    /// the default when --agent is omitted, CliRouter.cs:16) is the union — a bare/full uninstall still
+    /// sweeps. Keep this in lockstep with the agent branches in Apply().
+    private static IEnumerable<string> PathsForAgent(string agent, Paths paths)
+    {
+        bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
+        if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
+        { yield return paths.AgyServers; yield return paths.AgyPerms; }
+        if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
+            yield return paths.GenericPath;
+        // claude → nothing; unknown → nothing (Apply configures nothing either).
     }
 
     /// Delete the `<config>.bak-<timestamp>` files JsoncFile wrote next to each touched config.
