@@ -1,8 +1,11 @@
 # Spec — bundled driving-skill distribution (v0.15.0)
 
 **Date:** 2026-07-16
-**Status:** draft — **rounds 1–2 panelled (agy). Round 2: REJECT/4 → 2 folded, 2 rejected on
-measurement.** Round 3 pending. See [Review ledger](#review-ledger).
+**Status:** draft — **4 agy panel rounds, all REJECT; every finding dispositioned.** R1 7 (6 folded)
+· R2 4 (2 folded, 2 **rejected on measurement**) · R3 5 (all valid) · R4 5 (all valid). **NOT GREEN —
+the review is still finding substance.** Note the shift: rounds 1–2 hit the *design*, rounds 3–4 hit
+*implementation mechanics and doc coherence*. The design has held since round 2.
+See [Review ledger](#review-ledger).
 **Supersedes:** `2026-07-15-bundled-skill-distribution-design.md` (that draft bundled a *global
 observation inbox* into the same change; that half is **cut** — see [Out of scope](#out-of-scope)).
 Also supersedes the marketplace-only distribution decision (Fork 1B) in
@@ -261,6 +264,23 @@ already holds `generic-mcp.json` and `install.log`, and `--purge-data` already g
 **Consequence to state plainly:** `uninstall --purge-data` destroys the marker; ordering matters —
 **restore before purge**, or the restore silently no-ops.
 
+**R4 — `--purge-data` is NOT agent-scoped, so another agent's uninstall can destroy the marker.**
+`CliRouter.cs:18` reads `--purge-data` independently of `--agent`, and `PurgeDataDir` runs after the
+writer loop regardless of which agent was targeted (`CliRouter.cs:103-110`). The per-agent verb is
+documented and supported (`docs/ops-manual.md:61`: `flaui-mcp uninstall --agent agy|generic|claude|all`).
+So **`flaui-mcp uninstall --agent agy --purge-data` wipes the shared data dir — including the Claude
+restore marker** — while Claude is still installed. A later `uninstall --agent claude` then finds no
+marker, concludes "the user disabled it", and **silently strands the user's plugin disabled forever**.
+The marker must survive a purge that was not aimed at Claude: either scope it outside the generic
+purge, or make `--purge-data` honor `--agent`. **The plan must choose; the failure is silent either way.**
+
+**R5 — every restore decision must be logged, including the negative branch.** "Found it disabled
+with no marker → the user did this → don't touch it" is the correct rule and an **invisible** one. A
+user whose plugin stays disabled has no way to learn why, and a maintainer debugging it is guessing.
+**Contract:** the skip and its reason are recorded in `install.log` and surfaced by `flaui-mcp status`
+(which already reports deployed state). The whole point of `a373265` was that an unreported decision
+is indistinguishable from a bug.
+
 ⚠ **BLOCKING HAZARD — the runner has no timeout, so a prompt hangs the installer forever.**
 `ClaudeCodeConfigWriter.cs:62` calls `p.WaitForExit()` with **no timeout**, on a process started with
 `CreateNoWindow = true` (`:58`). Today's `mcp add/remove` never prompt, so this has never bitten. If
@@ -315,6 +335,42 @@ That framing made a live, publicly-documented breakage look victimless.
 **Therefore, whichever way this goes: mechanism A and the `README.md:158-163` rewrite must land in
 the same change.** Retiring the marketplace while the README still advertises it — or shipping
 mechanism A without rewriting those lines — breaks the documented path a second time.
+
+## Documentation consequences — the change falsifies docs beyond the two README ranges
+
+Round 4's Doc-Coherence seat found that naming only `README.md:158-163` and `:306-311` was
+incomplete. **Every item below ships in the same change**, per the same rule that binds mechanism A
+to the README rewrite: a doc that confidently describes the old behavior is worse than no doc.
+
+⚠ **`docs/ops-manual.md:22-24` states a PRODUCT PROMISE that detect-and-disable BREAKS.** It says
+uninstall "performs **targeted key removal** — it only deletes FlaUI.Mcp's own entries and leaves
+your other settings intact." **Disabling `flaui-mcp@flaui-mcp` mutates an entry that is the USER's,
+not ours.** This is not a stale sentence to refresh — it is a guarantee the chosen remedy violates,
+and it outranks the other doc fixes. The plan must **either** narrow the promise explicitly ("with
+one exception: a conflicting flaui-mcp plugin we detect is disabled, reversibly, and restored on
+uninstall") **or** revisit the remedy. Silently breaking a documented guarantee is not an option.
+*(Found by me while verifying the panel's ops-manual finding; the panel found the table, not the promise.)*
+
+| Doc | Line | Falsified how |
+|---|---|---|
+| `docs/ops-manual.md` | 27 | The "What the installer changes" table gives Claude Code as *only* "Registers the `flaui-mcp` MCP server". Mechanism A also writes `~/.claude/skills/flaui-mcp/`, disables a conflicting plugin, and drops a marker in `<data-dir>`. |
+| `docs/ops-manual.md` | 22-24 | The "targeted key removal / leaves your other settings intact" promise — see above. |
+| `README.md` | 165-166 | "it adds only the driving **and self-improvement** skills" — the autotrain loop is **cut**; the payload is driving-only. |
+| `README.md` | 173 | "**Claude Code gets the full self-improving plugin**" — flatly false under this spec, and it is the sentence that most misleads a user about what they are getting. |
+| `README.md` | 158-163 | the `/plugin marketplace add` install path (already named). |
+| `README.md` | 306-311 | the maintainer disable note + its wrong `@flaui-mcp` identity (already named). |
+
+**Live sessions do not hot-reload.** `installer/flaui-mcp.iss:65-71` kills a running `flaui-mcp.exe`
+so the binary can be replaced, but nothing coordinates with a **running Claude Code**. Evidence:
+`claude plugin init` tells the user "It will auto-load **next session** … Run `/reload-plugins` to
+load it now" — plugins are not picked up mid-session. So a user who installs with Claude Code open
+keeps the **old v0.14.0 marketplace skill resident in memory** while the new v0.15.0 server is now
+registered: the exact skew this spec exists to eliminate, during that session. The install output
+already says "restart agy to load the new tools" (`CliRouter.cs:35`) — **the Claude equivalent must
+be said too**. ⚠ But note the constraint that governs everything here: Setup runs `runhidden`, so
+that message reaches nobody at install time. It has to live where the user will actually meet it —
+the README and `flaui-mcp status`. **UNVERIFIED:** whether `/reload-plugins` picks up a *newly
+created* skills-dir plugin mid-session, or only a restart does.
 
 ## Consequences
 
@@ -401,6 +457,19 @@ two best defects on its first outing.
 | 3 | Cascade | `ClaudeCodeConfigWriter.cs:62` `WaitForExit()` has **no timeout** on a `CreateNoWindow` process (`:58`) — if `disable` ever prompts, Setup hangs **forever** | **FOLDED** — verified in code. A bounded timeout is now required *regardless* of what the interactivity measurement returns; an unbounded wait on a hidden process is a latent hang for every future `claude` subcommand. |
 | 4 | Mechanism Gamer | the smoke asserts `✔ loaded` — but **both** plugins load silently, so it passes when the disable step never ran | **FOLDED** — the gate must assert a **negative**: the marketplace copy is NOT loaded. A gate that can only observe success cannot see this failure. |
 | 5 | Axiom Breaker | install-before-Claude-CLI → `NotFound` → nothing deployed → user later finds no skill, README says otherwise | **FOLDED** — the recourse exists (`install --agent claude`) but was undocumented; the README rewrite must say so. |
+
+**Round 4 — agy panel, 2026-07-16, `merge-gate-adversarial-auditor`. Verdict: REJECT, 5 findings —
+ALL 5 VALID AND FOLDED**, plus one the panel half-missed. User authorized this round past the
+hard cap because rounds 1–3 kept finding substance. Two new **bespoke** seats (all 11 palette seats
+were spent by round 2; round 3 used a bespoke Rollback seat).
+
+| # | Seat | Finding | Disposition |
+|---|---|---|---|
+| 1 | Doc-Coherence (bespoke) | `docs/ops-manual.md:27` documents Claude Code as *only* "Registers the MCP server" | **FOLDED** — verified. **And it under-called it:** `ops-manual.md:22-24` promises uninstall "only deletes FlaUI.Mcp's own entries" — a **guarantee detect-and-disable breaks**, since it mutates the *user's* entry. Found while verifying the panel's finding. Outranks the rest. |
+| 2 | Doc-Coherence (bespoke) | `README.md:166`, `:173` still promise the autotrain loop the spec **cuts** | **FOLDED** — verified both lines. |
+| 3 | State Corruptor | `uninstall --agent agy --purge-data` wipes the **shared** data dir → destroys the Claude marker → restore silently skipped forever | **FOLDED** as R4 — verified: `CliRouter.cs:18` reads `--purge-data` independent of `--agent`; per-agent uninstall is documented at `ops-manual.md:61`. |
+| 4 | Live-Host Concurrency (bespoke) | a live Claude session keeps the old v0.14.0 skill in memory against the new v0.15.0 server — skew, during that session | **FOLDED** — corroborated: `claude plugin init` says plugins auto-load "next session". `CliRouter.cs:35` already says "restart agy"; the Claude equivalent was missing. |
+| 5 | Blindspot | the "user disabled it, don't touch" branch has **no logging** → a skipped restore is undiagnosable | **FOLDED** as R5 — logged to `install.log` + `flaui-mcp status`. |
 
 **Method note.** Round 1 was bound to measurement (name the files, cite code `file:line`, and
 *verify the relation, not just the endpoints*). Compared with the peer's 2026-07-15 panel — whose
