@@ -180,6 +180,51 @@ settings" → "**unrelated** settings". **Measured: `docs/ops-manual.md:50` alre
 unrelated settings untouched"** — 27 lines below the sentence it was meant to fix. The word is already
 in the document and has dissolved nothing; the adjective was never carrying the weight assigned to it.
 
+**4 — Detection mechanism: MUTATION-AS-DETECTOR, all scopes (settled during execution, 2026-07-16).**
+Decision #1 settled *which tool answers detection* (`--json`, not reading config directly). Executing
+plan Task 2 then measured a fact that **falsifies the plan's original detection STEP** — see the
+MEASURED block under [the runner hazard](#blocking-hazard) for the proof: **`list --json`'s `enabled`
+field is CWD-resolved for `scope=local` rows.** A single global read taken from Setup's own working
+directory (which has no `.claude`) reports every local row as `enabled=false`, so a deliberately-local
+colliding copy would be silently skipped. `id`/`scope`/`projectPath` remain CWD-stable and
+trustworthy; only `enabled` on local rows is not.
+
+*Consult + one negotiation turn (both models converged), user-decided **all scopes**:*
+- **agy recommended mutation-as-detector** over per-project reads: `disable --scope local` writing the
+  CWD's config is the CLI's **designed** behavior, whereas leaning on `--json`'s CWD-resolved `enabled`
+  makes us load-bearing on a leaky abstraction. Adopted.
+- **claude rejected agy's exit-1 disambiguation-by-message** ("match the string *is already
+  disabled*"): that is UI text, not a contract — a reword silently reclassifies a real failure as
+  benign, resurrecting the silent-success this subproject exists to kill. **agy conceded fully.**
+  Replacement: on `disable` exit 1, **re-read `list --json` with cwd=projectPath** and consult
+  `enabled` for the matching row — a boolean contract, read in the one CWD context measured to be
+  correct. This is not the leaky abstraction smuggled back in: it is a tie-breaker on an
+  already-failed mutation, not the detector.
+- **Rejected — direct settings-JSON write** (claude's alternative (i)): couples us to Claude's private
+  storage backend; a daemon/cache/schema change ⇒ we silently write dead files. The CLI is the public
+  write contract.
+- **Rejected — user-scope-only** (claude's alternative (ii), a YAGNI simplification): a user *can*
+  `claude plugin install flaui-mcp@flaui-mcp --scope local` (`install` defaults to `--scope user`, but
+  the override exists). Respond to the inventory, do not assume scope. *User chose the robust option
+  over YAGNI and over a seam-for-later middle.*
+
+**Contract (rewrites plan Tasks 5–7):**
+- **Marker (Task 5):** each record carries `{ id, scope, projectPath }` (projectPath null for user
+  scope). `SameEntry` compares projectPath **case-insensitively** (Windows path) and serves both Apply
+  and Restore.
+- **Detect + disable (Task 6):** from ONE global `list --json`, take every row with `id ==
+  flaui-mcp@flaui-mcp`. For each: **skip if `!Directory.Exists(projectPath)`** (a deleted project
+  cannot load the plugin; the runner also needs a valid cwd). Run `disable <id> --scope <its scope>`
+  with **cwd = its projectPath** (user rows: cwd = null). `exit 0` ⇒ we disabled it ⇒ record for
+  restore. `exit 1` ⇒ re-read `list --json` at cwd=projectPath: `enabled==false` ⇒ already off,
+  silent, record nothing; `enabled==true` ⇒ real failure, **warn**, record nothing. **Never parse a
+  human-readable message.**
+- **Restore (Task 7):** per record, a global `list --json` first — **is the id still installed?** No ⇒
+  the user removed the marketplace copy themselves ⇒ discard the record, do **not** `enable` (it would
+  write a phantom `{id:true}` for a plugin they deleted, since `enable` succeeds for fictitious ids).
+  Yes ⇒ `enable <id> --scope <scope>` at cwd=projectPath. If the global read itself **fails**, keep the
+  marker (cannot verify ⇒ cannot safely consume) — the R7 consume discipline, unchanged.
+
 ## Design
 
 ### Delivery mechanism (A)
@@ -585,8 +630,38 @@ and (b) give `DefaultRunner` a bounded timeout.** *(Round 5, scope discipline: (
 **because this spec adds a call whose interactivity is unverified** — that makes it load-bearing, not
 adjacent. It was previously framed as "required regardless", i.e. as a global framework fix for every
 subcommand; that framing was scope creep and is withdrawn. The wider benefit is incidental, not the
-reason.)* *(Also unverified: which file `disable` writes at user scope. The `--scope local`/`project`
-mapping was measured; user scope was not.)*
+reason.)*
+
+> **✅ MEASURED 2026-07-16 (plan Task 2, M1), all via an isolated `CLAUDE_CONFIG_DIR`:**
+> - **(a) `claude plugin disable` is NON-INTERACTIVE.** With stdin closed (`< /dev/null`) it returns in
+>   4–5 s with no prompt and no hang. `--help` exposes only `-a/-h/-s`. The hazard's trigger condition
+>   does not occur — but (b) the bounded timeout still shipped (plan Task 1, `ProcessRunner`) because
+>   "measured non-interactive today" is not "non-interactive forever".
+> - **Which file `disable` writes at user scope:** `~/.claude/settings.json` → `enabledPlugins` as a
+>   `{ "<id>": bool }` map. `disable` writes `false` (does **not** delete the key); `enable` writes
+>   `true`. `disable` on an entry not currently enabled ⇒ **exit 1**, message *"is already disabled at
+>   <scope> scope"*, **writes nothing**. `enable` **does not validate existence** — enabling a
+>   fictitious id prints `✔ Successfully enabled` and exits **0**, writing `{id:true}`.
+> - **⛔ NEW BLOCKING FINDING the measurement exposed — `list --json`'s `enabled` field is
+>   CWD-RESOLVED for `scope=local` rows.** Proven three ways (projectPath never varying): from a dir
+>   whose `.claude/settings.local.json` marks the id `true` ⇒ every local row reads `true`; from a
+>   virgin dir ⇒ every local row reads `false`; planting and flipping my own `settings.local.json`
+>   true→false ⇒ all local rows tracked my file — including one whose `projectPath` **no longer exists
+>   on disk**. `user`-scope rows are stable across CWD. **`id`/`scope`/`projectPath` are CWD-stable and
+>   trustworthy; only `enabled` on local rows is not.** This **falsifies the plan's original detection
+>   step** ("one global `list --json`, act on `enabled`"): from Setup's CWD (no `.claude`) every local
+>   row reads `false` ⇒ a deliberately-local colliding copy is silently skipped. **This retroactively
+>   VINDICATES round 7's rejected finding "`--json` is CWD-contextual"** — the rejection measured
+>   `id`/`scope`/`projectPath` (stable) and never varied CWD against `enabled`.
+>
+> **✅ FORK RESOLVED — see [Settled decisions](#settled-decisions-2026-07-16) #4.** AGY-FIRST consult +
+> one negotiation turn (both models converged) + USER-decided **all scopes (robust)**. Detection is now
+> **mutation-as-detector**: for every inventory row where `id == flaui-mcp@flaui-mcp` (skip if
+> `!Directory.Exists(projectPath)`), run `disable` at its own scope with **cwd = its projectPath**;
+> `exit 0` ⇒ we disabled it, record for restore; `exit 1` ⇒ **re-read `list --json` at cwd=projectPath**
+> (NOT string-matching the message) to tell already-off (silent) from a real failure (warn). Restore
+> verifies the id is still in the global inventory before re-enabling (else `enable` writes a phantom
+> entry for a plugin the user removed). This **rewrites plan Tasks 5–7.**
 
 **Late CLI adopters need a documented recourse.** If someone installs flaui-mcp *before* Claude Code,
 the claude target reports `NotFound` and — correctly — nothing is deployed. They then install Claude
