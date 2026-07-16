@@ -1,10 +1,24 @@
 # Spec — bundled driving-skill distribution (v0.15.0)
 
 **Date:** 2026-07-16
-**Status:** draft — **4 agy panel rounds, all REJECT; every finding dispositioned.** R1 7 (6 folded)
-· R2 4 (2 folded, 2 **rejected on measurement**) · R3 5 (all valid) · R4 5 (all valid). **NOT GREEN —
-the review is still finding substance.** Note the shift: rounds 1–2 hit the *design*, rounds 3–4 hit
-*implementation mechanics and doc coherence*. The design has held since round 2.
+**Status:** ⛔ **BLOCKED — not implementable as written.** 5 agy panel rounds, all REJECT; every
+finding dispositioned. R1 7 (6 folded) · R2 4 (2 folded, 2 **rejected on measurement**) · R3 5 (all
+valid) · R4 5 (all valid) · R5 7 (all valid). 28 findings, 25 valid.
+
+**Do not write an implementation plan off this spec yet.** Round 5 found that the detect-and-disable
+remedy requires **reading** Claude Code's state, and `ClaudeCodeConfigWriter`'s runner returns an
+**exit code only** — the capability does not exist. That decides the plan's *shape*, not one of its
+steps. Two blockers and one open fork must be settled first — all marked 🚩/⚠ in place:
+1. 🚩 **Detection mechanism** (stdout parsing vs reading Claude's config vs a `--json` flag —
+   the last is UNVERIFIED and cheapest if real: **measure it first**).
+2. 🚩 **R6** — uninstall deletes the exe and (under `--purge-data`) the log, destroying the very
+   observability the restore path depends on.
+3. ⚠ **The `ops-manual.md:22-24` promise** that detect-and-disable breaks (owner: user).
+
+Honest read on the review itself: rounds 1–2 hit the *design*; rounds 3–4 hit *mechanics and doc
+coherence*; round 5 went back to the *design* and found a hole all four earlier rounds missed. The
+review is **not converging** — GREEN was not reachable by another round, and chasing it produced this
+finding instead, which is worth more.
 See [Review ledger](#review-ledger).
 **Supersedes:** `2026-07-15-bundled-skill-distribution-design.md` (that draft bundled a *global
 observation inbox* into the same change; that half is **cut** — see [Out of scope](#out-of-scope)).
@@ -118,7 +132,12 @@ ckir/flauimcp` resolves against the **git repo** (`git@github.com:ckir/flauimcp.
 > decoupled by construction** — a user on the 0.14.0 exe who installs the plugin gets whatever
 > `master` says today, which may describe tools their binary does not have.
 
-Bundling makes skew impossible: one installer transaction writes both, from the same build.
+Bundling makes skew impossible **between what is on disk**: one installer transaction writes both,
+from the same build. **It does not make skew impossible in a live session** — round 5 caught this
+absolute standing uncorrected. A Claude Code session running *during* the install keeps the previous
+skill resident in memory (plugins load at session start; see the live-session fold below) and can
+drive the new binary with the old skill until it restarts. On-disk lockstep is the guarantee;
+session-lifetime skew is bounded by a restart and must be *documented*, not claimed away.
 
 A corollary the plan must respect: **a release does not ship or fix the plugin — a merge to `master`
 does.** Any task phrased as "the plugin fix ships in v0.15.0's setup.exe" is wrong on the mechanism.
@@ -155,8 +174,11 @@ writes exactly that file. **Do not document `--scope project`**: it writes the g
 
 ## Contracts
 
-**Install.** `flaui-mcp install --agent claude` (and `--agent all`) deploys the skill, mirroring the
-agy path. Per `a373265`, a deploy failure is a **warning on the agent's result, not a throw**: the
+**Install.** `flaui-mcp install --agent claude` (and `--agent all`) deploys the skill, following the
+same *policy* as the agy path — **not** the same code (see "NOT free parity" above: `AgyConfigWriter`
+writes an agy-shaped manifest via a hardcoded resource name, and `ClaudeCodeConfigWriter` has no file
+I/O at all). *(Round 5 caught "mirroring the agy path" here still asserting the parity the design
+section explicitly repudiates.)* Per `a373265`, a deploy failure is a **warning on the agent's result, not a throw**: the
 skill rides along with the registration and must never deny the user a working server. The outcome
 is recorded to `<data-dir>/install.log` and readable back via `flaui-mcp status`.
 
@@ -225,6 +247,31 @@ while the spec's own axiom says a drifted skill must not run. Claude and agy con
   `claude plugin disable flaui-mcp@flaui-mcp --scope user`, and report it as a `Warning` on the
   claude `AgentResult` (the channel `a373265` already built), so it reaches `install.log` and
   `flaui-mcp status`.
+
+🚩 **BLOCKER — this remedy needs a capability the writer does not have. Round 5's best finding; the
+plan CANNOT be written until it is resolved.** Every branch above requires *reading* Claude's state:
+"is the marketplace copy present?", "is it already disabled?", "did this run perform the
+enabled→disabled transition?". **`ClaudeCodeConfigWriter` cannot read anything.** Its runner is
+`Func<string, string[], int>` (`ClaudeCodeConfigWriter.cs:13`) — an **exit code only**. The class doc
+says so explicitly (`:36-41`): *"this writer has no locally-readable config — the registered args live
+inside the opaque `claude` CLI, and the injected runner returns only an exit code (no stdout), so
+there is no way to read back"*. That limitation is why the merge overload at `:42-43` silently
+degrades to full-replace. **The spec asserted detection as if it were free; it is not.**
+
+Compounding it: if `claude plugin disable` exits `0` **both** when it changes state and when it
+no-ops on an already-disabled plugin, then exit codes alone can never tell us whether *we* performed
+the transition — which is precisely what the write-once marker (R1) depends on. Without a pre-flight
+read, R1 is unimplementable.
+
+**The plan must choose a detection mechanism, and each option has a real cost:**
+| Option | Cost / risk |
+|---|---|
+| Widen the runner to capture **stdout**, then parse `claude plugin list` | Parsing human-readable CLI output is brittle across versions — the very coupling `ClaudeCodeConfigWriter` was designed to avoid. Touches a shared runner used by every verb. |
+| Read Claude's **config file directly** (`~/.claude/settings.json`, honoring `CLAUDE_CONFIG_DIR`) | Abandons the "only touch the stable CLI" principle this writer was built on; the file's schema is undocumented and may change. But it is what `AgyConfigWriter` already does for the peer, and `JsoncFile` exists. |
+| A **`--json`/machine-readable** flag on the CLI, if one exists | **UNVERIFIED** — not checked. Cheapest by far if real. **Measure this first.** |
+
+⚠ **Do not write the plan before this is settled.** It decides whether the change is confined to a
+new writer or reaches into shared installer machinery — i.e. it decides the plan's shape, not a step.
 - **Disable, not uninstall.** Both satisfy the axiom — the drifted skill cannot load either way — but
   disable is a **reversible** toggle, while uninstall silently destroys something the user installed
   deliberately *because our own README told them to*. Precedent: `README.md:306-311` already
@@ -271,15 +318,27 @@ documented and supported (`docs/ops-manual.md:61`: `flaui-mcp uninstall --agent 
 So **`flaui-mcp uninstall --agent agy --purge-data` wipes the shared data dir — including the Claude
 restore marker** — while Claude is still installed. A later `uninstall --agent claude` then finds no
 marker, concludes "the user disabled it", and **silently strands the user's plugin disabled forever**.
-The marker must survive a purge that was not aimed at Claude: either scope it outside the generic
-purge, or make `--purge-data` honor `--agent`. **The plan must choose; the failure is silent either way.**
+The marker must survive a purge that was not aimed at Claude. **DECIDED (round 5, scope discipline):
+move the marker OUT of the generic purge path. Do NOT make `--purge-data` honor `--agent`** — that
+rewrites shared router semantics (`CliRouter.cs:18`, `:103-110`) which today wipe the directory *by
+design*, and it is a pre-existing behavior unrelated to skill distribution. Fixing it here would be
+scope creep; moving our own marker is the smaller, contained change. If `--purge-data`'s agent-blindness
+is a defect, it is a **separate** one — file it, don't smuggle it.
 
 **R5 — every restore decision must be logged, including the negative branch.** "Found it disabled
 with no marker → the user did this → don't touch it" is the correct rule and an **invisible** one. A
 user whose plugin stays disabled has no way to learn why, and a maintainer debugging it is guessing.
-**Contract:** the skip and its reason are recorded in `install.log` and surfaced by `flaui-mcp status`
-(which already reports deployed state). The whole point of `a373265` was that an unreported decision
-is indistinguishable from a bug.
+**Contract:** the skip and its reason are recorded in `install.log`. The whole point of `a373265` was
+that an unreported decision is indistinguishable from a bug.
+
+🚩 **R6 — but at UNINSTALL time that observability channel does not survive. Round 5; unresolved.**
+Uninstall **deletes the exe** (`docs/ops-manual.md:45-47`: "removes the files"), so `flaui-mcp status`
+— the reader for all of this — **no longer exists** immediately afterwards. And `--purge-data` deletes
+`install.log` itself. So **every warning the restore path emits during uninstall is destroyed at the
+moment it is written**: the R2/R5 observability mandate is void exactly when it matters most (the user
+whose plugin wasn't restored has no product left to ask). The plan must put uninstall-time warnings
+somewhere that outlives the uninstall — the log is not it. **UNRESOLVED; it interacts with the marker's
+home (R3/R4) and must be settled with them.**
 
 ⚠ **BLOCKING HAZARD — the runner has no timeout, so a prompt hangs the installer forever.**
 `ClaudeCodeConfigWriter.cs:62` calls `p.WaitForExit()` with **no timeout**, on a process started with
@@ -287,9 +346,11 @@ is indistinguishable from a bug.
 `claude plugin disable` prompts under **any** condition, the hidden process blocks on stdin forever:
 Setup hangs, and the user never gets the product — a far worse outcome than the collision we set out
 to fix. **The plan must (a) MEASURE whether `claude plugin disable --scope user` is non-interactive,
-and (b) give `DefaultRunner` a bounded timeout regardless.** (b) is required even if (a) comes back
-clean: an unbounded wait on a hidden process is a latent hang for every future `claude` subcommand
-we add. *(Also unverified: which file `disable` writes at user scope. The `--scope local`/`project`
+and (b) give `DefaultRunner` a bounded timeout.** *(Round 5, scope discipline: (b) is justified
+**because this spec adds a call whose interactivity is unverified** — that makes it load-bearing, not
+adjacent. It was previously framed as "required regardless", i.e. as a global framework fix for every
+subcommand; that framing was scope creep and is withdrawn. The wider benefit is incidental, not the
+reason.)* *(Also unverified: which file `disable` writes at user scope. The `--scope local`/`project`
 mapping was measured; user scope was not.)*
 
 **Late CLI adopters need a documented recourse.** If someone installs flaui-mcp *before* Claude Code,
@@ -470,6 +531,19 @@ were spent by round 2; round 3 used a bespoke Rollback seat).
 | 3 | State Corruptor | `uninstall --agent agy --purge-data` wipes the **shared** data dir → destroys the Claude marker → restore silently skipped forever | **FOLDED** as R4 — verified: `CliRouter.cs:18` reads `--purge-data` independent of `--agent`; per-agent uninstall is documented at `ops-manual.md:61`. |
 | 4 | Live-Host Concurrency (bespoke) | a live Claude session keeps the old v0.14.0 skill in memory against the new v0.15.0 server — skew, during that session | **FOLDED** — corroborated: `claude plugin init` says plugins auto-load "next session". `CliRouter.cs:35` already says "restart agy"; the Claude equivalent was missing. |
 | 5 | Blindspot | the "user disabled it, don't touch" branch has **no logging** → a skipped restore is undiagnosable | **FOLDED** as R5 — logged to `install.log` + `flaui-mcp status`. |
+
+**Round 5 — agy panel, 2026-07-16. Verdict: REJECT, 7 findings — ALL 7 VALID AND FOLDED.** Two new
+bespoke seats aimed at what four rounds of *folding* had done to the document itself.
+
+| # | Seat | Finding | Disposition |
+|---|---|---|---|
+| 1 | Literal Implementer | **detection has no mechanism**: every branch of the remedy must READ Claude's state, but the runner is `Func<…,int>` — **exit code only** (`ClaudeCodeConfigWriter.cs:13`, doc `:36-41`) | **FOLDED as a 🚩 BLOCKER** — verified in code. The spec assumed a capability the writer does not have. **The plan cannot be written until a detection mechanism is chosen.** The best finding of the review. |
+| 2 | Literal Implementer | if `disable` exits `0` both on change and no-op, exit codes can never tell us whether *we* performed the transition — so the write-once marker (R1) is unimplementable without a pre-flight read | **FOLDED** into the same blocker. |
+| 3 | Axiom Breaker | **uninstall destroys its own observability**: the exe is deleted (`ops-manual.md:45-47`) so `status` is gone, and `--purge-data` deletes `install.log` — every restore warning dies as it is written | **FOLDED as R6 — UNRESOLVED.** Verified. Must be settled with the marker's home. |
+| 4 | Self-Contradiction (bespoke) | "mirroring the agy path" still asserted the parity the design section explicitly repudiates | **FOLDED** — corrected to *same policy, not same code*. |
+| 5 | Self-Contradiction (bespoke) | "Bundling makes skew **impossible**" — an absolute the R4 live-session fold falsified and never softened | **FOLDED** — now: on-disk lockstep is the guarantee; session-lifetime skew is bounded by a restart and documented, not claimed away. |
+| 6 | Scope Integrity (bespoke) | the runner timeout was framed as required "regardless" — a global framework fix smuggled in | **FOLDED** — justification narrowed to *this spec adds the call whose interactivity is unverified*. Wider benefit is incidental. |
+| 7 | Scope Integrity (bespoke) | making `--purge-data` agent-aware rewrites shared router semantics for a pre-existing, unrelated behavior | **FOLDED — DECIDED**: move the marker instead. If `--purge-data`'s agent-blindness is a defect, it is a separate one. |
 
 **Method note.** Round 1 was bound to measurement (name the files, cite code `file:line`, and
 *verify the relation, not just the endpoints*). Compared with the peer's 2026-07-15 panel — whose
