@@ -1,19 +1,18 @@
 # Spec — bundled driving-skill distribution (v0.15.0)
 
 **Date:** 2026-07-16
-**Status:** ⛔ **BLOCKED — not implementable as written.** 5 agy panel rounds, all REJECT; every
+**Status:** ✅ **UNBLOCKED — the plan may now be written.** 6 agy panel rounds, all REJECT; every
 finding dispositioned. R1 7 (6 folded) · R2 4 (2 folded, 2 **rejected on measurement**) · R3 5 (all
-valid) · R4 5 (all valid) · R5 7 (all valid). 28 findings, 25 valid.
+valid) · R4 5 (all valid) · R5 7 (all valid) · R6 2 (all valid). 30 findings, 27 valid.
 
-**Round 5's blocker is RESOLVED: detection is feasible.** `claude plugin list --json` exists and
-returns `{id, scope, enabled, …}` — measured. What remains is **not** a feasibility question but three
-decisions, all with named owners:
-1. ⚠ **Detection mechanism (USER, AGY-FIRST):** adopt `--json` + widen the runner, vs read Claude's
-   config directly. Narrow, both viable, evidence in place. *(An unauthorised implementation of the
-   first exists at `agy-attempt`/`c5e447d` — reference only; see Prior art.)*
-2. 🚩 **R6 — uninstall destroys its own observability** (the exe is deleted; `--purge-data` deletes the
-   log), so restore warnings die as written. **Genuinely unresolved** — settle with the marker's home.
-3. ⚠ **The `ops-manual.md:22-24` promise** that detect-and-disable breaks (owner: user).
+**All three blocking decisions were settled on 2026-07-16** by an AGY-FIRST consult + one negotiation
+turn, then decided by the user. Both models converged on all three; the user confirmed each.
+See [Settled decisions](#settled-decisions-2026-07-16).
+1. ✅ **Detection mechanism:** `claude plugin list --json` + widen the runner. *(An unauthorised
+   implementation exists at `agy-attempt`/`c5e447d` — reference only; see Prior art.)*
+2. ✅ **R6 — uninstall-time observability:** Inno reads the warnings log into a `MsgBox` at
+   `usPostUninstall`, then reaps it.
+3. ✅ **The `ops-manual.md:22-24` promise:** rewrite the contract to match the new lifecycle.
 
 Honest read on the review itself: rounds 1–2 hit the *design*; rounds 3–4 hit *mechanics and doc
 coherence*; round 5 went back to the *design* and found a hole all four earlier rounds missed. The
@@ -69,7 +68,88 @@ to a future subproject — see [Out of scope](#out-of-scope).
 | Payload | `driving-flaui-mcp` **only**, unconditional | agy (CHALLENGE-RIGHT), accepted |
 | Autotrain bundling / global inbox | **CUT** | 7 independent nails from 2 models |
 | Release vehicle | **v0.15.0** — nothing ships before it | user, 2026-07-16 |
+| Detection mechanism | **`claude plugin list --json`** + widen the runner | both models converged; user, 2026-07-16 |
+| Uninstall-time warnings | **Inno `usPostUninstall` MsgBox**, log reaped after display | agy (design), claude (litter patch); user, 2026-07-16 |
+| `ops-manual.md:22-24` | **Rewrite the contract** — it is broken, not imprecise | agy (CHALLENGE-RIGHT, reversed claude); user, 2026-07-16 |
 | Marketplace copy | **OPEN** — see [The marketplace copy](#the-marketplace-copy) | user deferred |
+
+### Settled decisions (2026-07-16)
+
+The three items that blocked round 5 were settled by an **AGY-FIRST consult + one negotiation turn**
+(not a panel round — the consult produced no code and the peer touched no file). Both models reached
+the same answer on all three; the user confirmed each. Recorded here because the *reasoning* is
+load-bearing for the plan, and because two of the three overturned a position **claude** held.
+
+**1 — Detection: `claude plugin list --json`, and widen the runner.** Decisive argument (agy, adopted
+without dispute): option (b) — reading Claude's config directly — makes us re-implement Claude's own
+**scope-resolution engine**, so the day a config tier is added (enterprise policy, a new override
+layer) it breaks **silently** and the collision returns undetected. `--json` asks the host for its
+*effective state* and treats it as a black box. The failure modes are asymmetric: `--json` changing
+breaks us **loudly**; a config-layout change breaks (b) **silently**. Widening
+`Func<string,string[],int>` → `(int Code, string Output)` is the one-time price of that asymmetry.
+
+**2 — R6: the Inno host inherits the reporting job.** Claude asked whether the dialog was *necessary
+or redundant*, given that the only path which destroys the reader is also the only path carrying a
+host. agy settled it: **you cannot argue the host should spare the reader, because the reader is the
+very thing the user asked to remove.** The exe's deletion is the host's primary directive, so the host
+must take over communicating the final state.
+
+*Measured, and it narrows R6 correctly:* `docs/ops-manual.md:48` documents the manual path as
+"`flaui-mcp uninstall --agent all`, **then** delete the executable" — the exe is deleted by **Inno**,
+not by our CLI. So on the CLI path the exe **survives** its own uninstall and `flaui-mcp status` reads
+the log fine. **R6 bites only on the installer path — exactly the path that has a host.** The halves match.
+
+*Mechanism (verified against live code, not proposed in the abstract):*
+- `installer/flaui-mcp.iss:113-117` **already** implements `CurUninstallStepChanged` with a
+  `usPostUninstall` branch (it cleans the PATH entry). This is an extension of live code, not new machinery.
+- `:84-87` **already** shows a `MsgBox` during uninstall, and `:83` **already** reasons about silent
+  runs: *"Default button is No (MB_DEFBUTTON2) so a `/VERYSILENT` uninstall keeps the user's config."*
+  So a second dialog introduces **no new interactivity hazard** — the established design already
+  handles it. *(Claude intended to counter agy on silent-uninstall hang risk; measuring `:83` killed
+  that objection, so it was withdrawn rather than sent. Contrast the `WaitForExit` hazard below, which
+  is a genuinely unbounded wait on a **hidden** process — a different animal from an Inno `MsgBox`
+  that silent mode auto-answers.)*
+- **Litter vs. the purge contract.** `installer/flaui-mcp.iss:44-45` runs `uninstall --agent all
+  --purge-data` **precisely when the user answered YES** to "also remove FlaUI.Mcp's configuration?".
+  A durable warnings log would therefore outlive an uninstall the user explicitly asked to be clean.
+  **Contract:** Inno reads the log's **contents into the MsgBox**, then deletes the file and directory.
+  The purge is honored (nothing survives) *and* the dismissed-and-lost race is beaten (the information
+  is already in the dialog, not in a file the user must go find). *(Claude proposed reap-after-display;
+  agy sharpened it to read-contents-into-the-dialog-then-reap, which closes the race.)*
+- ⚠ **UNVETTED refinement (claude's, not reviewed by the peer — the plan must decide it):** reap
+  **only on the `--purge` branch** (`:44-45`). If the user chose **keep** (`:46-47`, `ShouldKeep`),
+  there is no purge contract to honor, so the log could reasonably persist for `flaui-mcp status` —
+  which on that path still exists, since Inno's uninstall of the exe is what removes the reader.
+  Not measured, not negotiated. Treat as an open sub-decision, not a settled contract.
+
+**3 — `ops-manual.md:22-24` is BROKEN, not imprecise. agy reversed claude on the merits.** Claude had
+walked its own finding back, arguing the promise mostly holds because `flaui-mcp@flaui-mcp` **is** a
+FlaUI.Mcp entry (our marketplace, our namespace) and because `:22-24` governs *uninstall* while the
+disable happens at *install*. Invited to argue the opposite side, agy did, and won:
+
+> The violation is not about jurisdiction — **it is about the verb.** `:22-24` promises uninstall
+> "**only deletes** FlaUI.Mcp's own entries". Re-enabling a plugin is an **active write**, not a
+> deletion. The sentence describes an install/uninstall lifecycle that no longer exists: the product
+> has evolved from purely-subtractive cleanup to **state-mutation-and-restoration**.
+
+**Decision: rewrite the contract at both ends** rather than massage adjectives or apologise for
+touching the config —
+1. `:27` (install) gains the install-time mutation: *disables any colliding marketplace copy of FlaUI.Mcp*.
+2. `:22-24` (uninstall) acknowledges restoration: *targeted cleanup **and state restoration** — deletes
+   FlaUI.Mcp's own entries and re-enables any legacy copy it disabled.*
+
+⚠ **Caveat recorded against agy's framing (measured, does not change the decision):** agy's supporting
+claim that uninstall "was a **purely subtractive** operation" is **false**. `installer/flaui-mcp.iss:101-111`
+(`RemoveFromUserPath`) already calls `RegWriteExpandStringValue` — it **rewrites** the user's
+`HKCU\Environment\Path`. That is a write dressed as a removal. It weakens agy's *framing* (the
+lifecycle was never purely subtractive) but not its *conclusion* (re-enabling is a write in no sense a
+deletion, so "only deletes" is still false). Not re-negotiated: both models had already converged on
+the same **action**, and the panel discipline allows one negotiation turn, not a debate to consensus.
+
+**Also rejected here — claude's own earlier fix, and agy's.** agy first recommended swapping "other
+settings" → "**unrelated** settings". **Measured: `docs/ops-manual.md:50` already reads "leaves your
+unrelated settings untouched"** — 27 lines below the sentence it was meant to fix. The word is already
+in the document and has dissolved nothing; the adjective was never carrying the weight assigned to it.
 
 ## Design
 
@@ -259,8 +339,9 @@ gets `disable --scope user`, which **does not disable it** — the silent collis
 entries at which scopes* we disabled — not a single boolean. *(Found by the panel; the multi-entry
 half was found by measuring its premise.)*
 
-🚩 **BLOCKER — this remedy needs a capability the writer does not have. Round 5's best finding; the
-plan CANNOT be written until it is resolved.** Every branch above requires *reading* Claude's state:
+✅ **RESOLVED (2026-07-16) — see [Settled decisions](#settled-decisions-2026-07-16) #1: adopt
+`--json` and widen the runner.** Round 5's best finding, preserved below because the *constraint* it
+names is still real and the plan must respect it. Every branch above requires *reading* Claude's state:
 "is the marketplace copy present?", "is it already disabled?", "did this run perform the
 enabled→disabled transition?". **`ClaudeCodeConfigWriter` cannot read anything.** Its runner is
 `Func<string, string[], int>` (`ClaudeCodeConfigWriter.cs:13`) — an **exit code only**. The class doc
@@ -295,12 +376,14 @@ robust** option — the earlier risk table was wrong and is withdrawn.
 **Still required:** widen the runner from `Func<string,string[],int>` (`ClaudeCodeConfigWriter.cs:13`)
 to also return stdout. This is the one place the change reaches beyond a new writer.
 
-**The remaining fork — narrow, but still open and USER-OWNED (AGY-FIRST):**
-- **(a)** Adopt `--json` + widen the runner. Keeps the "only touch the stable CLI" principle the
-  writer was built on. Cost: the shared runner's signature changes.
-- **(b)** Read Claude's config file directly (honoring `CLAUDE_CONFIG_DIR`). Abandons that principle
-  for an undocumented file schema — though `AgyConfigWriter` already does exactly this for the peer,
-  and `JsoncFile` exists.
+**The fork — ✅ DECIDED 2026-07-16 (user, after AGY-FIRST; both models converged on (a)):**
+- **(a) — CHOSEN.** Adopt `--json` + widen the runner. Keeps the "only touch the stable CLI" principle
+  the writer was built on. Cost: the shared runner's signature changes, which touches every caller.
+- **(b) — rejected.** Read Claude's config file directly (honoring `CLAUDE_CONFIG_DIR`). Abandons that
+  principle for an undocumented file schema — though `AgyConfigWriter` already does exactly this for
+  the peer, and `JsoncFile` exists. **Rejected because it makes us re-implement Claude's
+  scope-resolution engine, and it fails SILENTLY when that changes** — see
+  [Settled decisions](#settled-decisions-2026-07-16) #1 for the full asymmetry argument.
 
 ⚠ **INCONCLUSIVE — do not assert either way:** whether `--json` also lists **skills-dir** plugins. A
 check found no `@skills-dir` ids, but the profile had **none installed at the time**, so the test was
@@ -394,14 +477,22 @@ user whose plugin stays disabled has no way to learn why, and a maintainer debug
 **Contract:** the skip and its reason are recorded in `install.log`. The whole point of `a373265` was
 that an unreported decision is indistinguishable from a bug.
 
-🚩 **R6 — but at UNINSTALL time that observability channel does not survive. Round 5; unresolved.**
+✅ **R6 — at UNINSTALL time that observability channel does not survive. Round 5; RESOLVED 2026-07-16.**
 Uninstall **deletes the exe** (`docs/ops-manual.md:45-47`: "removes the files"), so `flaui-mcp status`
 — the reader for all of this — **no longer exists** immediately afterwards. And `--purge-data` deletes
 `install.log` itself. So **every warning the restore path emits during uninstall is destroyed at the
 moment it is written**: the R2/R5 observability mandate is void exactly when it matters most (the user
-whose plugin wasn't restored has no product left to ask). The plan must put uninstall-time warnings
-somewhere that outlives the uninstall — the log is not it. **UNRESOLVED; it interacts with the marker's
-home (R3/R4) and must be settled with them.**
+whose plugin wasn't restored has no product left to ask).
+
+**Resolution — the Inno host inherits the reporting job.** The restore path writes its warnings to a
+durable path; `installer/flaui-mcp.iss`'s existing `CurUninstallStepChanged`/`usPostUninstall` branch
+(`:113-117`) reads **the contents** into a `MsgBox` and then reaps the file. Full argument, the
+measurements that narrow R6 to the installer path only, and the one **unvetted** sub-decision (reap on
+the purge branch only?) are in [Settled decisions](#settled-decisions-2026-07-16) #2.
+
+**The R3/R4 interaction it was flagged against still binds:** the warnings file has the same "must not
+be destroyed by a purge before it is read" property as the marker, so the plan must site the two
+together and order the uninstall steps as **restore → report → purge**, never purge-first.
 
 ⚠ **BLOCKING HAZARD — the runner has no timeout, so a prompt hangs the installer forever.**
 `ClaudeCodeConfigWriter.cs:62` calls `p.WaitForExit()` with **no timeout**, on a process started with
@@ -466,19 +557,32 @@ Round 4's Doc-Coherence seat found that naming only `README.md:158-163` and `:30
 incomplete. **Every item below ships in the same change**, per the same rule that binds mechanism A
 to the README rewrite: a doc that confidently describes the old behavior is worse than no doc.
 
-⚠ **`docs/ops-manual.md:22-24` states a PRODUCT PROMISE that detect-and-disable BREAKS.** It says
-uninstall "performs **targeted key removal** — it only deletes FlaUI.Mcp's own entries and leaves
-your other settings intact." **Disabling `flaui-mcp@flaui-mcp` mutates an entry that is the USER's,
-not ours.** This is not a stale sentence to refresh — it is a guarantee the chosen remedy violates,
-and it outranks the other doc fixes. The plan must **either** narrow the promise explicitly ("with
-one exception: a conflicting flaui-mcp plugin we detect is disabled, reversibly, and restored on
-uninstall") **or** revisit the remedy. Silently breaking a documented guarantee is not an option.
-*(Found by me while verifying the panel's ops-manual finding; the panel found the table, not the promise.)*
+✅ **`docs/ops-manual.md:22-24` states a PRODUCT PROMISE that detect-and-disable BREAKS. DECIDED
+2026-07-16: rewrite the contract at both ends.** It says uninstall "performs **targeted key removal**
+— it only deletes FlaUI.Mcp's own entries and leaves your other settings intact."
+
+**Why it is broken — and it is the VERB, not the jurisdiction.** An earlier draft of this line argued
+the breach was that we mutate "an entry that is the USER's, not ours"; **that reasoning is withdrawn**
+— `flaui-mcp@flaui-mcp` is our marketplace and our namespace, so by the promise's own wording it *is*
+one of "FlaUI.Mcp's own entries". The real breach is that **re-enabling a plugin is an active write,
+not a deletion**: the sentence describes a purely-subtractive lifecycle the product no longer has.
+*(agy argued this and reversed claude, who had walked the finding back to "merely imprecise".)*
+
+**The fix — both ends, in this change:**
+1. `:27` (install) gains the install-time mutation: *disables any colliding marketplace copy of FlaUI.Mcp*.
+2. `:22-24` (uninstall) acknowledges restoration: *targeted cleanup **and state restoration** — deletes
+   FlaUI.Mcp's own entries and re-enables any legacy copy it disabled.*
+
+Rejected: swapping "other" → "**unrelated**" (measured — `:50` already says exactly that, and it has
+dissolved nothing). See [Settled decisions](#settled-decisions-2026-07-16) #3, which also records the
+measured caveat against agy's "purely subtractive" framing (`iss:101-111` already rewrites `HKCU` PATH).
+*(Found by claude while verifying the panel's ops-manual finding; the panel found the table, not the promise.)*
 
 | Doc | Line | Falsified how |
 |---|---|---|
 | `docs/ops-manual.md` | 27 | The "What the installer changes" table gives Claude Code as *only* "Registers the `flaui-mcp` MCP server". Mechanism A also writes `~/.claude/skills/flaui-mcp/`, disables a conflicting plugin, and drops a marker in `<data-dir>`. |
-| `docs/ops-manual.md` | 22-24 | The "targeted key removal / leaves your other settings intact" promise — see above. |
+| `docs/ops-manual.md` | 22-24 | The "targeted key removal / **only deletes**" promise — broken by the restore's active write. Rewrite to *cleanup **and state restoration***; see above. |
+| `docs/ops-manual.md` | 45-47 | "Via the installer … removes the files" is now incomplete: the uninstaller may also **show a warnings dialog** (R6's resolution) before it finishes. |
 | `README.md` | 165-166 | "it adds only the driving **and self-improvement** skills" — the autotrain loop is **cut**; the payload is driving-only. |
 | `README.md` | 173 | "**Claude Code gets the full self-improving plugin**" — flatly false under this spec, and it is the sentence that most misleads a user about what they are getting. |
 | `README.md` | 158-163 | the `/plugin marketplace add` install path (already named). |
@@ -518,7 +622,8 @@ created* skills-dir plugin mid-session, or only a restart does.
 |---|---|
 | `skills-dir` auto-load is lesser-documented than marketplace install and could change under us | Pin to a tested Claude Code version; the smoke test is the tripwire. Fallback is B. |
 | Never verified on a **virgin** machine (no `~/.claude`) — every observation is on a dev profile | The smoke must run somewhere without a pre-existing `~/.claude`. **This is the weakest evidence in the spec.** |
-| Namespace collision: a user has both the marketplace copy and the bundled copy | Resolved if the marketplace is retired (#1); otherwise the installer must detect and warn |
+| Namespace collision: a user has both the marketplace copy and the bundled copy | The installer **detects and disables** the marketplace copy, reversibly, and restores it on uninstall. (Retiring the marketplace (#1) does **not** resolve it: v0.14.x users already have the copy installed, and retiring it upstream does not uninstall theirs.) |
+| The change reaches into `installer/flaui-mcp.iss` (Pascal), which no test covers | Accepted and **named**: R6's dialog and the `--purge`/`keep` branch selection are installer-script logic, exercised only by the manual install smoke. Keep the Pascal minimal — read a file, show it, delete it — and put every decision that can live in C# in C#. |
 | Bundled user-scope skill shadows the repo's project skill | **Resolved** — `--scope local` disable, measured. README must be corrected to the `@skills-dir` id. |
 | Losing out-of-band skill updates: fixing a typo now needs an installer release | Accepted — the price of lockstep, taken deliberately |
 
@@ -616,6 +721,24 @@ its *body*, not just its banner, was audit-shaped — and the peer touched nothi
 |---|---|---|
 | 1 | the remedy **hardcoded `--scope user`** while `--json` reports each entry's actual `scope` | **FOLDED — and it was worse than reported.** Measured: `claude plugin install` takes `--scope user\|project\|local`, and live `--json` shows `csharp-lsp@claude-plugins-official` **3× at `scope=local`**. So the copy is neither necessarily user-scoped nor a single row. Contract now: disable **each** matching entry **at its own scope**; the marker records which entries at which scopes. |
 | 2 | the marker's lifecycle is **write-only** — nothing deletes it when consumed | **FOLDED as R7.** Verified by reasoning against R1/R3/R4: because R4 moves it out of the purge path, it outlives its uninstall, and a later stale fire **re-enables a plugin the user disabled** — the exact outcome R1 exists to prevent, via R1's own bookkeeping. |
+
+**AGY-FIRST consult + negotiation, 2026-07-16 — NOT a panel round.** The three blocking decisions were
+routed to the peer as a consult (prose-only, no code), then one negotiation turn, then decided by the
+**user**. Logged here so a later round does not re-open settled ground; the reasoning is in
+[Settled decisions](#settled-decisions-2026-07-16).
+
+| # | Question | Outcome |
+|---|---|---|
+| 1 | Detection mechanism | **CONVERGED** — both models chose `--json` + widen the runner, independently. Claude folded agy's silent-failure asymmetry argument without dispute. User confirmed. |
+| 2 | R6 observability | **agy's design, claude's measurements, agy's sharpening.** Claude measured that the mechanism's home already exists (`iss:113-117`), that the interactivity objection it was about to raise was already retired (`:83`), and that R6 bites only on the installer path (`ops-manual.md:48`). Claude found the purge-litter cost; agy closed the race (read contents into the dialog, *then* reap). User confirmed. |
+| 3 | The `:22-24` promise | **agy REVERSED claude.** Claude had walked its own finding back to "merely imprecise" (jurisdiction: the entry is ours). agy, invited to argue the other side, won on the **verb**: "only deletes" vs. an active re-enable. Claude's counter — that agy's proposed word-swap already exists at `:50` — was accepted by agy, which then abandoned its own fix. Both converged on *rewrite the contract*. User confirmed. |
+
+**Method note on the consult.** Two of the three overturned a **claude** position, and one overturned
+**agy's own** recommendation mid-negotiation. Both were reached by pushing back with a *measurement*
+rather than an opinion — `:50` already containing agy's proposed adjective; `:83` already retiring the
+hang risk claude meant to raise. The peer touched **no file** across the consult and the negotiation:
+the payload's *body*, not just its banner, was consult-shaped (prose-only deliverable, no remedy
+tables to implement, no "does the mechanism exist in code" phrasing).
 
 **Method note.** Round 1 was bound to measurement (name the files, cite code `file:line`, and
 *verify the relation, not just the endpoints*). Compared with the peer's 2026-07-15 panel — whose
