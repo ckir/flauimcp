@@ -1,8 +1,8 @@
 # Spec — bundled driving-skill distribution (v0.15.0)
 
 **Date:** 2026-07-16
-**Status:** draft — **rounds 1–2 panelled (agy). Round 2: REJECT/4 → 2 folded, 2 rejected on measurement.** Round 3 pending. See [Review ledger](#review-ledger).
-[Review ledger](#review-ledger).
+**Status:** draft — **rounds 1–2 panelled (agy). Round 2: REJECT/4 → 2 folded, 2 rejected on
+measurement.** Round 3 pending. See [Review ledger](#review-ledger).
 **Supersedes:** `2026-07-15-bundled-skill-distribution-design.md` (that draft bundled a *global
 observation inbox* into the same change; that half is **cut** — see [Out of scope](#out-of-scope)).
 Also supersedes the marketplace-only distribution decision (Fork 1B) in
@@ -239,10 +239,45 @@ and then took away the thing that replaced it. **Contract:** the installer recor
 one that disabled the plugin, and uninstall re-enables it — but **only if we disabled it**. Never
 re-enable a plugin the user disabled themselves.
 
-⚠ **UNVERIFIED — the plan must measure:** whether `claude plugin disable --scope user` is
-non-interactive (`--scope user` is the documented default for `uninstall`; `disable`'s
-non-interactivity is assumed, not measured), and exactly which file it writes at user scope. The
-`--scope local`/`--scope project` file mapping *was* measured (see above); user scope was not.
+That contract is deceptively hard. Round 3 found three ways to get it wrong; all are binding:
+
+**R1 — the marker is WRITE-ONCE, set only on the transition.** The writers are stateless and re-read
+live config every run (`AgyConfigWriter.cs:59`, `:81`), and re-install is idempotent — so a repair or
+minor-version upgrade would observe the plugin *already disabled*, wrongly conclude the **user**
+disabled it, and overwrite the marker. Uninstall would then skip the restore and the user's plugin
+would be **permanently lost**. **Only the run that actually performs the enabled→disabled transition
+may write the marker; every later run must leave it untouched.** A run that finds the plugin already
+disabled and no marker must conclude "the user did this" and never touch it.
+
+**R2 — restore is best-effort and must verify the target still exists.** A user may manually
+`claude plugin uninstall flaui-mcp@flaui-mcp` after we disabled it. The marker still says restore, so
+uninstall would `enable` a plugin that no longer exists — throwing, or leaving an orphaned reference
+in the user's settings. **Restore must check presence first, and any failure degrades to a `Warning`,
+never a throw** (the `a373265` discipline: cleanup must never derail the uninstall).
+
+**R3 — the marker's home.** It must survive between install and uninstall and must not live in the
+user's Claude config (which we'd then be mutating twice). `<data-dir>/` is the natural home — it
+already holds `generic-mcp.json` and `install.log`, and `--purge-data` already governs its lifetime.
+**Consequence to state plainly:** `uninstall --purge-data` destroys the marker; ordering matters —
+**restore before purge**, or the restore silently no-ops.
+
+⚠ **BLOCKING HAZARD — the runner has no timeout, so a prompt hangs the installer forever.**
+`ClaudeCodeConfigWriter.cs:62` calls `p.WaitForExit()` with **no timeout**, on a process started with
+`CreateNoWindow = true` (`:58`). Today's `mcp add/remove` never prompt, so this has never bitten. If
+`claude plugin disable` prompts under **any** condition, the hidden process blocks on stdin forever:
+Setup hangs, and the user never gets the product — a far worse outcome than the collision we set out
+to fix. **The plan must (a) MEASURE whether `claude plugin disable --scope user` is non-interactive,
+and (b) give `DefaultRunner` a bounded timeout regardless.** (b) is required even if (a) comes back
+clean: an unbounded wait on a hidden process is a latent hang for every future `claude` subcommand
+we add. *(Also unverified: which file `disable` writes at user scope. The `--scope local`/`project`
+mapping was measured; user scope was not.)*
+
+**Late CLI adopters need a documented recourse.** If someone installs flaui-mcp *before* Claude Code,
+the claude target reports `NotFound` and — correctly — nothing is deployed. They then install Claude
+Code and find no skill, while the rewritten README says the installer bundles it. The recourse
+already exists (`flaui-mcp install --agent claude`); it is simply undocumented. **The README rewrite
+must say so**, and `flaui-mcp status` already reports the skill as not deployed, which is the
+diagnostic path.
 
 **Version.** Bump the manifest version in lockstep with the exe (csproj / iss / plugin.json) — the
 existing release convention.
@@ -314,6 +349,12 @@ mechanism A without rewriting those lines — breaks the documented path a secon
   from a directory *outside this repo* (inside it, project-scope skills mask the result, which is
   exactly why v0.14.0 shipped broken and looked fine). Assert `Status: ✔ loaded` and the expected
   component inventory.
+- ⚠ **`✔ loaded` ALONE IS A FALSE GREEN — the gate must assert a NEGATIVE.** Round 3's sharpest
+  finding. The collision is silent and **both** plugins report `✔ loaded` simultaneously (measured
+  above), so a smoke that only checks *our* plugin loaded **passes even when the disable step failed
+  or never ran** — green-lighting exactly the poisoned two-skill runtime this remedy exists to
+  prevent. **The collision smoke must assert the marketplace copy is NOT loaded**, from a profile
+  seeded with it. A gate that can only observe success cannot detect this failure at all.
 - **Unit:** install produces the correct file set for both agents; uninstall removes the skill dir;
   re-install is idempotent; a deploy failure degrades to a warning and never denies the registration.
 - **Install smoke:** extend the existing pre-push smoke (which already covers the agy seed surviving
@@ -346,6 +387,20 @@ rotated onto new lenses (Boundary Smuggler, Resource Vampire) plus two re-run on
 | 2 | Resource Vampire | user-scope deploy "will permanently bloat the context window" of every session | **REJECTED — measured false.** `claude plugin details` on the real plugin: `driving-flaui-mcp always-on ~80 tok / on-invoke ~7.2k`. Always-on is the frontmatter description; the 29KB body is lazy-loaded on invoke. Peer conceded: "my axiom falsely assumed Claude Code injects the entire SKILL.md into the standing system prompt". |
 | 3 | Boundary Smuggler | shipping one `SKILL.md` to both agents makes the peer read Claude's profile namespace | **REJECTED as a blocker; recorded as a wart.** Citation was wrong (`AgyConfigWriter.cs:64` holds no such instruction; it is `driving-flaui-mcp/SKILL.md:16-18`). The observation is real but: pre-existing in v0.14.0, both agents run as the **same OS user** (no boundary crossed), the read is conditional ("if it exists … proceed"), and the growth files belong to the **cut** autotrain scope. Peer conceded: "a wart, not a blocking defect". |
 | 4 | Literal Implementer | deferred decisions with no owner | **PARTIALLY ACCEPTED.** The manifest origin was genuinely hedged → now **decided** (generate in code). The rest — marketplace disposition, curator USER mode — are **user-owned with a named owner**, which is not a defect. |
+
+**Round 3 — agy panel, 2026-07-16, `merge-gate-adversarial-auditor`. Verdict: REJECT, 5 findings —
+ALL 5 VALID AND FOLDED.** Every palette seat was spent in rounds 1–2, so this round used the
+palette's escape hatch for a bespoke **Rollback & Reversal Auditor** aimed at the newest machinery
+(the installer now mutates pre-existing user state it did not create). That seat found the round's
+two best defects on its first outing.
+
+| # | Seat | Finding | Disposition |
+|---|---|---|---|
+| 1 | Rollback (bespoke) | idempotent re-install overwrites the "we disabled it" marker → uninstall skips the restore → **user's plugin permanently lost** | **FOLDED** as R1: the marker is **write-once**, set only on the enabled→disabled transition. |
+| 2 | Rollback (bespoke) | user manually uninstalls the disabled plugin → restore `enable`s something that no longer exists | **FOLDED** as R2: verify presence first; failure degrades to a `Warning`, never a throw. |
+| 3 | Cascade | `ClaudeCodeConfigWriter.cs:62` `WaitForExit()` has **no timeout** on a `CreateNoWindow` process (`:58`) — if `disable` ever prompts, Setup hangs **forever** | **FOLDED** — verified in code. A bounded timeout is now required *regardless* of what the interactivity measurement returns; an unbounded wait on a hidden process is a latent hang for every future `claude` subcommand. |
+| 4 | Mechanism Gamer | the smoke asserts `✔ loaded` — but **both** plugins load silently, so it passes when the disable step never ran | **FOLDED** — the gate must assert a **negative**: the marketplace copy is NOT loaded. A gate that can only observe success cannot see this failure. |
+| 5 | Axiom Breaker | install-before-Claude-CLI → `NotFound` → nothing deployed → user later finds no skill, README says otherwise | **FOLDED** — the recourse exists (`install --agent claude`) but was undocumented; the README rewrite must say so. |
 
 **Method note.** Round 1 was bound to measurement (name the files, cite code `file:line`, and
 *verify the relation, not just the endpoints*). Compared with the peer's 2026-07-15 panel — whose
