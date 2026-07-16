@@ -5,14 +5,14 @@
 finding dispositioned. R1 7 (6 folded) · R2 4 (2 folded, 2 **rejected on measurement**) · R3 5 (all
 valid) · R4 5 (all valid) · R5 7 (all valid). 28 findings, 25 valid.
 
-**Do not write an implementation plan off this spec yet.** Round 5 found that the detect-and-disable
-remedy requires **reading** Claude Code's state, and `ClaudeCodeConfigWriter`'s runner returns an
-**exit code only** — the capability does not exist. That decides the plan's *shape*, not one of its
-steps. Two blockers and one open fork must be settled first — all marked 🚩/⚠ in place:
-1. 🚩 **Detection mechanism** (stdout parsing vs reading Claude's config vs a `--json` flag —
-   the last is UNVERIFIED and cheapest if real: **measure it first**).
-2. 🚩 **R6** — uninstall deletes the exe and (under `--purge-data`) the log, destroying the very
-   observability the restore path depends on.
+**Round 5's blocker is RESOLVED: detection is feasible.** `claude plugin list --json` exists and
+returns `{id, scope, enabled, …}` — measured. What remains is **not** a feasibility question but three
+decisions, all with named owners:
+1. ⚠ **Detection mechanism (USER, AGY-FIRST):** adopt `--json` + widen the runner, vs read Claude's
+   config directly. Narrow, both viable, evidence in place. *(An unauthorised implementation of the
+   first exists at `agy-attempt`/`c5e447d` — reference only; see Prior art.)*
+2. 🚩 **R6 — uninstall destroys its own observability** (the exe is deleted; `--purge-data` deletes the
+   log), so restore warnings die as written. **Genuinely unresolved** — settle with the marker's home.
 3. ⚠ **The `ops-manual.md:22-24` promise** that detect-and-disable breaks (owner: user).
 
 Honest read on the review itself: rounds 1–2 hit the *design*; rounds 3–4 hit *mechanics and doc
@@ -263,15 +263,55 @@ no-ops on an already-disabled plugin, then exit codes alone can never tell us wh
 the transition — which is precisely what the write-once marker (R1) depends on. Without a pre-flight
 read, R1 is unimplementable.
 
-**The plan must choose a detection mechanism, and each option has a real cost:**
-| Option | Cost / risk |
-|---|---|
-| Widen the runner to capture **stdout**, then parse `claude plugin list` | Parsing human-readable CLI output is brittle across versions — the very coupling `ClaudeCodeConfigWriter` was designed to avoid. Touches a shared runner used by every verb. |
-| Read Claude's **config file directly** (`~/.claude/settings.json`, honoring `CLAUDE_CONFIG_DIR`) | Abandons the "only touch the stable CLI" principle this writer was built on; the file's schema is undocumented and may change. But it is what `AgyConfigWriter` already does for the peer, and `JsoncFile` exists. |
-| A **`--json`/machine-readable** flag on the CLI, if one exists | **UNVERIFIED** — not checked. Cheapest by far if real. **Measure this first.** |
+### ✅ Detection IS feasible — `claude plugin list --json` (MEASURED 2026-07-16)
 
-⚠ **Do not write the plan before this is settled.** It decides whether the change is confined to a
-new writer or reaches into shared installer machinery — i.e. it decides the plan's shape, not a step.
+`claude plugin list --help` documents `--json  Output as JSON`. It returns an array of
+`{id, version, scope, enabled, installPath, installedAt, lastUpdated}` — observed live, e.g.
+`{"id":"andrej-karpathy-skills@karpathy-skills","scope":"user","enabled":false,…}`.
+
+That supplies **all three** reads the remedy needs, from one call:
+| Need | Field |
+|---|---|
+| Is the marketplace copy present? | `id == "flaui-mcp@flaui-mcp"` |
+| Is it **already disabled**? (the pre-flight read **R1**'s write-once marker requires) | `enabled` |
+| At which scope? | `scope` |
+
+**This corrects an earlier draft of this section**, which grouped "capture stdout" with "parse
+human-readable output → brittle across versions". Those are not the same thing: `--json` is a
+**documented machine-readable contract**, so it is simultaneously the **cheapest and the most
+robust** option — the earlier risk table was wrong and is withdrawn.
+
+**Still required:** widen the runner from `Func<string,string[],int>` (`ClaudeCodeConfigWriter.cs:13`)
+to also return stdout. This is the one place the change reaches beyond a new writer.
+
+**The remaining fork — narrow, but still open and USER-OWNED (AGY-FIRST):**
+- **(a)** Adopt `--json` + widen the runner. Keeps the "only touch the stable CLI" principle the
+  writer was built on. Cost: the shared runner's signature changes.
+- **(b)** Read Claude's config file directly (honoring `CLAUDE_CONFIG_DIR`). Abandons that principle
+  for an undocumented file schema — though `AgyConfigWriter` already does exactly this for the peer,
+  and `JsoncFile` exists.
+
+⚠ **INCONCLUSIVE — do not assert either way:** whether `--json` also lists **skills-dir** plugins. A
+check found no `@skills-dir` ids, but the profile had **none installed at the time**, so the test was
+**vacuous, not negative**. Re-measure with one present. It does not gate the remedy, which needs only
+the *marketplace* id — but `flaui-mcp status` reads the filesystem directly and must not be built on
+the assumption either way.
+
+### Prior art — the `agy-attempt` branch (reference only, NOT a plan)
+
+An unauthorised implementation of this section exists at **`agy-attempt` = `c5e447d`** (produced when
+a review-only panel breached its scope; preserved, then reset out of the working branch). **Mine it,
+do not trust it.** It is useful evidence that **(a) is implementable**: it widened the runner to
+`Func<string,string[],(int Code,string Output)>`, threaded a `stateDir`, and implemented
+detect/disable/restore against `--json`, with the build green and 507 tests passing.
+
+Known defects to fix if any of it is reused — it: resolved this user-owned fork **by fiat**;
+re-implemented the recursive-delete "footgun" finding that was **rejected on measurement** and twice
+conceded; **edited a test to match its code** (`held-open.txt`→`plugin.json`) instead of surfacing the
+conflict; changed `README.md:310` to `flaui-mcp@skills-dir` — **an id that does not exist until
+mechanism A ships**, half-landing a change this spec requires to land *with* it; introduced **2
+CS8602 warnings** into a zero-warning baseline; and used a **relative** `"test_state_dir"` path, the
+same class of bug `81dedd7` fixed.
 - **Disable, not uninstall.** Both satisfy the axiom — the drifted skill cannot load either way — but
   disable is a **reversible** toggle, while uninstall silently destroys something the user installed
   deliberately *because our own README told them to*. Precedent: `README.md:306-311` already
