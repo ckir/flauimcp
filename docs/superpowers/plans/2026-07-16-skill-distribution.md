@@ -1773,8 +1773,13 @@ public sealed class ClaudeCollisionRemedy
             }
             if (r.Code == ProcessRunner.NotFound || r.Code == ProcessRunner.TimedOut)
             {
+                // -1 (NotFound) conflates "claude not on PATH" with "working directory unavailable"
+                // (Process.Start throws Win32Exception for both). Enumeration just succeeded, so a -1
+                // here is more likely the latter — do not assert the CLI is missing. (agy panel round 3.)
                 warnings.Add($"could not disable the conflicting {e.Id} ({Where(entry)}): claude " +
-                             (r.Code == ProcessRunner.TimedOut ? "timed out." : "was not found.") +
+                             (r.Code == ProcessRunner.TimedOut
+                                 ? "timed out."
+                                 : "could not be run (not on PATH, or its project directory was unavailable).") +
                              " Two copies of the driving skill may be active.");
                 continue;
             }
@@ -3522,8 +3527,27 @@ Implementer) + agy escalation, then a rotation round (added Blindspot Auditor, D
   is JsonArray { Count: 0 }` + test. agy's mechanism for (4) ("a new field breaks Parse") was **wrong**
   (Parse tolerates unknown fields); the real trigger is a *renamed* field, and the fix is stricter than
   agy's proposed `== "[]"` (which would false-warn on `[ ]`).
-- Test counts after folding: Task 6 → 19, Task 7 → 13.
-- **Round 3 is the hard cap** — round 2 still found substance, so continuing requires an operator decision.
+- **R3 agy (rotation: Boundary Smuggler + cores; user authorised past the round-3 cap):** the two
+  substantive findings were **REJECTED ON MEASUREMENT** and one trivial one folded.
+  - REJECTED — "Admin CWD hijacking is a local privilege-escalation primitive" and "unvalidated marker
+    reflection into Admin instructions": both assumed an **elevated installer**. **Measured false:**
+    `installer/flaui-mcp.iss:13` is `PrivilegesRequired=lowest` — the installer runs as the ordinary
+    user, so there is **no privilege boundary** to cross. An actor who can plant a plugin or write the
+    user's own `%LOCALAPPDATA%` marker is already that user; running `claude` in a user-owned directory
+    as that same user is not escalation, and the recourse string is displayed text, never auto-executed.
+  - FOLDED (minor) — after a *successful* enumeration, a `-1` on a later `disable` is more likely a
+    vanished working directory than a missing CLI, but the message asserted "was not found." Softened to
+    "could not be run (not on PATH, or its project directory was unavailable)."
+- **CONDITIONAL RISK recorded (forward-looking):** the two rejected findings are rejected *only because*
+  the installer is unprivileged. **If a future version sets `PrivilegesRequired=admin/elevated`,** feeding
+  an attacker-controllable `projectPath` (from untrusted `list --json` output) into
+  `ProcessStartInfo.WorkingDirectory` for a Node CLI **becomes a genuine CWD-planting escalation vector**
+  — re-evaluate this remedy before ever elevating the installer. (agy's finding was right about the
+  mechanism, wrong about the current premise.)
+- **PANEL COMPLETE, disposition GREEN-adjacent.** 3 rounds; round 3's substantive findings fell to
+  measurement and the survivor was below the severity floor (message wording), which is the stop
+  condition. Total: 8 findings folded across 3 rounds, 2 rejected on measurement, plus the conditional
+  risk above. Test counts after folding: Task 6 → 19, Task 7 → 13.
 
 ## Risks this plan accepts
 
