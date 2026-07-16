@@ -1,23 +1,36 @@
 # Spec — bundled driving-skill distribution (v0.15.0)
 
 **Date:** 2026-07-16
-**Status:** ✅ **UNBLOCKED — the plan may now be written.** 6 agy panel rounds, all REJECT; every
-finding dispositioned. R1 7 (6 folded) · R2 4 (2 folded, 2 **rejected on measurement**) · R3 5 (all
-valid) · R4 5 (all valid) · R5 7 (all valid) · R6 2 (all valid). 30 findings, 27 valid.
+**Status:** ✅ **UNBLOCKED — the plan may be written.** No decision is open; the three that blocked
+round 5 are settled. 7 agy panel rounds, all REJECT; every finding dispositioned. R1 7 (6 folded) ·
+R2 4 (2 folded, 2 **rejected on measurement**) · R3 5 · R4 5 · R5 7 · R6 2 · R7 4 (3 valid, **1
+rejected on measurement — and it was the round's most valuable finding**). **34 findings, 30 valid.**
 
 **All three blocking decisions were settled on 2026-07-16** by an AGY-FIRST consult + one negotiation
 turn, then decided by the user. Both models converged on all three; the user confirmed each.
 See [Settled decisions](#settled-decisions-2026-07-16).
-1. ✅ **Detection mechanism:** `claude plugin list --json` + widen the runner. *(An unauthorised
-   implementation exists at `agy-attempt`/`c5e447d` — reference only; see Prior art.)*
+1. ✅ **Detection mechanism:** `claude plugin list --json` + widen the runner. **Round 7 widened the
+   cost:** the runner must widen on **two** axes — stdout **and a working directory** — because
+   `--scope` is bound to the CWD. *(An unauthorised implementation exists at `agy-attempt`/`c5e447d`;
+   **its runner shape is now known insufficient** — reference only, see Prior art.)*
 2. ✅ **R6 — uninstall-time observability:** Inno reads the warnings log into a `MsgBox` at
-   `usPostUninstall`, then reaps it.
+   `usPostUninstall`, then reaps it. **Round 7 found the hole:** `/VERYSILENT` suppresses the dialog
+   but not the reap — the plan must make reaping conditional on the dialog being shown.
 3. ✅ **The `ops-manual.md:22-24` promise:** rewrite the contract to match the new lifecycle.
 
+⚠ **The review is still finding substance, and round 7 says where.** Three of its four findings landed
+on text written *the same day* by the consult — the **Settled decisions** section — while the material
+six rounds had already ground down produced nothing new. **The implication for the plan: the decisions
+hold, but newly-written text is where the defects live, so the plan will need its own review — it does
+not inherit this spec's hardening.**
+
 Honest read on the review itself: rounds 1–2 hit the *design*; rounds 3–4 hit *mechanics and doc
-coherence*; round 5 went back to the *design* and found a hole all four earlier rounds missed. The
-review is **not converging** — GREEN was not reachable by another round, and chasing it produced this
-finding instead, which is worth more.
+coherence*; round 5 went back to the *design* and found a hole all four earlier rounds missed; round 7
+hit the *newest* text and found three more. The review has **never converged**, and GREEN has never
+been reachable — every prediction that it was has been wrong. What kept paying was not the chase for
+GREEN but the discipline of measuring each claim: **4 of the 34 findings were rejected on measurement,
+and two of those rejections were worth more than the findings they killed** (R2's context-bloat claim,
+R7's CWD-blindness claim — refuting the latter produced the `projectPath` field the remedy depends on).
 See [Review ledger](#review-ledger).
 **Supersedes:** `2026-07-15-bundled-skill-distribution-design.md` (that draft bundled a *global
 observation inbox* into the same change; that half is **cut** — see [Out of scope](#out-of-scope)).
@@ -116,11 +129,27 @@ the log fine. **R6 bites only on the installer path — exactly the path that ha
   The purge is honored (nothing survives) *and* the dismissed-and-lost race is beaten (the information
   is already in the dialog, not in a file the user must go find). *(Claude proposed reap-after-display;
   agy sharpened it to read-contents-into-the-dialog-then-reap, which closes the race.)*
-- ⚠ **UNVETTED refinement (claude's, not reviewed by the peer — the plan must decide it):** reap
-  **only on the `--purge` branch** (`:44-45`). If the user chose **keep** (`:46-47`, `ShouldKeep`),
-  there is no purge contract to honor, so the log could reasonably persist for `flaui-mcp status` —
-  which on that path still exists, since Inno's uninstall of the exe is what removes the reader.
-  Not measured, not negotiated. Treat as an open sub-decision, not a settled contract.
+- - ⛔ **WITHDRAWN (round 7) — claude's "keep-branch" refinement was built on a false premise.** It
+  proposed reaping **only on the `--purge` branch** (`:44-45`), letting the log persist on **keep**
+  (`:46-47`, `ShouldKeep`) "for `flaui-mcp status`, which on that path still exists". **That is false.**
+  `ShouldKeep` only drops the `--purge-data` **argument** from the CLI call; it does **not** stop Inno's
+  `[Files]` uninstall (`installer/flaui-mcp.iss:25`) from deleting `flaui-mcp.exe`. On **both** installer
+  branches the reader is destroyed. The error was conflating the **manual** path (`ops-manual.md:48` —
+  where *the user* deletes the exe, so it survives the CLI uninstall) with the **installer's** keep
+  branch (where Inno deletes it either way). *Shipped flagged as unvetted; the panel killed it on its
+  first outing — which is the argument for flagging rather than quietly folding.*
+
+⚠ **The silent-mode hole in this design — round 7, Cascade Analyst. The plan MUST close it.** Under
+`/VERYSILENT`, Inno **suppresses** the `MsgBox` and auto-answers the default. The repo's own code
+proves it: `installer/flaui-mcp.iss:83` **depends** on that behavior ("Default button is No
+(MB_DEFBUTTON2) so a `/VERYSILENT` uninstall keeps the user's config"). So the sequence *show → reap*
+becomes **reap-without-showing**: the restore warning is deleted having reached nobody, and the user's
+plugin is permanently lost with no trace. **The reap is only legitimate if the dialog was actually
+displayed** — the plan must make reaping conditional on a non-silent run (Inno exposes `UninstallSilent`),
+and decide what a silent uninstall does instead (leave the log and accept the litter, is the obvious
+candidate — a silent run has no human to honor a purge *prompt* for, since `:83` shows the prompt was
+never answered by one). *(The hole is in the design agy proposed and claude folded; agy's own panel
+found it two turns later. Neither of us saw it while designing it.)*
 
 **3 — `ops-manual.md:22-24` is BROKEN, not imprecise. agy reversed claude on the merits.** Claude had
 walked its own finding back, arguing the promise mostly holds because `flaui-mcp@flaui-mcp` **is** a
@@ -335,9 +364,12 @@ one at `scope=local`** — so a marketplace plugin is neither necessarily user-s
 single row. Failure if hardcoded: a user who installed `flaui-mcp@flaui-mcp` at project or local scope
 gets `disable --scope user`, which **does not disable it** — the silent collision survives, and our
 `install.log` cheerfully records that we handled it. **Contract: read `scope` from each matching
-`--json` entry and disable each one, at its own scope.** The marker (R1) must therefore record *which
-entries at which scopes* we disabled — not a single boolean. *(Found by the panel; the multi-entry
-half was found by measuring its premise.)*
+`--json` entry and disable each one, at its own scope — and, per round 7, from that entry's
+`projectPath` as the working directory** (see the CWD-binding contract below; a `--scope local` disable
+fired from the wrong directory silently disables nothing). The marker (R1) must therefore record
+*which entries at which scopes **and at which project paths*** we disabled — not a single boolean.
+*(Found by the panel; the multi-entry half was found by measuring its premise; the CWD half took
+another round on top.)*
 
 ✅ **RESOLVED (2026-07-16) — see [Settled decisions](#settled-decisions-2026-07-16) #1: adopt
 `--json` and widen the runner.** Round 5's best finding, preserved below because the *constraint* it
@@ -361,20 +393,61 @@ read, R1 is unimplementable.
 `{id, version, scope, enabled, installPath, installedAt, lastUpdated}` — observed live, e.g.
 `{"id":"andrej-karpathy-skills@karpathy-skills","scope":"user","enabled":false,…}`.
 
-That supplies **all three** reads the remedy needs, from one call:
+That supplies **every** read the remedy needs, from one call:
 | Need | Field |
 |---|---|
 | Is the marketplace copy present? | `id == "flaui-mcp@flaui-mcp"` |
 | Is it **already disabled**? (the pre-flight read **R1**'s write-once marker requires) | `enabled` |
 | At which scope? | `scope` |
+| **Where must the disable be RUN from?** (round 7 — `--scope` is CWD-bound) | **`projectPath`** |
 
 **This corrects an earlier draft of this section**, which grouped "capture stdout" with "parse
 human-readable output → brittle across versions". Those are not the same thing: `--json` is a
 **documented machine-readable contract**, so it is simultaneously the **cheapest and the most
 robust** option — the earlier risk table was wrong and is withdrawn.
 
-**Still required:** widen the runner from `Func<string,string[],int>` (`ClaudeCodeConfigWriter.cs:13`)
-to also return stdout. This is the one place the change reaches beyond a new writer.
+**Measured — the field list above was INCOMPLETE, and the missing field is load-bearing.** `--json`
+also returns **`projectPath`** on entries that have one. An earlier draft of this section omitted it
+because the sample read stopped inside the user-scope rows, which do not carry it. It is the field the
+remediation cannot work without — see the CWD-binding below.
+
+**Measured — detection is GLOBAL, not CWD-contextual (round 7 asserted the opposite; rejected).**
+`claude plugin list --json` run from this repo and from an unrelated directory with no `.claude`
+returns **byte-identical** output — 15 entries, including all three `scope=local` rows, whose
+`projectPath`s are three **other** projects (`…\Rust\clavity`, `…\c#\aidesktop`, `…\c#\FlaUI`), none of
+them the CWD. The backing store is `~/.claude/plugins/installed_plugins.json`, a **global** file keyed
+by plugin id. **The installer can see every install from anywhere.**
+
+**Measured — this also decides the fork on evidence rather than argument.**
+`installed_plugins.json` records `{gitCommitSha, installPath, installedAt, lastUpdated, projectPath,
+scope, version}` — it has **no `enabled` field**. The enabled state is *not* in the install registry;
+it lives in `enabledPlugins` across the settings files, per scope. So option **(b)** cannot answer "is
+it already disabled?" — the pre-flight read **R1 depends on** — from that file at all; it would have to
+read and **merge** `enabledPlugins` across user/project/local itself. That is precisely the
+"re-implement Claude's scope-resolution engine" cost agy *argued*; it is now **measured**. `--json` is
+the only single source carrying `enabled`, `scope`, and `projectPath` together.
+
+🚩 **Still required, and BIGGER than "capture stdout" — round 7's best finding, VALID.** Scope is not
+a free parameter: **it is bound to a working directory.** `claude plugin disable --help` offers only
+`-a/--all`, `-h/--help`, `-s/--scope <user|project|local>` — **there is no flag to target another
+project's install.** And `--scope local` writes the **CWD's** `.claude/settings.local.json` (measured
+by the D1 probe). So a `disable --scope local` fired from wherever Setup happens to run does **not**
+disable the user's entry — it litters that directory with a useless settings file while the collision
+survives. Round 6's contract ("disable each entry at its own scope") priced the *scope* and never
+priced the *execution context*.
+
+**Contract:** for every matching `--json` entry, run the disable **with the process working directory
+set to that entry's `projectPath`** (user-scope entries have none and need none). Therefore the runner
+must widen on **two** axes, not one:
+
+```
+Func<string, string[], int>                          // today: exit code only
+  -> Func<string, string[], string?, (int Code, string Output)>   // + working directory
+```
+
+`ClaudeCodeConfigWriter.cs:52-62`'s `ProcessStartInfo` sets no `WorkingDirectory` today, so it inherits
+Setup's — which is exactly the bug. *(`agy-attempt`/`c5e447d` widened only for stdout; **its runner
+shape is insufficient** for this contract. Another reason to mine it rather than trust it.)*
 
 **The fork — ✅ DECIDED 2026-07-16 (user, after AGY-FIRST; both models converged on (a)):**
 - **(a) — CHOSEN.** Adopt `--json` + widen the runner. Keeps the "only touch the stable CLI" principle
@@ -390,6 +463,14 @@ check found no `@skills-dir` ids, but the profile had **none installed at the ti
 **vacuous, not negative**. Re-measure with one present. It does not gate the remedy, which needs only
 the *marketplace* id — but `flaui-mcp status` reads the filesystem directly and must not be built on
 the assumption either way.
+
+> **Narrowed 2026-07-16 (round 7):** the backing store is now known — `~/.claude/plugins/installed_plugins.json`,
+> whose records carry `{gitCommitSha, installPath, installedAt, lastUpdated, projectPath, scope, version}`.
+> A `skills-dir` plugin is **not installed through that registry** (it is auto-discovered from disk), which
+> is *consistent with* `--json` omitting it — but consistency is not measurement, and the vacuous test
+> still stands. **The prediction to test:** a skills-dir plugin will be **absent** from `--json`. If that
+> holds, `flaui-mcp status` **cannot** use `--json` to report our own deployed skill and must read the
+> filesystem — which is what it already does. Do not build on the prediction before measuring it.
 
 ### Prior art — the `agy-attempt` branch (reference only, NOT a plan)
 
@@ -721,6 +802,25 @@ its *body*, not just its banner, was audit-shaped — and the peer touched nothi
 |---|---|---|
 | 1 | the remedy **hardcoded `--scope user`** while `--json` reports each entry's actual `scope` | **FOLDED — and it was worse than reported.** Measured: `claude plugin install` takes `--scope user\|project\|local`, and live `--json` shows `csharp-lsp@claude-plugins-official` **3× at `scope=local`**. So the copy is neither necessarily user-scoped nor a single row. Contract now: disable **each** matching entry **at its own scope**; the marker records which entries at which scopes. |
 | 2 | the marker's lifecycle is **write-only** — nothing deletes it when consumed | **FOLDED as R7.** Verified by reasoning against R1/R3/R4: because R4 moves it out of the purge path, it outlives its uninstall, and a later stale fire **re-enables a plugin the user disabled** — the exact outcome R1 exists to prevent, via R1's own bookkeeping. |
+
+**Round 7 — agy panel, 2026-07-16, `merge-gate-adversarial-auditor`. Verdict: REJECT, 4 findings — 3
+VALID AND FOLDED, 1 REJECTED ON MEASUREMENT.** Aimed at the brand-new **Settled decisions** material no
+panel had seen. Two new bespoke seats (all 11 palette seats spent by R2; bespoke Rollback R3,
+Doc-Coherence + Live-Host R4, Self-Contradiction + Scope-Integrity R5).
+
+| # | Seat | Finding | Disposition |
+|---|---|---|---|
+| 1 | Axiom Breaker | detection is **CWD-blind**: `--json` "evaluates only the `user` scope and the `local`/`project` scopes of its Current Working Directory", so a project-scoped copy is invisible to an installer run from `C:\Downloads` | **REJECTED — measured false.** `--json` from this repo and from an unrelated dir with **no `.claude`** returns **identical** output, including 3 `scope=local` rows whose `projectPath`s are three **other** projects. The store is `~/.claude/plugins/installed_plugins.json` — **global**, keyed by id. **But refuting it paid for the round:** it surfaced `projectPath` (which the spec's field list omitted, and which finding 4 needs) and that `installed_plugins.json` has **no `enabled` field** (which settles the fork on measurement). |
+| 2 | Cascade | `/VERYSILENT` suppresses the `MsgBox`, but the script reaps the log anyway → the warning is **destroyed having reached nobody** | **FOLDED — VALID.** Corroborated by the repo's own `iss:83`, which *depends* on silent-mode auto-answering. The reap must be conditional on the dialog actually being shown. **A hole in the design agy proposed and claude folded — found by agy's own panel two turns later.** |
+| 3 | Installer-Script (bespoke) | the **keep** branch does not preserve the reader: Inno deletes the exe regardless of `ShouldKeep` | **FOLDED — VALID; it kills claude's UNVETTED refinement.** `ShouldKeep` (`iss:46-47`) only drops the `--purge-data` *argument*; `[Files]` (`:25`) deletes `flaui-mcp.exe` on both branches. Claude had conflated the **manual** path (`ops-manual.md:48`) with the **installer's** keep branch. |
+| 4 | Decision-Provenance (bespoke) | round 6 generalized a **state** observation (`scope=local` exists) into an invalid **action** contract: `--scope` is "a parameter **bound to a working directory**", so a disable fires against the installer's CWD and litters a random directory | **FOLDED — VALID; the round's best finding.** Verified: `claude plugin disable --help` exposes only `-a`, `-h`, `-s/--scope` — **no way to target another project**. Runner must widen on **two** axes (stdout **+ working directory**), not one. `agy-attempt`'s runner shape is insufficient. |
+
+**Method note on round 7.** The rejected finding was the **most valuable one in the round** — chasing
+its premise to measurement produced the `projectPath` field and the missing-`enabled` fact that
+together make finding 4 *fixable* and settle the detection fork on evidence. A panel's wrong answers
+are worth measuring, not just its right ones. Note also the shape of what it caught: **three of the
+four findings landed on material written the same day** by the consult — new text is where the defects
+were, not the parts six rounds had already ground down.
 
 **AGY-FIRST consult + negotiation, 2026-07-16 — NOT a panel round.** The three blocking decisions were
 routed to the peer as a consult (prose-only, no code), then one negotiation turn, then decided by the
