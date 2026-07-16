@@ -10,6 +10,10 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-16-skill-distribution-design.md` (status: UNBLOCKED; 7 panel rounds; 34 findings, 30 valid).
 
+**Plan review:** 1 agy panel — REJECT, 7 findings: **5 valid and folded, 2 rejected on measurement.**
+Folding one of them exposed an eighth defect the panel did not reach. See
+[Plan review ledger](#plan-review-ledger).
+
 ---
 
 ## Read this before Task 1
@@ -163,6 +167,29 @@ public class ProcessRunnerTests
         Assert.Equal(0, r.Code);
         Assert.Contains(Path.GetFileName(Directory.GetCurrentDirectory()), r.Output);
     }
+
+    // On failure the REASON is usually on stderr; a warning that says only "exited 1" is useless to
+    // the user who has to fix it.
+    [Fact]
+    public void On_failure_stderr_is_kept_so_the_reason_survives()
+    {
+        var r = ProcessRunner.Run("cmd.exe", new[] { "/c", "echo boom 1>&2 && exit 4" }, null, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(4, r.Code);
+        Assert.Contains("boom", r.Output);
+    }
+
+    // ...but on SUCCESS the output must stay clean: `claude plugin list --json` output is parsed,
+    // and a stray stderr line (a deprecation notice, say) would corrupt the JSON.
+    [Fact]
+    public void On_success_stderr_is_excluded_so_json_output_stays_parseable()
+    {
+        var r = ProcessRunner.Run("cmd.exe", new[] { "/c", "echo warning: noisy 1>&2 && echo [] " }, null, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(0, r.Code);
+        Assert.DoesNotContain("noisy", r.Output);
+        Assert.Contains("[]", r.Output);
+    }
 }
 ```
 
@@ -218,9 +245,13 @@ public static class ProcessRunner
             if (p is null) return new RunResult(NotFound, "");
 
             // Read asynchronously: a child that fills the stdout pipe while we block on WaitForExit
-            // would deadlock, which is the same hang by another route.
+            // would deadlock, which is the same hang by another route. Both streams are drained for
+            // that reason. stderr is KEPT rather than discarded: when `claude` fails, its reason is
+            // usually on stderr, and our warning would otherwise say only "exited 1".
             var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
             p.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
+            p.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
 
@@ -230,7 +261,12 @@ public static class ProcessRunner
                 return new RunResult(TimedOut, stdout.ToString());
             }
             p.WaitForExit();   // flush the async output handlers (see WaitForExit(int) remarks)
-            return new RunResult(p.ExitCode, stdout.ToString());
+
+            // On success the caller wants clean stdout (it may be JSON). On failure it wants the
+            // reason, which lives on stderr.
+            return p.ExitCode == 0
+                ? new RunResult(0, stdout.ToString())
+                : new RunResult(p.ExitCode, (stdout.ToString() + stderr.ToString()).Trim());
         }
         catch (System.ComponentModel.Win32Exception) { return new RunResult(NotFound, ""); }
     }
@@ -240,7 +276,7 @@ public static class ProcessRunner
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `dotnet test test/FlaUI.Mcp.Tests --filter "FullyQualifiedName~ProcessRunnerTests"`
-Expected: PASS — 6 passed.
+Expected: PASS — 8 passed.
 
 - [ ] **Step 5: Rewrite the four existing writer tests for the new contract**
 
@@ -1024,6 +1060,53 @@ public class CollisionMarkerTests
         CollisionMarker.Record(s, System.Array.Empty<DisabledEntry>());
         Assert.False(File.Exists(CollisionMarker.PathIn(s)), "an empty marker would later fire a no-op restore");
     }
+
+    // ProjectPath is a WINDOWS path: C:\Proj and c:\proj are one directory. Default record equality
+    // is case-sensitive, so without SameEntry the same entry would be recorded twice — and, worse,
+    // the "did we already record this?" check would MISS, making a re-install wrongly conclude the
+    // user disabled it.
+    [Fact]
+    public void An_entry_differing_only_in_path_casing_is_the_same_entry()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\Proj") });
+
+        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"c:\proj") });
+
+        Assert.Single(CollisionMarker.Read(s));
+    }
+
+    [Fact]
+    public void Entry_identity_ignores_case_in_id_scope_and_path()
+    {
+        Assert.True(CollisionMarker.SameEntry(
+            new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\Proj"),
+            new DisabledEntry("FlaUI-MCP@FlaUI-MCP", "LOCAL", @"c:\proj")));
+        Assert.False(CollisionMarker.SameEntry(
+            new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\a"),
+            new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\b")));
+        Assert.False(CollisionMarker.SameEntry(
+            new DisabledEntry("flaui-mcp@flaui-mcp", "user", null),
+            new DisabledEntry("flaui-mcp@flaui-mcp", "local", null)));
+    }
+
+    // We have already disabled the user's plugin by the time we record it. If the record does not
+    // survive, uninstall can never put it back — so this failure must be VISIBLE, not swallowed.
+    [Fact]
+    public void A_marker_that_cannot_be_written_returns_a_warning_rather_than_failing_silently()
+    {
+        var s = TempState();
+        Directory.CreateDirectory(CollisionMarker.PathIn(s));   // a DIRECTORY where the file must go
+
+        var warning = CollisionMarker.Record(s, new[] { UserEntry });
+
+        Assert.NotNull(warning);
+        Assert.Contains("will not re-enable it automatically", warning);
+    }
+
+    [Fact]
+    public void A_successful_record_returns_no_warning()
+        => Assert.Null(CollisionMarker.Record(TempState(), new[] { UserEntry }));
 }
 ```
 
@@ -1074,16 +1157,29 @@ public static class CollisionMarker
 
     public static string PathIn(string stateDir) => Path.Combine(stateDir, FileName);
 
+    /// <summary>Two entries are the same entry when they name the same plugin in the same place.
+    /// Paths and scopes are compared case-INSENSITIVELY: ProjectPath is a Windows path, so `C:\Proj`
+    /// and `c:\proj` are one directory, and default record equality (ordinal, case-sensitive) would
+    /// treat them as two. Getting this wrong duplicates entries in the marker and — worse — makes the
+    /// "did we already record this?" check miss, so a re-install would wrongly conclude the USER
+    /// disabled it. Restore's presence check uses the same comparison, deliberately.</summary>
+    public static bool SameEntry(DisabledEntry a, DisabledEntry b) =>
+        string.Equals(a.Id, b.Id, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(a.Scope, b.Scope, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(a.ProjectPath ?? "", b.ProjectPath ?? "", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Merge these entries in, preserving any already recorded. Recording an entry that is
-    /// already present is a no-op — the FIRST run to transition it owns the record.</summary>
-    public static void Record(string stateDir, IReadOnlyList<DisabledEntry> entries)
+    /// already present is a no-op — the FIRST run to transition it owns the record.
+    /// Returns null on success, else the reason: a marker we cannot write means uninstall will never
+    /// restore the user's plugin, so the caller MUST be able to see that this failed.</summary>
+    public static string? Record(string stateDir, IReadOnlyList<DisabledEntry> entries)
     {
         try
         {
-            if (entries.Count == 0) return;   // never write an empty marker: it would fire a no-op restore
+            if (entries.Count == 0) return null;   // never write an empty marker: it would fire a no-op restore
             var merged = Read(stateDir).ToList();
             foreach (var e in entries)
-                if (!merged.Contains(e)) merged.Add(e);
+                if (!merged.Any(m => SameEntry(m, e))) merged.Add(e);
 
             var arr = new JsonArray();
             foreach (var e in merged)
@@ -1097,8 +1193,16 @@ public static class CollisionMarker
 
             Directory.CreateDirectory(stateDir);
             File.WriteAllText(PathIn(stateDir), root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            return null;
         }
-        catch { /* best-effort: a marker we cannot write becomes a warning at the call site */ }
+        catch (Exception e)
+        {
+            // NOT swallowed. We have already disabled the user's plugin; if the record of that does
+            // not survive, uninstall can never put it back and they lose it permanently. The caller
+            // turns this into a Warning the user can actually see.
+            return $"disabled a conflicting plugin but could NOT record it at {PathIn(stateDir)} ({e.Message}) — " +
+                   "uninstalling flaui-mcp will not re-enable it automatically.";
+        }
     }
 
     /// <summary>Entries we recorded. Empty when absent OR unreadable — the fail-safe direction: an
@@ -1145,7 +1249,7 @@ public static class CollisionMarker
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `dotnet test test/FlaUI.Mcp.Tests --filter "FullyQualifiedName~CollisionMarkerTests"`
-Expected: PASS — 15 passed (5 of them `[Theory]` rows).
+Expected: PASS — 19 passed (5 of them `[Theory]` rows).
 
 - [ ] **Step 5: Commit**
 
@@ -1492,7 +1596,9 @@ public sealed class ClaudeCollisionRemedy
             {
                 // R1: no transition to perform. If we have no record of disabling it, the USER did —
                 // leave it alone forever. R5: say so, because this correct decision is invisible.
-                if (!recorded.Contains(entry))
+                // Case-insensitive: a path that differs only in casing is the SAME entry, and
+                // treating it as new would wrongly blame the user for our own disable.
+                if (!recorded.Any(m => CollisionMarker.SameEntry(m, entry)))
                     warnings.Add($"{e.Id} ({Where(entry)}) was already disabled and we have no record of disabling it — " +
                                  "assuming you did, and leaving it alone.");
                 continue;
@@ -1509,7 +1615,10 @@ public sealed class ClaudeCollisionRemedy
         }
 
         // Only entries WE transitioned are recorded; existing records are never rewritten (R1).
-        CollisionMarker.Record(_stateDir, justDisabled);
+        // A marker we cannot write is NOT a silent shrug: we have already disabled the user's plugin,
+        // so a lost record means uninstall never puts it back.
+        var recordWarning = CollisionMarker.Record(_stateDir, justDisabled);
+        if (recordWarning is not null) warnings.Add(recordWarning);
 
         if (justDisabled.Count > 0)
             warnings.Insert(0, $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
@@ -1525,19 +1634,26 @@ public sealed class ClaudeCollisionRemedy
         if (recorded.Count == 0) return null;
 
         var warnings = new List<string>();
-        var present = TryReadInventory(out var entries, out var listWarning)
-            ? ClaudePluginInventory.Matching(entries, MarketplaceId)
-            : null;
 
-        if (present is null)
-            warnings.Add($"could not check which plugins are still installed ({listWarning}) — " +
-                         "attempting to restore anyway.");
+        // If we cannot read the inventory at all (e.g. the claude CLI is gone), we cannot restore —
+        // and we must NOT consume the marker. It is still an ACCURATE record of a plugin we disabled
+        // and have not put back; deleting it here would strand the user's plugin disabled with no
+        // record anywhere that we were the ones who did it. R7's stale-marker hazard is about a
+        // marker surviving a SUCCESSFUL consume, which this is not.
+        if (!TryReadInventory(out var entries, out var listWarning))
+            return $"{listWarning} Your conflicting plugin(s) are still disabled and were NOT re-enabled. " +
+                   "The record is kept at " + CollisionMarker.PathIn(_stateDir) + ". To restore manually: " +
+                   string.Join("; ", recorded.Select(e =>
+                       $"claude plugin enable {e.Id} --scope {e.Scope}" +
+                       (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})")));
+
+        var present = ClaudePluginInventory.Matching(entries, MarketplaceId);
 
         foreach (var e in recorded)
         {
             // R2: the user may have uninstalled it themselves after we disabled it. Enabling a
             // plugin that no longer exists throws or orphans a reference — check first.
-            if (present is not null && !present.Any(p => Same(p, e)))
+            if (!present.Any(p => Same(p, e)))
             {
                 warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, so it was not re-enabled.");
                 continue;
@@ -1583,8 +1699,7 @@ public sealed class ClaudeCollisionRemedy
     private static bool LooksLikeEmptyList(string output) => output.Trim().StartsWith("[");
 
     private static bool Same(ClaudePluginEntry p, DisabledEntry e) =>
-        string.Equals(p.Scope, e.Scope, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(p.ProjectPath ?? "", e.ProjectPath ?? "", StringComparison.OrdinalIgnoreCase);
+        CollisionMarker.SameEntry(new DisabledEntry(p.Id, p.Scope, p.ProjectPath), e);
 
     private static string Where(DisabledEntry e) => e.ProjectPath is null ? $"scope {e.Scope}" : $"scope {e.Scope} in {e.ProjectPath}";
 }
@@ -1785,15 +1900,23 @@ public class ClaudeCollisionRestoreTests
         Assert.False(File.Exists(CollisionMarker.PathIn(s)));
     }
 
+    // If we cannot even see what is installed, we cannot restore — and we must KEEP the marker. It
+    // is still an accurate record of a plugin we disabled and have not put back; consuming it here
+    // would strand the user's plugin disabled with no record anywhere that we did it. (R7's
+    // stale-marker hazard is about surviving a SUCCESSFUL consume — this is not one.)
     [Fact]
-    public void A_missing_claude_cli_at_restore_time_is_reported_and_never_throws()
+    public void A_missing_claude_cli_at_restore_time_KEEPS_the_marker_and_reports_a_manual_recourse()
     {
         var s = TempState();
-        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) });
+        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\proj") });
 
         var warning = new ClaudeCollisionRemedy((_, _, _) => new RunResult(ProcessRunner.NotFound, ""), s).Restore();
 
         Assert.NotNull(warning);
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)), "consuming the marker here loses the record forever");
+        Assert.Contains("still disabled", warning);
+        Assert.Contains("claude plugin enable flaui-mcp@flaui-mcp --scope local", warning);
+        Assert.Contains(@"C:\proj", warning);          // they need to know WHERE to run it
     }
 
     // THE FULL ROUND TRIP — the property that actually matters to a user.
@@ -2148,6 +2271,66 @@ public class CliRouterClaudeSkillTests : IDisposable
         finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", null); }
     }
 
+    // The NotFound gate belongs to INSTALL only. Removing the skill dir is pure file I/O and needs
+    // no CLI — gating it would strand a skill on disk telling the agent to call tools that are gone.
+    [Fact]
+    public void Uninstall_still_removes_the_skill_when_the_claude_cli_is_absent()
+    {
+        var outp = new StringWriter();
+        CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
+        Assert.True(File.Exists(ClaudeSkill));
+
+        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", "1");
+        try
+        {
+            CliRouter.Run(new[] { "uninstall", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
+            Assert.False(Directory.Exists(Path.Combine(_root, "claude", "skills", "flaui-mcp")),
+                "a skill for deleted tools was left on disk because the CLI happened to be off PATH");
+        }
+        finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", null); }
+    }
+
+    // The permanent-loss path: `claude` off PATH for a minute must not cost the user their plugin.
+    [Fact]
+    public void Uninstall_with_the_cli_absent_keeps_the_restore_marker_and_warns()
+    {
+        var state = Path.Combine(_root, "state");
+        CollisionMarker.Record(state, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) });
+        var outp = new StringWriter();
+
+        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", "1");
+        try
+        {
+            CliRouter.Run(new[] { "uninstall", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
+
+            Assert.True(File.Exists(CollisionMarker.PathIn(state)), "the marker was consumed without restoring anything");
+            var warnings = File.ReadAllText(UninstallWarnings.PathIn(state));
+            Assert.Contains("still disabled", warnings);
+        }
+        finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", null); }
+    }
+
+    // R6, end to end: an uninstall warning must reach the file the Inno uninstaller reads, and must
+    // survive the purge that runs in the same breath.
+    [Fact]
+    public void Uninstall_warnings_are_parked_where_they_survive_the_purge()
+    {
+        var state = Path.Combine(_root, "state");
+        CollisionMarker.Record(state, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) });
+        var outp = new StringWriter();
+
+        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", "1");
+        try
+        {
+            CliRouter.Run(new[] { "uninstall", "--agent", "all", "--purge-data", "--config", Path.Combine(_root, "c.json") },
+                @"C:\x\flaui-mcp.exe", outp);
+
+            Assert.False(Directory.Exists(Path.Combine(_root, "data")), "the purge did not happen");
+            Assert.True(File.Exists(UninstallWarnings.PathIn(state)), "the purge destroyed the warnings it was supposed to outlive");
+        }
+        finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", null); }
+    }
+
     [Fact]
     public void Agy_only_install_does_not_touch_the_claude_config_dir()
     {
@@ -2250,16 +2433,32 @@ Replace the claude branch of `Apply` (`CliRouter.cs:233-238`):
                 var runner = ClaudeRunner();
                 var w = new ClaudeCodeConfigWriter(runner);
                 var r = install ? w.Install(exePath, extraArgs) : w.Uninstall();
-
-                // Deploying a skill for a client we could not register is pointless by construction:
-                // with --agent all as the installer's default, an unguarded write would leave an
-                // orphaned skills dir on every agy-only machine.
-                if (r.Change == AgentChange.NotFound) return r;
-
                 var deployer = new ClaudeSkillDeployer(paths.ClaudeConfigDir);
                 var remedy = new ClaudeCollisionRemedy(runner, paths.StateDir);
-                var skillWarning = install ? deployer.Deploy() : deployer.Remove();
-                var collisionWarning = install ? remedy.Apply() : remedy.Restore();
+
+                string? skillWarning, collisionWarning;
+                if (install)
+                {
+                    // Gate the DEPLOY — and only the deploy — on the client existing. Deploying a
+                    // skill for a client we could not register is pointless by construction, and with
+                    // --agent all as the installer's default, an unguarded write would leave an
+                    // orphaned skills dir on every agy-only machine.
+                    if (r.Change == AgentChange.NotFound) return r;
+                    skillWarning = deployer.Deploy();
+                    collisionWarning = remedy.Apply();
+                }
+                else
+                {
+                    // NO such gate on uninstall, deliberately. Removing the skill dir is pure file
+                    // I/O and needs no CLI at all — gating it would strand the skill on disk, telling
+                    // the agent to call desktop_* tools that no longer exist. And skipping Restore()
+                    // would ORPHAN the marker and leave the user's plugin disabled forever: the exact
+                    // permanent-loss outcome R1/R2 exist to prevent, triggered by nothing worse than
+                    // `claude` being off PATH for a minute. Restore() handles a missing CLI itself —
+                    // it reports and KEEPS the marker rather than consuming it.
+                    skillWarning = deployer.Remove();
+                    collisionWarning = remedy.Restore();
+                }
 
                 var combined = string.Join(" ", new[] { r.Warning, skillWarning, collisionWarning }.Where(x => x is not null));
                 return r with
@@ -2435,6 +2634,9 @@ Replace `InstallStatus.cs:21-37`:
         if (!File.Exists(skill))
             return $"NOT deployed — nothing at {skillRoot}. If you installed Claude Code after " +
                    "flaui-mcp, run: flaui-mcp install --agent claude";
+        // ReadDeployedVersion ALREADY EXISTS in this class (InstallStatus.cs:51) and takes the
+        // manifest path as a parameter, so it is location-agnostic — reuse it, do not write a second
+        // JSON parser. (A panel seat called this an undefined symbol; it is defined at :51.)
         var deployed = ReadDeployedVersion(Path.Combine(skillRoot, ".claude-plugin", "plugin.json"));
         return $"deployed ({deployed}) at {skillRoot}";
     }
@@ -2523,12 +2725,21 @@ begin
   if UninstallSilent then
     exit;
 
-  if LoadStringFromFile(LogPath, Contents) then
-    MsgBox('FlaUI.Mcp was removed, but some cleanup did not complete:' + #13#10#13#10 +
-           String(Contents), mbInformation, MB_OK);
+  // If we cannot READ it we must not DELETE it: reaping here would destroy the evidence having
+  // shown it to nobody, which is the very failure this procedure exists to prevent. Leave it and
+  // point at it instead — a file the user can still open beats a file we silently ate.
+  if not LoadStringFromFile(LogPath, Contents) then
+  begin
+    MsgBox('FlaUI.Mcp was removed, but some cleanup did not complete and the details could not be read.'
+           + #13#10#13#10 + 'They were left for you at:' + #13#10 + LogPath, mbInformation, MB_OK);
+    exit;
+  end;
 
-  // Reaped only now that a human has actually seen it — this honors the "remove my configuration"
-  // request without silently swallowing the reason they may need.
+  MsgBox('FlaUI.Mcp was removed, but some cleanup did not complete:' + #13#10#13#10 +
+         String(Contents), mbInformation, MB_OK);
+
+  // Reaped ONLY on the path where a human has actually seen the contents — this honors the
+  // "remove my configuration" request without silently swallowing the reason they may need.
   DeleteFile(LogPath);
   RemoveDir(StateDir());
   RemoveDir(ExpandConstant('{localappdata}\FlaUI.Mcp'));
@@ -2711,8 +2922,11 @@ try {
     claude plugin install flaui-mcp@flaui-mcp --scope user 2>&1 | Out-Host
 
     $before = claude plugin list --json | ConvertFrom-Json | Where-Object { $_.id -eq 'flaui-mcp@flaui-mcp' }
+    # A gate that cannot run has NOT passed. Counting the skip as a failure is the whole point:
+    # otherwise the one scenario this gate exists for is the one it silently stops checking.
+    Check 'the marketplace copy could be seeded (the gate is able to run at all)' ($null -ne $before)
     if ($null -eq $before) {
-        Write-Warning "could not seed the marketplace copy — collision smoke SKIPPED, not passed."
+        Write-Warning "could not seed the marketplace copy — the collision gate did NOT run. This is a FAILURE, not a skip."
     } else {
         Check 'seeded marketplace copy starts enabled' ($before.enabled -eq $true)
 
@@ -2740,7 +2954,12 @@ finally {
 - [ ] **Step 2: Run it**
 
 Run: `./scripts/install-smoke.ps1`
-Expected: `ALL CHECKS PASSED`. A **SKIPPED** collision block is **not** a pass — if seeding fails, say so out loud rather than treating the gate as green.
+Expected: `ALL CHECKS PASSED`.
+
+A collision block that could not run is a **FAILURE, not a skip** — and the script now enforces that
+rather than merely saying so in prose. *(The panel caught the first draft doing exactly what this
+paragraph warned against: warning about a skip while exiting 0 and printing `ALL CHECKS PASSED`. A
+gate whose own bypass is silent is not a gate.)*
 
 - [ ] **Step 3: Commit**
 
@@ -2920,6 +3139,34 @@ git commit -m "release: v0.15.0 (bundled Claude driving skill + collision remedy
 | The autotrain loop / global observation inbox | **Cut** on 7 independent nails from 2 models. Do not resurrect without answering them — in particular that a global inbox **voids the anti-poisoning gate**, opening a path from an untrusted terminal buffer into the GROWTH region and out to every user as operating instructions. | A future subproject |
 | The Stop hook's PowerShell rewrite | Moot under a driving-only payload — no hook ships. Returns the moment autotrain bundling does. | With autotrain |
 | A CI gate for any of this | **Measured impossible:** no Claude CLI, no `~/.claude` in CI. Do not plan a gate that cannot exist. | Local/manual only |
+
+## Plan review ledger
+
+**Panel — agy, 2026-07-16, `relentless-adversarial-auditor`. Verdict: REJECT, 7 findings — 5 VALID
+AND FOLDED, 2 REJECTED ON MEASUREMENT.** Seats: Literal Implementer · Type & Signature Pedant · Test
+Adequacy Auditor · Cascade Analyst.
+
+| # | Seat | Finding | Disposition |
+|---|---|---|---|
+| 1 | Literal Implementer | `ReadDeployedVersion` is undefined — Task 10 calls it but no task defines it, "and it cannot be the agy parser since the Claude manifest lives in a different directory" | **REJECTED — measured false.** It **already exists** at `InstallStatus.cs:51`, in the very class Task 10 modifies. It takes the manifest **path as a parameter**, so it is location-agnostic and the stated reasoning does not hold. *(Clarified in Task 10 anyway — the plan never said it was pre-existing, and that ambiguity was real.)* |
+| 2 | Literal Implementer | `BeginErrorReadLine()` without an `ErrorDataReceived` handler "throws `InvalidOperationException` immediately… this will crash the installer on every single process invocation" | **REJECTED — measured false.** Ran it: `RedirectStandardError = true` + `BeginErrorReadLine()` + no handler → **no throw**, exit 0, stdout intact. A confident, specific, and wrong claim. **But the remedy direction was right for a different reason:** discarding stderr loses *why* a command failed, so a handler was added and stderr is now kept **on failure only** (keeping it on success would corrupt the `--json` output we parse). |
+| 3 | Type & Signature Pedant | `CollisionMarker.Record` returns `void`, yet its own catch comment claims the failure "becomes a warning at the call site" — so a marker we cannot write is **silently swallowed** | **FOLDED — VALID.** A real contract lie, and a severe one: we have *already disabled the user's plugin* by then, so a lost record means uninstall never restores it. `Record` now returns `string?` and `Apply` surfaces it. |
+| 4 | Test Adequacy | the smoke *says* "a SKIPPED collision block is not a pass" but, when seeding fails, only `Write-Warning`s — adding nothing to `$failed`, then exiting 0 and printing `ALL CHECKS PASSED` | **FOLDED — VALID.** A gate that fails open, in the exact scenario the gate exists for. The skip is now a `Check` that fails. *(The prose warned against precisely what the code did.)* |
+| 5 | Test Adequacy | `merged.Contains(e)` uses default record equality — case-**sensitive** — on `ProjectPath`, a **Windows** path | **FOLDED — VALID.** And it was worse than reported: `Apply`'s "already recorded?" check was case-sensitive while `Restore`'s `Same()` was case-**insensitive** — the two disagreed. One `CollisionMarker.SameEntry` now serves both. A casing mismatch would have made a re-install wrongly conclude **the user** disabled it. |
+| 6 | Cascade | `if (r.Change == AgentChange.NotFound) return r;` aborts the whole Claude block, so an uninstall with `claude` off PATH **bypasses `Restore()`** — marker orphaned, user's plugin left disabled, warning never emitted | **FOLDED — VALID; the round's best finding.** The gate belongs to **install only**. Uninstall now always removes the skill (pure file I/O — no CLI needed) and always attempts the restore. |
+| 7 | Cascade | the Inno hook shows the `MsgBox` conditionally on `LoadStringFromFile` but **deletes unconditionally** — an unreadable log is destroyed having shown nobody, violating the plan's own "reaped only once a human has seen it" | **FOLDED — VALID.** Unreadable → report the path and **keep** the file. |
+
+**Found while folding #6 — the panel did not reach it.** `Restore()` consumed the marker even when
+`TryReadInventory` failed outright. With the CLI absent that meant: cannot restore, *and* the record
+is deleted — the user's plugin disabled forever with nothing anywhere saying we did it. **Restore now
+returns early and KEEPS the marker when the inventory cannot be read**, with per-entry manual recourse
+in the warning. R7's stale-marker hazard is about surviving a *successful* consume; this is not one.
+
+**Method note.** Both rejections were **confident, specific, and false** — a fabricated missing symbol
+and a fabricated exception, each with a plausible mechanism attached. Both took one measurement to
+kill. Neither was dismissed on judgment. The 5 that survived measurement were all real, and 2 of them
+(#3, #6) were paths to **permanently losing a user's plugin** — the exact class of defect this whole
+remedy exists to prevent, reintroduced by the code meant to prevent it.
 
 ## Risks this plan accepts
 
