@@ -101,7 +101,12 @@ public static class CliRouter
             }
 
             case "uninstall":
-                Report(Apply(agent, paths, install: false, exePath), "uninstall", paths.DataDir, outp);
+                var uninstallResults = Apply(agent, paths, install: false, exePath).ToList();
+                Report(uninstallResults, "uninstall", paths.DataDir, outp);
+                // The exe is about to be deleted and install.log may be purged, so a warning written
+                // now is destroyed as it is written. Park it where the Inno uninstaller can find it.
+                UninstallWarnings.Write(paths.StateDir,
+                    uninstallResults.Where(r => r.Warning is not null).Select(r => $"[{r.Agent}] {r.Warning}").ToList());
                 // Leave no leftovers: delete the timestamped backups we wrote next to each config
                 // file we touched. (Backups are a safety net for the live install, not after removal.)
                 foreach (var line in SweepBackups(new[] { paths.AgyServers, paths.AgyPerms, paths.GenericPath }))
@@ -200,7 +205,7 @@ public static class CliRouter
         outp.WriteLine("  flaui-mcp uninstall --purge-data");
     }
 
-    private readonly record struct Paths(string AgyServers, string AgyPerms, string GenericPath, string DataDir, string AgyPluginsDir);
+    private readonly record struct Paths(string AgyServers, string AgyPerms, string GenericPath, string DataDir, string AgyPluginsDir, string ClaudeConfigDir, string StateDir);
 
     /// Resolve every config path the installer touches. The data dir (home of the generic config
     /// and the purge target) honors FLAUI_MCP_DATA_DIR so tests never touch the real `~/.flaui-mcp`.
@@ -216,7 +221,21 @@ public static class CliRouter
         var genericPath = configOverride ?? Path.Combine(dataDir, "generic-mcp.json");
         var agyPlugins = Environment.GetEnvironmentVariable("FLAUI_MCP_AGY_PLUGINS_DIR")
                          ?? Path.Combine(home, ".gemini", "config", "plugins");
-        return new Paths(agyServers, agyPerms, genericPath, dataDir, agyPlugins);
+
+        // Claude Code honors CLAUDE_CONFIG_DIR (measured: with it pointed at an empty dir,
+        // `claude plugin list` reports "No plugins installed"). A hardcoded ~/.claude would write
+        // where the host is not reading, for any user who sets it. FLAUI_MCP_* wins so tests never
+        // touch the real profile.
+        var claudeConfigDir = Environment.GetEnvironmentVariable("FLAUI_MCP_CLAUDE_CONFIG_DIR")
+                              ?? Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR")
+                              ?? Path.Combine(home, ".claude");
+
+        // NOT under dataDir: --purge-data deletes that, and it is not agent-scoped (see :18), so an
+        // `uninstall --agent agy --purge-data` would take the Claude restore marker with it.
+        // NOT under {app}: Inno deletes that on both uninstall branches.
+        var stateDir = Environment.GetEnvironmentVariable("FLAUI_MCP_STATE_DIR")
+                       ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FlaUI.Mcp", "state");
+        return new Paths(agyServers, agyPerms, genericPath, dataDir, agyPlugins, claudeConfigDir, stateDir);
     }
 
     private static IEnumerable<AgentResult> Apply(string agent, Paths paths, bool install, string exePath, IReadOnlyList<string>? extraArgs = null)
@@ -233,8 +252,42 @@ public static class CliRouter
         if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
             results.Add(Isolate("claude", () =>
             {
-                var w = new ClaudeCodeConfigWriter();
-                return install ? w.Install(exePath, extraArgs) : w.Uninstall();
+                var runner = ClaudeRunner();
+                var w = new ClaudeCodeConfigWriter(runner);
+                var r = install ? w.Install(exePath, extraArgs) : w.Uninstall();
+                var deployer = new ClaudeSkillDeployer(paths.ClaudeConfigDir);
+                var remedy = new ClaudeCollisionRemedy(runner, paths.StateDir);
+
+                string? skillWarning, collisionWarning;
+                if (install)
+                {
+                    // Gate the DEPLOY — and only the deploy — on the client existing. Deploying a
+                    // skill for a client we could not register is pointless by construction, and with
+                    // --agent all as the installer's default, an unguarded write would leave an
+                    // orphaned skills dir on every agy-only machine.
+                    if (r.Change == AgentChange.NotFound) return r;
+                    skillWarning = deployer.Deploy();
+                    collisionWarning = remedy.Apply();
+                }
+                else
+                {
+                    // NO such gate on uninstall, deliberately. Removing the skill dir is pure file
+                    // I/O and needs no CLI at all — gating it would strand the skill on disk, telling
+                    // the agent to call desktop_* tools that no longer exist. And skipping Restore()
+                    // would ORPHAN the marker and leave the user's plugin disabled forever: the exact
+                    // permanent-loss outcome R1/R2 exist to prevent, triggered by nothing worse than
+                    // `claude` being off PATH for a minute. Restore() handles a missing CLI itself —
+                    // it reports and KEEPS the marker rather than consuming it.
+                    skillWarning = deployer.Remove();
+                    collisionWarning = remedy.Restore();
+                }
+
+                var combined = string.Join(" ", new[] { r.Warning, skillWarning, collisionWarning }.Where(x => x is not null));
+                return r with
+                {
+                    Detail = install ? $"{r.Detail}; {deployer.SkillRoot}" : r.Detail,
+                    Warning = combined.Length == 0 ? null : combined,
+                };
             }));
         if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
             results.Add(Isolate("generic", () =>
@@ -244,6 +297,13 @@ public static class CliRouter
             }));
         return results;
     }
+
+    /// The claude runner, with a test seam for the "CLI absent" case — the branch that gates the
+    /// skill deploy, and the one a machine without Claude Code actually takes.
+    private static Func<string, string[], string?, RunResult> ClaudeRunner() =>
+        Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING") == "1"
+            ? (_, _, _) => new RunResult(ProcessRunner.NotFound, "")
+            : (file, args, cwd) => ProcessRunner.Run(file, args, cwd, ProcessRunner.DefaultTimeout);
 
     /// The agents are independent targets, so one agent's fault must not deny the others: a throw
     /// becomes that agent's own <see cref="AgentChange.Failed"/> result and the loop carries on.
