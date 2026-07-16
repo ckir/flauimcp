@@ -175,6 +175,47 @@ public class CliRouterClaudeSkillTests : IDisposable
         Assert.False(Directory.Exists(Path.Combine(_root, "data")));
     }
 
+    // The whole subsystem exists so the user never ends up with NO driving skill. If our replacement
+    // fails to deploy, disabling the working marketplace copy would produce exactly that — so the
+    // collision remedy must NOT run when the deploy failed. (Found by the final whole-branch review.)
+    [Fact]
+    public void A_failed_skill_deploy_does_not_disable_the_incumbent_marketplace_copy()
+    {
+        // Block the skill write: a FILE where the skills directory must be created makes Deploy() throw.
+        var claude = Path.Combine(_root, "claude");
+        Directory.CreateDirectory(claude);
+        File.WriteAllText(Path.Combine(claude, "skills"), "not a directory");
+
+        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION", "flaui-mcp@flaui-mcp");
+        try
+        {
+            var outp = new StringWriter();
+            CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
+
+            Assert.False(File.Exists(CollisionMarker.PathIn(Path.Combine(_root, "state"))),
+                "the remedy disabled the incumbent even though our skill never deployed — leaving the user no skill");
+        }
+        finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION", null); }
+    }
+
+    // Companion to the above: on a SUCCESSFUL deploy a detected collision IS disabled and recorded —
+    // proving the negative test isn't passing merely because the fake never reports a collision.
+    [Fact]
+    public void A_successful_install_disables_and_records_a_detected_collision()
+    {
+        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION", "flaui-mcp@flaui-mcp");
+        try
+        {
+            var outp = new StringWriter();
+            CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
+
+            Assert.True(File.Exists(ClaudeSkill), "the skill should have deployed");
+            Assert.True(File.Exists(CollisionMarker.PathIn(Path.Combine(_root, "state"))),
+                "a detected collision on a successful install should have been disabled and recorded");
+        }
+        finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION", null); }
+    }
+
     [Fact]
     public void CLAUDE_CONFIG_DIR_is_honored_when_our_own_override_is_absent()
     {

@@ -267,7 +267,12 @@ public static class CliRouter
                     // orphaned skills dir on every agy-only machine.
                     if (r.Change == AgentChange.NotFound) return r;
                     skillWarning = deployer.Deploy();
-                    collisionWarning = remedy.Apply();
+                    // Do NOT disable the incumbent marketplace copy unless our replacement actually
+                    // landed. If Deploy failed (non-null warning), disabling the working copy would
+                    // leave the user with NO driving skill — the exact outcome this remedy exists to
+                    // prevent. A later successful re-install runs Apply() normally; with Apply skipped
+                    // no marker is written, so uninstall's Restore() stays a correct no-op.
+                    collisionWarning = skillWarning is null ? remedy.Apply() : null;
                 }
                 else
                 {
@@ -300,10 +305,22 @@ public static class CliRouter
 
     /// The claude runner, with a test seam for the "CLI absent" case — the branch that gates the
     /// skill deploy, and the one a machine without Claude Code actually takes.
-    private static Func<string, string[], string?, RunResult> ClaudeRunner() =>
-        Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING") == "1"
-            ? (_, _, _) => new RunResult(ProcessRunner.NotFound, "")
-            : (file, args, cwd) => ProcessRunner.Run(file, args, cwd, ProcessRunner.DefaultTimeout);
+    private static Func<string, string[], string?, RunResult> ClaudeRunner()
+    {
+        if (Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING") == "1")
+            return (_, _, _) => new RunResult(ProcessRunner.NotFound, "");
+
+        // Test seam: simulate a Claude Code reporting ONE enabled colliding plugin, so the router's
+        // collision path is exercisable without the real CLI or a live marketplace. `plugin list --json`
+        // reports the id as enabled; `disable`/`enable`/`mcp` all succeed (exit 0).
+        var collision = Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION");
+        if (!string.IsNullOrEmpty(collision))
+            return (_, args, _) => args.Contains("list")
+                ? new RunResult(0, $"[{{\"id\":\"{collision}\",\"scope\":\"user\",\"enabled\":true}}]")
+                : new RunResult(0, "");
+
+        return (file, args, cwd) => ProcessRunner.Run(file, args, cwd, ProcessRunner.DefaultTimeout);
+    }
 
     /// The agents are independent targets, so one agent's fault must not deny the others: a throw
     /// becomes that agent's own <see cref="AgentChange.Failed"/> result and the loop carries on.
