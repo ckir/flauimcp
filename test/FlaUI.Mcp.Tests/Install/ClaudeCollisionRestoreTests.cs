@@ -263,6 +263,63 @@ public class ClaudeCollisionRestoreTests
         Assert.False(File.Exists(CollisionMarker.PathIn(s)));
     }
 
+    [Fact]
+    public void A_corrupt_marker_at_uninstall_warns_with_recourse_and_keeps_the_file()
+    {
+        var cli = new FakeCli();
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), "{ torn half-written");   // Corrupt
+
+        var warning = new ClaudeCollisionRemedy(cli.Run, s).Restore();
+
+        Assert.NotNull(warning);
+        Assert.Contains("unreadable", warning);
+        Assert.Contains("claude plugin list", warning);
+        Assert.Contains(ClaudeCollisionRemedy.MarketplaceId, warning);
+        Assert.Empty(cli.Calls);                                   // never tried to enable
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)), "a corrupt marker must be kept, not silently deleted");
+    }
+
+    [Fact]
+    public void A_future_version_marker_at_uninstall_warns_and_keeps_the_file()
+    {
+        var cli = new FakeCli();
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 2, "disabled": [] }""");
+
+        var warning = new ClaudeCollisionRemedy(cli.Run, s).Restore();
+
+        Assert.NotNull(warning);
+        Assert.Contains("newer flaui-mcp", warning);
+        Assert.Empty(cli.Calls);
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)));
+    }
+
+    [Theory]
+    [InlineData("absent")]
+    [InlineData("corrupt")]
+    [InlineData("future")]
+    [InlineData("present")]
+    public void The_bak_sweep_runs_on_every_restore_branch(string kind)
+    {
+        var cli = new FakeCli { ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": false } ]""" };
+        var s = TempState();
+        var stale = CollisionMarker.PathIn(s) + ".bak-20200101000000";
+        File.WriteAllText(stale, "old");
+
+        switch (kind)
+        {
+            case "absent":  break;                                                             // no marker file
+            case "corrupt": File.WriteAllText(CollisionMarker.PathIn(s), "{ torn"); break;
+            case "future":  File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 2, "disabled": [] }"""); break;
+            case "present": CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) }); break;
+        }
+
+        new ClaudeCollisionRemedy(cli.Run, s).Restore();
+
+        Assert.False(File.Exists(stale), $"the stale .bak must be swept on the '{kind}' branch");
+    }
+
     // And the inverse property: what we never disabled, we never enable.
     [Fact]
     public void A_plugin_the_user_disabled_is_still_disabled_after_install_then_uninstall()

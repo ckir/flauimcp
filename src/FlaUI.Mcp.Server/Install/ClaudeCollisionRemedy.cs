@@ -148,72 +148,89 @@ public sealed class ClaudeCollisionRemedy
     /// <summary>Uninstall side: put back exactly what we disabled, then consume the marker (R7).</summary>
     public string? Restore()
     {
-        var recorded = CollisionMarker.Read(_stateDir);
-        if (recorded.Count == 0) return null;
-
-        var warnings = new List<string>();
-
-        // If we cannot read the inventory at all (e.g. the claude CLI is gone), we cannot restore —
-        // and we must NOT consume the marker. It is still an ACCURATE record of a plugin we disabled
-        // and have not put back; deleting it here would strand the user's plugin disabled with no
-        // record anywhere that we were the ones who did it. R7's stale-marker hazard is about a
-        // marker surviving a SUCCESSFUL consume, which this is not.
-        if (!TryReadInventory(out var entries, out var listWarning))
+        try
         {
-            // Manual recourse, but only for entries we could actually act on: an entry whose project
-            // directory is gone is moot AND a `cd` into a deleted path is impossible, so listing it
-            // would resurrect the same bad-recourse defect the in-loop guard below fixes. (agy panel
-            // round 2 — the early return bypassed that guard.)
-            var recoverable = recorded.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
-            var recourse = recoverable.Count == 0
-                ? "No manual action is possible (the recorded projects no longer exist)."
-                : "To restore manually: " + string.Join("; ", recoverable.Select(e =>
-                    $"claude plugin enable {e.Id} --scope {e.Scope}" +
-                    (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})")));
-            return $"{listWarning} Your conflicting plugin(s) are still disabled and were NOT re-enabled. " +
-                   "The record is kept at " + CollisionMarker.PathIn(_stateDir) + ". " + recourse;
-        }
+            var (state, recorded) = CollisionMarker.ReadState(_stateDir);
 
-        var present = ClaudePluginInventory.Matching(entries, MarketplaceId);
+            if (state == MarkerState.Absent) return null;
+            if (state == MarkerState.FutureVersion)
+                return $"the restore record at {CollisionMarker.PathIn(_stateDir)} was written by a newer " +
+                       "flaui-mcp; it was left in place and not acted on.";
+            if (state == MarkerState.Corrupt)
+                return $"the restore record at {CollisionMarker.PathIn(_stateDir)} is unreadable, so any " +
+                       "conflicting plugin(s) we disabled may still be disabled and could not be re-enabled " +
+                       "automatically. To check: run `claude plugin list`, and re-enable " +
+                       $"{MarketplaceId} wherever it is disabled.";
+            if (recorded.Count == 0) return null;   // Present, but every entry was dropped as malformed
 
-        foreach (var e in recorded)
-        {
-            // Symmetric to Apply's guard: a project deleted AFTER we disabled the copy but BEFORE
-            // uninstall cannot load the plugin (the collision is moot) and `enable` has nowhere valid
-            // to run from. MEASURED: Process.Start with a missing working directory throws
-            // Win32Exception, which ProcessRunner surfaces as a failed run — so without this guard we
-            // would fall through to the failure branch below and print an impossible "run it from
-            // <deleted path>" recourse. The `present` check does NOT catch this: the inventory can
-            // still LIST a stale row for a deleted project (measured).
-            if (e.ProjectPath is not null && !_dirExists(e.ProjectPath))
+            var warnings = new List<string>();
+
+            // If we cannot read the inventory at all (e.g. the claude CLI is gone), we cannot restore —
+            // and we must NOT consume the marker. It is still an ACCURATE record of a plugin we disabled
+            // and have not put back; deleting it here would strand the user's plugin disabled with no
+            // record anywhere that we were the ones who did it. R7's stale-marker hazard is about a
+            // marker surviving a SUCCESSFUL consume, which this is not.
+            if (!TryReadInventory(out var entries, out var listWarning))
             {
-                warnings.Add($"{e.Id} ({Where(e)}) — its project directory no longer exists, so there was nothing to re-enable.");
-                continue;
+                // Manual recourse, but only for entries we could actually act on: an entry whose project
+                // directory is gone is moot AND a `cd` into a deleted path is impossible, so listing it
+                // would resurrect the same bad-recourse defect the in-loop guard below fixes. (agy panel
+                // round 2 — the early return bypassed that guard.)
+                var recoverable = recorded.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
+                var recourse = recoverable.Count == 0
+                    ? "No manual action is possible (the recorded projects no longer exist)."
+                    : "To restore manually: " + string.Join("; ", recoverable.Select(e =>
+                        $"claude plugin enable {e.Id} --scope {e.Scope}" +
+                        (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})")));
+                return $"{listWarning} Your conflicting plugin(s) are still disabled and were NOT re-enabled. " +
+                       "The record is kept at " + CollisionMarker.PathIn(_stateDir) + ". " + recourse;
             }
 
-            // R2: the user may have uninstalled it themselves after we disabled it. Enabling a
-            // plugin that no longer exists writes a phantom {id:true} (measured: enable succeeds for a
-            // nonexistent id) — check the id is still installed first.
-            if (!present.Any(p => Same(p, e)))
+            var present = ClaudePluginInventory.Matching(entries, MarketplaceId);
+
+            foreach (var e in recorded)
             {
-                warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, so it was not re-enabled.");
-                continue;
+                // Symmetric to Apply's guard: a project deleted AFTER we disabled the copy but BEFORE
+                // uninstall cannot load the plugin (the collision is moot) and `enable` has nowhere valid
+                // to run from. MEASURED: Process.Start with a missing working directory throws
+                // Win32Exception, which ProcessRunner surfaces as a failed run — so without this guard we
+                // would fall through to the failure branch below and print an impossible "run it from
+                // <deleted path>" recourse. The `present` check does NOT catch this: the inventory can
+                // still LIST a stale row for a deleted project (measured).
+                if (e.ProjectPath is not null && !_dirExists(e.ProjectPath))
+                {
+                    warnings.Add($"{e.Id} ({Where(e)}) — its project directory no longer exists, so there was nothing to re-enable.");
+                    continue;
+                }
+
+                // R2: the user may have uninstalled it themselves after we disabled it. Enabling a
+                // plugin that no longer exists writes a phantom {id:true} (measured: enable succeeds for a
+                // nonexistent id) — check the id is still installed first.
+                if (!present.Any(p => Same(p, e)))
+                {
+                    warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, so it was not re-enabled.");
+                    continue;
+                }
+
+                var r = _run("claude", new[] { "plugin", "enable", e.Id, "--scope", e.Scope }, e.ProjectPath);
+                if (r.Code != 0)
+                    warnings.Add($"could not re-enable {e.Id} ({Where(e)}): claude exited {r.Code}. " +
+                                 $"To restore it yourself: claude plugin enable {e.Id} --scope {e.Scope}" +
+                                 (e.ProjectPath is null ? "" : $" (run it from {e.ProjectPath})"));
             }
 
-            var r = _run("claude", new[] { "plugin", "enable", e.Id, "--scope", e.Scope }, e.ProjectPath);
-            if (r.Code != 0)
-                warnings.Add($"could not re-enable {e.Id} ({Where(e)}): claude exited {r.Code}. " +
-                             $"To restore it yourself: claude plugin enable {e.Id} --scope {e.Scope}" +
-                             (e.ProjectPath is null ? "" : $" (run it from {e.ProjectPath})"));
+            // R7: deleting the marker is part of consuming it. Delete even when a restore failed — a
+            // surviving marker would later re-enable a plugin the user had deliberately disabled, which
+            // is the exact outcome R1 exists to prevent. The failure is reported instead.
+            var deleteWarning = CollisionMarker.Delete(_stateDir);
+            if (deleteWarning is not null) warnings.Add(deleteWarning);
+
+            return warnings.Count == 0 ? null : string.Join(" ", warnings);
         }
-
-        // R7: deleting the marker is part of consuming it. Delete even when a restore failed — a
-        // surviving marker would later re-enable a plugin the user had deliberately disabled, which
-        // is the exact outcome R1 exists to prevent. The failure is reported instead.
-        var deleteWarning = CollisionMarker.Delete(_stateDir);
-        if (deleteWarning is not null) warnings.Add(deleteWarning);
-
-        return warnings.Count == 0 ? null : string.Join(" ", warnings);
+        finally
+        {
+            CollisionMarker.SweepBackups(_stateDir);
+        }
     }
 
     /// <summary>Re-read one entry's ACTUAL enabled state from its OWN project directory — the only

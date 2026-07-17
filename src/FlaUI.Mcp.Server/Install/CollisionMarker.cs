@@ -218,4 +218,17 @@ public static class CollisionMarker
             return $"could not remove the plugin-restore marker at {PathIn(stateDir)}: {e.Message}";
         }
     }
+
+    /// <summary>Best-effort delete of THIS marker's own stale .bak-* files in the state dir. Runs on
+    /// every uninstall regardless of the active marker's state. Per-file try/catch so an AV-locked
+    /// backup never fails the uninstall. Never throws.</summary>
+    public static void SweepBackups(string stateDir)
+    {
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(stateDir, FileName + ".bak-*"))
+                try { File.Delete(f); } catch { /* leave a locked backup; never fail uninstall */ }
+        }
+        catch { /* state dir gone or unreadable: nothing to sweep */ }
+    }
 }
