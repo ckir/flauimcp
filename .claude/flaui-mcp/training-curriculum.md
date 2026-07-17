@@ -133,3 +133,45 @@ execute its `steps` with the live MCP server, and capture what you observe.
     Failure-Mode=foregroundGained:false. Recovery=restore if minimized, else launch-fresh for a
     foreground-lock; or NONE if neither reclaims foreground.
 ```
+
+## Input tier — supervised, lease-gated (physical console)
+
+Requires `flaui-mcp unlock --minutes N` (add `--allow-shells` for terminal sinks) with a human present.
+Run only at the physical console — SendInput delivery does not land over RDP.
+
+```yaml
+- id: reactive-editor-input
+  tier: input
+  requires_lease: true
+  destructive: true
+  target_app: notepad
+  framework: WinUI
+  trap_class: reactive-editor
+  steps: |
+    1. Confirm desktop_input_status shows a live lease. Launch Win11 Notepad (desktop_launch_app grants
+       the new window foreground) and act immediately.
+    2. desktop_type a multi-word string into the RichEdit body; desktop_get_text to read it back —
+       observe garble/dropped chars (verify{mismatch:true} soft-fails).
+    3. Recover with desktop_set_value (ValuePattern) or desktop_paste_text (atomic clipboard Ctrl+V);
+       re-read to confirm the text landed clean.
+  observe: |
+    App-Framework=Notepad/WinUI-RichEdit. Trigger=desktop_type into a reactive editor. Failure-Mode=typed
+    text garbled/reordered. Recovery=set_value or paste_text; or NONE if both also garble.
+- id: context-menu-popup-window
+  tier: input
+  requires_lease: true
+  destructive: true
+  target_app: explorer
+  framework: WinUI
+  trap_class: context-menu-popup
+  steps: |
+    1. Confirm a live lease. Open an Explorer folder with at least one file; desktop_focus_window it.
+    2. desktop_click (right button) or desktop_key Shift+F10 on a file to raise its context menu.
+    3. desktop_list_windows — observe the menu appears as its OWN top-level popup window, not a child of
+       Explorer; snapshot/find that popup window to reach "Properties".
+    4. Note: refs from the pre-menu Explorer snapshot do NOT contain the menu items — enumerate the popup.
+  observe: |
+    App-Framework=Explorer/WinUI. Trigger=right-click context menu. Failure-Mode=menu items absent from
+    the host window's tree. Recovery=find the separate top-level popup window and snapshot it; or NONE if
+    the popup cannot be located as a window.
+```
