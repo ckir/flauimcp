@@ -317,4 +317,14 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   encoded in the `TabItem` accessible **Name** as a trailing `". Modified."` (e.g. `"<title>. Modified."`),
   while the tab's child `Text` node carries the clean title. Find unsaved tabs by that Name suffix (or the
   window title's leading `*`) — the child `Text` alone does not reveal dirty state. *(verified live 2026-07-15)*
+- **Find a CLI app in Windows Terminal — tab title is a fast HINT, never a complete filter.** Filter
+  `desktop_list_windows` to `ProcessName == WindowsTerminal` (also flagged by `Hint`), then `desktop_find <wt>
+  controlType:"TabItem"` lists every tab name in ONE cheap call (no full snapshot). An app that SETS its terminal
+  title (agy: a braille spinner + its task) is spotted instantly. BUT a tab named for its bare launcher
+  (`cmd.exe`/`PowerShell`) is NOT proof it's a shell — apps that DON'T set a title hide there (verified live:
+  nano ran in a `PowerShell` tab; a second Gemini/agy ran in a `cmd.exe` tab, while only the first agy titled
+  its tab). So to find a SPECIFIC app that isn't the distinctively-titled one, you MUST `desktop_read_terminal_tab`
+  the generic-titled tabs too — a distinctive tab present does NOT license skipping them. Don't assume the titled
+  tab is active/index 0; `read_terminal_tab` really switches + restores (`restoreConfidence` can drop to
+  `reduced` when switching through a full-screen TUI like nano). *(verified live 2026-07-17)*
 <!-- AUTOTRAIN:GROWTH:END -->
