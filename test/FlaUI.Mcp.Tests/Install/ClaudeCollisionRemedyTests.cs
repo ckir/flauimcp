@@ -390,4 +390,21 @@ public class ClaudeCollisionRemedyTests
         Assert.Equal(new[] { "plugin", "list", "--json" }, list.args);
         Assert.Null(list.cwd);          // enumeration is global; only remediation is CWD-bound
     }
+
+    // Round-2 AB (Critical): when Record RECOVERS from a corrupt marker it returns null (it DID record),
+    // so Apply must still PROMISE the re-enable. The promise is suppressed only on a genuine record
+    // failure — a corrupt-but-recovered marker is not one.
+    [Fact]
+    public void A_corrupt_marker_recovered_during_apply_still_promises_the_re_enable()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), "{ torn half-written");   // a Corrupt marker is present
+
+        var warning = Remedy(cli, s).Apply();
+
+        Assert.NotNull(warning);
+        Assert.Contains("they will be re-enabled if you uninstall", warning);
+        Assert.Equal(new DisabledEntry("flaui-mcp@flaui-mcp", "user", null), Assert.Single(CollisionMarker.Read(s)));
+    }
 }

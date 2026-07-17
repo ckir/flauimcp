@@ -51,41 +51,99 @@ public static class CollisionMarker
         string.Equals(a.Scope, b.Scope, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(a.ProjectPath ?? "", b.ProjectPath ?? "", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Merge these entries in, preserving any already recorded. Recording an entry that is
-    /// already present is a no-op — the FIRST run to transition it owns the record.
-    /// Returns null on success, else the reason: a marker we cannot write means uninstall will never
-    /// restore the user's plugin, so the caller MUST be able to see that this failed.</summary>
+    /// <summary>Size above which a corrupt marker is treated as non-marker garbage and discarded
+    /// (overwritten) rather than backed up. A real marker is a few small JSON objects.</summary>
+    public const long BackupSizeCap = 1024 * 1024;   // 1 MB
+
+    /// <summary>Merge these entries in, preserving any already recorded, and write atomically.
+    /// Returns null on success (INCLUDING recovery from a Corrupt file — it DID record, so the caller's
+    /// re-enable promise must still fire). Returns a non-null reason only when the record did NOT
+    /// happen: a genuine write failure, or a refusal to touch a FutureVersion marker.</summary>
     public static string? Record(string stateDir, IReadOnlyList<DisabledEntry> entries)
     {
+        if (entries is null || entries.Count == 0) return null;   // never write an empty marker (a no-op restore); null-safe to keep the class's "Never throws" contract
+
+        var (state, existing) = ReadState(stateDir);
+        if (state == MarkerState.FutureVersion)
+            return $"the restore record at {PathIn(stateDir)} was written by a newer flaui-mcp and was " +
+                   "left unchanged; this install's disable was NOT recorded. If you did not expect this, " +
+                   $"remove {PathIn(stateDir)}.";
+
         try
         {
-            if (entries.Count == 0) return null;   // never write an empty marker: it would fire a no-op restore
-            var merged = Read(stateDir).ToList();
+            IReadOnlyList<DisabledEntry> baseline;
+            if (state == MarkerState.Corrupt)
+            {
+                BackUpCorrupt(stateDir);                       // best-effort: preserve forensic bytes
+                baseline = System.Array.Empty<DisabledEntry>();
+            }
+            else
+            {
+                baseline = state == MarkerState.Present
+                    ? DedupBySameEntry(existing)
+                    : System.Array.Empty<DisabledEntry>();     // Absent
+            }
+
+            var merged = baseline.ToList();
             foreach (var e in entries)
                 if (!merged.Any(m => SameEntry(m, e))) merged.Add(e);
 
-            var arr = new JsonArray();
-            foreach (var e in merged)
-                arr.Add(new JsonObject
-                {
-                    ["id"] = e.Id,
-                    ["scope"] = e.Scope,
-                    ["projectPath"] = e.ProjectPath,
-                });
-            var root = new JsonObject { ["version"] = 1, ["disabled"] = arr };
-
-            Directory.CreateDirectory(stateDir);
-            File.WriteAllText(PathIn(stateDir), root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            return null;
+            WriteAtomically(stateDir, BuildJson(merged));
+            return null;                                        // recorded (incl. Corrupt recovery)
         }
         catch (Exception e)
         {
-            // NOT swallowed. We have already disabled the user's plugin; if the record of that does
-            // not survive, uninstall can never put it back and they lose it permanently. The caller
-            // turns this into a Warning the user can actually see.
+            // NOT swallowed. We have already disabled the user's plugin; if the record does not survive,
+            // uninstall can never put it back. The caller turns this into a Warning the user can see.
             return $"disabled a conflicting plugin but could NOT record it at {PathIn(stateDir)} ({e.Message}) — " +
                    "uninstalling flaui-mcp will not re-enable it automatically.";
         }
+    }
+
+    private static JsonObject BuildJson(IReadOnlyList<DisabledEntry> entries)
+    {
+        var arr = new JsonArray();
+        foreach (var e in entries)
+            arr.Add(new JsonObject { ["id"] = e.Id, ["scope"] = e.Scope, ["projectPath"] = e.ProjectPath });
+        return new JsonObject { ["version"] = 1, ["disabled"] = arr };
+    }
+
+    // Follows JsoncFile.Save's tmp -> File.Move pattern (the repo's atomic-write convention), but with
+    // NO happy-path backup: the merged marker is a superset of the old, so an atomic replace loses
+    // nothing and leaves no .bak litter in the state dir.
+    private static void WriteAtomically(string stateDir, JsonObject root)
+    {
+        Directory.CreateDirectory(stateDir);
+        var path = PathIn(stateDir);
+        var tmp = path + ".tmp";
+        File.WriteAllText(tmp, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(tmp, path, overwrite: true);   // atomic directory-entry replace on the same volume
+    }
+
+    private static IReadOnlyList<DisabledEntry> DedupBySameEntry(IReadOnlyList<DisabledEntry> entries)
+    {
+        var result = new List<DisabledEntry>();
+        foreach (var e in entries)
+            if (!result.Any(m => SameEntry(m, e))) result.Add(e);   // SameEntry, NOT record .Distinct()
+        return result;
+    }
+
+    // Move a corrupt marker aside to a collision-free .bak so its bytes survive for forensics, unless it
+    // is absurdly large (a sign of non-marker garbage — discarded by the coming overwrite instead).
+    // Best-effort: a backup hiccup must not fail an otherwise-recoverable record.
+    private static void BackUpCorrupt(string stateDir)
+    {
+        try
+        {
+            var path = PathIn(stateDir);
+            if (!File.Exists(path)) return;
+            if (new FileInfo(path).Length > BackupSizeCap) return;   // oversized garbage: leave it, overwrite discards it
+            var stamp = DateTime.UtcNow.ToString("yyyyMMddHHmmssfff");
+            var dest = $"{path}.bak-{stamp}";
+            for (var n = 0; File.Exists(dest); n++) dest = $"{path}.bak-{stamp}-{n}";   // same-ms collision-free
+            File.Move(path, dest);
+        }
+        catch { /* best-effort: a failed backup must not fail a recoverable record */ }
     }
 
     /// <summary>Classify the marker and project its entries. The single source of truth Read, Record,

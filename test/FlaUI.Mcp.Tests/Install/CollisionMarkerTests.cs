@@ -274,4 +274,98 @@ public class CollisionMarkerTests
     public void Read_is_empty_for_a_future_version_marker()
         => Assert.Empty(CollisionMarker.Read(
             WriteMarker("""{ "version": 2, "disabled": [ { "id": "x", "scope": "user" } ] }""")));
+
+    [Fact]
+    public void Record_over_a_corrupt_marker_preserves_the_old_bytes_and_still_records()
+    {
+        var s = TempState();
+        var path = CollisionMarker.PathIn(s);
+        File.WriteAllText(path, "{ torn half-written garbage");   // a Corrupt file
+
+        var warning = CollisionMarker.Record(s, new[] { UserEntry });
+
+        Assert.Null(warning);                                      // recovery succeeded => promise holds
+        Assert.Equal(UserEntry, Assert.Single(CollisionMarker.Read(s)));   // fresh marker written
+        var baks = Directory.GetFiles(s, CollisionMarker.FileName + ".bak-*");
+        Assert.Single(baks);
+        Assert.Equal("{ torn half-written garbage", File.ReadAllText(baks[0]));   // old bytes preserved
+    }
+
+    [Fact]
+    public void Record_refuses_to_touch_a_future_version_marker()
+    {
+        var s = TempState();
+        var path = CollisionMarker.PathIn(s);
+        var future = """{ "version": 2, "disabled": [ { "id": "keep@me", "scope": "user" } ] }""";
+        File.WriteAllText(path, future);
+
+        var warning = CollisionMarker.Record(s, new[] { UserEntry });
+
+        Assert.NotNull(warning);
+        Assert.Contains("newer flaui-mcp", warning);
+        Assert.Equal(future, File.ReadAllText(path));               // byte-for-byte unchanged
+        Assert.Empty(Directory.GetFiles(s, CollisionMarker.FileName + ".bak-*"));
+    }
+
+    [Fact]
+    public void Record_on_the_happy_path_writes_no_backup()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { ProjA });   // Absent -> write
+        CollisionMarker.Record(s, new[] { ProjB });   // Present -> merge, no .bak
+        Assert.Empty(Directory.GetFiles(s, CollisionMarker.FileName + ".bak-*"));
+        Assert.Equal(2, CollisionMarker.Read(s).Count);
+    }
+
+    [Fact]
+    public void Record_discards_an_oversized_corrupt_file_without_a_backup_and_still_records()
+    {
+        var s = TempState();
+        var path = CollisionMarker.PathIn(s);
+        File.WriteAllText(path, new string('x', (int)CollisionMarker.BackupSizeCap + 1));   // > 1 MB garbage
+
+        var warning = CollisionMarker.Record(s, new[] { UserEntry });
+
+        Assert.Null(warning);
+        Assert.Equal(UserEntry, Assert.Single(CollisionMarker.Read(s)));
+        Assert.Empty(Directory.GetFiles(s, CollisionMarker.FileName + ".bak-*"));   // oversized => discarded
+    }
+
+    [Fact]
+    public void Record_dedups_a_case_variant_duplicate_in_a_present_baseline()
+    {
+        var s = TempState();
+        // Hand-write a Present marker with a duplicate that differs only in path casing.
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+        {
+          "version": 1,
+          "disabled": [
+            { "id": "flaui-mcp@flaui-mcp", "scope": "local", "projectPath": "C:\\Proj" },
+            { "id": "flaui-mcp@flaui-mcp", "scope": "local", "projectPath": "c:\\proj" }
+          ]
+        }
+        """);
+
+        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "local", @"C:\other") });
+
+        // baseline deduped to one, plus the new entry = 2 (not 3).
+        Assert.Equal(2, CollisionMarker.Read(s).Count);
+    }
+
+    // Spec goal 3 partial: a torn/interrupted write leaves a `.tmp`; ReadState reads only the `.json`,
+    // so the sibling is ignored and the next Record is unaffected.
+    [Fact]
+    public void A_stale_tmp_sibling_is_ignored_and_does_not_corrupt_the_next_record()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { ProjA });
+        File.WriteAllText(CollisionMarker.PathIn(s) + ".tmp", "{ half-written interrupted garbage");
+
+        var (state, entries) = CollisionMarker.ReadState(s);
+        Assert.Equal(MarkerState.Present, state);
+        Assert.Equal(ProjA, Assert.Single(entries));
+
+        Assert.Null(CollisionMarker.Record(s, new[] { ProjB }));   // next record unaffected
+        Assert.Equal(2, CollisionMarker.Read(s).Count);
+    }
 }
