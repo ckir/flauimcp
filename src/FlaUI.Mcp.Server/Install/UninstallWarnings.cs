@@ -7,7 +7,7 @@ namespace FlaUI.Mcp.Server.Install;
 /// <summary>
 /// Warnings from an uninstall, parked where they outlive the uninstall.
 ///
-/// WHY THIS IS NOT install.log: uninstall deletes the exe (docs/ops-manual.md:45-47), so
+/// WHY THIS IS NOT install.log: uninstall deletes the exe (see docs/operator-manual.md, Uninstall), so
 /// `flaui-mcp status` — the reader for install.log — no longer exists moments later; and
 /// `--purge-data` deletes install.log itself. A warning written there during uninstall is destroyed
 /// at the moment it is written, for exactly the user who needs it.

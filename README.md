@@ -6,328 +6,42 @@
 ![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
 ![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets an AI
-agent — Claude Code, Antigravity (agy), or any MCP client — **control the Windows desktop**:
-enumerate windows, launch applications, focus/close windows, **snapshot a window's UI into
-a ref-tagged accessibility tree**, **screenshot windows or the desktop, read element bounds,
-diff/stat snapshots, and wait for UI conditions**, **act on elements through UI Automation
-patterns** (click, set value, toggle, expand, select, scroll, focus, window min/max), and
-**read and write structured content** (grid/table cells, element text via TextPattern, clipboard)
-— and **drive synthetic mouse/keyboard input** (`SendInput`-backed type/click/drag/key, plus
-`TextPattern` caret/selection), all gated behind a safety foundation (time-lease,
-deny-list, per-window budget, audit, elevation guard). Think "Playwright, but for native Windows
-apps."
+A Model Context Protocol (MCP) server that lets an AI agent control the Windows desktop.
 
-> **This README describes the current state of the project.** For the per-version feature
-> history — what landed when — see [`CHANGELOG.md`](CHANGELOG.md).
+> **⚠️ WARNING:** This software allows an AI agent to drive real Windows input. It can cause data loss, launch arbitrary programs, or damage your machine. Synthetic input is locked by default. There is no sandbox. Read [Architecture and Safety](docs/architecture-and-safety.md) for the full danger model before installing.
 
----
+FlaUI.Mcp translates MCP commands into native UI Automation reads, pattern-based interactions, and synthetic OS-level input. It gives non-deterministic agents supervised access to Windows applications behind strict safety guardrails.
 
-<a id="warning"></a>
+## Quickstart
 
-## ⚠️ WARNING / DISCLAIMER — READ BEFORE INSTALLING
-
-**Installing this software gives an AI agent the ability to operate your computer as if it
-were sitting at the keyboard.** That is the entire point of the tool, and it is also the
-entire risk. Understand the following before you install:
-
-- **It runs with *your* user privileges.** Anything you can do without an admin prompt, the
-  agent can do: launch programs, close windows (losing unsaved work), interact with your
-  files, browser, email, and any open application. There is no built-in sandbox.
-- **An agent can launch arbitrary executables.** The current tool surface already includes
-  "launch this program with these arguments." A confused, jailbroken, or
-  prompt-injected agent could start unwanted software. Treat the agent's permission to use
-  this server as equivalent to giving it a shell.
-- **Prompt injection is a real attack vector.** If the agent reads attacker-controlled
-  content (a web page, a document, an email) that content can attempt to instruct the agent
-  to take desktop actions. The blast radius of a successful injection is your whole desktop
-  session.
-- **Synthetic input is live.** The `SendInput`-backed mouse/keyboard tools are gated behind the
-  time-lease, deny-list, per-window budget, audit, and elevation guard of the safety foundation.
-  A human must explicitly unlock a time-bounded window (`flaui-mcp unlock`)
-  before any input fires. The permission you grant at install (`mcp(flaui-mcp/*)`) covers these
-  tools. **Leases longer than 60 minutes require an explicit risk acknowledgment** — an interactive
-  `'I understand'` prompt, or `--accept-risk` non-interactively — because the server itself provides
-  **no sandboxing**; short leases (≤60 min) are unaffected.
-- **The released binaries are NOT code-signed.** Windows SmartScreen and antivirus software
-  will likely flag the installer and the self-extracting executable. You will have to click
-  through "More info → Run anyway." Verify the published SHA-256 checksums before trusting a
-  download. (Code signing is a planned v2 improvement.)
-- **It cannot drive elevated apps** (UIPI): a normally-launched server cannot send input to
-  applications running as Administrator. This is a Windows security boundary, not a bug.
-- **No warranty.** Per the license, the software is provided "as is," with no warranty and no
-  liability for any damage arising from its use.
-
-**Recommended use:** run it against a machine, VM, or user account where you are comfortable
-with an automated agent taking actions on your behalf, and where you can supervise it. Do not
-install it on a machine holding data you cannot afford to have an agent touch.
-
-By installing, you accept these risks.
-
----
-
-## What it does
-
-FlaUI.Mcp is a stdio MCP server built on [FlaUI](https://github.com/FlaUI/FlaUI) (UI
-Automation / UIA3) and the official MCP C# SDK. It exposes the Windows desktop to an agent as
-MCP tools across five areas: **window management**; **perception** (ref-tagged accessibility-tree
-snapshots, screenshots, find, diff/stat, wait conditions); **pattern-based interaction** (invoke,
-set value, toggle, expand, select, scroll, focus, window transform); **structured content &
-clipboard**; and **lease-gated synthetic mouse/keyboard input** — plus **event streaming** and
-**opaque-app access** (wake + on-box OCR). Every tool returns structured JSON with a uniform error
-envelope, and read-only tools are annotated so clients can auto-approve them while still prompting
-for the mutating ones. All synthetic input sits behind a safety foundation — time-lease, deny-list,
-per-window budget, audit, and elevation guard.
-
-`desktop_list_windows(includeHandles:true)` returns a reusable `wN` handle inline on each window, so
-you can snapshot/find/interact directly, skipping the separate `desktop_open_window` round-trip. It also
-tags Windows Terminal windows with a multiplexer `Hint` flagging that they may host background tabs.
-
-`desktop_read_terminal_tab(window, tabIndex)` reads the scrollback of a program running in a
-**non-active** Windows Terminal tab — a background CLI/agent peer that would otherwise look "headless" —
-selecting the tab, reading its buffer, and restoring the originally-active tab. `desktop_get_text` also
-gained `fromEnd`/`truncatedFrom` to read the tail of a long buffer.
-
-➡ **Full tool tables, the safety model, event streaming, and opaque-app access:
-[docs/features-and-safeguards.md](docs/features-and-safeguards.md).**
-
-### Targeting: `ref` or `selector`
-
-Interaction tools accept either a `ref` from a `desktop_snapshot` **or** a `selector`
-(`{automationId?, name?, nameMatch?, controlType?, scope?, ignoreCase?}`) resolved fresh at action
-time — exactly one of the two, always. A selector with a stable `automationId` survives the
-snapshot churn that would otherwise force a re-`desktop_snapshot`; one with no `automationId` and a
-non-unique `name` still needs a snapshot ref (0 or >1 matches fail closed as `SelectorNoMatch` /
-`AmbiguousMatch`, never a silent guess). Full contract, the `resolvedElement` durability caveat, and
-`ignoreCase` semantics:
-[Targeting: ref or selector](docs/features-and-safeguards.md#targeting-ref-or-selector).
+1. Download `flaui-mcp-setup.exe` from the [latest release](https://github.com/ckir/flauimcp/releases/latest).
+2. Run it. SmartScreen will warn that it is unsigned; choose **More info → Run anyway**. It configures Claude Code and Antigravity automatically.
+3. **Restart your agent** to reload its tool registry.
+4. Ask the agent to do desktop work (e.g., "List my open windows").
 
 ## Documentation
 
-- **[Features & safeguards](docs/features-and-safeguards.md)** — full tool reference, the safety
-  model, ref resolution, event streaming, opaque-app access, and the Appium comparison.
-- **[Ops manual](docs/ops-manual.md)** — manual install, what the installer changes, uninstall,
-  and the full CLI reference.
-- **[Building from source](docs/building.md)** — SDK, test loop, and packaging.
-- **[Contributing](CONTRIBUTING.md)** — setup, the (honest) test loop, and the tool pattern.
-- **[Changelog](CHANGELOG.md)** — per-version feature history.
+- **[Operator Manual](docs/operator-manual.md)** — read this to install via silent one-liner, view CLI commands, manage leases, run read-only mode, audit agents, or uninstall.
+- **[Agent Contract](docs/agent-contract.md)** — read this to look up the `desktop_*` RPC tool catalog, element targeting schemas, and known limitations.
+- **[Architecture and Safety](docs/architecture-and-safety.md)** — read this to understand the safety model, perception safeguards, and the full danger rationale.
+- **[Building from Source](docs/building.md)** — read this to compile the SDK, run the local test loop, and package the executable.
 
 ## Requirements
 
-- **Windows 10/11, x64.** (FlaUI/UIA is Windows-only.)
-- **v0.9.0+ requires Windows 10 build 19041 (version 2004) or later** — the on-box OCR features
-  (`desktop_find_text`/`desktop_wait_for_text`) depend on the WinRT OCR projection, which raised the
-  minimum supported OS build.
-- **No .NET runtime and no build tools required** for the released binaries — they are
-  self-contained, single-file `win-x64` executables.
-- An **interactive desktop session** (the agent drives real windows; it does not work
-  headless).
+- **Windows 10/11, x64.** (Build 19041 / version 2004 or later).
+- **Interactive desktop session.** The agent drives real windows; it cannot run headless.
+- **No .NET runtime required.**
 
-## Installation
-
-The installer drops `flaui-mcp.exe` into `%LOCALAPPDATA%\Programs\FlaUI.Mcp\` and configures
-every agent it can find. No manual config editing is required.
-
-### Option A — Standalone installer (recommended)
-
-1. Download `flaui-mcp-setup.exe` from the [latest release](https://github.com/ckir/flauimcp/releases/latest).
-2. (Optional but recommended) verify its SHA-256 against `SHA256SUMS.txt` from the same release.
-3. Run it. SmartScreen will warn (unsigned) — choose **More info → Run anyway**.
-4. The installer configures Claude Code, Antigravity, and a generic MCP config automatically.
-5. **Restart Antigravity (agy)** if you use it, so it reloads its tool registry.
-
-### Option B — Silent one-liner (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/ckir/flauimcp/master/dist/install.ps1 | iex
-```
-
-This downloads the latest `flaui-mcp-setup.exe` and runs it silently
-(`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`). Pass `-Version vX.Y.Z` to pin a release.
-
-> **Manual install** (the exe is its own installer), **what the installer changes**, and
-> **uninstall** live in the **[Ops manual](docs/ops-manual.md)**.
-
-### Claude Code
-
-The installer does it for you. `flaui-mcp install` registers the MCP server **and** deploys the
-driving skill to `~/.claude/skills/flaui-mcp/`, which Claude Code auto-loads as `flaui-mcp@skills-dir`.
-The skill is versioned with the binary, so it always describes the tools you actually have.
-
-Restart Claude Code after installing — plugins load at session start, so a running session keeps the
-previous skill until it restarts.
-
-**Installed Claude Code after flaui-mcp?** Nothing was deployed then (correctly — there was no client
-to register). Run `flaui-mcp install --agent claude`, and check with `flaui-mcp status`.
-
-**Upgrading from v0.14.x?** If you installed the plugin from the old marketplace, the installer
-disables that copy so two versions of the driving skill cannot both load. It is reversible: uninstall
-re-enables it. `flaui-mcp status` reports what was disabled.
-
-### agy (Antigravity) parity
-
-Running the installer (or `flaui-mcp install --agent all`) also deploys the `driving-flaui-mcp`
-skill to agy (Antigravity) as a static plugin under `%USERPROFILE%\.gemini\config\plugins\flaui-mcp\`.
-Restart agy to load it. Both agents get the same driving skill, versioned with the binary.
-
-## Usage
-
-Once installed and your agent is restarted, just ask the agent to do desktop work — e.g.
-"list my open windows," "launch Notepad," "focus the Calculator window." The agent calls the
-MCP tools documented in **[Features & safeguards](docs/features-and-safeguards.md)**.
-
-The MCP server itself is the bare executable speaking JSON-RPC over stdio (no wrapper script,
-no launch-time download). Running `flaui-mcp` with **no arguments** starts the server;
-running it with a verb (`install`, `uninstall`, `print-config`, `--version`) runs the
-installer instead. See the **[CLI reference](docs/ops-manual.md#cli-reference)**.
-
-## Watching & auditing the agent
-
-Understand what the agent is about to do before it does it:
-
-- **Intent overlay (`--overlay` / `--overlay-ms=N`)** — opt-in visual feedback. When enabled, draws a
-  red rectangle on the target element (or a crosshair at a coordinate pair) for ~500 ms (configurable;
-  `0` disables) **before** each mutative action — so a human watching the screen sees what the agent
-  is about to touch. It is a **visibility aid, not an authorization gate**; the lease/deny-list/read-only-mode
-  safety foundation remains the real gates. Off by default — zero cost when not enabled. To turn it on, add
-  add `--overlay` to the server's launch args — easiest via the built-in toggle: run `flaui-mcp overlay on`
-  (and `flaui-mcp overlay off` to disable), then reconnect your MCP client.
-- **Audible attention cue (`flaui-mcp autosound on|off`)** — opt-in spoken cue (off by default) that
-  names only the target app (leak-safe) when a window needs your attention — i.e. it isn't in the OS
-  foreground. The intent-overlay flash above is **always on** regardless of this setting; `autosound`
-  only adds the spoken line. Toggle with `flaui-mcp autosound on` / `flaui-mcp autosound off`, then
-  reconnect your MCP client (`/mcp`) to apply.
-- **Coarse user-state presence (`desktop_user_state`, `flaui-mcp presence on|off`)** — an opt-in,
-  human-only presence sensor (off by default). The read-only, lease-exempt `desktop_user_state` tool
-  returns `{ enabled, activity: "active"|"nearby"|"away"|null }` — never raw idle time — so the agent
-  can reason about whether a human is even at the keyboard and orchestrate its own escalation; the
-  server does no outbound signaling itself. Enable with `flaui-mcp presence on [--nearby-secs N]
-  [--away-secs N]` (defaults 60/300; `away-secs` must exceed `nearby-secs`), disable with `flaui-mcp
-  presence off`. Coexists with `overlay`/`autosound` via the same non-destructive config merge; both
-  `on` and `off` take effect immediately via a live state file (no `/mcp` reconnect needed for the
-  toggle itself, though the merged launch flags apply on the next reconnect).
-- **Element-identity audit trace** — when a mutative action (via `desktop_type`, `desktop_click`,
-  `desktop_invoke`, etc.) resolves a `selector` target, the input audit line now names the resolved
-  element's stable identity: an allow-listed set of `RuntimeId`, `AutomationId`, `ClassName`,
-  `ControlType`, and bounds ONLY (never `Name`, `Value`, `HelpText`, or any content-bearing property).
-  The trace is strictly omitted when no element resolves (selector targeting failed), so pre-0.10.1 log
-  parsers still read the unchanged window-level audit fields.
-- **Foreground-lock attention handshake.** A background-process server can't always bring a window to
-  the OS foreground (Windows' foreground-lock), so `desktop_type`/`desktop_key` surface that state
-  instead of guessing: when the target isn't foreground, they flash the window and return
-  `targetNotForeground: { targetWindow, currentForeground: { handle, process }, recommendedAction:
-  "call-wait-for-foreground", recovery }` (via the normal response, not an error). `desktop_focus_window`
-  reports the same shape whenever the lock blocks it, alongside its existing `foregroundGained` boolean.
-  `currentForeground` is leak-safe — only the foreground process's name, never its window title, except
-  a `title` for a modal owned by the exact target window. **Recommended pattern:** on either signal,
-  call **`desktop_wait_for_foreground(window)`** (flashes the window, then blocks up to 45s for it to
-  gain foreground) instead of retyping blind — and if it comes back `reason:"timeout"`, call it again
-  rather than yielding your turn, since the server caps each call at 45s. Clicks (`desktop_click`/
-  `desktop_click_at`/`desktop_drag`) are unaffected — a click activates the window, so it's a remedy,
-  not a victim of the lock.
-
-### Known limitations (auditing)
-
-- **Overlay rendering is not CI-verifiable.** The intent overlay's red rectangle is confirmed by a live
-  controller watching the screen; headless and RDP-box test runs (where no GDI overlay is visible) do
-  not validate it — they validate the audit line and the targeting logic instead.
-- **Audit trace is synthetic-input only (for now).** UIA pattern actions (`desktop_invoke`,
-  `desktop_set_value`, `desktop_toggle`, etc.) leave no element-identity audit trace until a future
-  0.10.2 adds audit to the pattern leg.
-- **RuntimeId is per-session.** An element's `RuntimeId` is stable within a session, but not across app
-  restarts — if the app crashes and relaunches, the same logical element gets a new `RuntimeId`.
-- **`overlay`/`autosound` don't coexist on the `claude` target.** Toggling one for Claude Code
-  re-registers the server through the opaque `claude mcp` CLI, which cannot read back the other flag's
-  existing args — so enabling `autosound` there silently drops a previously-enabled `overlay` (and vice
-  versa). The agy and generic MCP targets merge both flags non-destructively; only `claude` has this gap.
-
-## Known limitations
-
-Capability boundaries you'll meet in practice. Each links to the fuller explanation — this
-is just the scannable index. (These are about what the tool **can't reach**; that's distinct from
-the [security warning](#warning) at the top, which is about
-what an agent **can do** to your machine.)
-
-- **Can't drive elevated / Administrator apps.** UIPI blocks a normally-launched server from sending
-  input to higher-integrity windows — a Windows boundary, not a bug. [→ Synthetic input](docs/features-and-safeguards.md#synthetic-input)
-- **No headless operation.** It drives real windows and needs an interactive desktop session.
-  [→ Requirements](#requirements)
-- **Input needs a connected, unlocked session.** `SendInput` can't reach a locked or RDP-disconnected
-  desktop; those calls return `InputDesktopUnavailable`. [→ Synthetic input](docs/features-and-safeguards.md#synthetic-input)
-- **Electron / Chromium apps show one opaque node.** Their accessibility tree is off by default (VS
-  Code, Slack, Discord, Teams); use the coordinate path or `--force-renderer-accessibility`.
-  [→ Electron / Chromium](docs/features-and-safeguards.md#electron--chromium--other-custom-render-apps)
-- **Some editors garble typed text.** The new Win11 Notepad and Chromium editors corrupt `SendInput`
-  at any pacing; prefer `desktop_set_value` where available, else `desktop_paste_text` (its clipboard
-  restore is best-effort, not guaranteed). [→ Synthetic input](docs/features-and-safeguards.md#synthetic-input)
-- **Watch event refs are ephemeral.** An event's `ref` lives in a small bounded per-window pool (64,
-  shared across all event kinds), so a busy `structure_changed` watch can evict older refs before you
-  act on them → `REF_NOT_FOUND`. Re-`desktop_snapshot` for a durable ref. [→ Event streaming](docs/features-and-safeguards.md#event-streaming-desktop_watch)
-- **OCR text targeting needs a Windows OCR language pack.** `desktop_find_text`/`desktop_wait_for_text`
-  return `OcrUnavailable` if none is installed (Settings → Time & Language → Language & region → add
-  a language, ensuring its optional OCR component is installed). [→ Opaque apps: wake + find_text](docs/features-and-safeguards.md#opaque-apps-wake--find_text)
-- **OCR is targeting, not reading.** `desktop_find_text` resolves visible text to click coordinates;
-  it does not summarize or transcribe text back to the agent as data — the model reads that from the
-  screenshot. A fuzzy query can also match inside unrelated body text, so verify each match's
-  `text`/`bounds` before acting on it. [→ Opaque apps: wake + find_text](docs/features-and-safeguards.md#opaque-apps-wake--find_text)
-- **OCR only recognizes installed OCR languages.** `Windows.Media.Ocr` reads only the Windows OCR
-  languages installed on the host; a target window rendering text in a language whose OCR pack isn't
-  installed yields **no matches**, not an error — indistinguishable from "text not present."
-  [→ Opaque apps: wake + find_text](docs/features-and-safeguards.md#opaque-apps-wake--find_text)
-- **The process-coarse deny-list can be punched through by OCR into RDP/Citrix wrappers.** The
-  credential-store deny-list matches by process name; a denied app rendered *inside* a remote-desktop
-  window is invisible to it (the visible process is the RDP/Citrix client, not the remote app), so an
-  OCR capture of that window can still surface and target the remote app's on-screen text.
-  [→ Perception safeguards](docs/features-and-safeguards.md#perception-safeguards-built-in)
-- **An editor's document text body can stay behind a screen-reader gate even when woken.**
-  `desktop_wake_accessibility` hydrates a Chromium/Electron window's *chrome* tree, but some editors
-  keep the actual document text gated separately — if `desktop_snapshot` still shows an empty text
-  body after waking, fall back to `desktop_find_text`. [→ Opaque apps: wake + find_text](docs/features-and-safeguards.md#opaque-apps-wake--find_text)
-- **`desktop_find_text` coordinate mapping is host-limited in CI, not a product limitation.** The
-  screen-px/window-fraction mapping is validated end-to-end on a DPI-aware connected console/server
-  session; the CI xUnit test host runs DPI-virtualized, so the capture-based Desktop test for it is
-  maintainer-run rather than CI-asserted. [→ Building from source](docs/building.md#building-from-source)
-- **Screenshots don't handle occlusion.** A covered window is captured as-is — focus it first.
-  [→ Perception safeguards](docs/features-and-safeguards.md#perception-safeguards-built-in)
-- **Zero-UIA surfaces need the coordinate path.** Games, canvas apps, and Citrix/RDP inners expose no
-  accessibility tree; drive them by coordinate + screenshot. [→ Electron / Chromium](docs/features-and-safeguards.md#electron--chromium--other-custom-render-apps)
-- **Elements with no AutomationId *and* no Name can't be re-resolved after recycling.** On a
-  cache-miss a state-changing action fails `REF_STALE_UNRESOLVABLE` (it never guesses); fall back to
-  `desktop_click_at`. [→ Ref resolution](docs/features-and-safeguards.md#ref-resolution-safe-by-default)
-- **Released binaries are unsigned.** SmartScreen and antivirus will flag them; verify the published
-  SHA-256 checksums. [→ warning](#warning)
-- **It's a guardrail, not a sandbox.** The lease and deny-list constrain an agent driving high-risk
-  sinks, but anything running as your user can act as your user. [→ Synthetic input](docs/features-and-safeguards.md#synthetic-input)
+For full requirement details, see the [Operator Manual](docs/operator-manual.md).
 
 ## Maintainers
 
-When developing inside this repository with the skill installed globally, disable it for
-this repo so the repo's local project-scope `driving-flaui-mcp` skill is the single authority
-(the bundled skill has the same name and would conflict).
-
-Add this to `.claude/settings.local.json`:
-
-```json
-{ "enabledPlugins": { "flaui-mcp@skills-dir": false } }
-```
-
-Equivalently, run `claude plugin disable flaui-mcp@skills-dir --scope local` from the repo root. **Do
-not use `--scope project`** — it writes the git-tracked `.claude/settings.json` and would commit your
-personal disable into the repo for everyone who clones it.
-
-End users never encounter this — they have no project-scope copy of the plugin.
+When developing inside this repository, disable the globally installed skill for this repo so the local `driving-flaui-mcp` skill is the single authority. Add `{ "enabledPlugins": { "flaui-mcp@skills-dir": false } }` to `.claude/settings.local.json`, or run `claude plugin disable flaui-mcp@skills-dir --scope local`.
 
 ## Contributing
 
-Contributions — **especially new MCP tools** — are welcome. The fast path: run
-`./scripts/new-tool.ps1 -Name DesktopFoo` to scaffold a tool + test, fill the stub, and open a PR.
-See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, the (honest) test loop, and the tool pattern.
-
-Heads-up: FlaUI.Mcp is noncommercially licensed and the maintainer sells commercial licenses, so your
-first PR triggers a one-click **CLA** ([CLA.md](CLA.md)).
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, the test loop, and how to add new MCP tools. Note: Your first PR triggers a one-click **[CLA](CLA.md)**.
 
 ## License
 
-[PolyForm Noncommercial License 1.0.0](LICENSE) — © 2026 Costas Kirgoussios. Free for
-noncommercial use (personal, research, education, hobby, nonprofit, government). Commercial
-use requires a separate license.
+[PolyForm Noncommercial License 1.0.0](LICENSE) — © 2026 Costas Kirgoussios. Free for noncommercial use (personal, research, education, hobby, nonprofit, government). Commercial use requires a separate license.
