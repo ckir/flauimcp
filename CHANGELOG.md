@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [0.15.0] - 2026-07-16
+## [0.15.0] - 2026-07-17
 
 ### Added
 - Claude Code now gets the driving skill from the installer, versioned with the binary. It no longer
@@ -16,6 +16,12 @@ All notable changes to this project are documented here. This project adheres to
 - Upgrading from v0.14.x no longer leaves two copies of the driving skill loaded at once. The old
   marketplace copy is disabled (reversibly — uninstall re-enables it) and reported in `status`.
 - A `claude` CLI that hangs can no longer hang Setup: every invocation is now time-bounded.
+- The installer's record of which conflicting plugin it disabled is now crash-safe. An interrupted or
+  corrupted record can no longer silently lose track of a disabled plugin or report success when nothing
+  was recorded: the marker is written atomically, a corrupt one is preserved rather than clobbered, and a
+  record written by a newer flaui-mcp is left untouched. On uninstall the plugin is re-enabled as before,
+  or — if the record is unreadable — you get a warning telling you how to re-enable it by hand instead of
+  a silent no-op. `flaui-mcp status` now surfaces a corrupt or newer-version record instead of hiding it.
 
 ## [0.14.0] - 2026-07-15
 
