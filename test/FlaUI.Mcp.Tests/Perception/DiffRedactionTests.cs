@@ -16,7 +16,7 @@ public class DiffRedactionTests
     private static SnapshotNode N(string @ref, ControlType ct, string aid, string name,
         bool isPassword, bool enabled, params int[] rid)
         => new(@ref, 0, "", ct, aid, name, System.Drawing.Rectangle.Empty,
-               enabled, false, false, isPassword, false, rid, System.Array.Empty<string>(), "");
+               enabled, false, false, false, isPassword, false, rid, System.Array.Empty<string>(), "");
 
     private static SnapshotModel Model(params SnapshotItem[] nodes) => new(nodes);
 

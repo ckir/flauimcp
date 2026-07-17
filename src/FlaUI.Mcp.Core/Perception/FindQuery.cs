@@ -28,7 +28,8 @@ public sealed record FindMatch(
     int[] Bounds,
     bool IsOffscreen,
     bool IsEnabled,
-    bool HasFocus);
+    bool HasFocus,
+    bool IsSelected);
 
 /// <summary>find result: matches capped at max, in tree order; TotalMatches is the full count
 /// (before the cap) so a truncated result is never silently misleading (spec 3.1).</summary>

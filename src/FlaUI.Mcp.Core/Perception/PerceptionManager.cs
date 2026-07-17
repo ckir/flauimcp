@@ -518,6 +518,7 @@ public sealed class PerceptionManager
                 var b = SafeRead(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
                 bool offscreen = SafeRead(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 bool hasFocus = SafeRead(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
+                bool selected = SafeRead(() => el.Patterns.SelectionItem.PatternOrDefault?.IsSelected.ValueOrDefault ?? false, false);
 
                 // Descriptor uses the RAW name - a redacted "[REDACTED]" would break Name-based re-resolution
                 // for a password field. cached: el (like snapshot's Register at SnapshotEngine.cs:87) so the
@@ -530,7 +531,7 @@ public sealed class PerceptionManager
                     SnapshotEngine.NearestAncestorAutomationId(el), System.Array.Empty<int>(), hasFocus);
                 var @ref = _refs.Register(handle.Id, descriptor, cached: el); // ADDITIVE, cached (usable ref)
                 matches.Add(new FindMatch(@ref, aid, name, ctEnum.ToString(),
-                    new[] { b.X, b.Y, b.Width, b.Height }, offscreen, enabled, hasFocus)); // name already redacted
+                    new[] { b.X, b.Y, b.Width, b.Height }, offscreen, enabled, hasFocus, selected)); // name already redacted
             }
             return new FindResult(matches, total, total > max);
         });

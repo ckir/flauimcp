@@ -7,7 +7,6 @@ using Xunit;
 
 namespace FlaUI.Mcp.Tests.Server;
 
-// fix-the-tool: docs/fix-the-tool-backlog/selection-state-unreadable.md
 [Trait("Category", "Desktop")]
 public class SelectionStateTests
 {
@@ -20,7 +19,7 @@ public class SelectionStateTests
     }
 
     [Fact]
-    public async Task Selected_list_item_state_is_not_exposed_by_snapshot_or_find()
+    public async Task Selected_list_item_state_is_exposed_by_snapshot_and_find()
     {
         using var app = new TestAppFixture();
         using var dispatcher = new AutomationDispatcher();
@@ -44,14 +43,10 @@ public class SelectionStateTests
             new FindQuery("ItemA", null, "eq", null, false), max: 20, scopeRef: null);
         var match = Assert.Single(findResult.Matches);
 
-        // KNOWN DEFECT: ItemA IS selected now (SelectionItemPattern.IsSelected == true) but neither read
-        // surfaces it — the snapshot state braces only ever emit {enabled,focusable,focused}, and
-        // FindMatch only carries IsEnabled/HasFocus/IsOffscreen. There is no way to confirm the selection.
-        Assert.Fail("selection-state-unreadable: ItemA was selected via desktop_select, but the snapshot " +
-            $"state braces (line: \"{itemLine.Trim()}\") show no \"selected\" token, and the desktop_find " +
-            $"match (aid={match.AutomationId}, isEnabled={match.IsEnabled}, hasFocus={match.HasFocus}, " +
-            $"isOffscreen={match.IsOffscreen}) has no isSelected field — selection state is unreadable via " +
-            "either tool; correct behavior not asserted yet — see " +
-            "docs/fix-the-tool-backlog/selection-state-unreadable.md");
+        // ItemA IS selected now (SelectionItemPattern.IsSelected == true) and both read surfaces must
+        // confirm it: the snapshot state braces carry a "selected" token, and the FindMatch carries
+        // IsSelected == true.
+        Assert.Contains("selected", itemLine);
+        Assert.True(match.IsSelected);
     }
 }

@@ -19,6 +19,7 @@ public sealed record SnapshotNode(
     bool Enabled,
     bool Focusable,
     bool Focused,
+    bool Selected,
     bool IsPassword,
     bool IsOffscreen,
     IReadOnlyList<int> RuntimeId,
