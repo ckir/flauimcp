@@ -20,7 +20,7 @@ There are two tiers:
 
 ```powershell
 # 1. Headless unit tests — THIS is what CI runs on your PR:
-dotnet test -c Release --filter "Category!=Desktop"
+dotnet test -c Release --filter "Category!=Desktop&Category!=KnownDefect"
 
 # 2. Desktop/UIA tests — you MUST run these locally, on an UNLOCKED, connected session
 #    (CI can't: GitHub-hosted runners have no interactive desktop):
@@ -65,7 +65,7 @@ FlaUI.Mcp tools follow one regular pattern:
    failure. State-changing tools must respect `--read-only-mode`.
 5. **Write the test.** UIA-backed behavior → an `IClassFixture<TestAppFixture>` test with
    `[Trait("Category","Desktop")]`; pure logic → a plain unit test in `test/FlaUI.Mcp.Tests/`.
-6. **Update docs.** Add a row to the README tool table and an entry under `CHANGELOG.md [Unreleased]`.
+6. **Update docs.** Add the tool to `docs/agent-contract.md` (the tool catalog) and an entry under `CHANGELOG.md [Unreleased]`.
 
 ## Opening a PR
 

@@ -66,5 +66,5 @@ Set-Content -Path $classPath -Value $newSrc -NoNewline -Encoding UTF8
 New-Item -ItemType Directory -Force -Path (Split-Path $testPath) | Out-Null
 Set-Content -Path $testPath -Value $test -NoNewline -Encoding UTF8
 Write-Host "Created tool stub $Name ($snake) in $Class and test $testPath."
-Write-Host "Next: fill the stub + Core logic, run headless tests, then Desktop tests on an unlocked session, then update README + CHANGELOG."
+Write-Host "Next: fill the stub + Core logic, run headless tests, then Desktop tests on an unlocked session, then update docs/agent-contract.md + CHANGELOG."
 exit 0
