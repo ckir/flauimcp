@@ -1,6 +1,6 @@
 namespace FlaUI.Mcp.Core.Perception;
 
-public sealed record NodeState(string Name, bool Enabled, bool Focused);
+public sealed record NodeState(string Name, bool Enabled, bool Focused, bool Selected);
 public sealed record DiffDescriptor(string Ref, string ControlType, string AutomationId, string Name);
 public sealed record ChangedEntry(string Ref, NodeState Was, NodeState Now);
 public sealed record SnapshotDiffResult(string BaselineSnapshotId, string CurrentSnapshotId,
@@ -24,7 +24,7 @@ public static class SnapshotDiff
     /// never serialized) so a password node still matches itself across baseline/current.</summary>
     private static string ShownName(SnapshotNode n) => n.IsPassword ? "[REDACTED]" : n.Name;
     private static DiffDescriptor Desc(SnapshotNode n) => new(n.Ref, n.ControlType.ToString(), n.AutomationId, ShownName(n));
-    private static NodeState State(SnapshotNode n) => new(ShownName(n), n.Enabled, n.Focused);
+    private static NodeState State(SnapshotNode n) => new(ShownName(n), n.Enabled, n.Focused, n.Selected);
 
     /// <summary>Slice a cached model down to the subtree rooted at the node matching the scope
     /// descriptor's identity (same IdentityKey as the diff), by pre-order depth walk: the matched
