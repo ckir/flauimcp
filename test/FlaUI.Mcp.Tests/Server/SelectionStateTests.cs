@@ -48,5 +48,13 @@ public class SelectionStateTests
         // IsSelected == true.
         Assert.Contains("selected", itemLine);
         Assert.True(match.IsSelected);
+
+        // And the real desktop_find WIRE response must carry isSelected end-to-end (FindTools projects
+        // FindMatch into its own DTO — the internal field alone is not enough for a driver to read it).
+        var findTools = new FindTools(perception);
+        var findJson = await findTools.DesktopFind(handle.Id, automationId: "ItemA");
+        var compact = findJson.Replace(" ", string.Empty);
+        Assert.Contains("isSelected", findJson);
+        Assert.DoesNotContain("isSelected\":false", compact); // ItemA is selected -> must serialize true
     }
 }
