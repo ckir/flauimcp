@@ -327,4 +327,14 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   the generic-titled tabs too — a distinctive tab present does NOT license skipping them. Don't assume the titled
   tab is active/index 0; `read_terminal_tab` really switches + restores (`restoreConfidence` can drop to
   `reduced` when switching through a full-screen TUI like nano). *(verified live 2026-07-17)*
+- Shell surfaces (Notification Center `Win+N`; Start/Search `Ctrl+Esc` — bare `Win` isn't a valid chord; likely Quick Settings `Win+A`) are NOT in `desktop_list_windows` — open the surface, then `desktop_get_focused_element` returns its hidden handle → snapshot/find/type it; the UIA walk is non-ephemeral; Start's `SearchTextBox` Edit types clean.
+- Win11 modern context menu = one/two empty `PopupHost` top-level windows (no items in UIA) — drive by keyboard (menu has focus: arrows+Enter) or `find_text`+`click_at`; DETECT a menu/popup open via `structure_changed` (poll `drain_events`), NOT `window_opened` (doesn't fire for PopupHost).
+- Read off-screen/virtualized list rows with `desktop_get_grid_cell(row,col)` — a details-view list (`[Grid]`) returns off-screen rows WITHOUT scrolling (snapshot shows only rendered items); the recovery for the off-screen catch-22; out-of-range error reveals dims.
+- Common file dialog ("Save as"/"Open"): the filename box is buried under ~20+ `System.ItemNameDisplay` file-list cells — target it by name `"File name:"` / automationId `1001`; recipe: `set_value` full path → click Save (automationId `"1"`). Modal file dialogs ARE enumerable top-level windows.
+- Rename a file (F2) opens a SEPARATE top-level window (title=filename) hosting the edit — `set_value` its `System.ItemNameDisplay` "Name" Edit → `Enter`. `explorer.exe <folderpath>` spawns a real new window+pid; launching Notepad instead TABS into the existing process (LaunchTimeout, but a same-pid tab-window appears).
+- Explorer address bar reads empty via `get_text` in breadcrumb mode — read the path from the breadcrumb SplitButton segments (lease-exempt), or `Ctrl+L` to morph it to an editable Edit that returns the full path (`Esc` restores).
+- No window move/resize verb — `desktop_focus_window` then `Win+Left`/`Win+Right` tiles to a half, `Win+Up` maximizes.
+- `wake_accessibility` on Chromium (Chrome) hydrates the browser CHROME (tabs/toolbars/buttons) but NOT the page DOM (stays empty Panes) — use `find_text` (OCR) for page content.
+- `desktop_clipboard_get` returns `""` for BOTH empty AND non-text (file/image) clipboards (no format signal); `desktop_paste_text` refuses `ClipboardHoldsNonText` (`forceOverwriteClipboard` to override).
+*(rules above verified live 2026-07-17)*
 <!-- AUTOTRAIN:GROWTH:END -->

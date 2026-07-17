@@ -167,11 +167,15 @@ Run only at the physical console — SendInput delivery does not land over RDP.
   steps: |
     1. Confirm a live lease. Open an Explorer folder with at least one file; desktop_focus_window it.
     2. desktop_click (right button) or desktop_key Shift+F10 on a file to raise its context menu.
-    3. desktop_list_windows — observe the menu appears as its OWN top-level popup window, not a child of
-       Explorer; snapshot/find that popup window to reach "Properties".
-    4. Note: refs from the pre-menu Explorer snapshot do NOT contain the menu items — enumerate the popup.
+    3. desktop_list_windows — observe the menu appears as one or two empty "PopupHost" top-level windows
+       (same process as Explorer) with NO items exposed in UIA (snapshot/find return no menu entries) —
+       do NOT expect to snapshot/find menu items by name.
+    4. Drive by KEYBOARD instead (the menu has focus on open: Down/Up to move, Enter to invoke, or the
+       item's accelerator letter) OR desktop_find_text (OCR) + desktop_click_at on the rendered item, to
+       reach "Properties".
   observe: |
-    App-Framework=Explorer/WinUI. Trigger=right-click context menu. Failure-Mode=menu items absent from
-    the host window's tree. Recovery=find the separate top-level popup window and snapshot it; or NONE if
-    the popup cannot be located as a window.
+    App-Framework=Explorer/WinUI. Trigger=right-click context menu. Failure-Mode=the popup's UIA tree is
+    a single empty Pane — menu items are absent from BOTH the host window's tree and the popup's own
+    tree. Recovery=keyboard navigation (menu already has focus) or find_text+click_at (OCR); or NONE if
+    neither reaches the target item.
 ```
