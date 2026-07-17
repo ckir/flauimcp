@@ -161,7 +161,16 @@ public sealed class ClaudeCollisionRemedy
                        "conflicting plugin(s) we disabled may still be disabled and could not be re-enabled " +
                        "automatically. To check: run `claude plugin list`, and re-enable " +
                        $"{MarketplaceId} wherever it is disabled.";
-            if (recorded.Count == 0) return null;   // Present, but every entry was dropped as malformed
+            if (recorded.Count == 0)
+            {
+                // Present, but every entry was dropped as malformed (only reachable via an external edit —
+                // Record never writes such a marker). Nothing to restore, and it is useless litter that
+                // would survive every future uninstall, so consume it. REPORT a Delete failure (e.g. a
+                // transient lock) rather than swallowing it — same convention as the R7 consume below, so
+                // the failure reaches the install log instead of vanishing. (SweepBackups in finally only
+                // touches .bak-*/.tmp, never the marker itself, so it is NOT a net for this delete.)
+                return CollisionMarker.Delete(_stateDir);   // null on success; the failure reason otherwise
+            }
 
             var warnings = new List<string>();
 

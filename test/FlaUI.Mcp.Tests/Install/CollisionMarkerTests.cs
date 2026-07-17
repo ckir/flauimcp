@@ -368,4 +368,21 @@ public class CollisionMarkerTests
         Assert.Null(CollisionMarker.Record(s, new[] { ProjB }));   // next record unaffected
         Assert.Equal(2, CollisionMarker.Read(s).Count);
     }
+
+    [Fact]
+    public void SweepBackups_removes_bak_and_orphaned_tmp_sidecars_but_keeps_the_live_marker()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { ProjA });                 // a live marker exists
+        var bak = CollisionMarker.PathIn(s) + ".bak-20200101000000";
+        var tmp = CollisionMarker.PathIn(s) + ".tmp";
+        File.WriteAllText(bak, "old");
+        File.WriteAllText(tmp, "{ half-written");
+
+        CollisionMarker.SweepBackups(s);
+
+        Assert.False(File.Exists(bak), "stale .bak-* must be swept");
+        Assert.False(File.Exists(tmp), "orphaned .tmp must be swept");
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)), "the live marker must NOT be swept");
+    }
 }

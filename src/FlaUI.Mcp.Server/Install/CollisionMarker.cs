@@ -189,6 +189,12 @@ public static class CollisionMarker
             }
             return (MarkerState.Present, list);
         }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // The file (or its directory) vanished AFTER the File.Exists check — a concurrent run deleted
+            // it. That is "absent" (nothing to restore), not "corrupt" (an unreadable record).
+            return (MarkerState.Absent, empty);
+        }
         catch { return (MarkerState.Corrupt, empty); }
     }
 
@@ -219,15 +225,22 @@ public static class CollisionMarker
         }
     }
 
-    /// <summary>Best-effort delete of THIS marker's own stale .bak-* files in the state dir. Runs on
-    /// every uninstall regardless of the active marker's state. Per-file try/catch so an AV-locked
-    /// backup never fails the uninstall. Never throws.</summary>
+    /// <summary>Best-effort cleanup of THIS marker's own stale sidecar files in the state dir: the
+    /// <c>.bak-*</c> forensic copies <see cref="BackUpCorrupt"/> leaves behind, AND any orphaned
+    /// <c>.tmp</c> from an interrupted atomic write. Runs on every uninstall regardless of the active
+    /// marker's state. Per-file try/catch so an AV-locked file never fails the uninstall. Never throws.
+    /// NOTE: sweeping the <c>.bak-*</c> intentionally trades away its forensic value — BackUpCorrupt
+    /// preserves a corrupt marker's bytes, but Record reports success silently, so those bytes are rarely
+    /// inspected before this removes them — in exchange for not leaving litter in the state dir.</summary>
     public static void SweepBackups(string stateDir)
     {
         try
         {
             foreach (var f in Directory.EnumerateFiles(stateDir, FileName + ".bak-*"))
                 try { File.Delete(f); } catch { /* leave a locked backup; never fail uninstall */ }
+            // The interrupted-write temp is a single known name (WriteAtomically uses path + ".tmp"), so
+            // delete it directly rather than via a 3-char-extension glob that could 8.3-match a ".tmpX".
+            try { File.Delete(PathIn(stateDir) + ".tmp"); } catch { /* absent or locked: ignore */ }
         }
         catch { /* state dir gone or unreadable: nothing to sweep */ }
     }

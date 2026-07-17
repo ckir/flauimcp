@@ -381,4 +381,20 @@ public class ClaudeCollisionRestoreTests
         Assert.DoesNotContain(calls, c => c[1] == "enable");   // the invariant: never re-enable what we did not disable
         Assert.Empty(CollisionMarker.Read(s));                 // and nothing was recorded to restore
     }
+
+    [Fact]
+    public void A_present_marker_with_only_malformed_entries_is_consumed_and_returns_null()
+    {
+        var cli = new FakeCli();
+        var s = TempState();
+        // A structurally valid v1 marker whose only entry is malformed (id is a number) -> ReadState
+        // classifies it Present with zero usable entries. Nothing to restore; it must not survive uninstall.
+        File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 1, "disabled": [ { "id": 1 } ] }""");
+
+        var warning = new ClaudeCollisionRemedy(cli.Run, s).Restore();
+
+        Assert.Null(warning);
+        Assert.Empty(cli.Calls);
+        Assert.False(File.Exists(CollisionMarker.PathIn(s)), "an all-malformed marker should be consumed, not left forever");
+    }
 }

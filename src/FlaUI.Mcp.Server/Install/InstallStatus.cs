@@ -64,23 +64,34 @@ public static class InstallStatus
     private static string? DescribeCollisions(string stateDir)
     {
         var (state, recorded) = CollisionMarker.ReadState(stateDir);
-        switch (state)
+        var path = CollisionMarker.PathIn(stateDir);
+        // The path is named for parity with the sibling Record/Restore messages, so a user can locate or
+        // remove the file. The `_` arm keeps this SAFE for any future/unknown MarkerState — it says nothing
+        // rather than mislabelling it as Present, which the previous `default: // Present` would have done.
+        // (A compile-time guard on a new member isn't possible here: an arm-less enum switch expression warns
+        // CS8524 over the unnamed-value domain, which the repo's 0-warnings gate forbids.)
+        return state switch
         {
-            case MarkerState.Absent:
-                return null;
-            case MarkerState.Corrupt:
-                return "Conflicting-plugin record: a restore record exists but is unreadable — re-enable " +
-                       $"{ClaudeCollisionRemedy.MarketplaceId} manually if a driving-skill copy is still disabled.";
-            case MarkerState.FutureVersion:
-                return "Conflicting-plugin record: a restore record written by a newer flaui-mcp is present.";
-            default:   // Present
-                if (recorded.Count == 0) return null;
-                var sb = new StringBuilder();
-                sb.AppendLine("Conflicting plugins we disabled (they will be re-enabled if you uninstall flaui-mcp):");
-                foreach (var e in recorded)
-                    sb.AppendLine($"  {e.Id} — scope {e.Scope}{(e.ProjectPath is null ? "" : $" in {e.ProjectPath}")}");
-                return sb.ToString().TrimEnd();
-        }
+            MarkerState.Absent => null,
+            MarkerState.Corrupt =>
+                $"Conflicting-plugin record: the restore record at {path} exists but is unreadable — re-enable " +
+                $"{ClaudeCollisionRemedy.MarketplaceId} manually if a driving-skill copy is still disabled.",
+            MarkerState.FutureVersion =>
+                $"Conflicting-plugin record: a restore record written by a newer flaui-mcp is present at {path}.",
+            MarkerState.Present => FormatPresentCollisions(recorded),
+            _ => null,
+        };
+    }
+
+    /// <summary>The Present-state collision listing — byte-identical to the pre-switch-expression output.</summary>
+    private static string? FormatPresentCollisions(IReadOnlyList<DisabledEntry> recorded)
+    {
+        if (recorded.Count == 0) return null;
+        var sb = new StringBuilder();
+        sb.AppendLine("Conflicting plugins we disabled (they will be re-enabled if you uninstall flaui-mcp):");
+        foreach (var e in recorded)
+            sb.AppendLine($"  {e.Id} — scope {e.Scope}{(e.ProjectPath is null ? "" : $" in {e.ProjectPath}")}");
+        return sb.ToString().TrimEnd();
     }
 
     private static string DescribeSeed(string pluginRoot)

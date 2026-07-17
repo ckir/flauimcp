@@ -144,4 +144,19 @@ public class InstallStatusTests
         Assert.DoesNotContain("Conflicting", s);
         Assert.DoesNotContain("unreadable", s);
     }
+
+    [Fact]
+    public void Status_corrupt_and_future_messages_name_the_marker_path()
+    {
+        var (plugins, dataDir, claude, state) = TempPaths();
+        Directory.CreateDirectory(state);
+
+        File.WriteAllText(CollisionMarker.PathIn(state), "{ torn");
+        var corrupt = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        Assert.Contains(CollisionMarker.PathIn(state), corrupt);
+
+        File.WriteAllText(CollisionMarker.PathIn(state), """{ "version": 2, "disabled": [] }""");
+        var future = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        Assert.Contains(CollisionMarker.PathIn(state), future);
+    }
 }
