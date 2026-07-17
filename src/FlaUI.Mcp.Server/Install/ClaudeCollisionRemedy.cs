@@ -214,7 +214,7 @@ public sealed class ClaudeCollisionRemedy
 
                 var r = _run("claude", new[] { "plugin", "enable", e.Id, "--scope", e.Scope }, e.ProjectPath);
                 if (r.Code != 0)
-                    warnings.Add($"could not re-enable {e.Id} ({Where(e)}): claude exited {r.Code}. " +
+                    warnings.Add($"could not re-enable {e.Id} ({Where(e)}): claude {DescribeExit(r.Code)}. " +
                                  $"To restore it yourself: claude plugin enable {e.Id} --scope {e.Scope}" +
                                  (e.ProjectPath is null ? "" : $" (run it from {e.ProjectPath})"));
             }
@@ -287,4 +287,13 @@ public sealed class ClaudeCollisionRemedy
         CollisionMarker.SameEntry(new DisabledEntry(p.Id, p.Scope, p.ProjectPath), e);
 
     private static string Where(DisabledEntry e) => e.ProjectPath is null ? $"scope {e.Scope}" : $"scope {e.Scope} in {e.ProjectPath}";
+
+    // The internal -1/-2 sentinels (ProcessRunner.NotFound/TimedOut) are NOT OS exit codes; translate
+    // them to plain words rather than leak them to a human, matching TryReadInventory's mapping.
+    private static string DescribeExit(int code) => code switch
+    {
+        ProcessRunner.NotFound => "could not be run",
+        ProcessRunner.TimedOut => "timed out",
+        _ => $"exited {code}",
+    };
 }

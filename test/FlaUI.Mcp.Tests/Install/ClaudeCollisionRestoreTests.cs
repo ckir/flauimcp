@@ -320,6 +320,42 @@ public class ClaudeCollisionRestoreTests
         Assert.False(File.Exists(stale), $"the stale .bak must be swept on the '{kind}' branch");
     }
 
+    [Fact]
+    public void A_timed_out_re_enable_is_reported_as_timed_out_not_minus_two()
+    {
+        var cli = new FakeCli
+        {
+            ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": false } ]""",
+            EnableCode = ProcessRunner.TimedOut,
+        };
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) });
+
+        var warning = new ClaudeCollisionRemedy(cli.Run, s).Restore();
+
+        Assert.NotNull(warning);
+        Assert.Contains("timed out", warning);
+        Assert.DoesNotContain("-2", warning);
+    }
+
+    [Fact]
+    public void A_not_found_re_enable_is_reported_as_could_not_be_run_not_minus_one()
+    {
+        var cli = new FakeCli
+        {
+            ListJson = """[ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "enabled": false } ]""",
+            EnableCode = ProcessRunner.NotFound,
+        };
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) });
+
+        var warning = new ClaudeCollisionRemedy(cli.Run, s).Restore();
+
+        Assert.NotNull(warning);
+        Assert.Contains("could not be run", warning);
+        Assert.DoesNotContain("-1", warning);
+    }
+
     // And the inverse property: what we never disabled, we never enable.
     [Fact]
     public void A_plugin_the_user_disabled_is_still_disabled_after_install_then_uninstall()
