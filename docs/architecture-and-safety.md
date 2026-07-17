@@ -16,11 +16,11 @@ Only the `SendInput`-backed synthetic-input tools require a human-granted lease 
 **Axis 2: The Destructive Flag (Read-Only Mode)**
 Any state-changing tool is blocked when the server runs in `--read-only-mode`. This is a separate axis from the lease.
 
-The two axes are independent. A tool can be destructive but lease-exempt (e.g. `desktop_set_caret`, `desktop_select_text_range`, `desktop_read_terminal_tab` change state and need no lease, but are still blocked in `--read-only-mode`). Unattended-safe operation requires tools that are both lease-exempt and non-destructive (the pure read tools).
+The two axes are independent. A tool can be destructive but lease-exempt (e.g. `desktop_set_caret`, `desktop_select_text_range`, `desktop_read_terminal_tab` change state and need no lease, but are still blocked in `--read-only-mode`). Unattended-safe operation requires tools that are both lease-exempt and non-destructive (the pure read tools). See the [Agent Contract](agent-contract.md) for each tool's axis.
 
 ## Why synthetic input needs a lease
 
-Synthetic input (`SendInput`) drives the desktop exactly as a physical keyboard or mouse does. It bypasses application-level API isolation and can drive high-risk sinks like credential dialogs, run prompts, and shells. The time-lease acts as a dead-man's switch. It ensures synthetic input only fires while a human is present, actively supervising, and has explicitly authorized the time window. The agent cannot grant or extend its own lease.
+Synthetic input (`SendInput`) drives the desktop exactly as a physical keyboard or mouse does. It bypasses application-level API isolation and can drive high-risk sinks like credential dialogs, run prompts, and shells. The time-lease acts as a dead-man's switch. It ensures synthetic input only fires while a human is present, actively supervising, and has explicitly authorized the time window. The agent cannot grant or extend its own lease; a human grants it out-of-band via the [Operator Manual](operator-manual.md).
 
 ## Read-only mode rationale
 

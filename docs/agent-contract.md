@@ -127,7 +127,7 @@ Event payload shape:
 
 - Cannot drive elevated/Administrator apps (UIPI boundary blocks input).
 - Input needs a connected, interactive, and unlocked desktop session (`InputDesktopUnavailable`).
-- Reactive editors (Win11 Notepad, Monaco) garble `desktop_type` keystrokes. Prefer `desktop_set_value` or `desktop_paste_text`.
+- Reactive editors (Win11 Notepad, Chromium editors) garble `desktop_type` keystrokes. Prefer `desktop_set_value` or `desktop_paste_text`.
 - Screenshots do not handle occlusion; target windows must be focused to guarantee full visibility.
-- Credential stores (e.g. 1Password) deny snapshot and grid cell reads.
+- Credential stores (matched by process name) deny snapshot and grid cell reads.
 - Elements with no `AutomationId` and no `Name` cannot be re-resolved after recycling. Fall back to `desktop_click_at`.
