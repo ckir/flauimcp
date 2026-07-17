@@ -29,8 +29,10 @@ mutual corrections recorded in §8).
 Synthetic input (type/click/keys) needs a human lease + the physical console; read-only inspection needs
 neither. The suite mirrors that safety split:
 
-- **Autonomous read-only tier** — `desktop_list_windows` / `snapshot` / `find` / `get_text` /
-  `wake_accessibility` / `watch`. Lease-exempt, **non-disruptive**, runs **unattended, anytime**.
+- **Autonomous lease-exempt tier** (`tier: lease-exempt` — read-only inspection) — `desktop_list_windows`
+  / `snapshot` / `find` / `get_text` / `wake_accessibility` / `watch`. Needs no unlock, **non-disruptive**,
+  runs **unattended, anytime** (a task in this tier is fully unattended only when it is also
+  `destructive:false`; see the frontmatter note in §3).
   *(Solo-panel correction: `desktop_read_terminal_tab` is lease-exempt too but is **Destructive** — it
   visibly switches tabs and is blocked in `--read-only-mode` — so it is NOT unattended-safe. Treat it as a
   supervised / solo-console read: check `desktop_user_state` first and don't flip a present human's tabs.)* agy's driving bottleneck is human latency, so **this tier is maximized**: the bulk of
@@ -46,7 +48,7 @@ driver's own context (this design's session hit ~80% from exactly that). So **ea
 a FRESH SUBAGENT**: the subagent does the bulky driving — every snapshot/tree/buffer stays in *its* context
 — and returns ONLY the compact 4-field observation (§5) to the main thread, which stays lean across the
 whole run. Corollaries: run a **bounded batch per session** (the curriculum drains monotonically, like the
-inbox); the read-only tier's large snapshots especially belong in subagents.
+inbox); the lease-exempt tier's large snapshots especially belong in subagents.
 
 ## 3. Artifact — a curated markdown curriculum, NOT a harness
 
@@ -60,8 +62,13 @@ report. Tool-**code** correctness is tested elsewhere (§7), not here.
 
 ```yaml
 - id: <kebab-slug>
-  tier: read-only | input          # read-only runs unattended; input needs a lease
+  tier: lease-exempt | input       # lease axis: lease-exempt = no unlock; input = needs a lease
   requires_lease: false | true     # true => also note --allow-shells if a terminal sink
+  destructive: false | true        # true if it calls a Destructive tool (blocked in --read-only-mode).
+                                    #   lease-exempt + destructive:true = SUPERVISED (needs no unlock, but
+                                    #   read_terminal_tab/scroll/scroll_into_view/select/focus_window are
+                                    #   Destructive): check desktop_user_state, not fully unattended. See §2.
+                                    #   Unattended filter = tier==lease-exempt AND destructive==false.
   target_app: <notepad | explorer | settings | chrome | terminal | ...>
   framework: Win32 | WinUI | WPF | Electron/Chromium | Terminal | Unknown
   trap_class: <one of §4>
@@ -160,7 +167,7 @@ capacity-recovery path and the plan states it explicitly.
 
 ## 9. v1 scope & first step
 
-Draft `training-curriculum.md` with **~3–5 read-only tasks + ~2 lease-gated input tasks** targeting the
+Draft `training-curriculum.md` with **~3–5 lease-exempt tasks + ~2 lease-gated input tasks** targeting the
 traps above (virtualized list, context-menu popup, opaque wake, terminal tab-find, reactive-editor input,
 focus-steal). **Run it once manually**, capture structured observations, let `flaui-curate` fold/route
 them — *then* decide whether any thin dispatch helper is worth adding. No automation until the raw
