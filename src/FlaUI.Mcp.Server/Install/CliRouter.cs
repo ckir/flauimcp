@@ -335,6 +335,16 @@ public static class CliRouter
                 ? new RunResult(0, $"[{{\"id\":\"{collision}\",\"scope\":\"user\",\"enabled\":true}}]")
                 : new RunResult(0, "");
 
+        // Test seam: simulate Claude Code PRESENT with NO colliding plugin — every command succeeds
+        // (exit 0) and `plugin list --json` reports an empty array. This lets the skill-deploy path run on
+        // a host WITHOUT the real CLI (e.g. a headless CI runner); without it, a skill-deploy test would
+        // silently depend on `claude` being on the runner's PATH. Both seams above are checked BEFORE
+        // this one, so a test can still force "absent" (MISSING wins) or a specific collision (COLLISION wins).
+        if (Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_PRESENT") == "1")
+            return (_, args, _) => args.Contains("list")
+                ? new RunResult(0, "[]")
+                : new RunResult(0, "");
+
         return (file, args, cwd) =>
         {
             var timeout = BudgetedTimeout(budget, elapsed());

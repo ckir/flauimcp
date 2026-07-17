@@ -18,7 +18,7 @@ namespace FlaUI.Mcp.Tests.Install;
 public class CliRouterClaudeSkillTests : IDisposable
 {
     private static readonly string[] Vars =
-        { "FLAUI_MCP_DATA_DIR", "FLAUI_MCP_STATE_DIR", "FLAUI_MCP_CLAUDE_CONFIG_DIR", "FLAUI_MCP_AGY_PLUGINS_DIR", "CLAUDE_CONFIG_DIR" };
+        { "FLAUI_MCP_DATA_DIR", "FLAUI_MCP_STATE_DIR", "FLAUI_MCP_CLAUDE_CONFIG_DIR", "FLAUI_MCP_AGY_PLUGINS_DIR", "CLAUDE_CONFIG_DIR", "FLAUI_MCP_FAKE_CLAUDE_PRESENT" };
 
     private readonly string _root;
     private readonly Dictionary<string, string?> _saved = new();
@@ -34,6 +34,11 @@ public class CliRouterClaudeSkillTests : IDisposable
         Environment.SetEnvironmentVariable("FLAUI_MCP_CLAUDE_CONFIG_DIR", Path.Combine(_root, "claude"));
         Environment.SetEnvironmentVariable("FLAUI_MCP_AGY_PLUGINS_DIR", Path.Combine(_root, "agy"));
         Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", null);   // our override must be what wins
+        // Deterministic Claude presence: the skill-deploy path is gated on Claude being detected, so
+        // without this the deploy tests would silently depend on the real `claude` being on the host's
+        // PATH (green on a dev box, red on a headless CI runner). A test forces "absent" via
+        // FLAUI_MCP_FAKE_CLAUDE_MISSING, which ClaudeRunner checks first and so still wins.
+        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_PRESENT", "1");
     }
 
     public void Dispose()
