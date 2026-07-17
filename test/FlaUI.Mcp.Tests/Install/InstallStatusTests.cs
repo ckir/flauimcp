@@ -96,4 +96,52 @@ public class InstallStatusTests
         var json = System.Text.Json.Nodes.JsonNode.Parse(sb.ToString());   // throws if we polluted it
         Assert.NotNull(json?["mcpServers"]);
     }
+
+    [Fact]
+    public void Status_surfaces_a_corrupt_collision_record_instead_of_masking_it()
+    {
+        var (plugins, dataDir, claude, state) = TempPaths();
+        Directory.CreateDirectory(state);
+        File.WriteAllText(CollisionMarker.PathIn(state), "{ torn half-written");
+
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+
+        Assert.Contains("unreadable", s);
+    }
+
+    [Fact]
+    public void Status_surfaces_a_future_version_collision_record()
+    {
+        var (plugins, dataDir, claude, state) = TempPaths();
+        Directory.CreateDirectory(state);
+        File.WriteAllText(CollisionMarker.PathIn(state), """{ "version": 2, "disabled": [] }""");
+
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+
+        Assert.Contains("newer flaui-mcp", s);
+    }
+
+    [Fact]
+    public void Status_lists_a_present_collision_record_with_the_exact_existing_wording()
+    {
+        var (plugins, dataDir, claude, state) = TempPaths();
+        CollisionMarker.Record(state, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) });
+
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+
+        // Byte-identical to today's output (round-4 Regression): header + entry line unchanged.
+        Assert.Contains("Conflicting plugins we disabled (they will be re-enabled if you uninstall flaui-mcp):", s);
+        Assert.Contains("  flaui-mcp@flaui-mcp — scope user", s);
+    }
+
+    [Fact]
+    public void Status_says_nothing_about_collisions_when_the_record_is_absent()
+    {
+        var (plugins, dataDir, claude, state) = TempPaths();
+
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+
+        Assert.DoesNotContain("Conflicting", s);
+        Assert.DoesNotContain("unreadable", s);
+    }
 }

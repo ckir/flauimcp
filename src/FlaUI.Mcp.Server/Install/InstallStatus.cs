@@ -59,17 +59,28 @@ public static class InstallStatus
     }
 
     /// <summary>The R5 channel: a plugin we disabled on the user's behalf is otherwise invisible —
-    /// Setup ran hidden, so this is where they can find out.</summary>
+    /// Setup ran hidden, so this is where they can find out. A corrupt or future-version record is
+    /// surfaced rather than masked as "nothing disabled" (goal 7).</summary>
     private static string? DescribeCollisions(string stateDir)
     {
-        var recorded = CollisionMarker.Read(stateDir);
-        if (recorded.Count == 0) return null;
-
-        var sb = new StringBuilder();
-        sb.AppendLine("Conflicting plugins we disabled (they will be re-enabled if you uninstall flaui-mcp):");
-        foreach (var e in recorded)
-            sb.AppendLine($"  {e.Id} — scope {e.Scope}{(e.ProjectPath is null ? "" : $" in {e.ProjectPath}")}");
-        return sb.ToString().TrimEnd();
+        var (state, recorded) = CollisionMarker.ReadState(stateDir);
+        switch (state)
+        {
+            case MarkerState.Absent:
+                return null;
+            case MarkerState.Corrupt:
+                return "Conflicting-plugin record: a restore record exists but is unreadable — re-enable " +
+                       $"{ClaudeCollisionRemedy.MarketplaceId} manually if a driving-skill copy is still disabled.";
+            case MarkerState.FutureVersion:
+                return "Conflicting-plugin record: a restore record written by a newer flaui-mcp is present.";
+            default:   // Present
+                if (recorded.Count == 0) return null;
+                var sb = new StringBuilder();
+                sb.AppendLine("Conflicting plugins we disabled (they will be re-enabled if you uninstall flaui-mcp):");
+                foreach (var e in recorded)
+                    sb.AppendLine($"  {e.Id} — scope {e.Scope}{(e.ProjectPath is null ? "" : $" in {e.ProjectPath}")}");
+                return sb.ToString().TrimEnd();
+        }
     }
 
     private static string DescribeSeed(string pluginRoot)
