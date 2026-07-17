@@ -59,14 +59,14 @@ public sealed class PerceptionManager
     /// on the action STA against window+popup roots built by that STA's own automation — no query-STA
     /// COM object crosses apartments. An offscreen target is rejected before acting (offscreen Invoke
     /// can hang). On modal block past timeoutMs the call surfaces ACTION_BLOCKED_PENDING.</summary>
-    public Task<T> RunOnRefActionAsync<T>(WindowHandle handle, string @ref, Func<AutomationElement, T> func, int timeoutMs)
+    public Task<T> RunOnRefActionAsync<T>(WindowHandle handle, string @ref, Func<AutomationElement, T> func, int timeoutMs, bool skipOffscreenGuard = false)
     {
         var descriptor = _refs.Lookup(handle.Id, @ref).Descriptor; // REF_NOT_FOUND if absent (cheap, off-STA)
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
             var roots = PopupFinder.SearchRoots(win, desktop);
             var el = _refs.ResolveDescriptor(descriptor, roots, @ref, WriteMode); // INV-8 (break-glass: FLAUI_MCP_REF_STRICT=off)
-            if (el.Properties.IsOffscreen.ValueOrDefault)
+            if (!skipOffscreenGuard && el.Properties.IsOffscreen.ValueOrDefault)
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
             return func(el);
@@ -222,7 +222,7 @@ public sealed class PerceptionManager
     /// sibling's — the only difference is resolution is a fresh bounded walk (no prior descriptor to be
     /// stale against) and the mint is descriptor-only.</summary>
     public Task<(T Value, string ResolvedRef)> RunOnSelectorActionAsync<T>(WindowHandle handle, Selector sel,
-        Func<AutomationElement, T> func, int timeoutMs)
+        Func<AutomationElement, T> func, int timeoutMs, bool skipOffscreenGuard = false)
     {
         var scopeDescriptor = string.IsNullOrEmpty(sel.Scope) ? null : _refs.Lookup(handle.Id, sel.Scope!).Descriptor;
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
@@ -232,7 +232,7 @@ public sealed class PerceptionManager
                 ? win
                 : _refs.ResolveDescriptor(scopeDescriptor, roots, sel.Scope!, WriteMode);
             var (el, r) = ResolveSelectorOnSta(handle.Id, root, sel);
-            if (el.Properties.IsOffscreen.ValueOrDefault)
+            if (!skipOffscreenGuard && el.Properties.IsOffscreen.ValueOrDefault)
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
             return (func(el), r);

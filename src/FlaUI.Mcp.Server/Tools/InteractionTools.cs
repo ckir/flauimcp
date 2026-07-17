@@ -22,7 +22,7 @@ public sealed class InteractionTools
     { _perception = perception; _windows = windows; _options = options; _overlay = overlay ?? NullActionOverlay.Instance; }
 
     private Task<string> Act(string window, string? @ref, Selector? selector,
-        Action<FlaUI.Core.AutomationElements.AutomationElement> act, int timeoutMs)
+        Action<FlaUI.Core.AutomationElements.AutomationElement> act, int timeoutMs, bool skipOffscreenGuard = false)
         => ToolResponse.GuardWrite(_options, async () =>
         {
             SelectorGating.RequireExactlyOne(@ref, selector);
@@ -38,7 +38,7 @@ public sealed class InteractionTools
                     await _overlay.PreviewAsync(rect);
                 }
                 var (_, resolved) = await _perception.RunOnSelectorActionAsync(
-                    handle, sel, el => { act(el); return true; }, timeoutMs);
+                    handle, sel, el => { act(el); return true; }, timeoutMs, skipOffscreenGuard);
                 return ToolResponse.Ok(new { ok = true, pathUsed = "pattern", resolvedElement = resolved });
             }
             if (_overlay.Enabled)
@@ -46,7 +46,7 @@ public sealed class InteractionTools
                 var rect = await _perception.RunOnRefReadAsync(handle, @ref!, BoundsOf, timeoutMs);
                 await _overlay.PreviewAsync(rect);
             }
-            await _perception.RunOnRefActionAsync(handle, @ref!, el => { act(el); return true; }, timeoutMs);
+            await _perception.RunOnRefActionAsync(handle, @ref!, el => { act(el); return true; }, timeoutMs, skipOffscreenGuard);
             return ToolResponse.Ok(new { ok = true, pathUsed = "pattern" });
         });
 
@@ -115,7 +115,7 @@ public sealed class InteractionTools
         [Description(RefDesc)] string? @ref = null,
         [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout in ms (default 4000).")] int timeoutMs = DefaultActionTimeoutMs)
-        => Act(window, @ref, selector, Interactor.ScrollIntoView, timeoutMs);
+        => Act(window, @ref, selector, Interactor.ScrollIntoView, timeoutMs, skipOffscreenGuard: true);
 
     [McpServerTool(Destructive = true), Description("Scroll a container by ref via UIA ScrollPattern. direction = up|down|left|right; amount = number of small scroll steps (1..50). Realize virtualized items, then re-snapshot.")]
     public Task<string> DesktopScroll(

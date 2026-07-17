@@ -3,16 +3,17 @@ using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server;
+using FlaUI.Mcp.Server.Tools;
 using Xunit;
 
 namespace FlaUI.Mcp.Tests.Perception;
 
-// fix-the-tool: docs/fix-the-tool-backlog/scroll-into-view-offscreen-guard.md
 [Trait("Category", "Desktop")]
 public class ScrollIntoViewOffscreenGuardTests
 {
     [Fact]
-    public async Task ScrollIntoView_wrongly_refuses_an_offscreen_element_ElementNotActionable()
+    public async Task ScrollIntoView_is_allowed_on_an_offscreen_element_while_the_guard_still_protects_other_actions()
     {
         using var app = new TestAppFixture();
         using var dispatcher = new AutomationDispatcher();
@@ -28,23 +29,21 @@ public class ScrollIntoViewOffscreenGuardTests
             new SnapshotOptions { FullProperties = true, IncludeOffscreen = true });
         var offscreenRef = RefLineHelper.RefFor(snap.Tree, "OffscreenButton");
 
-        // Invoke: the exact path desktop_scroll_into_view runs through
-        // (InteractionTools.DesktopScrollIntoView -> Act -> PerceptionManager.RunOnRefActionAsync with
-        // Interactor.ScrollIntoView).
-        var ex = await Assert.ThrowsAsync<ToolException>(() =>
-            perception.RunOnRefActionAsync(handle, offscreenRef,
-                el => { Interactor.ScrollIntoView(el); return true; }, timeoutMs: 4000));
+        // (a) guard SKIPPED when asked — trivial callback so the result doesn't depend on whether
+        // OffscreenButton itself supports ScrollItemPattern.
+        var ok = await perception.RunOnRefActionAsync(handle, offscreenRef, el => true, timeoutMs: 4000, skipOffscreenGuard: true);
+        Assert.True(ok);
 
+        // (b) guard INTACT by default — still protects normal (non-scroll_into_view) actions.
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            perception.RunOnRefActionAsync(handle, offscreenRef, el => true, timeoutMs: 4000));
         Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
 
-        // KNOWN DEFECT: this is the SAME preflight guard desktop_select hits on an off-screen element —
-        // ScrollItemPattern.ScrollIntoView is specifically designed to realize off-screen items, but
-        // RunOnRefActionAsync's generic IsOffscreen check rejects it before Interactor.ScrollIntoView
-        // ever runs, so the tool the select-error recommends as recovery refuses the same element.
-        Assert.Fail("scroll-into-view-offscreen-guard: desktop_scroll_into_view refuses an off-screen " +
-            $"element with {ex.Code} (\"{ex.Message}\") via the same generic preflight guard used for " +
-            "desktop_select, even though UIA ScrollItemPattern.ScrollIntoView exists to realize off-screen " +
-            "items; correct behavior not asserted yet — see " +
-            "docs/fix-the-tool-backlog/scroll-into-view-offscreen-guard.md");
+        // (c) end-to-end tool wiring — DesktopScrollIntoView actually passes skipOffscreenGuard: true.
+        // Success or a ScrollItem-unsupported error are both acceptable; it must NOT be the off-screen
+        // guard's rejection.
+        var tools = new InteractionTools(perception, mgr, new ServerOptions(ReadOnly: false, AllowElevation: false));
+        var resp = await tools.DesktopScrollIntoView(handle.Id, offscreenRef);
+        Assert.DoesNotContain("off-screen; cannot act on it reliably", resp);
     }
 }
