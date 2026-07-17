@@ -470,7 +470,7 @@ public sealed class InputTools
             return ToolResponse.Ok(new { ok = true, pathUsed = "coordinate" });
         });
 
-    [McpServerTool(Destructive = true), Description("Synthetic mouse drag between two window-relative points (§5 pct space). BOTH endpoints are hit-tested + deny-listed; the END point is re-hit-tested immediately before the mouse-up. button=left|right|middle. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Synthetic mouse drag between two window-relative points (§5 pct space). BOTH endpoints are hit-tested + deny-listed; the END point is re-hit-tested immediately before the mouse-up. button=left|right|middle. endWindow (optional) — resolve the END point's fractions in ANOTHER window's [0,1] space for a cross-window drag; omit for a same-window drag. Each endpoint's fractions are [0,1] within its own window. Blocked in --read-only-mode.")]
     public Task<string> DesktopDrag(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Start X fraction 0..1.")] double startXPct,
@@ -478,11 +478,12 @@ public sealed class InputTools
         [Description("End X fraction 0..1.")] double endXPct,
         [Description("End Y fraction 0..1.")] double endYPct,
         [Description("left|right|middle (default left).")] string button = "left",
-        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
+        [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
+        [Description("Optional window handle to resolve the END point's fractions in (defaults to window for a same-window drag; set to another window's handle for a cross-window drag).")] string? endWindow = null)
         => ToolResponse.GuardWrite(_options, async () =>
         {
             var (sx, sy) = await ResolveWindowPctAsync(window, startXPct, startYPct, timeoutMs);
-            var (ex, ey) = await ResolveWindowPctAsync(window, endXPct, endYPct, timeoutMs);
+            var (ex, ey) = await ResolveWindowPctAsync(endWindow ?? window, endXPct, endYPct, timeoutMs);
             var sPt = _env.HitTestRoot(sx, sy);
             var ePt = _env.HitTestRoot(ex, ey);
             var startTarget = new ActionTarget(sPt.Root, 0, sPt.ProcessName, sPt.WindowClass);
