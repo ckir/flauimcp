@@ -11,8 +11,12 @@ using Microsoft.Extensions.Hosting;
 // Installer verbs run and exit; anything else (including no args) runs the MCP stdio host.
 if (CliRouter.IsInstallerVerb(args))
 {
+    // Environment.ProcessPath is single-file-publish-safe (Assembly.Location returns "" in a single-file
+    // app — IL3000) and is populated for any normal launch, which every installer-verb invocation is;
+    // MainModule.FileName is an equally single-file-safe backstop.
     var exePath = Environment.ProcessPath
-        ?? System.Reflection.Assembly.GetExecutingAssembly().Location;
+        ?? System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName
+        ?? AppContext.BaseDirectory;
     return CliRouter.Run(args, exePath, Console.Out);
 }
 
