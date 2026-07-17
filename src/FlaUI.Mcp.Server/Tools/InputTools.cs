@@ -401,17 +401,23 @@ public sealed class InputTools
         return new ActionTarget(root, 0, r.ProcessName, r.WindowClass);
     }
 
-    [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers optional. Re-hit-tests that the point still maps to the target window immediately before sending. Same lease/deny-list/session gates. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers=optional array of Ctrl|Alt|Shift|Win held for the duration of the click (e.g. [\"Ctrl\"] for additive-select, [\"Shift\"] for range-select). Re-hit-tests that the point still maps to the target window immediately before sending. Same lease/deny-list/session gates. Blocked in --read-only-mode.")]
     public Task<string> DesktopClick(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Element ref to click, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
         [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("left|right|middle (default left).")] string button = "left",
         [Description("1 or 2 (default 1).")] int count = 1,
+        [Description("Optional modifier keys to hold during the click: any of Ctrl|Alt|Shift|Win (case-insensitive), e.g. [\"Ctrl\"]. Omit for a plain click.")] string[]? modifiers = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
             SelectorGating.RequireExactlyOne(@ref, selector);
+            var clickModifiers = modifiers ?? System.Array.Empty<string>();
+            foreach (var m in clickModifiers)
+                if (!ValidModifierTokens.Contains(m))
+                    throw new ToolException(ToolErrorCode.InvalidArguments,
+                        $"Unrecognized modifier '{m}'.", "use Ctrl|Alt|Shift|Win (case-insensitive)");
             // BLOCKER (agy): the click point may belong to a SEPARATE top-level window — a context menu,
             // tooltip, or WPF Popup is its own HWND, NOT win's root. So derive the ActionTarget from a
             // hit-test of the element's clickable point (the surface actually under the pixel), not from
@@ -442,7 +448,7 @@ public sealed class InputTools
                 (target, px, py) = await _perception.RunOnRefForInputAsync(new WindowHandle(window), @ref!, cb, timeoutMs);
             }
             await PreviewSyntheticAsync(target, Crosshair(px, py));
-            await Task.Run(() => _guard.MouseClick(px, py, button, count, System.Array.Empty<string>(), target));
+            await Task.Run(() => _guard.MouseClick(px, py, button, count, clickModifiers, target));
             return resolved is null
                 ? ToolResponse.Ok(new { ok = true, pathUsed = "synthetic" })
                 : ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", resolvedElement = resolved });
@@ -495,6 +501,11 @@ public sealed class InputTools
             var r = win.BoundingRectangle; // System.Drawing.Rectangle, physical px
             return CoordinateMath.PctToPhysical(r.Left, r.Top, r.Width, r.Height, xPct, yPct);
         }, timeoutMs);
+
+    // Same Ctrl|Alt|Shift|Win token vocabulary KeyChordParser.Modifiers uses for desktop_key chords —
+    // desktop_click's modifiers param reuses it rather than inventing a new encoding.
+    private static readonly System.Collections.Generic.HashSet<string> ValidModifierTokens =
+        new(System.StringComparer.OrdinalIgnoreCase) { "Ctrl", "Alt", "Shift", "Win" };
 
     private static (string[] mods, string key) SplitChord(string chord)
     {
