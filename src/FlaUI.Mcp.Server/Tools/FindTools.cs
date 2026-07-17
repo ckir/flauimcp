@@ -16,7 +16,7 @@ public sealed class FindTools
         "control. Give any of: automationId, name (+ nameMatch=eq|contains), controlType (UIA name e.g. " +
         "Button/Edit/ListItem), enabledOnly. Optional scope=<a live ref> searches only that element's " +
         "subtree. Returns matches[{ref,automationId,name,controlType,bounds[x,y,w,h],isOffscreen,isEnabled," +
-        "hasFocus}] in tree order (capped at max, default 20) plus totalMatches + isTruncated (narrow your " +
+        "hasFocus,isSelected}] in tree order (capped at max, default 20) plus totalMatches + isTruncated (narrow your " +
         "query if truncated). No match => empty list (not an error). Refs are additive: a find does NOT " +
         "invalidate a prior desktop_snapshot's refs. Password fields return name=\"[REDACTED]\" and are " +
         "not findable by name.")]
@@ -39,7 +39,8 @@ public sealed class FindTools
                 matches = r.Matches.Select(m => new
                 {
                     @ref = m.Ref, automationId = m.AutomationId, name = m.Name, controlType = m.ControlType,
-                    bounds = m.Bounds, isOffscreen = m.IsOffscreen, isEnabled = m.IsEnabled, hasFocus = m.HasFocus
+                    bounds = m.Bounds, isOffscreen = m.IsOffscreen, isEnabled = m.IsEnabled, hasFocus = m.HasFocus,
+                    isSelected = m.IsSelected
                 }),
                 totalMatches = r.TotalMatches,
                 isTruncated = r.IsTruncated

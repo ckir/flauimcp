@@ -79,6 +79,7 @@ public static class SnapshotEngine
                 bool enabled = Safe(() => el.IsEnabled, false);
                 bool focusable = Safe(() => el.Properties.IsKeyboardFocusable.ValueOrDefault, false);
                 bool focused = Safe(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
+                bool selected = Safe(() => el.Patterns.SelectionItem.PatternOrDefault?.IsSelected.ValueOrDefault ?? false, false);
                 bool isPassword = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 var patterns = SupportedPatterns(el);
@@ -86,7 +87,7 @@ public static class SnapshotEngine
                 var descriptor = new ElementDescriptor(rid, ct, aid, name, ancestorAid, indexPath, focused);
                 var @ref = refs.Register(windowId, descriptor, el);
                 items.Add(new SnapshotNode(@ref, depth, indent, ct, aid, name, rect, enabled, focusable,
-                    focused, isPassword, offscreen, rid, patterns, help));
+                    focused, selected, isPassword, offscreen, rid, patterns, help));
                 childIndent = indent + "  ";
             }
             var nextAncestor = string.IsNullOrEmpty(aid) ? ancestorAid : aid;
@@ -128,6 +129,7 @@ public static class SnapshotEngine
         if (n.Enabled) state.Add("enabled");
         if (n.Focusable) state.Add("focusable");
         if (n.Focused) state.Add("focused");
+        if (n.Selected) state.Add("selected");
         string shownName = n.IsPassword ? "[REDACTED]" : n.Name;
         var sb = new StringBuilder();
         sb.Append(n.Indent).Append('[').Append(n.Ref).Append("] ").Append(n.ControlType).Append(' ')

@@ -9,7 +9,7 @@ public class ScopedDiffTests
 {
     private static SnapshotNode Node(string @ref, int depth, ControlType ct, string aid, string name, params int[] rid)
         => new(@ref, depth, new string(' ', depth * 2), ct, aid, name,
-               System.Drawing.Rectangle.Empty, true, false, false, false, false, rid,
+               System.Drawing.Rectangle.Empty, true, false, false, false, false, false, rid,
                System.Array.Empty<string>(), "");
 
     private static ElementDescriptor Desc(ControlType ct, string aid, string name, params int[] rid)

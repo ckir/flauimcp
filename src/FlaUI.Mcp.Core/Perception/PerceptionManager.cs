@@ -59,14 +59,14 @@ public sealed class PerceptionManager
     /// on the action STA against window+popup roots built by that STA's own automation — no query-STA
     /// COM object crosses apartments. An offscreen target is rejected before acting (offscreen Invoke
     /// can hang). On modal block past timeoutMs the call surfaces ACTION_BLOCKED_PENDING.</summary>
-    public Task<T> RunOnRefActionAsync<T>(WindowHandle handle, string @ref, Func<AutomationElement, T> func, int timeoutMs)
+    public Task<T> RunOnRefActionAsync<T>(WindowHandle handle, string @ref, Func<AutomationElement, T> func, int timeoutMs, bool skipOffscreenGuard = false)
     {
         var descriptor = _refs.Lookup(handle.Id, @ref).Descriptor; // REF_NOT_FOUND if absent (cheap, off-STA)
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
         {
             var roots = PopupFinder.SearchRoots(win, desktop);
             var el = _refs.ResolveDescriptor(descriptor, roots, @ref, WriteMode); // INV-8 (break-glass: FLAUI_MCP_REF_STRICT=off)
-            if (el.Properties.IsOffscreen.ValueOrDefault)
+            if (!skipOffscreenGuard && el.Properties.IsOffscreen.ValueOrDefault)
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
             return func(el);
@@ -222,7 +222,7 @@ public sealed class PerceptionManager
     /// sibling's — the only difference is resolution is a fresh bounded walk (no prior descriptor to be
     /// stale against) and the mint is descriptor-only.</summary>
     public Task<(T Value, string ResolvedRef)> RunOnSelectorActionAsync<T>(WindowHandle handle, Selector sel,
-        Func<AutomationElement, T> func, int timeoutMs)
+        Func<AutomationElement, T> func, int timeoutMs, bool skipOffscreenGuard = false)
     {
         var scopeDescriptor = string.IsNullOrEmpty(sel.Scope) ? null : _refs.Lookup(handle.Id, sel.Scope!).Descriptor;
         return _windows.RunOnWindowActionAsync(handle, (win, desktop) =>
@@ -232,7 +232,7 @@ public sealed class PerceptionManager
                 ? win
                 : _refs.ResolveDescriptor(scopeDescriptor, roots, sel.Scope!, WriteMode);
             var (el, r) = ResolveSelectorOnSta(handle.Id, root, sel);
-            if (el.Properties.IsOffscreen.ValueOrDefault)
+            if (!skipOffscreenGuard && el.Properties.IsOffscreen.ValueOrDefault)
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "Element is off-screen; cannot act on it reliably.", "desktop_scroll_into_view then retry");
             return (func(el), r);
@@ -518,6 +518,7 @@ public sealed class PerceptionManager
                 var b = SafeRead(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
                 bool offscreen = SafeRead(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 bool hasFocus = SafeRead(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
+                bool selected = SafeRead(() => el.Patterns.SelectionItem.PatternOrDefault?.IsSelected.ValueOrDefault ?? false, false);
 
                 // Descriptor uses the RAW name - a redacted "[REDACTED]" would break Name-based re-resolution
                 // for a password field. cached: el (like snapshot's Register at SnapshotEngine.cs:87) so the
@@ -530,7 +531,7 @@ public sealed class PerceptionManager
                     SnapshotEngine.NearestAncestorAutomationId(el), System.Array.Empty<int>(), hasFocus);
                 var @ref = _refs.Register(handle.Id, descriptor, cached: el); // ADDITIVE, cached (usable ref)
                 matches.Add(new FindMatch(@ref, aid, name, ctEnum.ToString(),
-                    new[] { b.X, b.Y, b.Width, b.Height }, offscreen, enabled, hasFocus)); // name already redacted
+                    new[] { b.X, b.Y, b.Width, b.Height }, offscreen, enabled, hasFocus, selected)); // name already redacted
             }
             return new FindResult(matches, total, total > max);
         });
