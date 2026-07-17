@@ -380,6 +380,25 @@ public class ClaudeCollisionRemedyTests
         Assert.DoesNotContain("they will be re-enabled if you uninstall", warning);   // the promise is withheld
     }
 
+    // R5 (goal 6): two list rows resolve to the SAME entry (differ only in path casing, which the fake
+    // treats as one target). We disable it via the first row; the second row's disable is then a no-op
+    // exit 1 and the re-read shows it off. Without Concat(justDisabled) the marker (still empty at this
+    // point) does not contain it, so it is wrongly blamed on the user. With Concat it is recognized as
+    // our own disable and stays silent.
+    [Fact]
+    public void A_second_row_for_an_entry_we_just_disabled_is_not_blamed_on_the_user()
+    {
+        var cli = new FakeClaude()
+            .Install("flaui-mcp@flaui-mcp", "local", @"C:\Proj", enabled: true)
+            .Install("flaui-mcp@flaui-mcp", "local", @"c:\proj", enabled: true);   // same target, case-variant path
+        var s = TempState();
+
+        var warning = Remedy(cli, s).Apply();
+
+        Assert.DoesNotContain("assuming you did", warning ?? "");
+        Assert.Single(CollisionMarker.Read(s));   // recorded exactly once
+    }
+
     [Fact]
     public void The_inventory_is_enumerated_with_json_and_no_cwd()
     {

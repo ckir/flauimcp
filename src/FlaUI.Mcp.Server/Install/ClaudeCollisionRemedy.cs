@@ -114,7 +114,7 @@ public sealed class ClaudeCollisionRemedy
                 // so (R5), because this correct decision is otherwise invisible. Case-insensitive, so a
                 // path differing only in casing is the SAME entry and we do not blame the user for our
                 // own disable.
-                if (!recorded.Any(m => CollisionMarker.SameEntry(m, entry)))
+                if (!recorded.Concat(justDisabled).Any(m => CollisionMarker.SameEntry(m, entry)))
                     warnings.Add($"{e.Id} ({Where(entry)}) was already disabled and we have no record of disabling it — " +
                                  "assuming you did, and leaving it alone.");
             }
