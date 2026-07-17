@@ -47,11 +47,10 @@ public sealed class Win32SyntheticInput : ISyntheticInput
     public void MouseClick(int physX, int physY, string button, int count, string[] modifiers, nint expectedRootAtPoint)
     {
         Reverify(expectedRootAtPoint, _env.HitTestRoot(physX, physY).Root);
+        var modifierVks = KeyChordParser.MapModifiers(modifiers);
         var (down, up) = ButtonFlags(button);
         var (ax, ay) = AbsolutePoint(physX, physY);
-        var inputs = new List<INPUT> { Move(ax, ay) };
-        for (int i = 0; i < Math.Clamp(count, 1, 2); i++) { inputs.Add(Mouse(ax, ay, down)); inputs.Add(Mouse(ax, ay, up)); }
-        Send(inputs.ToArray());
+        Send(MouseClickInput.Build(ax, ay, down, up, count, modifierVks));
     }
 
     public void MouseDrag(int startX, int startY, int endX, int endY, string button, nint expectedRootAtStart, nint expectedRootAtEnd)

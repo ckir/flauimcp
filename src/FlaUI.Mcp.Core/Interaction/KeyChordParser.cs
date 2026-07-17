@@ -46,6 +46,27 @@ public static class KeyChordParser
         return new ParsedChord(mods.ToArray(), key);
     }
 
+    /// <summary>Maps a list of modifier tokens (Ctrl|Alt|Shift|Win, case-insensitive) to Win32 VK codes,
+    /// reusing the SAME <see cref="Modifiers"/> table <see cref="Parse"/> uses for chord modifiers — the
+    /// single source of truth for the modifier vocabulary. Throws InvalidArguments on an unknown token or
+    /// a duplicate. Null/empty input returns an empty array.</summary>
+    public static ushort[] MapModifiers(IReadOnlyList<string>? tokens)
+    {
+        if (tokens is null || tokens.Count == 0) return Array.Empty<ushort>();
+        var vks = new List<ushort>(tokens.Count);
+        foreach (var token in tokens)
+        {
+            if (!Modifiers.TryGetValue(token, out var vk))
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    $"Unrecognized modifier '{token}'.", "use Ctrl|Alt|Shift|Win (case-insensitive)");
+            if (vks.Contains(vk))
+                throw new ToolException(ToolErrorCode.InvalidArguments,
+                    $"Duplicate modifier '{token}'.", "list each modifier once");
+            vks.Add(vk);
+        }
+        return vks.ToArray();
+    }
+
     private static ushort? ResolveKey(string token)
     {
         if (Modifiers.ContainsKey(token)) return null; // a bare modifier is not a key

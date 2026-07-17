@@ -414,10 +414,8 @@ public sealed class InputTools
         {
             SelectorGating.RequireExactlyOne(@ref, selector);
             var clickModifiers = modifiers ?? System.Array.Empty<string>();
-            foreach (var m in clickModifiers)
-                if (!ValidModifierTokens.Contains(m))
-                    throw new ToolException(ToolErrorCode.InvalidArguments,
-                        $"Unrecognized modifier '{m}'.", "use Ctrl|Alt|Shift|Win (case-insensitive)");
+            KeyChordParser.MapModifiers(clickModifiers); // validate early (unknown/duplicate token) — same
+            // Ctrl|Alt|Shift|Win vocabulary the sink maps via KeyChordParser.Modifiers; single source of truth.
             // BLOCKER (agy): the click point may belong to a SEPARATE top-level window — a context menu,
             // tooltip, or WPF Popup is its own HWND, NOT win's root. So derive the ActionTarget from a
             // hit-test of the element's clickable point (the surface actually under the pixel), not from
@@ -501,11 +499,6 @@ public sealed class InputTools
             var r = win.BoundingRectangle; // System.Drawing.Rectangle, physical px
             return CoordinateMath.PctToPhysical(r.Left, r.Top, r.Width, r.Height, xPct, yPct);
         }, timeoutMs);
-
-    // Same Ctrl|Alt|Shift|Win token vocabulary KeyChordParser.Modifiers uses for desktop_key chords —
-    // desktop_click's modifiers param reuses it rather than inventing a new encoding.
-    private static readonly System.Collections.Generic.HashSet<string> ValidModifierTokens =
-        new(System.StringComparer.OrdinalIgnoreCase) { "Ctrl", "Alt", "Shift", "Win" };
 
     private static (string[] mods, string key) SplitChord(string chord)
     {
