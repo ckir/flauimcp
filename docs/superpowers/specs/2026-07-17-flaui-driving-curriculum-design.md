@@ -40,6 +40,14 @@ neither. The suite mirrors that safety split:
   `drag`. Requires a human-granted lease (`flaui-mcp unlock`, `--allow-shells` for terminals) at the
   physical console. Run only while a human is present.
 
+**Context economy (execution rule — mandatory).** Desktop payloads (a11y trees from `snapshot`,
+`read_terminal_tab` buffers, `find`/`list` arrays) are large; a linear multi-task run overflows the
+driver's own context (this design's session hit ~80% from exactly that). So **each curriculum task runs in
+a FRESH SUBAGENT**: the subagent does the bulky driving — every snapshot/tree/buffer stays in *its* context
+— and returns ONLY the compact 4-field observation (§5) to the main thread, which stays lean across the
+whole run. Corollaries: run a **bounded batch per session** (the curriculum drains monotonically, like the
+inbox); the read-only tier's large snapshots especially belong in subagents.
+
 ## 3. Artifact — a curated markdown curriculum, NOT a harness
 
 **`.claude/flaui-mcp/training-curriculum.md`** (alongside `observations.md`, feeding the same loop). It is
