@@ -10,6 +10,11 @@ namespace FlaUI.Mcp.Server.Install;
 /// enable must RUN from — `claude plugin enable` cannot target another project by flag.</param>
 public sealed record DisabledEntry(string Id, string Scope, string? ProjectPath);
 
+/// <summary>How <see cref="CollisionMarker.ReadState"/> classified the marker file.
+/// Absent = no file. Corrupt = present but structurally unreadable (fail-safe: collapse to empty).
+/// FutureVersion = written by a newer build (version &gt; 1) — leave it untouched. Present = valid v1.</summary>
+internal enum MarkerState { Absent, Corrupt, FutureVersion, Present }
+
 /// <summary>
 /// The durable record of which plugin entries THIS product disabled, so uninstall can put back
 /// exactly those and nothing else. Without it we cannot tell "we disabled it" from "the user
@@ -83,28 +88,62 @@ public static class CollisionMarker
         }
     }
 
-    /// <summary>Entries we recorded. Empty when absent OR unreadable — the fail-safe direction: an
-    /// unreadable marker must mean "restore nothing", never "enable things we have no record of".</summary>
-    public static IReadOnlyList<DisabledEntry> Read(string stateDir)
+    /// <summary>Classify the marker and project its entries. The single source of truth Read, Record,
+    /// Restore, and status all branch on. NEVER throws — every failure collapses to Corrupt.</summary>
+    internal static (MarkerState State, IReadOnlyList<DisabledEntry> Entries) ReadState(string stateDir)
     {
-        var list = new List<DisabledEntry>();
+        var empty = (IReadOnlyList<DisabledEntry>)System.Array.Empty<DisabledEntry>();
         try
         {
             var path = PathIn(stateDir);
-            if (!File.Exists(path)) return list;
-            if (JsonNode.Parse(File.ReadAllText(path)) is not JsonObject o) return list;
-            if (o["disabled"] is not JsonArray arr) return list;
+            if (!File.Exists(path)) return (MarkerState.Absent, empty);
+            if (JsonNode.Parse(File.ReadAllText(path)) is not JsonObject o) return (MarkerState.Corrupt, empty);
+
+            // version must be a NUMBER >= 1. Read as double so a large integer or a fractional future
+            // version (2.1) neither overflows nor throws into Corrupt.
+            if (o["version"] is not JsonValue vNode || vNode.GetValueKind() != JsonValueKind.Number)
+                return (MarkerState.Corrupt, empty);
+            var version = vNode.GetValue<double>();
+            if (version < 1) return (MarkerState.Corrupt, empty);
+            if (version > 1) return (MarkerState.FutureVersion, empty);   // honored on version alone (goal 4)
+
+            if (o["disabled"] is not JsonArray arr) return (MarkerState.Corrupt, empty);
+
+            var list = new List<DisabledEntry>();
             foreach (var node in arr)
             {
                 if (node is not JsonObject e) continue;
-                var id = (string?)e["id"];
-                var scope = (string?)e["scope"];
+                // A bare (string?)e["id"] cast THROWS on a numeric/boolean node (it does NOT return
+                // null), so every field is gated on GetValueKind == String; a wrong-typed field drops
+                // THIS entry only, never the whole file.
+                var id = AsString(e["id"]);
+                var scope = AsString(e["scope"]);
                 if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(scope)) continue;
-                list.Add(new DisabledEntry(id, scope, (string?)e["projectPath"]));
+
+                // projectPath may be legitimately absent or JSON null (user scope). A present-but-
+                // wrong-typed projectPath drops the entry.
+                var ppNode = e["projectPath"];
+                string? projectPath;
+                if (ppNode is null) projectPath = null;                     // absent OR JSON null
+                else { projectPath = AsString(ppNode); if (projectPath is null) continue; }
+
+                list.Add(new DisabledEntry(id!, scope!, projectPath));
             }
+            return (MarkerState.Present, list);
         }
-        catch { return new List<DisabledEntry>(); }
-        return list;
+        catch { return (MarkerState.Corrupt, empty); }
+    }
+
+    private static string? AsString(JsonNode? node) =>
+        node is JsonValue v && v.GetValueKind() == JsonValueKind.String ? v.GetValue<string>() : null;
+
+    /// <summary>Entries we recorded. Empty for every non-Present state (Absent/Corrupt/FutureVersion) —
+    /// the fail-safe direction: an unreadable or future marker must mean "restore nothing", never
+    /// "enable things we have no record of". Never throws.</summary>
+    public static IReadOnlyList<DisabledEntry> Read(string stateDir)
+    {
+        var (state, entries) = ReadState(stateDir);
+        return state == MarkerState.Present ? entries : System.Array.Empty<DisabledEntry>();
     }
 
     /// <summary>Consume the marker (spec R7). Returns null on success, else the reason.</summary>

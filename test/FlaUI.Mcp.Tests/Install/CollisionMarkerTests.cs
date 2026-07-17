@@ -113,6 +113,7 @@ public class CollisionMarkerTests
     [InlineData("[]")]
     [InlineData("{ \"version\": 1 }")]
     [InlineData("{ \"version\": 1, \"disabled\": \"not an array\" }")]
+    [InlineData("{ \"version\": 2, \"disabled\": [] }")]   // FutureVersion — Read still collapses it to empty
     public void A_corrupt_marker_reads_as_empty_and_never_throws(string content)
     {
         var s = TempState();
@@ -186,4 +187,91 @@ public class CollisionMarkerTests
     [Fact]
     public void A_successful_record_returns_no_warning()
         => Assert.Null(CollisionMarker.Record(TempState(), new[] { UserEntry }));
+
+    private static string WriteMarker(string content)
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), content);
+        return s;
+    }
+
+    [Fact]
+    public void ReadState_reports_Absent_when_no_file_exists()
+        => Assert.Equal(MarkerState.Absent, CollisionMarker.ReadState(TempState()).State);
+
+    [Fact]
+    public void ReadState_reports_Present_for_a_valid_v1_marker()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { ProjA });
+
+        var (state, entries) = CollisionMarker.ReadState(s);
+
+        Assert.Equal(MarkerState.Present, state);
+        Assert.Equal(ProjA, Assert.Single(entries));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("{ this is not json")]
+    [InlineData("[]")]                                          // root not an object
+    [InlineData("{ \"disabled\": [] }")]                        // version missing
+    [InlineData("{ \"version\": \"1\", \"disabled\": [] }")]    // version not a number
+    [InlineData("{ \"version\": 0, \"disabled\": [] }")]        // version < 1
+    [InlineData("{ \"version\": 1 }")]                          // disabled missing
+    [InlineData("{ \"version\": 1, \"disabled\": \"x\" }")]     // disabled not an array
+    public void ReadState_reports_Corrupt_for_structural_failures(string content)
+    {
+        var (state, entries) = CollisionMarker.ReadState(WriteMarker(content));
+        Assert.Equal(MarkerState.Corrupt, state);
+        Assert.Empty(entries);
+    }
+
+    [Theory]
+    [InlineData("{ \"version\": 2, \"disabled\": [] }")]
+    [InlineData("{ \"version\": 999 }")]          // no disabled key — still FutureVersion (honored on version alone)
+    [InlineData("{ \"version\": 2.1, \"disabled\": [] }")]   // fractional must not throw into Corrupt (double parse)
+    public void ReadState_reports_FutureVersion_for_a_version_greater_than_one(string content)
+    {
+        var (state, entries) = CollisionMarker.ReadState(WriteMarker(content));
+        Assert.Equal(MarkerState.FutureVersion, state);
+        Assert.Empty(entries);
+    }
+
+    [Fact]
+    public void ReadState_drops_only_the_malformed_entry_and_keeps_valid_siblings()
+    {
+        // id is a NUMBER (a bare (string?) cast would THROW, not return null), scope blank, projectPath
+        // wrong-typed — each drops that entry only; the valid sibling survives.
+        var s = WriteMarker("""
+        {
+          "version": 1,
+          "disabled": [
+            { "id": 123, "scope": "user" },
+            { "id": "flaui-mcp@flaui-mcp", "scope": "" },
+            { "id": "flaui-mcp@flaui-mcp", "scope": "local", "projectPath": 7 },
+            { "id": "flaui-mcp@flaui-mcp", "scope": "user", "projectPath": null }
+          ]
+        }
+        """);
+
+        var (state, entries) = CollisionMarker.ReadState(s);
+
+        Assert.Equal(MarkerState.Present, state);
+        Assert.Equal(new DisabledEntry("flaui-mcp@flaui-mcp", "user", null), Assert.Single(entries));
+    }
+
+    [Fact]
+    public void ReadState_yields_Present_empty_when_every_entry_is_dropped()
+    {
+        var (state, entries) = CollisionMarker.ReadState(
+            WriteMarker("""{ "version": 1, "disabled": [ { "id": 1 } ] }"""));
+        Assert.Equal(MarkerState.Present, state);
+        Assert.Empty(entries);
+    }
+
+    [Fact]
+    public void Read_is_empty_for_a_future_version_marker()
+        => Assert.Empty(CollisionMarker.Read(
+            WriteMarker("""{ "version": 2, "disabled": [ { "id": "x", "scope": "user" } ] }""")));
 }
