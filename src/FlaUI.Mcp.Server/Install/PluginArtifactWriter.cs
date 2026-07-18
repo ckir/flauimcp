@@ -1,6 +1,7 @@
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace FlaUI.Mcp.Server.Install;
 
@@ -53,6 +54,28 @@ public sealed class PluginArtifactWriter
         }
         catch { /* malformed -> reseed fresh */ }
         return System.Array.Empty<string>();
+    }
+
+    /// Merge runtime flag args into the staging .mcp.json's server args (idempotent: removals win, no dups),
+    /// preserving flags other verbs set. Seeds the file (args:[]) if it does not exist yet.
+    public void MergeArgs(string exePath, IReadOnlyList<string> add, IReadOnlyList<string> remove)
+    {
+        var path = Path.Combine(_stagingDir, ".mcp.json");
+        if (!File.Exists(path)) WriteMcpJson(exePath);
+
+        var root = JsonNode.Parse(File.ReadAllText(path))!;
+        var server = root["mcpServers"]![PluginIds.PluginName]!;
+        var existing = server["args"]!.AsArray();
+
+        var kept = existing.Select(a => a!.GetValue<string>())
+                           .Where(a => !remove.Contains(a) && !add.Contains(a))
+                           .Concat(add.Where(a => !remove.Contains(a)))
+                           .ToList();
+
+        var arr = new JsonArray();
+        foreach (var a in kept) arr.Add(a);
+        server["args"] = arr;
+        File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
 
     public void Generate(string exePath, string version)

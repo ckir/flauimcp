@@ -70,4 +70,22 @@ public class PluginArtifactWriterTests
         Assert.True(File.Exists(skill));
         Assert.Contains("Driving FlaUI.Mcp", File.ReadAllText(skill)); // real skill content from embedded resource
     }
+
+    [Fact]
+    public void MergeArgs_adds_removes_and_preserves_other_flags_idempotently()
+    {
+        var staging = TempDir();
+        var exe = @"C:\p\flaui-mcp.exe";
+        var w = new PluginArtifactWriter(staging);
+        w.MergeArgs(exe, add: new[] { "--overlay" },   remove: System.Array.Empty<string>()); // seeds .mcp.json if missing
+        w.MergeArgs(exe, add: new[] { "--autosound" }, remove: System.Array.Empty<string>());
+        w.MergeArgs(exe, add: new[] { "--autosound" }, remove: System.Array.Empty<string>()); // idempotent (no dup)
+        w.MergeArgs(exe, add: System.Array.Empty<string>(), remove: new[] { "--overlay" });    // remove
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(staging, ".mcp.json")));
+        var args = doc.RootElement.GetProperty("mcpServers").GetProperty("flaui-mcp").GetProperty("args");
+        var list = new System.Collections.Generic.List<string?>();
+        foreach (var e in args.EnumerateArray()) list.Add(e.GetString());
+        Assert.Equal(new[] { "--autosound" }, list); // overlay removed, autosound present exactly once
+    }
 }

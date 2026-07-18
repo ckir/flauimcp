@@ -417,24 +417,31 @@ public static class CliRouter
     {
         var results = new List<AgentResult>();
         bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
+        bool agy = all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase);
+        bool claude = all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase);
 
-        if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
-            results.Add(Isolate("agy", () =>
-            {
-                var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir);
-                return w.Install(exePath, addArgs, removeArgs);
-            }));
-        if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
-            results.Add(Isolate("claude", () =>
-            {
-                var w = new ClaudeCodeConfigWriter();
-                return w.Install(exePath, addArgs, removeArgs);
-            }));
+        var stagingDir = Environment.GetEnvironmentVariable("FLAUI_MCP_STAGING_DIR")
+                         ?? Path.Combine(Path.GetDirectoryName(exePath)!, "plugin");
+
+        // A flag verb may run BEFORE install, so ensure the FULL plugin dir exists (plugin.json + marketplace.json,
+        // not just .mcp.json — else ClaudePluginRegistrar.Register fails: `marketplace add` needs the manifest).
+        // Generate() is arg-preserving (WriteMcpJson keeps existing args), so it never wipes prior flags. Then merge.
+        if (agy || claude)
+        {
+            var writer = new PluginArtifactWriter(stagingDir);
+            writer.Generate(exePath, ThisVersion());
+            writer.MergeArgs(exePath, addArgs, removeArgs);
+        }
+        // ...then re-register the targeted agent(s) so they pick up the new args (agy copies; Claude re-reads).
+        if (agy)
+            results.Add(Isolate("agy", () => new AgyPluginRegistrar(AgyInvoker()).Register(stagingDir)));
+        if (claude)
+            results.Add(Isolate("claude", () => new ClaudePluginRegistrar(ClaudeInvoker()).Register(stagingDir)));
         if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
             results.Add(Isolate("generic", () =>
             {
                 var w = new GenericMcpConfigWriter();
-                return w.Install(paths.GenericPath, exePath, addArgs, removeArgs);
+                return w.Install(paths.GenericPath, exePath, addArgs, removeArgs); // generic file is unchanged by the rework
             }));
         return results;
     }
