@@ -33,17 +33,21 @@ content is the Claude marketplace source dir) containing:
 `CliRouter.cs` shells out to the agent CLIs (idempotent remove-then-add + read-back verify, porting clavity's
 `plugin-registration.iss` logic to C#). It NO LONGER writes `mcpServers` into any config file.
 
-- **agy:** `agy plugin uninstall flaui-mcp` (swallow result) → `agy plugin install "<pluginDir>"`. Check exit
-  code; capture stdout/stderr into the install-log detail.
+- **agy:** `agy plugin uninstall flaui-mcp` (swallow result) → `agy plugin install "<stagingDir>"` — where
+  `<stagingDir>` is the ISOLATED staged dir, NOT `~/.gemini/config/plugins/`; `agy plugin install` copies it into
+  its managed dir itself. Check exit code; capture stdout/stderr into the install-log detail.
 - **Claude:** `claude plugin marketplace remove <marketplace>` (swallow) → `claude plugin marketplace add
   "<dir>" --scope user` → `claude plugin uninstall flaui-mcp` (swallow) → `claude plugin install
   "flaui-mcp@<marketplace>" --scope user` → read-back `claude plugin list` and assert `flaui-mcp@<marketplace>`
   is present (the existing Claude-running-clobber guard stays: refuse if Claude Code is running).
 
 ### CLI resolution (install-context robustness)
-An installer may run with a different `PATH`/`USERPROFILE` than the target user. Match clavity's PROVEN approach
-first (invoke bare `claude`/`agy` via a shell that inherits the user PATH — clavity does this and it works). If
-resolution fails, fall back to searching known locations (`%APPDATA%\npm`, `~/.cargo/bin`, `~/.local/bin`).
+The installer is PER-USER, non-elevated (`installer/flaui-mcp.iss:13` `PrivilegesRequired=lowest`; installs to
+`{localappdata}`), so it runs as the actual user — there is NO UAC-elevation profile/PATH mismatch. (A panel R1
+finding premised on elevated-shell `~`-misresolution is REFUTED by this measurement — agy's default worst-case-
+elevation assumption; per-user install never triggers it.) Match clavity's PROVEN approach: invoke bare
+`claude`/`agy` via a shell that inherits the user PATH (clavity does this and it works). If resolution fails,
+fall back to known locations (`%APPDATA%\npm`, `~/.cargo/bin`, `~/.local/bin`).
 On any launch failure, record a clear "could not launch <cli>" detail rather than silently succeeding.
 (NOTE: relying on the CLI is the design; a plugin-dir "drop + agent auto-discovery" — agy claims agy
 auto-discovers a plugin dir dropped in `~/.gemini/config/plugins/` with no CLI call, Claude does not — is
@@ -53,14 +57,17 @@ a bonus simplification for the agy path, not a design dependency.)
 ## Migration (existing installs)
 On install, sweep any LEGACY hand-written `flaui-mcp` entries so the old and new mechanisms don't collide
 (the duplicate-server failure observed live). Delete a `flaui-mcp` `mcpServers` block from, if present:
-`~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json`, and the Claude side (`claude mcp remove
-flaui-mcp` or the equivalent config sweep). Also remove any stray hand-dropped `.mcp.json` the debugging left.
+`~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json`, and the Claude side via exactly `claude mcp
+remove flaui-mcp` (flaui-mcp's pre-rework Claude registration used `claude mcp add`, so this is the precise
+inverse). Also remove any stray hand-dropped `.mcp.json` the earlier debugging left.
 Idempotent: absent entries are a no-op.
 
 ## Uninstall
-Delegate + fail-open (never block uninstall on a CLI error): `agy plugin uninstall flaui-mcp`,
-`claude plugin uninstall flaui-mcp`, `claude plugin marketplace remove <marketplace>`, then remove the deployed
-plugin dir(s). Report any failure as a warning (uninstall still completes).
+ORDER MATTERS (panel R1): deregister via the CLIs FIRST — `agy plugin uninstall flaui-mcp`,
+`claude plugin uninstall flaui-mcp`, `claude plugin marketplace remove <marketplace>` — and delete the staged
+plugin dir ONLY if deregistration succeeded. If a CLI deregister FAILS, LEAVE the files and emit a loud
+manual-cleanup warning: deleting a still-referenced marketplace/plugin dir leaves the agent pointing at a missing
+dir → startup errors. "Fail-open" means uninstall still COMPLETES (never blocks); it does NOT mean delete-regardless.
 
 ## Bundled clavity fixes (verified in the installer review — in scope per "clavity repo is in scope")
 1. `commonmemory/installer/commonmemory.iss:32` — add `.claude-plugin` to `Excludes` so `Source: "..\*"` stops
