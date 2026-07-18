@@ -3,6 +3,29 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] - 2026-07-18
+
+### Added
+- `desktop_click` accepts `modifiers` (Ctrl/Alt/Shift/Win held for the click) for additive/range
+  selection — now actually held at the SendInput layer.
+- `desktop_drag` accepts `endWindow` for cross-window drag; each endpoint resolves in its own
+  window's [0,1] coordinate space.
+- Selection state is now readable: `desktop_snapshot` emits a `selected` token, `desktop_find`
+  returns `isSelected`, and `desktop_snapshot_diff` reports selection changes (UIA
+  SelectionItemPattern.IsSelected).
+
+### Fixed
+- `desktop_scroll_into_view` no longer refuses an off-screen element — the generic off-screen guard
+  wrongly blocked the one tool meant to realize off-screen items.
+
+### Changed
+- Documentation restructured: `README.md` is now a lean router into role-scoped docs (operator
+  manual, agent contract, architecture & safety). Retired the old features-and-safeguards and
+  ops-manual pages.
+- Documented previously-undocumented surface: `FLAUI_MCP_*` environment variables (path overrides +
+  ref-resolution tuning), the full CLI launch-flag set, and tool parameters (`timeoutMs`, `verify`,
+  snapshot dials).
+
 ## [0.15.0] - 2026-07-17
 
 ### Added
