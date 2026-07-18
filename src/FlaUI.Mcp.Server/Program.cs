@@ -7,6 +7,7 @@ using FlaUI.Mcp.Server.Install;
 using FlaUI.Mcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 // Installer verbs run and exit; anything else (including no args) runs the MCP stdio host.
 if (CliRouter.IsInstallerVerb(args))
@@ -25,6 +26,13 @@ if (CliRouter.IsInstallerVerb(args))
 ElevationGuard.WarnIfElevated(ElevationGuard.IsElevated(), Console.Error);
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// MCP stdio: stdout is the JSON-RPC channel — a single framework log line on stdout corrupts the
+// protocol stream, and a strict client (e.g. Antigravity/agy) then refuses to load the server. Route
+// ALL host/framework logs to stderr. (InputAudit/ElevationGuard already write their output to stderr.)
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+
 builder.Services.AddSingleton(ServerOptions.FromArgs(args));
 
 // v0.10.1 intent overlay: the real GDI renderer only when --overlay is on AND the delay is non-zero;

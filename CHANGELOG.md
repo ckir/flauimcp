@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.16.1] - 2026-07-18
+
+### Fixed
+- The MCP server wrote .NET host log lines to **stdout**, corrupting the JSON-RPC stream. Strict MCP
+  clients (Antigravity / agy) refused to load the server; lenient clients tolerated it, so the bug
+  shipped unnoticed. All framework/host logs now route to stderr, leaving stdout as pure JSON-RPC —
+  this restores the agy (Antigravity) integration, which had never actually worked over a strict client.
+
 ## [0.16.0] - 2026-07-18
 
 ### Added
