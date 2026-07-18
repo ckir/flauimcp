@@ -226,12 +226,14 @@ function Add-ChangelogSection {
         $newContent = $content.TrimEnd() + "`n`n" + $section
     } else {
         $insertAt = $firstSectionLine - 1   # 0-based index of the first '## [' line
-        $before = ($lines[0..($insertAt - 1)] -join "`n").TrimEnd()
+        # Guard the PowerShell negative-range footgun: when the first section is line 1, $insertAt is 0 and
+        # $lines[0..($insertAt-1)] is $lines[0..-1], which WRAPS to the whole array (duplicating the file).
+        $before = if ($insertAt -eq 0) { '' } else { ($lines[0..($insertAt - 1)] -join "`n").TrimEnd() }
         $after  = ($lines[$insertAt..($lines.Count - 1)] -join "`n")
-        $newContent = "$before`n`n$section`n$after"
+        $newContent = if ($before) { "$before`n`n$section`n$after" } else { "$section`n$after" }
     }
 
-    Set-Content -Path $ChangelogPath -Value $newContent -NoNewline -Encoding UTF8
+    Set-FilePreservingBom -Path $ChangelogPath -Content $newContent
 }
 
 function Get-ChangelogPrompt {

@@ -259,6 +259,25 @@ All notable changes to this project are documented here.
         (Get-Content $empty -Raw) | Should -Match '## \[0\.1\.0\] - 2026-07-01'
         Remove-Item $empty -Force
     }
+
+    It 'does not duplicate the file when the CHANGELOG has no preamble before the first section' {
+        $noPreamble = Join-Path ([IO.Path]::GetTempPath()) ("nopreamble_" + [guid]::NewGuid() + '.md')
+        @'
+## [0.1.0] - 2026-01-01
+
+### Added
+- First thing.
+'@ | Set-Content $noPreamble
+
+        Add-ChangelogSection -ChangelogPath $noPreamble -Version '0.2.0' -Body "### Added`n- new thing" -Date (Get-Date '2026-07-19')
+        $result = Get-Content $noPreamble -Raw
+
+        $result | Should -Match '## \[0\.2\.0\] - 2026-07-19'
+        ([regex]::Matches($result, '\[0\.1\.0\]')).Count | Should -Be 1
+        $result.IndexOf('[0.2.0]') | Should -BeLessThan $result.IndexOf('[0.1.0]')
+
+        Remove-Item $noPreamble -Force
+    }
 }
 
 Describe 'Get-ChangelogPrompt' {
