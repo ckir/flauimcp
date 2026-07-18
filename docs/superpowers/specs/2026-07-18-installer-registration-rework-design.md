@@ -41,6 +41,26 @@ content is the Claude marketplace source dir) containing:
   `flaui-mcp-marketplace`. These exact strings are reused verbatim across the `.mcp.json`, the marketplace
   manifest, every `claude plugin …` argv, and the read-back — never re-derived.
 
+**These files are NOT statically packaged — CliRouter.cs GENERATES them at runtime (panel R3, code-grounded).**
+`installer/flaui-mcp.iss:25` `[Files]` ships ONLY `flaui-mcp.exe`; nothing else is in the setup payload. The
+"ALREADY deployed" `plugin.json` + `skills/` above are deployed by the C# at RUNTIME (today: `ClaudeSkillDeployer`
+writes the skill during `flaui-mcp install`), not by Inno. So the two NEW manifests (`.mcp.json`,
+`.claude-plugin/marketplace.json`) must likewise be WRITTEN TO DISK by `CliRouter.cs` into the staging dir at
+install time (extend the existing deployer, or add a plugin-staging step). If the spec's port assumes the files
+are already on disk, the staging dir is empty and `agy plugin install`/`claude plugin marketplace add` load
+nothing (silent false-success). Success criterion: after `install`, assert the staging dir actually contains all
+four artifacts on disk.
+
+**Exact current code paths to change in `CliRouter.cs.Apply()` (panel R3 — enumerate, don't hand-wave "stop
+writing config"):** the install path today constructs `AgyConfigWriter` (`:249`/`:415`), `ClaudeCodeConfigWriter`
+(`:257`/`:421`), `ClaudeSkillDeployer` (`:259`/`:270`), `ClaudeCollisionRemedy` (`:260`). The rework must specify,
+per class: **REMOVE/REPLACE** `AgyConfigWriter` (hand-writes agy config — the root-cause bug) and
+`ClaudeCodeConfigWriter` (`claude mcp add/remove` — superseded by `claude plugin`); **RE-EVALUATE**
+`ClaudeSkillDeployer` (under the plugin model the skill ships INSIDE the plugin dir — a separate deploy to
+`~/.claude/skills/flaui-mcp` would DUAL-DEPLOY the same skill and risk a collision; decide one home) and
+`ClaudeCollisionRemedy` (may still be wanted to disable stale marketplace copies — keep or fold into the new
+migration). This is NOT a blanket delete-all-four; the plan states the disposition of each.
+
 ## Registration mechanism (replaces all hand-written config)
 `CliRouter.cs` shells out to the agent CLIs (idempotent remove-then-add + read-back verify, porting clavity's
 `plugin-registration.iss` logic to C#). It NO LONGER writes `mcpServers` into any config file.
@@ -59,7 +79,7 @@ strings are grounded in a working installer rather than authored fresh.
   `flaui-mcp@flaui-mcp-marketplace` line is present AND not in a `Disabled`/`Error` state (panel R2: a bare
   substring "present" match is false-GREEN if the plugin lists but failed to load — clavity's oracle accepts the
   substring match, so this active-state check is a cheap hardening beyond it, applied only if `plugin list`
-  surfaces state). The existing Claude-running-clobber guard stays: refuse if Claude Code is running.
+  surfaces state). (On the running-guard, see Constraints — there is NO such guard in the current C# to "keep".)
 
 ### CLI resolution (install-context robustness)
 The installer is PER-USER, non-elevated (`installer/flaui-mcp.iss:13` `PrivilegesRequired=lowest`; installs to
@@ -85,6 +105,13 @@ UNVERIFIED agy confabulation-risk and is NOT relied upon here. Validate it durin
 a bonus simplification for the agy path, not a design dependency.)
 
 ## Migration (existing installs)
+**ORDER: the migration sweep runs BEFORE the new registration, never after (panel R3).** On the Claude side the
+two are cross-namespace-safe (`claude mcp remove` touches the MCP-server list, not `claude plugin` registrations —
+verified `ClaudeCodeConfigWriter.cs:7`), so order is only hygiene there. On the AGY side it is a real clobber
+risk: `agy plugin install` copies the plugin into agy's managed plugins dir, which may BE `~/.gemini/config/
+plugins/flaui-mcp/` — the exact path the sweep deletes to clean the stray hand-dropped `.mcp.json`. Sweep-after-
+register would delete the freshly installed plugin. So on a re-install: sweep first, then register.
+
 On install, sweep any LEGACY hand-written `flaui-mcp` entries so the old and new mechanisms don't collide
 (the duplicate-server failure observed live). Delete a `flaui-mcp` `mcpServers` block from, if present:
 `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json`, and the Claude side via exactly `claude mcp
@@ -97,10 +124,17 @@ Idempotent: absent entries are a no-op.
 
 ## Uninstall
 ORDER MATTERS (panel R1): deregister via the CLIs FIRST — `agy plugin uninstall flaui-mcp`,
-`claude plugin uninstall flaui-mcp`, `claude plugin marketplace remove <marketplace>` — and delete the staged
-plugin dir ONLY if deregistration succeeded. If a CLI deregister FAILS, LEAVE the files and emit a loud
+`claude plugin uninstall flaui-mcp`, `claude plugin marketplace remove flaui-mcp-marketplace` — and delete the
+staged plugin dir ONLY if deregistration succeeded. If a CLI deregister FAILS, LEAVE the files and emit a loud
 manual-cleanup warning: deleting a still-referenced marketplace/plugin dir leaves the agent pointing at a missing
 dir → startup errors. "Fail-open" means uninstall still COMPLETES (never blocks); it does NOT mean delete-regardless.
+
+**The conditional delete lives in `CliRouter.cs`, NOT Inno (panel R3, code-grounded).** `installer/flaui-mcp.iss`
+`[UninstallRun]:44-47` blindly invokes `flaui-mcp uninstall --agent all` and waits — Inno cannot see the per-CLI
+exit codes gathered inside C#, so it CANNOT make the delete conditional. Therefore `CliRouter.cs`'s `uninstall`
+verb must itself do the `Directory.Delete(stagingDir, recursive)` after a successful deregister. Note the staging
+dir sits UNDER `{app}` (`{localappdata}\Programs\FlaUI.Mcp\plugin\`) but is runtime-generated, so it is NOT in
+Inno's `[Files]` manifest — Inno will NOT remove it on its own; without the C# delete it is orphaned.
 
 ## Documentation update (IN SCOPE — user-added)
 The operator-facing docs describe the OLD hand-written mechanism and MUST be rewritten to the plugin model in
@@ -145,7 +179,12 @@ each line citation again at plan-authoring time (PLAN-vs-SPEC discipline) — li
 ## Constraints
 - Never rename the literal flags `--read-only-mode` / `--allow-shells`.
 - The `flaui-mcp` MCP server command/exe path is unchanged; only HOW it's registered changes.
-- Keep the Claude-running clobber guard (refuse registration while Claude Code is running).
+- Claude-running guard: there is NO such guard in the current `CliRouter.cs` (verified panel R3 — no process/
+  running check anywhere in `src/FlaUI.Mcp.Server/Install/`; the earlier "keep the existing guard" was wrong).
+  Decide during planning: the old `claude mcp` write-clobber concern is largely moot under `claude plugin` (the
+  CLI mediates its own registry writes), so the likely answer is DROP it, not port it — but if a guard is wanted,
+  port a `claude`-process check (clavity has one in `plugin-registration.iss`). Do NOT claim to "keep" a
+  non-existent guard.
 - Preserve the generic-MCP and stdout-fix behavior already shipped in 0.16.x.
 
 ## Testing
