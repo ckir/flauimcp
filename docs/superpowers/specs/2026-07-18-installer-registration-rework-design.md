@@ -60,16 +60,28 @@ four artifacts on disk.
 **Exact current code paths to change in `CliRouter.cs.Apply()` (panel R3 — enumerate, don't hand-wave "stop
 writing config"):** the install path today constructs `AgyConfigWriter` (`:249`/`:415`), `ClaudeCodeConfigWriter`
 (`:257`/`:421`), `ClaudeSkillDeployer` (`:259`/`:270`), `ClaudeCollisionRemedy` (`:260`). The rework must specify,
-per class: **REMOVE/REPLACE** `AgyConfigWriter` (hand-writes agy config — the root-cause bug) and
-`ClaudeCodeConfigWriter` (`claude mcp add/remove` — superseded by `claude plugin`); **RE-EVALUATE**
+per class: **RETIRE THE `Install()` (write) PATH, but REUSE `Uninstall()` AS THE MIGRATION SWEEP (panel R5)** for
+`AgyConfigWriter` (its `Install()` hand-writes agy config — the root-cause bug — is dropped; its `Uninstall()`
+`:250` already deletes the legacy agy `mcpServers` block and is exactly the Migration §'s cleanup — INVOKE it,
+extended to cover BOTH `~/.gemini/settings.json` and `~/.gemini/config/mcp_config.json`, rather than rewrite the
+deletion from scratch) and `ClaudeCodeConfigWriter` (drop its `Install()` `claude mcp add`; its `Uninstall()`
+`:258` = `claude mcp remove flaui-mcp`, which IS the Claude-side migration sweep — invoke it). NOTE the
+contradiction this resolves: "remove the classes" vs "the migration must delete the config those classes wrote"
+— the deletion logic lives IN their `Uninstall()`, so keep that, retire only the write path; **RE-EVALUATE**
 `ClaudeSkillDeployer` — **determinate, NOT a "decide later" (panel R4):** REPOINT it to write the skill into the
 staging plugin dir (`{app}\plugin\skills\driving-flaui-mcp\`) so the skill ships INSIDE the plugin and both
 `agy plugin install` and `claude plugin install` distribute it; DROP the separate legacy deploy to
 `~/.claude/skills/flaui-mcp`. Leaving the deployer on the legacy path is a silent-break landmine: the staging dir
 would lack `skills/`, `agy plugin install` copies an incomplete plugin, and agy gets the MCP server with NO
-driving skill (Claude, still on the legacy path, would look fine — masking it). `ClaudeCollisionRemedy` — may
-still be wanted to disable stale marketplace copies; keep or fold into the new migration (state which in the
-plan). This is NOT a blanket delete-all-four; the plan states the disposition of each.
+driving skill (Claude, still on the legacy path, would look fine — masking it). `ClaudeCollisionRemedy` —
+**determinate ordering + self-exclusion (panel R5):** today `remedy.Apply()` runs AFTER registration (`:276`) and
+disables an "incumbent colliding" marketplace copy; under the new model, if its matcher matches
+`flaui-mcp-marketplace` it would disable the plugin we JUST registered (self-clobber). So (a) run its disable
+BEFORE the new `claude plugin marketplace add` (as part of the pre-register migration sweep), and (b) its matcher
+must EXCLUDE `flaui-mcp-marketplace` — only ever disable LEGACY/`skills-dir` copies, never our own new plugin.
+Do NOT simply delete the class: its `Apply()`/`Restore()` pair is stateful (a disable-marker that uninstall's
+`Restore()` `:288` re-enables) — preserve that disable/restore semantics wherever the logic lands.
+This is NOT a blanket delete-all-four; the plan states the disposition of each.
 
 ## Registration mechanism (replaces all hand-written config)
 `CliRouter.cs` shells out to the agent CLIs (idempotent remove-then-add + read-back verify, porting clavity's
@@ -114,6 +126,15 @@ quoted blob as the executable name and fails. `--scope user` is TWO elements (`"
 copy clavity's `> "<tmp>" 2>&1` shell redirect — that is Inno-specific; through `ArgumentList` a `>` is a literal
 argument, not a redirect. It is also UNNECESSARY: `ProcessRunner` already captures both streams via pipes. The
 seam (`ICliRunner`) wraps this single orchestration.
+
+**Agent-presence gating — the new agy CLI path needs it too (panel R5).** The claude branch already fails SOFT on
+a missing CLI: `CliRouter.cs:269` `if (r.Change == AgentChange.NotFound) return r;` returns gracefully (skip that
+agent, don't abort), so a single-agent machine installs fine today. But the OLD agy path only WROTE a file (no
+CLI needed); the NEW `agy plugin install` path introduces a CLI dependency the old path lacked. So the agy branch
+must gain the SAME NotFound gate: if `agy` is absent, skip + report "agy not found, skipped" — NEVER a fatal
+abort, and NEVER a silent success. `--agent all` on an agy-only OR claude-only box must install the present agent
+and cleanly skip the absent one. (This is the correct reading of "record a clear detail rather than silently
+succeeding": it applies to a PRESENT-but-failing CLI, not an ABSENT agent, which is a legitimate skip.)
 (NOTE: relying on the CLI is the design; a plugin-dir "drop + agent auto-discovery" — agy claims agy
 auto-discovers a plugin dir dropped in `~/.gemini/config/plugins/` with no CLI call, Claude does not — is
 UNVERIFIED agy confabulation-risk and is NOT relied upon here. Validate it during implementation; if true, it is
