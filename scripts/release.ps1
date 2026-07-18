@@ -135,7 +135,7 @@ function Edit-InEditor {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$InitialContent)
 
-    $tmp = [IO.Path]::GetTempFileName() -replace '\.tmp$', '.md'
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("flaui-mcp-editor-" + [Guid]::NewGuid().ToString('N') + ".md")
     Set-Content -Path $tmp -Value $InitialContent -NoNewline -Encoding UTF8
     $editor = $env:EDITOR
     if ([string]::IsNullOrWhiteSpace($editor)) { $editor = 'notepad' }
@@ -159,22 +159,25 @@ function Invoke-ChangelogLlm {
         [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
     } -ArgumentList $Prompt, $Model
 
-    $finished = Wait-Job -Job $job -Timeout $TimeoutSeconds
-    if (-not $finished) {
-        Stop-Job $job | Out-Null
-        Remove-Job $job -Force | Out-Null
-        return [pscustomobject]@{ Success = $false; Body = $null; Reason = "claude -p timed out after ${TimeoutSeconds}s" }
+    try {
+        $finished = Wait-Job -Job $job -Timeout $TimeoutSeconds
+        if (-not $finished) {
+            Stop-Job $job | Out-Null
+            return [pscustomobject]@{ Success = $false; Body = $null; Reason = "claude -p timed out after ${TimeoutSeconds}s" }
+        }
+
+        $result = Receive-Job $job
+
+        if (-not $result -or $result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.Output)) {
+            $reason = if ($result) { "claude -p exited $($result.ExitCode): $($result.Output)" } else { "claude -p produced no result" }
+            return [pscustomobject]@{ Success = $false; Body = $null; Reason = $reason }
+        }
+
+        [pscustomobject]@{ Success = $true; Body = $result.Output.Trim(); Reason = $null }
     }
-
-    $result = Receive-Job $job
-    Remove-Job $job -Force | Out-Null
-
-    if (-not $result -or $result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.Output)) {
-        $reason = if ($result) { "claude -p exited $($result.ExitCode): $($result.Output)" } else { "claude -p produced no result" }
-        return [pscustomobject]@{ Success = $false; Body = $null; Reason = $reason }
+    finally {
+        if ($job) { Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue }
     }
-
-    [pscustomobject]@{ Success = $true; Body = $result.Output.Trim(); Reason = $null }
 }
 
 function Get-OrCreateDraft {
@@ -352,8 +355,8 @@ function Resolve-HalfFinishedRelease {
     # ever" (including the -Yes hard-fail's exit 1, which is itself a mutation-adjacent unattended
     # decision), so it must win to preserve the read-only guarantee.
     if ($WhatIf) {
-        Write-Host "[-WhatIf] Half-finished release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land). -WhatIf makes no changes; re-run without -WhatIf to reconcile."
-        return
+        Write-Host "[-WhatIf] Half-finished release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land). -WhatIf makes no changes; re-run without -WhatIf to reconcile. (Preview stops here — a real run reconciles and exits before computing a new release.)"
+        exit 0
     }
 
     if ($Yes) {
