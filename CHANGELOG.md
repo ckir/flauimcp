@@ -3,6 +3,11 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-07-18
+
+### Fixed
+- The release automation script (`release.ps1`) was aborting with "zero commits in range," blocking all releases despite pending changes. A PowerShell if-expression that built the git log range argument returned a single-element array, but automatic enumeration converted it to a scalar string ΓÇö the splatted result then became individual characters passed to `git log`, returning nothing. Wrapping the if-expression in `@()` preserves it as an array and restores correct commit enumeration. This eluded unit tests (which inject commits directly) and `-WhatIf` (which exits before the zero-commit check).
+
 ## [0.16.1] - 2026-07-18
 
 ### Fixed
@@ -436,4 +441,3 @@ All notable changes to this project are documented here. This project adheres to
 
 <!-- Releases before 0.3.0 (window management + the perception/snapshot foundation) predate this
 changelog; see the tagged history and ROADMAP.md for that lineage. -->
-
