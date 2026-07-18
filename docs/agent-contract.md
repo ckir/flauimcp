@@ -131,10 +131,6 @@ For apps lacking out-of-the-box trees. Lease-exempt.
 - **Targeted Keystrokes:** Pass a `ref` or `selector` to `desktop_key` to guarantee focus is set on a specific element immediately before sending the keystroke.
 - **Subtree Diffing & Watching:** Pass `scope` (an element ref) to `desktop_snapshot_diff` or `desktop_watch` to constrain tree diffs and `structure_changed` events to a specific subset of the window, saving memory and CPU.
 
-## Verification & Safety
-
-- **TOCTOU Guards:** Input tools will abort with `ElementDisappearedDuringAction` if the target window loses foreground during the input sequence.
-
 ## Event Streaming Delivery
 
 Events are buffered and can be fetched via `desktop_drain_events`, or delivered via push notifications (`notifications/flaui/desktop_event`) if the MCP client supports it. Do not rely on both in the same host.
@@ -160,3 +156,4 @@ Event payload shape:
 - Screenshots do not handle occlusion; target windows must be focused to guarantee full visibility.
 - Credential stores (matched by process name) deny snapshot and grid cell reads.
 - Elements with no `AutomationId` and no `Name` cannot be re-resolved after recycling. Fall back to `desktop_click_at`.
+- Input tools abort with `ElementDisappearedDuringAction` if the target loses foreground mid-sequence (a TOCTOU guard).
