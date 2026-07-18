@@ -154,6 +154,25 @@ Pure PowerShell (no `just` dependency; repo already uses standalone `.ps1`):
 - `-Version X.Y.Z` / `-Bump {major|minor|patch}` — override the computed version/level (escape hatch).
 - `-Model <name>` — override the `claude -p` model.
 
+### Unattended (`-Yes`) contract
+
+`-Yes` means the script NEVER blocks on stdin. Every interactive gate has a deterministic non-interactive
+resolution — adding `-Yes` without auditing all of them would hang the pipeline (agy panel R3). The complete map:
+
+| Interactive gate | `-Yes` resolution |
+|---|---|
+| Draft review (accept/edit/regen/abort) | auto-accept the LLM draft |
+| Final "Cut release?" confirmation | proceed (skip) |
+| Resume a surviving temp draft | auto-resume (reuse the existing draft) |
+| LLM timeout/error → `$EDITOR` fallback | **hard-fail `exit 1`** (no interactive manual write) |
+| Zero-commit range → `$EDITOR` fallback | **hard-fail `exit 1`** (nothing to summarize) |
+| Accepted-body validation failure | **hard-fail `exit 1`** (the loop-back-to-Review is interactive-only) |
+| Half-finished reconciliation (resume/re-push/reset) | **hard-fail `exit 1`**, printing the manual reconciliation steps (never auto-mutate git history unattended) |
+
+So under `-Yes` the run either completes cleanly or exits non-zero with a clear reason — it never opens an
+editor and never spins. The loop-back / editor-fallback behaviors described elsewhere are the INTERACTIVE-mode
+behaviors; `-Yes` overrides them per this table.
+
 ## release.yml change
 
 The `Create GitHub Release` step sources its **body** from the top CHANGELOG section instead of GitHub's
