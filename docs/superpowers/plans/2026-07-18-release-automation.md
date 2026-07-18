@@ -541,19 +541,21 @@ function Set-ProjectVersion {
     $issPath    = Join-Path $RepoRoot 'installer/flaui-mcp.iss'
     $pluginPath = Join-Path $RepoRoot 'plugins/flaui-mcp/.claude-plugin/plugin.json'
 
+    # Guard on element EXISTENCE (not "string changed"): re-releasing the version already in the files
+    # (a pre-bumped/first-use case, see Task 8) replaces target->target — a safe no-op that must NOT throw.
     $csproj = Get-Content $csprojPath -Raw
+    if ($csproj -notmatch '<Version>\d+\.\d+\.\d+</Version>') { throw "Set-ProjectVersion: no <Version> element found in $csprojPath" }
     $newCsproj = [regex]::Replace($csproj, '<Version>\d+\.\d+\.\d+</Version>', "<Version>$Version</Version>")
-    if ($newCsproj -eq $csproj) { throw "Set-ProjectVersion: no <Version> element replaced in $csprojPath" }
     Set-Content -Path $csprojPath -Value $newCsproj -NoNewline -Encoding UTF8
 
     $iss = Get-Content $issPath -Raw
+    if ($iss -notmatch '#define AppVersion "\d+\.\d+\.\d+"') { throw "Set-ProjectVersion: no AppVersion found in $issPath" }
     $newIss = [regex]::Replace($iss, '#define AppVersion "\d+\.\d+\.\d+"', "#define AppVersion `"$Version`"")
-    if ($newIss -eq $iss) { throw "Set-ProjectVersion: no AppVersion replaced in $issPath" }
     Set-Content -Path $issPath -Value $newIss -NoNewline -Encoding UTF8
 
     $plugin = Get-Content $pluginPath -Raw
+    if ($plugin -notmatch '"version":\s*"\d+\.\d+\.\d+"') { throw "Set-ProjectVersion: no version key found in $pluginPath" }
     $newPlugin = [regex]::Replace($plugin, '"version":\s*"\d+\.\d+\.\d+"', "`"version`": `"$Version`"")
-    if ($newPlugin -eq $plugin) { throw "Set-ProjectVersion: no version key replaced in $pluginPath" }
     Set-Content -Path $pluginPath -Value $newPlugin -NoNewline -Encoding UTF8
 
     Get-VersionsInSync -RepoRoot $RepoRoot
@@ -832,7 +834,7 @@ Describe 'Get-ChangelogPrompt' {
     It 'instructs body-only output and includes the style exemplar and commit list' {
         $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $Commits -DiffText 'd' -DiffStatText 's' -StyleExemplar $Exemplar
         $p | Should -Match 'Output ONLY'
-        $p | Should -Match 'no.*heading'
+        $p | Should -Match '(?s)no.*heading'
         $p | Should -Match ([regex]::Escape($Exemplar))
         $p | Should -Match '- feat\(release\): add release script'
         $p | Should -Match '- fix\(server\): correct a leak'
