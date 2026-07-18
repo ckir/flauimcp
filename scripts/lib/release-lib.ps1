@@ -289,7 +289,8 @@ function Invoke-Gate {
             git -C $Root diff --quiet -- plugins/flaui-mcp
             $global:LASTEXITCODE = $LASTEXITCODE
             'plugin snapshot regenerated and diffed against the working tree'
-        }
+        },
+        [switch]$SkipPluginDrift
     )
 
     $checks = @()
@@ -307,14 +308,16 @@ function Invoke-Gate {
     $sync = Get-VersionsInSync -RepoRoot $RepoRoot
     $checks += [pscustomobject]@{ Name = 'VersionSync'; Passed = $sync.InSync; Detail = $sync.Message }
 
-    & $PluginDriftCheck $RepoRoot | Out-Null
-    $driftPassed = ($LASTEXITCODE -eq 0)
-    $driftDetail = if ($driftPassed) {
-        'no drift'
-    } else {
-        'plugins/flaui-mcp drifted from .claude source — scripts/build-plugin.ps1 was run and regenerated it; review + commit the diff'
+    if (-not $SkipPluginDrift) {
+        & $PluginDriftCheck $RepoRoot | Out-Null
+        $driftPassed = ($LASTEXITCODE -eq 0)
+        $driftDetail = if ($driftPassed) {
+            'no drift'
+        } else {
+            'plugins/flaui-mcp drifted from .claude source — scripts/build-plugin.ps1 was run and regenerated it; review + commit the diff'
+        }
+        $checks += [pscustomobject]@{ Name = 'PluginDrift'; Passed = $driftPassed; Detail = $driftDetail }
     }
-    $checks += [pscustomobject]@{ Name = 'PluginDrift'; Passed = $driftPassed; Detail = $driftDetail }
 
     [pscustomobject]@{
         Passed = -not [bool]($checks | Where-Object { -not $_.Passed })

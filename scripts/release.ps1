@@ -445,7 +445,7 @@ try {
         if ($ans -notmatch '^[Yy]') { Write-Host "Aborted — re-run with -Version X.Y.Z to pin the release version."; exit 0 }
     }
 
-    $gate = Invoke-Gate -RepoRoot $RepoRoot
+    $gate = Invoke-Gate -RepoRoot $RepoRoot -SkipPluginDrift:$WhatIf
     foreach ($c in $gate.Checks) {
         $status = if ($c.Passed) { 'PASS' } else { 'FAIL' }
         Write-Host "[$status] $($c.Name): $($c.Detail)"
@@ -460,6 +460,7 @@ try {
     if ($WhatIf) {
         Write-Host "`n[-WhatIf] Prompt that WOULD be sent to 'claude -p --model $Model':`n"
         Write-Host $prompt
+        Write-Host "`n[-WhatIf] plugin-drift check was skipped in preview (no writes); the real run verifies it."
         Write-Host "`n[-WhatIf] No commit, tag, or push will happen. Exiting without side effects."
         exit 0
     }

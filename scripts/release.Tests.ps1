@@ -350,4 +350,10 @@ Describe 'Invoke-Gate' {
         $result.Passed | Should -BeFalse
         ($result.Checks | Where-Object Name -eq 'PluginDrift').Passed | Should -BeFalse
     }
+
+    It 'skips the PluginDrift check entirely when -SkipPluginDrift is passed' {
+        $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $Pass -TestCheck $Pass -SkipPluginDrift
+        ($result.Checks | Where-Object Name -eq 'PluginDrift') | Should -BeNullOrEmpty
+        $result.Passed | Should -BeTrue
+    }
 }
