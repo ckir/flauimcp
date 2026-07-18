@@ -21,30 +21,20 @@ dotnet publish src/FlaUI.Mcp.Server -c Release -r win-x64 --self-contained `
 
 ## Cutting a release
 
-`scripts/release.ps1` is the one-command release tool. It computes the next semver from
-conventional commits since the last `v*` tag, then gates the release (`dotnet build -c Release`,
-the unit test suite, a 3-file version-sync check, and a plugin-artifact drift check), drafts the
-CHANGELOG body with `claude -p` (the script owns the `## [X.Y.Z] - date` heading), lets you review
-the draft, then commits `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and runs
-`git push --atomic origin master vX.Y.Z`.
+`scripts/release.ps1` handles the full release lifecycle. It computes semver from conventional commits since the last `v*` tag and runs the pre-flight gate (`dotnet build -c Release`, tests, 3-file version-sync, plugin-artifact drift). It drafts the CHANGELOG body via `claude -p` (the script owns the `## [X.Y.Z] - date` heading) and pauses for your review. Finally, it commits `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and runs `git push --atomic origin master vX.Y.Z`.
 
 ```powershell
-pwsh -File scripts/release.ps1 -WhatIf   # preview: runs the gate, prints the LLM prompt; no writes or push
-pwsh -File scripts/release.ps1           # cut the release
+pwsh -File scripts/release.ps1 -WhatIf   # Preview gate and LLM prompt. No LLM calls, no writes.
+pwsh -File scripts/release.ps1           # Cut the release.
 ```
 
-Flags:
-
-| Flag | What it does |
+| Flag | Description |
 |---|---|
-| `-Help`, `-H`, `-?` | Print usage and exit. No side effects. |
-| `-WhatIf` | Preview only: runs the gate and prints the changelog-draft prompt; makes no writes, never calls the LLM. |
-| `-Yes`, `-y` | Unattended: auto-accepts the changelog draft and the final confirmation; other interactive gates hard-fail instead of blocking. |
-| `-Version X.Y.Z` | Pin the release to this exact version instead of computing one. |
-| `-Bump major\|minor\|patch` | Force a bump level from the last tag instead of computing it from commits. |
-| `-Model <name>` | The `claude -p` model used for the changelog draft. Default: `haiku`. |
+| `-Help`, `-H`, `-?` | Print usage and exit. |
+| `-WhatIf` | Preview gate and prompt. No writes, never calls the LLM. |
+| `-Yes`, `-y` | Unattended: auto-accept draft and confirmation. Interactive gates hard-fail instead of blocking. |
+| `-Version X.Y.Z` | Pin the release to this exact version. |
+| `-Bump major\|minor\|patch` | Force a bump level from the last tag. |
+| `-Model <name>` | `claude -p` model used for the draft. Default: `haiku`. |
 
-Pushing the `vX.Y.Z` tag triggers the release workflow
-([`.github/workflows/release.yml`](../.github/workflows/release.yml)), which builds the exe and
-the Inno Setup installer and publishes them — with checksums — to a GitHub Release, sourcing the
-release body from the top section of `CHANGELOG.md`.
+Pushing the `vX.Y.Z` tag triggers `.github/workflows/release.yml`. CI builds the executable and the Inno Setup installer, generates checksums, and publishes a GitHub Release using the top section of `CHANGELOG.md` as the body.
