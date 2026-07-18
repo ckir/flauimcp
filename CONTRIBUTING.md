@@ -3,13 +3,12 @@
 Thanks for your interest! FlaUI.Mcp welcomes **code contributions — especially new MCP tools**.
 This guide gets you from clone to a mergeable PR.
 
-> **License & CLA (read first).** FlaUI.Mcp is [PolyForm Noncommercial](LICENSE); the maintainer also
-> sells commercial licenses. So contributions require signing the **CLA** ([CLA.md](CLA.md)), granting
-> the maintainer the rights needed to relicense your contribution commercially. **Automated CLA
-> enforcement isn't live yet** — the bot workflow (`.github/workflows/cla.yml`) exists but its PR
-> triggers are disabled pending legal review and PAT provisioning, so the maintainer verifies your
-> sign-off manually on each PR for now. If you can't sign a CLA for a non-OSI project, that's an honest
-> deal-breaker — no hard feelings.
+> **License & CLA.** FlaUI.Mcp is [PolyForm Noncommercial](LICENSE); the maintainer also sells commercial
+> licenses. Contributions require signing the [CLA](CLA.md), granting commercial-relicensing rights. If you
+> can't sign a CLA for a non-OSI project, that's an honest deal-breaker — no hard feelings.
+>
+> Automated CLA enforcement (`.github/workflows/cla.yml`) isn't live yet — the maintainer verifies sign-offs
+> manually on each PR.
 
 ## Dev setup
 
@@ -55,9 +54,11 @@ FlaUI.Mcp tools follow one regular pattern:
    ./scripts/new-tool.ps1 -Name DesktopFoo -ReadOnly  # safe read
    ```
    This stamps a method stub into a `Tools` class and a matching test file. Add `-WhatIf` to preview.
-   (Scaffolder tests use Pester 5.8.0 — CI and `DevelopersCockpit.ps1` pin this version:
-   `Install-Module Pester -RequiredVersion 5.8.0 -Scope CurrentUser -Force` if you don't have it,
-   then run with `Invoke-Pester -Path scripts/`.)
+   Scaffolder tests require Pester 5.8.0 (pinned by CI and `DevelopersCockpit.ps1`). To run them:
+   ```powershell
+   Install-Module Pester -RequiredVersion 5.8.0 -Scope CurrentUser -Force
+   Invoke-Pester -Path scripts/
+   ```
 2. **Fill the stub.** A tool is a method on a `[McpServerToolType] public sealed class XxxTools` in
    `src/FlaUI.Mcp.Server/Tools/`, annotated `[McpServerTool(ReadOnly = true | Destructive = true),
    Description("…")]`. The MCP SDK **auto-discovers** it — no registration to edit.
