@@ -136,17 +136,26 @@ function Edit-InEditor {
     param([Parameter(Mandatory)][string]$InitialContent)
 
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("flaui-mcp-editor-" + [Guid]::NewGuid().ToString('N') + ".md")
-    Set-Content -Path $tmp -Value $InitialContent -NoNewline -Encoding UTF8
-    $editor = $env:EDITOR
-    if ([string]::IsNullOrWhiteSpace($editor)) { $editor = 'notepad' }
-    # Split so an $EDITOR carrying arguments (e.g. 'code --wait', 'subl -w') isn't treated as one exe name.
-    $editorParts = $editor.Trim() -split '\s+'
-    $editorExe   = $editorParts[0]
-    $editorArgs  = if ($editorParts.Count -gt 1) { $editorParts[1..($editorParts.Count - 1)] } else { @() }
-    & $editorExe @editorArgs $tmp | Out-Null
-    $result = Get-Content $tmp -Raw
-    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-    $result
+    try {
+        Set-Content -Path $tmp -Value $InitialContent -NoNewline -Encoding UTF8
+        $editor = $env:EDITOR
+        if ([string]::IsNullOrWhiteSpace($editor)) { $editor = 'notepad' }
+        # Parse $EDITOR into exe + args, respecting a QUOTED path (e.g. '"C:\Program Files\...\code.exe" --wait')
+        # as well as a bare command with flags ('code --wait'); a naive whitespace split shatters quoted paths.
+        $editor = $editor.Trim()
+        if ($editor -match '^\s*"([^"]+)"\s*(.*)$') {
+            $editorExe = $Matches[1]; $editorRest = $Matches[2].Trim()
+        } else {
+            $editorParts = $editor -split '\s+', 2
+            $editorExe = $editorParts[0]; $editorRest = if ($editorParts.Count -gt 1) { $editorParts[1].Trim() } else { '' }
+        }
+        $editorArgs = if ($editorRest) { $editorRest -split '\s+' } else { @() }
+        & $editorExe @editorArgs $tmp | Out-Null
+        Get-Content $tmp -Raw
+    }
+    finally {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-ChangelogLlm {
