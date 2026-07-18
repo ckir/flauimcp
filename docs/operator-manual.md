@@ -35,7 +35,12 @@ flaui-mcp install --agent all
 
 ## Register with Claude Code
 
-The installer generates a unified plugin (server config + `driving-flaui-mcp` skill) into a staging dir at `{app}\plugin`, then registers it with Claude Code by running `claude plugin marketplace add "<staging-dir>" --scope user` followed by `claude plugin install flaui-mcp@flaui-mcp-marketplace --scope user`. Claude references the staging dir in place — it does not copy it.
+The installer generates a unified plugin — server config + `driving-flaui-mcp` skill — into `{app}\plugin`, then registers it with Claude Code:
+```powershell
+claude plugin marketplace add "{app}\plugin" --scope user
+claude plugin install flaui-mcp@flaui-mcp-marketplace --scope user
+```
+Claude references the staging dir in place; it does not copy it.
 
 If you installed Claude Code *after* `flaui-mcp`, run:
 ```powershell
@@ -45,7 +50,7 @@ Restart Claude Code to load the plugin. Check registration status with `flaui-mc
 
 ## agy (Antigravity) parity
 
-The installer registers the same staging dir with agy via `agy plugin install "<staging-dir>"`; agy copies the dir into its own managed plugins location. Restart agy to load it. Both agents share the identical driving skill versioned with the binary.
+Same plugin, registered with agy via `agy plugin install "{app}\plugin"` — agy copies it into its own managed plugins dir. Restart agy to load it. Both agents run the identical skill, versioned with the binary.
 
 ## CLI reference
 
@@ -155,7 +160,7 @@ Mutative actions leave an audit log entry. If a selector resolves an element, th
 
 ## What the installer changes
 
-The installer writes NO agent MCP config file by hand. It generates the unified plugin into the staging dir, then registers it via each agent's own CLI, which owns writing its config.
+The installer hand-writes NO agent config. It generates the plugin; each agent's own CLI registers it and owns its config.
 
 | Target | Change |
 |---|---|
@@ -165,7 +170,12 @@ The installer writes NO agent MCP config file by hand. It generates the unified 
 
 ## Uninstall
 
-Uninstalling deregisters via each agent's CLI first (`claude plugin marketplace remove flaui-mcp-marketplace`, `agy plugin uninstall flaui-mcp`), then removes files and reverts configuration entries. It leaves unrelated settings untouched. The shared staging dir is deleted only on a full (`--agent all`) uninstall, and only once deregistration on both agents succeeded; if deregistration fails, the staging dir is left in place and a warning is surfaced via the uninstaller instead of guessing.
+Uninstall deregisters via each agent's CLI first, then removes files:
+```powershell
+claude plugin marketplace remove flaui-mcp-marketplace
+agy plugin uninstall flaui-mcp
+```
+The shared staging dir is deleted only on a full `--agent all` uninstall, and only if both agents deregistered cleanly. On failure it's left in place and the uninstaller warns. Unrelated settings are untouched.
 
 ### Windows Settings
 Uninstall "FlaUI.Mcp" from **Settings → Apps**. The uninstaller deregisters every agent via its CLI, re-enables any disabled plugins, and deletes the binaries.
