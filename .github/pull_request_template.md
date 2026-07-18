@@ -5,7 +5,7 @@
 ## Checklist
 
 - [ ] I have signed the CLA (see [CLA.md](../CLA.md)) — automated bot enforcement isn't live yet, so the maintainer verifies this manually.
-- [ ] Headless tests pass locally: `dotnet test --filter "Category!=Desktop&Category!=KnownDefect"`.
+- [ ] Headless tests pass locally: `dotnet test --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`.
 - [ ] Desktop tests run locally on an unlocked session — **or N/A** (no UIA-backed behavior).
 - [ ] Build is clean (`dotnet build -c Release`, no new warnings).
 - [ ] **Safety annotation is correct** — safe reads are `[McpServerTool(ReadOnly = true)]`, state-changing tools are `Destructive = true` (a mis-annotation bypasses `--read-only-mode`).

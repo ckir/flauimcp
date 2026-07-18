@@ -24,7 +24,7 @@ There are two tiers:
 
 ```powershell
 # 1. Headless unit tests — THIS is what CI runs on your PR:
-dotnet test -c Release --filter "Category!=Desktop&Category!=KnownDefect"
+dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"
 
 # 2. Desktop/UIA tests — you MUST run these locally, on an UNLOCKED, connected session
 #    (CI can't: GitHub-hosted runners have no interactive desktop):

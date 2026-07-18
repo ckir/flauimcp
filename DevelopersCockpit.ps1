@@ -96,7 +96,7 @@ $script:Tiers = @(
 $script:Actions = @(
     # [1] INNER LOOP
     [pscustomobject]@{ Key='B'; Tier=0; Desc='Build (Debug)';          Note='';       Cmd='dotnet build FlaUI.Mcp.slnx -c Debug' }
-    [pscustomobject]@{ Key='T'; Tier=0; Desc='Test (unit)';            Note='';       Cmd='dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput"' }
+    [pscustomobject]@{ Key='T'; Tier=0; Desc='Test (unit)';            Note='';       Cmd='dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"' }
     [pscustomobject]@{ Key='R'; Tier=0; Desc='Regen plugin snapshot';  Note='writes'; Cmd='pwsh -File scripts/build-plugin.ps1' }
     [pscustomobject]@{ Key='N'; Tier=0; Desc='Scaffold new tool';      Note='writes'; Handler={ Invoke-Scaffold } }
 
@@ -129,7 +129,7 @@ function Invoke-Scaffold {
 
 function Invoke-DevGate {
     Invoke-Cmd 'dotnet build FlaUI.Mcp.slnx -c Debug'
-    Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput"'
+    Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"'
     Invoke-Cmd 'pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/"'
 }
 

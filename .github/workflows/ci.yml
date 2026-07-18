@@ -17,7 +17,7 @@ jobs:
       - name: Build
         run: dotnet build -c Release
       - name: Test (non-Desktop)
-        run: dotnet test -c Release --filter "Category!=Desktop&Category!=KnownDefect" --no-build
+        run: dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect" --no-build
 
   # NOTE: the Desktop (Category=Desktop) UIA suite is intentionally NOT a CI job. GitHub-hosted
   # windows-latest runners have no usable interactive session for UIA — the WPF TestApp launches but

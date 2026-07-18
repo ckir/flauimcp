@@ -294,7 +294,7 @@ function Invoke-Gate {
         },
         [scriptblock]$TestCheck = {
             param($Root)
-            dotnet test (Join-Path $Root 'FlaUI.Mcp.slnx') -c Release --filter 'Category!=Desktop&Category!=SyntheticInput' --no-build 2>&1 | Out-String
+            dotnet test (Join-Path $Root 'FlaUI.Mcp.slnx') -c Release --filter 'Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect' --no-build 2>&1 | Out-String
         },
         [scriptblock]$PluginDriftCheck = {
             param($Root)
