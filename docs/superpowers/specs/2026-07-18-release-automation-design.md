@@ -39,10 +39,11 @@ LLM drafts the one genuinely non-mechanical step (changelog prose); the human do
                    are deterministic); claude -p (headless) generates ONLY the ### body from the
                    commit range + diff, matching the existing style.
 5. Review (human)  accept / regenerate / edit / abort  ← light editorial pass on the body
-6. Commit + push   prepend CHANGELOG · sync 3 version files · commit "chore(release): vX.Y.Z"
+6. Confirm cut     "Cut release vX.Y.Z — commit, tag, and push to origin? [y/N]"  (default N; -y skips)
+7. Commit + push   prepend CHANGELOG · sync 3 version files · commit "chore(release): vX.Y.Z"
                    · git tag vX.Y.Z · git push --atomic origin master vX.Y.Z
                    · print the GitHub Actions run URL to watch CI
-7. CI publishes    release.yml (tag-triggered) builds installer + Release; release BODY
+8. CI publishes    release.yml (tag-triggered) builds installer + Release; release BODY
                    is the top CHANGELOG section (release.yml change), not auto-notes.
 ```
 
@@ -144,10 +145,12 @@ Pure PowerShell (no `just` dependency; repo already uses standalone `.ps1`):
 
 ## CLI flags
 
+- `-Help` / `-H` / `-?` — print usage (flags, the flow, examples) and exit 0. No side-effects, no git/LLM calls.
 - `-WhatIf` — run preconditions + compute + gate, print the target version + gate result + the prompt-context
   that WOULD be sent to `claude -p`. Does NOT call the LLM (a dry-run must incur no paid/slow side-effect) and
   makes no writes (no commit/tag/push).
-- `-AcceptDraft` — skip the interactive review prompt (hands-off cut; trusts the LLM draft).
+- `-Yes` / `-y` — non-interactive/unattended: auto-accept the LLM changelog draft AND skip the final
+  "Cut release?" confirmation. (Supersedes a separate accept-draft flag — one switch turns off all prompts.)
 - `-Version X.Y.Z` / `-Bump {major|minor|patch}` — override the computed version/level (escape hatch).
 - `-Model <name>` — override the `claude -p` model.
 
