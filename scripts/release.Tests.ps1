@@ -207,3 +207,39 @@ All notable changes to this project are documented here.
         Remove-Item $empty -Force
     }
 }
+
+Describe 'Add-ChangelogSection' {
+    BeforeEach {
+        $script:ClPath = Join-Path ([IO.Path]::GetTempPath()) ("changelog_" + [guid]::NewGuid() + '.md')
+        @'
+# Changelog
+
+All notable changes to this project are documented here.
+
+## [0.16.1] - 2026-07-18
+
+### Fixed
+- Something.
+'@ | Set-Content $ClPath
+    }
+    AfterEach { Remove-Item $script:ClPath -Force -ErrorAction SilentlyContinue }
+
+    It 'prepends the new section above the existing ones, preserving the preamble' {
+        Add-ChangelogSection -ChangelogPath $ClPath -Version '0.17.0' -Body "### Added`n- New thing." -Date (Get-Date '2026-07-19')
+        $content = Get-Content $ClPath -Raw
+        $content | Should -Match '(?s)# Changelog.*## \[0\.17\.0\] - 2026-07-19.*### Added.*New thing\..*## \[0\.16\.1\] - 2026-07-18'
+    }
+
+    It 'aborts (throws) when the target version heading already exists' {
+        Add-ChangelogSection -ChangelogPath $ClPath -Version '0.17.0' -Body "### Added`n- New thing." -Date (Get-Date '2026-07-19')
+        { Add-ChangelogSection -ChangelogPath $ClPath -Version '0.17.0' -Body "### Added`n- Different." -Date (Get-Date '2026-07-19') } | Should -Throw
+    }
+
+    It 'appends a section when the file has no existing sections yet' {
+        $empty = Join-Path ([IO.Path]::GetTempPath()) ("emptycl_" + [guid]::NewGuid() + '.md')
+        '# Changelog' | Set-Content $empty
+        Add-ChangelogSection -ChangelogPath $empty -Version '0.1.0' -Body "### Added`n- First." -Date (Get-Date '2026-07-01')
+        (Get-Content $empty -Raw) | Should -Match '## \[0\.1\.0\] - 2026-07-01'
+        Remove-Item $empty -Force
+    }
+}

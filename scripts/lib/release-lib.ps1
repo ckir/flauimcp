@@ -198,3 +198,35 @@ function Get-TopChangelogSection {
     $end = if ($headingIdx.Count -gt $take) { $headingIdx[$take] - 1 } else { $lines.Count - 1 }
     ($lines[$start..$end] -join "`n").TrimEnd()
 }
+
+function Add-ChangelogSection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ChangelogPath,
+        [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
+        [Parameter(Mandatory)][string]$Body,
+        [datetime]$Date = (Get-Date)
+    )
+
+    $heading = "## [$Version] - $($Date.ToString('yyyy-MM-dd'))"
+    $content = Get-Content $ChangelogPath -Raw
+
+    if ($content -match [regex]::Escape($heading)) {
+        throw "Add-ChangelogSection: heading '$heading' already exists in $ChangelogPath — refusing to add a duplicate."
+    }
+
+    $lines = Get-Content $ChangelogPath
+    $firstSectionLine = ($lines | Select-String -Pattern '^## \[' | Select-Object -First 1).LineNumber
+    $section = "$heading`n`n$($Body.Trim())`n"
+
+    if (-not $firstSectionLine) {
+        $newContent = $content.TrimEnd() + "`n`n" + $section
+    } else {
+        $insertAt = $firstSectionLine - 1   # 0-based index of the first '## [' line
+        $before = ($lines[0..($insertAt - 1)] -join "`n").TrimEnd()
+        $after  = ($lines[$insertAt..($lines.Count - 1)] -join "`n")
+        $newContent = "$before`n`n$section`n$after"
+    }
+
+    Set-Content -Path $ChangelogPath -Value $newContent -NoNewline -Encoding UTF8
+}
