@@ -9,6 +9,12 @@ namespace FlaUI.Mcp.Tests.Install;
 // profile. `81dedd7` had to fix tests that wrote into the real ~/.flaui-mcp precisely because a
 // path lacked an override.
 //
+// NOTE (installer-registration-rework): the CLAUDE SKILL-DEPLOY contract these tests were named for
+// is RETIRED — the driving skill now ships INSIDE the generated plugin (staging dir), not written to
+// ~/.claude/skills/flaui-mcp. Those assertions moved to CliRouterPluginRegistrationTests. What
+// survives here is the still-live behavior CliRouter owns on the claude path: the collision-remedy
+// marker lifecycle, --purge-data, and agy/claude path isolation.
+//
 // Env vars are process-global. Two things make this safe, and both are pre-existing repo facts —
 // do not "improve" on them:
 //   - xunit.runner.json sets parallelizeTestCollections:false, so test classes run sequentially.
@@ -18,7 +24,7 @@ namespace FlaUI.Mcp.Tests.Install;
 public class CliRouterClaudeSkillTests : IDisposable
 {
     private static readonly string[] Vars =
-        { "FLAUI_MCP_DATA_DIR", "FLAUI_MCP_STATE_DIR", "FLAUI_MCP_CLAUDE_CONFIG_DIR", "FLAUI_MCP_AGY_PLUGINS_DIR", "CLAUDE_CONFIG_DIR", "FLAUI_MCP_FAKE_CLAUDE_PRESENT" };
+        { "FLAUI_MCP_DATA_DIR", "FLAUI_MCP_STATE_DIR", "FLAUI_MCP_CLAUDE_CONFIG_DIR", "FLAUI_MCP_AGY_PLUGINS_DIR", "FLAUI_MCP_STAGING_DIR", "CLAUDE_CONFIG_DIR", "FLAUI_MCP_FAKE_CLAUDE_PRESENT", "FLAUI_MCP_FAKE_AGY_PRESENT" };
 
     private readonly string _root;
     private readonly Dictionary<string, string?> _saved = new();
@@ -33,75 +39,20 @@ public class CliRouterClaudeSkillTests : IDisposable
         Environment.SetEnvironmentVariable("FLAUI_MCP_STATE_DIR", Path.Combine(_root, "state"));
         Environment.SetEnvironmentVariable("FLAUI_MCP_CLAUDE_CONFIG_DIR", Path.Combine(_root, "claude"));
         Environment.SetEnvironmentVariable("FLAUI_MCP_AGY_PLUGINS_DIR", Path.Combine(_root, "agy"));
+        Environment.SetEnvironmentVariable("FLAUI_MCP_STAGING_DIR", Path.Combine(_root, "plugin"));
         Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", null);   // our override must be what wins
-        // Deterministic Claude presence: the skill-deploy path is gated on Claude being detected, so
-        // without this the deploy tests would silently depend on the real `claude` being on the host's
-        // PATH (green on a dev box, red on a headless CI runner). A test forces "absent" via
-        // FLAUI_MCP_FAKE_CLAUDE_MISSING, which ClaudeRunner checks first and so still wins.
+        // Deterministic agent presence: the plugin-register path resolves the CLI, so without these
+        // seams the tests would silently depend on the real `claude`/`agy` being on the host's PATH
+        // (green on a dev box, red on a headless CI runner). A test forces "absent" via
+        // FLAUI_MCP_FAKE_CLAUDE_MISSING, which the runner checks first and so still wins.
         Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_PRESENT", "1");
+        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_AGY_PRESENT", "1");
     }
 
     public void Dispose()
     {
         foreach (var v in Vars) Environment.SetEnvironmentVariable(v, _saved[v]);
         try { Directory.Delete(_root, recursive: true); } catch { }
-    }
-
-    private string ClaudeSkill => Path.Combine(_root, "claude", "skills", "flaui-mcp", "skills", "driving-flaui-mcp", "SKILL.md");
-
-    [Fact]
-    public void Install_deploys_the_claude_skill()
-    {
-        var outp = new StringWriter();
-        CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
-        Assert.True(File.Exists(ClaudeSkill), "the driving skill was not deployed for Claude Code");
-    }
-
-    [Fact]
-    public void Uninstall_removes_the_claude_skill()
-    {
-        var outp = new StringWriter();
-        CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
-
-        CliRouter.Run(new[] { "uninstall", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
-
-        Assert.False(Directory.Exists(Path.Combine(_root, "claude", "skills", "flaui-mcp")));
-    }
-
-    // The payload is unconditional in the sense of "no contributor gate" — it must NOT mean "write
-    // regardless of host". --agent all is the installer's default (installer/flaui-mcp.iss:38), so an
-    // unguarded write would create an orphaned ~/.claude/skills/flaui-mcp on EVERY agy-only machine.
-    [Fact]
-    public void Install_deploys_nothing_for_claude_when_the_claude_cli_is_absent()
-    {
-        var outp = new StringWriter();
-        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", "1");
-        try
-        {
-            CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
-            Assert.False(Directory.Exists(Path.Combine(_root, "claude", "skills", "flaui-mcp")),
-                "deployed a skill for a client we could not register");
-        }
-        finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", null); }
-    }
-
-    // The NotFound gate belongs to INSTALL only. Removing the skill dir is pure file I/O and needs
-    // no CLI — gating it would strand a skill on disk telling the agent to call tools that are gone.
-    [Fact]
-    public void Uninstall_still_removes_the_skill_when_the_claude_cli_is_absent()
-    {
-        var outp = new StringWriter();
-        CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
-        Assert.True(File.Exists(ClaudeSkill));
-
-        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", "1");
-        try
-        {
-            CliRouter.Run(new[] { "uninstall", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
-            Assert.False(Directory.Exists(Path.Combine(_root, "claude", "skills", "flaui-mcp")),
-                "a skill for deleted tools was left on disk because the CLI happened to be off PATH");
-        }
-        finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", null); }
     }
 
     // The permanent-loss path: `claude` off PATH for a minute must not cost the user their plugin.
@@ -180,31 +131,9 @@ public class CliRouterClaudeSkillTests : IDisposable
         Assert.False(Directory.Exists(Path.Combine(_root, "data")));
     }
 
-    // The whole subsystem exists so the user never ends up with NO driving skill. If our replacement
-    // fails to deploy, disabling the working marketplace copy would produce exactly that — so the
-    // collision remedy must NOT run when the deploy failed. (Found by the final whole-branch review.)
-    [Fact]
-    public void A_failed_skill_deploy_does_not_disable_the_incumbent_marketplace_copy()
-    {
-        // Block the skill write: a FILE where the skills directory must be created makes Deploy() throw.
-        var claude = Path.Combine(_root, "claude");
-        Directory.CreateDirectory(claude);
-        File.WriteAllText(Path.Combine(claude, "skills"), "not a directory");
-
-        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION", "flaui-mcp@flaui-mcp");
-        try
-        {
-            var outp = new StringWriter();
-            CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
-
-            Assert.False(File.Exists(CollisionMarker.PathIn(Path.Combine(_root, "state"))),
-                "the remedy disabled the incumbent even though our skill never deployed — leaving the user no skill");
-        }
-        finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION", null); }
-    }
-
-    // Companion to the above: on a SUCCESSFUL deploy a detected collision IS disabled and recorded —
-    // proving the negative test isn't passing merely because the fake never reports a collision.
+    // On a SUCCESSFUL install a detected collision IS disabled and recorded. (The retired assertion
+    // that a skill was ALSO written to ~/.claude/skills is dropped — the skill now ships inside the
+    // generated plugin, verified by CliRouterPluginRegistrationTests.)
     [Fact]
     public void A_successful_install_disables_and_records_a_detected_collision()
     {
@@ -214,25 +143,9 @@ public class CliRouterClaudeSkillTests : IDisposable
             var outp = new StringWriter();
             CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
 
-            Assert.True(File.Exists(ClaudeSkill), "the skill should have deployed");
             Assert.True(File.Exists(CollisionMarker.PathIn(Path.Combine(_root, "state"))),
                 "a detected collision on a successful install should have been disabled and recorded");
         }
         finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION", null); }
-    }
-
-    [Fact]
-    public void CLAUDE_CONFIG_DIR_is_honored_when_our_own_override_is_absent()
-    {
-        Environment.SetEnvironmentVariable("FLAUI_MCP_CLAUDE_CONFIG_DIR", null);
-        var claudeHome = Path.Combine(_root, "claude-home");
-        Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", claudeHome);
-        try
-        {
-            var outp = new StringWriter();
-            CliRouter.Run(new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "c.json") }, @"C:\x\flaui-mcp.exe", outp);
-            Assert.True(File.Exists(Path.Combine(claudeHome, "skills", "flaui-mcp", "skills", "driving-flaui-mcp", "SKILL.md")));
-        }
-        finally { Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", null); }
     }
 }

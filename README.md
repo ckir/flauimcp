@@ -15,7 +15,7 @@ FlaUI.Mcp translates MCP commands into native UI Automation reads, pattern-based
 ## Quickstart
 
 1. Download `flaui-mcp-setup.exe` from the [latest release](https://github.com/ckir/flauimcp/releases/latest).
-2. Run it. SmartScreen will warn that it is unsigned; choose **More info → Run anyway**. It configures Claude Code and Antigravity automatically.
+2. Run it. SmartScreen will warn that it is unsigned; choose **More info → Run anyway**. It registers with Claude Code and Antigravity automatically via their own CLIs — no manual config editing.
 3. **Restart your agent** to reload its tool registry.
 4. Ask the agent to do desktop work (e.g., "List my open windows").
 

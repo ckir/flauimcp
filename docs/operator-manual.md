@@ -35,17 +35,22 @@ flaui-mcp install --agent all
 
 ## Register with Claude Code
 
-The installer registers the MCP server and deploys the driving skill to `~/.claude/skills/flaui-mcp/`. Claude Code auto-loads this as `flaui-mcp@skills-dir`.
+The installer generates a unified plugin — server config + `driving-flaui-mcp` skill — into `{app}\plugin`, then registers it with Claude Code:
+```powershell
+claude plugin marketplace add "{app}\plugin" --scope user
+claude plugin install flaui-mcp@flaui-mcp-marketplace --scope user
+```
+Claude references the staging dir in place; it does not copy it.
 
 If you installed Claude Code *after* `flaui-mcp`, run:
 ```powershell
 flaui-mcp install --agent claude
 ```
-Restart Claude Code to load the skill. Check registration status with `flaui-mcp status`.
+Restart Claude Code to load the plugin. Check registration status with `flaui-mcp status`.
 
 ## agy (Antigravity) parity
 
-The installer deploys the `driving-flaui-mcp` skill to agy as a static plugin under `%USERPROFILE%\.gemini\config\plugins\flaui-mcp\`. Restart agy to load it. Both agents share the identical driving skill versioned with the binary.
+Same plugin, registered with agy via `agy plugin install "{app}\plugin"` — agy copies it into its own managed plugins dir. Restart agy to load it. Both agents run the identical skill, versioned with the binary.
 
 ## CLI reference
 
@@ -85,7 +90,8 @@ Use `--config <path>` with any command to override the target config file. Use `
 |---|---|---|
 | `FLAUI_MCP_DATA_DIR` | Overrides the root directory for generic configs and presence states. | `%USERPROFILE%\.flaui-mcp` |
 | `FLAUI_MCP_STATE_DIR` | Overrides the location for state files (e.g. uninstall warnings). | `%LOCALAPPDATA%\FlaUI.Mcp\state` |
-| `FLAUI_MCP_AGY_PLUGINS_DIR` | Overrides the target path for agy plugin installation. | `%USERPROFILE%\.gemini\config\plugins` |
+| `FLAUI_MCP_STAGING_DIR` | Overrides the staging dir the installer generates the unified plugin into (server config + skill), which is then registered with both agents. | `{app}\plugin` |
+| `FLAUI_MCP_AGY_PLUGINS_DIR` | Used only to locate and sweep the retired hand-written agy config on install/uninstall (legacy migration). Not the install target anymore. | `%USERPROFILE%\.gemini\config\plugins` |
 | `FLAUI_MCP_CLAUDE_CONFIG_DIR` | Overrides the path for Claude Code's config/skills directory. | `%USERPROFILE%\.claude` |
 | `CLAUDE_CONFIG_DIR` | Upstream Claude Code env var, honored as a fallback if `FLAUI_MCP_CLAUDE_CONFIG_DIR` is unset. | `%USERPROFILE%\.claude` |
 | `FLAUI_MCP_REF_STRICT` | Ref-resolution mode for state-changing paths. Set `off` as a break-glass switch to force lenient resolution (disables the INV-8 identity guard) on apps whose UIA identity is too volatile for strict. | `strict` (unset = strict) |
@@ -154,20 +160,25 @@ Mutative actions leave an audit log entry. If a selector resolves an element, th
 
 ## What the installer changes
 
-The configuration writes atomically and is idempotent.
+The installer hand-writes NO agent config. It generates the plugin; each agent's own CLI registers it and owns its config.
 
 | Target | Change |
 |---|---|
-| **Claude Code** | Registers the MCP server via `claude mcp`. Deploys the driving skill to `~/.claude/skills/flaui-mcp/`. Disables conflicting old marketplace plugins. |
-| **Antigravity (agy)** | Appends the server and the `mcp(flaui-mcp/*)` permission to `~/.gemini/settings.json` and `antigravity-cli/settings.json`. |
+| **Claude Code** | Registers via `claude plugin marketplace add`/`plugin install`, referencing the staging dir in place. Sweeps the retired `claude mcp` server + legacy `~/.claude/skills/flaui-mcp/` dir. Disables conflicting old marketplace plugins. |
+| **Antigravity (agy)** | Registers via `agy plugin install "<staging-dir>"`, which agy copies into its own managed plugins dir. Sweeps the retired hand-written agy config. |
 | **Generic MCP** | Writes the command snippet to `~/.flaui-mcp/generic-mcp.json`. |
 
 ## Uninstall
 
-Uninstalling removes files and reverts configuration entries. It leaves unrelated settings untouched.
+Uninstall deregisters via each agent's CLI first, then removes files:
+```powershell
+claude plugin marketplace remove flaui-mcp-marketplace
+agy plugin uninstall flaui-mcp
+```
+The shared staging dir is deleted only on a full `--agent all` uninstall, and only if both agents deregistered cleanly. On failure it's left in place and the uninstaller warns. Unrelated settings are untouched.
 
 ### Windows Settings
-Uninstall "FlaUI.Mcp" from **Settings → Apps**. The uninstaller reverts every agent's config, re-enables any disabled plugins, and deletes the binaries.
+Uninstall "FlaUI.Mcp" from **Settings → Apps**. The uninstaller deregisters every agent via its CLI, re-enables any disabled plugins, and deletes the binaries.
 
 ### Manual uninstall
 Run the CLI uninstaller, then delete the executable:
