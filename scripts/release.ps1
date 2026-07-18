@@ -103,6 +103,13 @@ function Assert-Preconditions {
     $branch = (git -C $RepoRoot rev-parse --abbrev-ref HEAD).Trim()
     if ($branch -ne 'master') { throw "Must be on 'master' to release (currently on '$branch')." }
 
+    # The earlier `git fetch origin --tags` also updated origin/master; refuse to release if local master is
+    # behind it, so we don't run the whole gate/draft/commit only to have `git push --atomic` reject non-fast-forward.
+    $behind = (git -C $RepoRoot rev-list --count 'HEAD..origin/master' 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $behind -match '^\d+$' -and [int]$behind -gt 0) {
+        throw "Local master is $behind commit(s) behind origin/master — pull/rebase before releasing (a 'git push --atomic' would be rejected non-fast-forward after all the work)."
+    }
+
     $dirty = git -C $RepoRoot status --porcelain --untracked-files=no
     if ($dirty) { throw "Working tree has uncommitted tracked changes (untracked files are OK):`n$dirty" }
 
