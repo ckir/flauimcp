@@ -125,7 +125,10 @@ one concatenated `"claude plugin install …"` string; a single element gets quo
 quoted blob as the executable name and fails. `--scope user` is TWO elements (`"--scope","user"`). (2) Do NOT
 copy clavity's `> "<tmp>" 2>&1` shell redirect — that is Inno-specific; through `ArgumentList` a `>` is a literal
 argument, not a redirect. It is also UNNECESSARY: `ProcessRunner` already captures both streams via pipes. The
-seam (`ICliRunner`) wraps this single orchestration.
+CLI-exec seam wraps this single orchestration. (The seam is the EXISTING delegate
+`Func<string, string[], string?, RunResult>` already injected into `ClaudeCodeConfigWriter`/`ClaudeCollisionRemedy`
+and returned by `CliRouter.ClaudeRunner` — reuse it; do NOT introduce a new `ICliRunner` interface. Earlier drafts
+named `ICliRunner` aspirationally; there is no such type in the code.)
 
 **Agent-presence gating — the new agy CLI path needs it too (panel R5).** The claude branch already fails SOFT on
 a missing CLI: `CliRouter.cs:269` `if (r.Change == AgentChange.NotFound) return r;` returns gracefully (skip that
@@ -278,7 +281,7 @@ each line citation again at plan-authoring time (PLAN-vs-SPEC discipline) — li
 - Preserve the generic-MCP and stdout-fix behavior already shipped in 0.16.x.
 
 ## Testing
-- Unit: fake the CLI-exec seam (an `ICliRunner` or equivalent) so `RegisterAgy`/`RegisterClaude`/uninstall/
+- Unit: fake the CLI-exec seam (the existing `Func<string,string[],string?,RunResult>` delegate) so `RegisterAgy`/`RegisterClaude`/uninstall/
   migration are tested headlessly (assert the exact CLI argv, the idempotent remove-then-add order, read-back
   parsing, fail-open on error, and the migration sweep on a fixture config). Category != Desktop.
 - Manual (console): a real install on the dev box, then confirm both agents load `desktop_*` and neither
