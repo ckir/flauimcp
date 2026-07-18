@@ -96,3 +96,71 @@ function Get-NextVersion {
         NothingToRelease = $false; NonConventionalCount = $nonConventionalCount; Commits = $parsedCommits
     }
 }
+
+function Get-VersionsInSync {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+
+    $csprojPath = Join-Path $RepoRoot 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj'
+    $issPath    = Join-Path $RepoRoot 'installer/flaui-mcp.iss'
+    $pluginPath = Join-Path $RepoRoot 'plugins/flaui-mcp/.claude-plugin/plugin.json'
+
+    foreach ($p in @($csprojPath, $issPath, $pluginPath)) {
+        if (-not (Test-Path $p)) { throw "Get-VersionsInSync: version file not found: $p" }
+    }
+
+    $csprojVersion = $null
+    if ((Get-Content $csprojPath -Raw) -match '<Version>(?<v>\d+\.\d+\.\d+)</Version>') { $csprojVersion = $Matches.v }
+    $issVersion = $null
+    if ((Get-Content $issPath -Raw) -match '#define AppVersion "(?<v>\d+\.\d+\.\d+)"') { $issVersion = $Matches.v }
+    $pluginVersion = (Get-Content $pluginPath -Raw | ConvertFrom-Json).version
+
+    if (-not $csprojVersion) { throw "Get-VersionsInSync: no <Version> element found in $csprojPath" }
+    if (-not $issVersion)    { throw "Get-VersionsInSync: no #define AppVersion found in $issPath" }
+    if (-not $pluginVersion) { throw "Get-VersionsInSync: no 'version' key found in $pluginPath" }
+
+    $versions = [ordered]@{ Csproj = $csprojVersion; Iss = $issVersion; Plugin = $pluginVersion }
+    $distinct = $versions.Values | Select-Object -Unique
+    $inSync = ($distinct.Count -eq 1)
+
+    [pscustomobject]@{
+        InSync   = $inSync
+        Versions = $versions
+        Message  = if ($inSync) {
+            "3 version files agree at $($distinct[0])"
+        } else {
+            "Version files disagree: csproj=$csprojVersion iss=$issVersion plugin=$pluginVersion"
+        }
+    }
+}
+
+function Set-ProjectVersion {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version
+    )
+
+    $csprojPath = Join-Path $RepoRoot 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj'
+    $issPath    = Join-Path $RepoRoot 'installer/flaui-mcp.iss'
+    $pluginPath = Join-Path $RepoRoot 'plugins/flaui-mcp/.claude-plugin/plugin.json'
+
+    # Guard on element EXISTENCE (not "string changed"): re-releasing the version already in the files
+    # (a pre-bumped/first-use case, see Task 8) replaces target->target — a safe no-op that must NOT throw.
+    $csproj = Get-Content $csprojPath -Raw
+    if ($csproj -notmatch '<Version>\d+\.\d+\.\d+</Version>') { throw "Set-ProjectVersion: no <Version> element found in $csprojPath" }
+    $newCsproj = [regex]::Replace($csproj, '<Version>\d+\.\d+\.\d+</Version>', "<Version>$Version</Version>")
+    Set-Content -Path $csprojPath -Value $newCsproj -NoNewline -Encoding UTF8
+
+    $iss = Get-Content $issPath -Raw
+    if ($iss -notmatch '#define AppVersion "\d+\.\d+\.\d+"') { throw "Set-ProjectVersion: no AppVersion found in $issPath" }
+    $newIss = [regex]::Replace($iss, '#define AppVersion "\d+\.\d+\.\d+"', "#define AppVersion `"$Version`"")
+    Set-Content -Path $issPath -Value $newIss -NoNewline -Encoding UTF8
+
+    $plugin = Get-Content $pluginPath -Raw
+    if ($plugin -notmatch '"version":\s*"\d+\.\d+\.\d+"') { throw "Set-ProjectVersion: no version key found in $pluginPath" }
+    $newPlugin = [regex]::Replace($plugin, '"version":\s*"\d+\.\d+\.\d+"', "`"version`": `"$Version`"")
+    Set-Content -Path $pluginPath -Value $newPlugin -NoNewline -Encoding UTF8
+
+    Get-VersionsInSync -RepoRoot $RepoRoot
+}

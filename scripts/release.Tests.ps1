@@ -84,3 +84,60 @@ Describe 'Get-NextVersion' {
         $r.Level   | Should -Be 'patch'
     }
 }
+
+Describe 'Get-VersionsInSync and Set-ProjectVersion' {
+    BeforeEach {
+        $script:VerSandbox = Join-Path ([IO.Path]::GetTempPath()) ("verbox_" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Force -Path (Join-Path $VerSandbox 'src/FlaUI.Mcp.Server') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $VerSandbox 'installer') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $VerSandbox 'plugins/flaui-mcp/.claude-plugin') | Out-Null
+        @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>flaui-mcp</AssemblyName>
+    <Version>0.16.2</Version>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+</Project>
+'@ | Set-Content (Join-Path $VerSandbox 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj')
+        @'
+#define AppName "FlaUI.Mcp"
+#define AppVersion "0.16.2"
+#define ExeName "flaui-mcp.exe"
+'@ | Set-Content (Join-Path $VerSandbox 'installer/flaui-mcp.iss')
+        '{"displayName": "flaui-mcp driving", "version": "0.16.2", "author": {"name": "Costas Kirgoussios"}}' |
+            Set-Content (Join-Path $VerSandbox 'plugins/flaui-mcp/.claude-plugin/plugin.json')
+    }
+    AfterEach { if (Test-Path $script:VerSandbox) { Remove-Item -Recurse -Force $script:VerSandbox } }
+
+    It 'reports InSync=true when all 3 files agree' {
+        $r = Get-VersionsInSync -RepoRoot $VerSandbox
+        $r.InSync | Should -BeTrue
+        $r.Versions.Csproj | Should -Be '0.16.2'
+        $r.Versions.Iss    | Should -Be '0.16.2'
+        $r.Versions.Plugin | Should -Be '0.16.2'
+    }
+
+    It 'reports InSync=false and names the drift when one file disagrees' {
+        (Get-Content (Join-Path $VerSandbox 'installer/flaui-mcp.iss') -Raw) -replace '0\.16\.2', '0.16.3' |
+            Set-Content (Join-Path $VerSandbox 'installer/flaui-mcp.iss')
+        $r = Get-VersionsInSync -RepoRoot $VerSandbox
+        $r.InSync | Should -BeFalse
+        $r.Message | Should -Match '0\.16\.3'
+    }
+
+    It 'Set-ProjectVersion rewrites all 3 files and preserves surrounding content' {
+        Set-ProjectVersion -RepoRoot $VerSandbox -Version '0.17.0'
+        $r = Get-VersionsInSync -RepoRoot $VerSandbox
+        $r.InSync | Should -BeTrue
+        $r.Versions.Csproj | Should -Be '0.17.0'
+        (Get-Content (Join-Path $VerSandbox 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj') -Raw) | Should -Match '<AssemblyName>flaui-mcp</AssemblyName>'
+        (Get-Content (Join-Path $VerSandbox 'installer/flaui-mcp.iss') -Raw) | Should -Match '#define AppName "FlaUI.Mcp"'
+        (Get-Content (Join-Path $VerSandbox 'plugins/flaui-mcp/.claude-plugin/plugin.json') -Raw) | Should -Match 'Costas Kirgoussios'
+    }
+
+    It 'Get-VersionsInSync throws when a version file is missing' {
+        Remove-Item (Join-Path $VerSandbox 'installer/flaui-mcp.iss')
+        { Get-VersionsInSync -RepoRoot $VerSandbox } | Should -Throw
+    }
+}
