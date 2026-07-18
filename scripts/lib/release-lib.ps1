@@ -233,7 +233,7 @@ function Add-ChangelogSection {
         $newContent = if ($before) { "$before`n`n$section`n$after" } else { "$section`n$after" }
     }
 
-    Set-FilePreservingBom -Path $ChangelogPath -Content $newContent
+    Set-FilePreservingBom -Path $ChangelogPath -Content ($newContent.TrimEnd() + "`n")
 }
 
 function Get-ChangelogPrompt {
