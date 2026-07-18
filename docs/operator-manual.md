@@ -79,10 +79,10 @@ Same plugin, registered with agy via `agy plugin install "{app}\plugin"` — agy
 | `presence on\|off` | Toggle human presence sensing. |
 | `print-config` | Print the JSON configuration snippet to stdout. |
 | `status` | Print installation and registration status. |
-| `--version` | Print the server version. |
+| `--version`, `-v` | Print the server version. |
 | `--config <path>` | Override the target config file during install verbs. |
 
-Use `--config <path>` with any command to override the target config file. Use `--help` for full syntax.
+Use `--config <path>` with any command to override the target config file. Use `--help`/`-h` for full syntax.
 
 ## Environment variables
 
