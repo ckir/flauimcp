@@ -19,10 +19,24 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
   - >1 matches: `AmbiguousMatch`. Refine the selector or fall back to `ref`.
   - 1 match: The tool acts and returns a freshly minted `resolvedElement` ref for immediate follow-up. Do not hold this ref across turns.
 
-## Universal Safety and Timing Parameters
+## Common parameters
 
-- **`timeoutMs`:** Most read, interact, and wait tools accept an explicit `timeoutMs` (defaults usually 4000ms-5000ms). Use this to extend blocks for slow UIs.
-- **`overlay`:** Synthetic input tools accept `overlay: true` (or `overlay: <milliseconds>`) to draw a red bounding box over the target before acting. This provides a visual safety cue for human supervisors.
+- **`timeoutMs`:** Most interaction, perception, and wait tools accept an explicit block timeout in milliseconds (default 4000). Agents can extend it for slow UIs.
+- **`overlay`:** Mutative tools accept `overlay: true` (or `<milliseconds>`) to draw the red intent overlay before acting (visibility aid).
+- **`verify`:** Synthetic-text tools (`desktop_type`, `desktop_paste_text`) perform an advisory read-back. They return a `verify` object; a mismatch is advisory and does NOT throw an error. Exact shape:
+  ```json
+  {
+    "ran": true,
+    "verified": false,
+    "mismatch": true,
+    "reason": "string (optional)",
+    "expected": "string (optional)",
+    "actual": "string (optional)",
+    "canSetValue": true,
+    "recommendedFallbackTool": "desktop_set_value | desktop_paste_text",
+    "remedy": "string (optional prose advice)"
+  }
+  ```
 
 ## Tool Catalog
 
@@ -86,9 +100,9 @@ Real `SendInput`-backed actions. Require active lease, blocked in `--read-only-m
 | `desktop_type` | Destructive | Type text. **Params:** `interKeyDelayMs` (pacing), `verify` (read-back check), `overlay`. |
 | `desktop_paste_text` | Destructive | Atomic Ctrl+V. **Params:** `verify`, `forceOverwriteClipboard`, `overlay`. |
 | `desktop_key` | Destructive | Send keyboard chord. **Params:** `ref`/`selector` (focus element first), `overlay`. |
-| `desktop_click` | Destructive | Click element. **Params:** `modifiers` (hold Ctrl/Shift/Alt), `overlay`. |
+| `desktop_click` | Destructive | Click element. **Params:** `modifiers` (array of `Ctrl\|Alt\|Shift\|Win`), `overlay`. |
 | `desktop_click_at` | Destructive | Click absolute/window-relative point. **Params:** `modifiers`, `overlay`. |
-| `desktop_drag` | Destructive | Drag mouse. **Params:** `endWindow` (cross-window drag), `modifiers`, `overlay`. |
+| `desktop_drag` | Destructive | Drag mouse. **Params:** `endWindow` (resolve end point in another window's [0,1] space for cross-window drag), `modifiers`, `overlay`. |
 
 ### Event Streaming (`desktop_watch`)
 Subscribe to UIA events instead of polling. Lease-exempt.
@@ -119,7 +133,6 @@ For apps lacking out-of-the-box trees. Lease-exempt.
 
 ## Verification & Safety
 
-- **Advisory Verification (`verify`):** Tools like `desktop_type` and `desktop_paste_text` use a `verify` flag (default true) to read back the text pattern and verify the typed text landed intact. If the UI garbles the input (common in reactive editors), the tool returns a soft-failure `mismatch: true` and a `recommendedFallbackTool` (like `desktop_set_value`), instead of throwing a hard error.
 - **TOCTOU Guards:** Input tools will abort with `ElementDisappearedDuringAction` if the target window loses foreground during the input sequence.
 
 ## Event Streaming Delivery

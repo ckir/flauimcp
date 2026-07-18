@@ -54,20 +54,43 @@ The installer deploys the `driving-flaui-mcp` skill to agy as a static plugin un
 | `flaui-mcp` | Start the stdio MCP server. |
 | `--read-only-mode` | Start the server, blocking all state-changing tools. |
 | `--unsafe-allow-elevation` | Allow synthetic input to elevated windows (default: hard-refused). |
+| `--overlay` | Launch flag: enable red intent overlay before mutative actions. |
+| `--overlay-ms=<ms>` | Launch flag: specify intent overlay duration in milliseconds. |
+| `--autosound` | Launch flag: enable TTS spoken cue when target window needs attention. |
+| `--presence` | Launch flag: enable coarse human presence sensing. |
+| `--nearby-secs=<n>` | Launch flag: idle seconds before user is considered nearby. |
+| `--away-secs=<n>` | Launch flag: idle seconds before user is considered away. |
+| `--force-renderer-accessibility`| Target app launch flag: force Chromium to expose native accessibility trees. |
 | `unlock --minutes N` | Grant a time-bounded synthetic-input lease. |
 | `[--allow-shells]` | Pass to `unlock` to allow input to terminal/shell windows. |
 | `[--accept-risk]` | Pass to `unlock` to suppress the interactive prompt for leases >60 minutes. |
+| `[--i-understand]` | Pass to `unlock` as an alias for `--accept-risk`. |
 | `lock` | Revoke the synthetic-input lease immediately. |
 | `install --agent <name>` | Register the server (targets: `agy`, `generic`, `claude`, `all`). |
 | `uninstall --agent <name>`| Unregister the server and revert configs. |
+| `[--purge-data]` | Pass to `uninstall` to delete the MCP data directory. |
 | `overlay on\|off` | Toggle the intent overlay. |
 | `autosound on\|off` | Toggle the spoken attention cue. |
 | `presence on\|off` | Toggle human presence sensing. |
 | `print-config` | Print the JSON configuration snippet to stdout. |
 | `status` | Print installation and registration status. |
 | `--version` | Print the server version. |
+| `--config <path>` | Override the target config file during install verbs. |
 
 Use `--config <path>` with any command to override the target config file. Use `--help` for full syntax.
+
+## Environment variables
+
+| Variable | What it does | Default |
+|---|---|---|
+| `FLAUI_MCP_DATA_DIR` | Overrides the root directory for generic configs and presence states. | `%USERPROFILE%\.flaui-mcp` |
+| `FLAUI_MCP_STATE_DIR` | Overrides the location for state files (e.g. uninstall warnings). | `%LOCALAPPDATA%\FlaUI.Mcp\state` |
+| `FLAUI_MCP_AGY_PLUGINS_DIR` | Overrides the target path for agy plugin installation. | `%USERPROFILE%\.gemini\config\plugins` |
+| `FLAUI_MCP_CLAUDE_CONFIG_DIR` | Overrides the path for Claude Code's config/skills directory. | `%USERPROFILE%\.claude` |
+| `CLAUDE_CONFIG_DIR` | Upstream Claude Code env var, honored as a fallback if `FLAUI_MCP_CLAUDE_CONFIG_DIR` is unset. | `%USERPROFILE%\.claude` |
+| `FLAUI_MCP_REF_STRICT` | Ref-resolution mode for state-changing paths. Set `off` as a break-glass switch to force lenient resolution (disables the INV-8 identity guard) on apps whose UIA identity is too volatile for strict. | `strict` (unset = strict) |
+| `FLAUI_MCP_REF_MAXSCOPES` | Tunes the ancestor fan-out cap for scope gathering. | `512` |
+| `FLAUI_MCP_SELECTOR_MAXNODES` | Caps the number of nodes a selector walk evaluates. | `5000` |
 
 ## Grant and scope a lease
 
