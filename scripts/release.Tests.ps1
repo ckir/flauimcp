@@ -243,3 +243,38 @@ All notable changes to this project are documented here.
         Remove-Item $empty -Force
     }
 }
+
+Describe 'Get-ChangelogPrompt' {
+    BeforeEach {
+        $script:Commits = @('feat(release): add release script', 'fix(server): correct a leak')
+        $script:Exemplar = "## [0.16.1] - 2026-07-18`n`n### Fixed`n- Something."
+    }
+
+    It 'uses the full diff when under the size/commit thresholds' {
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $Commits -DiffText 'small diff' -DiffStatText 'stat' -StyleExemplar $Exemplar
+        $p | Should -Match 'Full diff:'
+        $p | Should -Not -Match 'Diff stat'
+    }
+
+    It 'degrades to the diff stat when the diff exceeds the size threshold' {
+        $bigDiff = 'x' * 200000
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $Commits -DiffText $bigDiff -DiffStatText 'stat summary' -StyleExemplar $Exemplar
+        $p | Should -Match 'Diff stat'
+        $p | Should -Not -Match 'Full diff:'
+    }
+
+    It 'degrades to the diff stat when the commit count exceeds the threshold' {
+        $manyCommits = 1..41 | ForEach-Object { "fix(x): change $_" }
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $manyCommits -DiffText 'small' -DiffStatText 'stat summary' -StyleExemplar $Exemplar
+        $p | Should -Match 'Diff stat'
+    }
+
+    It 'instructs body-only output and includes the style exemplar and commit list' {
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $Commits -DiffText 'd' -DiffStatText 's' -StyleExemplar $Exemplar
+        $p | Should -Match 'Output ONLY'
+        $p | Should -Match '(?s)no.*heading'
+        $p | Should -Match ([regex]::Escape($Exemplar))
+        $p | Should -Match '- feat\(release\): add release script'
+        $p | Should -Match '- fix\(server\): correct a leak'
+    }
+}

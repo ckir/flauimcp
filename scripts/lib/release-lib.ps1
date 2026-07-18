@@ -230,3 +230,40 @@ function Add-ChangelogSection {
 
     Set-Content -Path $ChangelogPath -Value $newContent -NoNewline -Encoding UTF8
 }
+
+function Get-ChangelogPrompt {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$CommitMessages,
+        [string]$DiffText = '',
+        [string]$DiffStatText = '',
+        [Parameter(Mandatory)][string]$StyleExemplar,
+        [int]$DiffSizeThresholdBytes = 150000,
+        [int]$CommitCountThreshold = 40
+    )
+
+    $useStat = ($DiffText.Length -gt $DiffSizeThresholdBytes) -or ($CommitMessages.Count -gt $CommitCountThreshold)
+    $diffSection = if ($useStat) {
+        "Diff stat (full patch omitted — release is large):`n$DiffStatText"
+    } else {
+        "Full diff:`n$DiffText"
+    }
+    $commitList = ($CommitMessages | ForEach-Object { "- $(($_ -split "`n")[0])" }) -join "`n"
+
+    @"
+You are drafting the CHANGELOG.md body for flaui-mcp release $Version.
+
+Output ONLY the body sections (### Added / ### Fixed / ### Changed as applicable) — no '## [$Version]'
+heading, no commit-subject dump, no surrounding chatter, no code fences. Write explanatory prose bullets,
+matching the style of the exemplar below (not a list of raw commit subjects).
+
+## Style exemplar (last entries from CHANGELOG.md)
+$StyleExemplar
+
+## Commits in this release
+$commitList
+
+## $diffSection
+"@
+}
