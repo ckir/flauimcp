@@ -920,7 +920,7 @@ Build "pass" requires **both** exit code 0 **and** a `0 Warning(s)` count parsed
 plain exit-code check would be a false pass, because `dotnet build`'s success summary always prints a
 `Warning(s)` line (e.g. `2 Warning(s)`) even when it's the string "Warning(s)" with count 0, so a naive
 `-notmatch 'warning'` text search would falsely FAIL on a clean 0-warning build. This is `Invoke-Gate`'s
-production behavior against the real `dotnet build FlaUI.Mcp.slnx -c Debug`, confirmed live: 0 errors, 0
+production behavior against the real `dotnet build FlaUI.Mcp.slnx -c Release`, confirmed live: 0 errors, 0
 warnings.
 
 `scripts/build-plugin.ps1` has no dry-run mode (ground-truth fact above) — its default drift check runs it
@@ -1870,7 +1870,7 @@ before it's ever exercised by an actual tag push.
 - [ ] **Step 4: Final integration verification — the full local gate + full Pester suite**
 
 ```powershell
-dotnet build FlaUI.Mcp.slnx -c Debug
+dotnet build FlaUI.Mcp.slnx -c Release
 # Expected: "Build succeeded." — "0 Warning(s)", "0 Error(s)".
 
 dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput"
