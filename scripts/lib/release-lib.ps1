@@ -123,7 +123,9 @@ function Get-VersionsInSync {
     if (-not $pluginVersion) { throw "Get-VersionsInSync: no 'version' key found in $pluginPath" }
 
     $versions = [ordered]@{ Csproj = $csprojVersion; Iss = $issVersion; Plugin = $pluginVersion }
-    $distinct = $versions.Values | Select-Object -Unique
+    # @(...) forces an array: with one unique value PowerShell would otherwise unwrap to a scalar STRING,
+    # making $distinct[0] index its first CHARACTER (e.g. '0' from '0.16.2') in the agree-at message below.
+    $distinct = @($versions.Values | Select-Object -Unique)
     $inSync = ($distinct.Count -eq 1)
 
     [pscustomobject]@{

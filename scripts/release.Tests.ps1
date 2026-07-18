@@ -133,6 +133,7 @@ Describe 'Get-VersionsInSync and Set-ProjectVersion' {
         $r.Versions.Csproj | Should -Be '0.16.2'
         $r.Versions.Iss    | Should -Be '0.16.2'
         $r.Versions.Plugin | Should -Be '0.16.2'
+        $r.Message | Should -Match '0\.16\.2'   # full version, not just first char '0' (scalar-index regression guard)
     }
 
     It 'reports InSync=false and names the drift when one file disagrees' {
