@@ -19,92 +19,108 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
   - >1 matches: `AmbiguousMatch`. Refine the selector or fall back to `ref`.
   - 1 match: The tool acts and returns a freshly minted `resolvedElement` ref for immediate follow-up. Do not hold this ref across turns.
 
+## Universal Safety and Timing Parameters
+
+- **`timeoutMs`:** Most read, interact, and wait tools accept an explicit `timeoutMs` (defaults usually 4000ms-5000ms). Use this to extend blocks for slow UIs.
+- **`overlay`:** Synthetic input tools accept `overlay: true` (or `overlay: <milliseconds>`) to draw a red bounding box over the target before acting. This provides a visual safety cue for human supervisors.
+
 ## Tool Catalog
 
 ### Window Lifecycle
-| Tool | Access | Description |
+| Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_list_windows` | ReadOnly | List top-level desktop windows (Title, ProcessName, Pid, IsForeground). Opt-ins: includeBounds, includeHandles. |
-| `desktop_open_window` | ReadOnly | Open a window by pid or title and return its handle (e.g. `w1`). |
-| `desktop_launch_app` | Destructive | Launch an app and return a handle to its main window. Blocked in `--read-only-mode`. |
-| `desktop_focus_window` | Destructive | Bring a window to the foreground. Blocked in `--read-only-mode`. |
-| `desktop_close_window` | Destructive | Close a window and free its handle. Blocked in `--read-only-mode`. |
+| `desktop_list_windows` | ReadOnly | List top-level desktop windows. Opt-ins: `includeBounds`, `includeHandles`. |
+| `desktop_open_window` | ReadOnly | Open window by pid/title, returns handle (e.g. `w1`). |
+| `desktop_launch_app` | Destructive | Launch app, returns handle. Blocked in `--read-only-mode`. |
+| `desktop_focus_window` | Destructive | Bring window to foreground. Blocked in `--read-only-mode`. |
+| `desktop_close_window` | Destructive | Close window, free handle. Blocked in `--read-only-mode`. |
 
 ### Perception
-| Tool | Access | Description |
+| Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_snapshot` | ReadOnly | Walk a window's accessibility tree into an indented, ref-tagged snapshot. |
-| `desktop_snapshot_diff` | ReadOnly | Diff a window's CURRENT tree against an explicit baseline snapshotId. |
-| `desktop_snapshot_stats` | ReadOnly | Cheap orientation: control counts and per-ControlType histogram, without full tree text. |
-| `desktop_get_focused_element` | ReadOnly | Return the UIA-focused element's ref, descriptor line, and owning window. |
-| `desktop_find` | ReadOnly | Query a window for element refs without walking the whole tree. |
-| `desktop_screenshot` | ReadOnly | Capture a window, element, or full desktop as PNG. Password fields are redacted at capture time. |
-| `desktop_get_bounds` | ReadOnly | Get absolute physical-pixel screen bounds, monitor dpiScale, and isOffscreen status. |
-| `desktop_wait_for` | ReadOnly | Poll a window until a selector condition holds. Timeout returns `{satisfied:false}`. |
-| `desktop_wait_for_stable` | ReadOnly | Poll until a window subtree stops structurally changing. |
-| `desktop_user_state` | ReadOnly | Report coarse human presence: active, nearby, away, or null. Lease-exempt. |
-| `desktop_wait_for_foreground` | ReadOnly | Block until a window gains OS foreground, closes, or times out. Lease-exempt. |
+| `desktop_snapshot` | ReadOnly | Walk tree into ref-tagged snapshot. **Params:** `root` (subtree scope), `maxDepth`, `interactiveOnly`, `fullProperties`, `includeOffscreen`, `timeoutMs`. |
+| `desktop_snapshot_diff` | ReadOnly | Diff CURRENT tree against baseline `snapshotId`. **Params:** `scope` (subtree ref). |
+| `desktop_snapshot_stats` | ReadOnly | Control counts. **Params:** `snapshotId` (offline stats) OR `window`. |
+| `desktop_get_focused_element` | ReadOnly | Return UIA-focused element's ref and descriptor. |
+| `desktop_find` | ReadOnly | Query window for refs without full walk. **Params:** `timeoutMs`. |
+| `desktop_screenshot` | ReadOnly | PNG capture. Redacts passwords. **Params:** `window`, `ref`, `maxWidth` (default 1600). |
+| `desktop_get_bounds` | ReadOnly | Get absolute screen bounds, dpiScale, isOffscreen status. |
+| `desktop_wait_for` | ReadOnly | Poll until selector condition holds. **Params:** `by`, `value`, `until`, `equals`, `pollIntervalMs`, `timeoutMs`. |
+| `desktop_wait_for_stable` | ReadOnly | Poll until tree stops changing. **Params:** `by`, `value`, `includeText`, `quietMs`, `pollIntervalMs`, `timeoutMs`. |
+| `desktop_user_state` | ReadOnly | Report coarse human presence. Lease-exempt. |
+| `desktop_wait_for_foreground` | ReadOnly | Block until window gains foreground. **Params:** `timeoutMs`. Lease-exempt. |
 
 ### Content & Clipboard
-| Tool | Access | Description |
+| Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_get_grid_cell` | ReadOnly | Read one grid/table cell by `(row,col)` without snapshotting the whole grid. |
-| `desktop_grid_select` | Destructive | Select a grid/table cell by `(row,col)` via UIA SelectionItemPattern. Blocked in `--read-only-mode`. |
-| `desktop_get_text` | ReadOnly | Read an element's text via UIA TextPattern. |
-| `desktop_read_terminal_tab` | Destructive | Read a background Windows Terminal tab buffer. Restores original tab. Blocked in `--read-only-mode`. |
-| `desktop_clipboard_get` | ReadOnly | Read the system clipboard as text. Returns `ClipboardUnavailable` if locked. |
-| `desktop_clipboard_set` | Destructive | Write text to the system clipboard. Blocked in `--read-only-mode`. |
+| `desktop_get_grid_cell` | ReadOnly | Read one grid/table cell by `(row,col)`. |
+| `desktop_grid_select` | Destructive | Select cell by `(row,col)`. |
+| `desktop_get_text` | ReadOnly | Read element's text. **Params:** `selectionOnly`, `maxLength`, `fromEnd`. |
+| `desktop_read_terminal_tab` | Destructive | Read terminal tab. **Params:** `tabIndex`, `restoreFocus`, `fromEnd`, `maxLength`. |
+| `desktop_clipboard_get` | ReadOnly | Read system clipboard as text. |
+| `desktop_clipboard_set` | Destructive | Write text to clipboard. |
 
 ### Interaction (UIA Patterns)
-State-changing tools that drive the app's automation providers (no OS input). All are blocked in `--read-only-mode`.
+State-changing tools that drive the app's automation providers (no OS input). Blocked in `--read-only-mode`.
 
-| Tool | Access | Description |
+| Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_invoke` | Destructive | Invoke (activate) an element by ref via UIA InvokePattern. |
-| `desktop_set_focus` | Destructive | Set keyboard focus to an element by ref (UIA Focus). |
-| `desktop_set_value` | Destructive | Set an element's value by ref via UIA ValuePattern (focuses first). |
-| `desktop_toggle` | Destructive | Toggle an element by ref via UIA TogglePattern. |
-| `desktop_expand` | Destructive | Expand or collapse an element by ref via UIA ExpandCollapsePattern. |
-| `desktop_select` | Destructive | Select an element by ref via UIA SelectionItemPattern. |
-| `desktop_scroll_into_view` | Destructive | Scroll an element into view by ref via UIA ScrollItemPattern. |
-| `desktop_scroll` | Destructive | Scroll a container by ref via UIA ScrollPattern. |
-| `desktop_window_transform` | Destructive | Transform a window by handle via UIA Window/Transform patterns (maximize/minimize/restore). |
+| `desktop_invoke` | Destructive | Activate element (UIA InvokePattern). **Params:** `timeoutMs`, `overlay`. |
+| `desktop_set_focus` | Destructive | Set keyboard focus (UIA Focus). **Params:** `timeoutMs`, `overlay`. |
+| `desktop_set_value` | Destructive | Set value (UIA ValuePattern). **Params:** `timeoutMs`, `overlay`. |
+| `desktop_toggle` | Destructive | Toggle element (UIA TogglePattern). **Params:** `timeoutMs`, `overlay`. |
+| `desktop_expand` | Destructive | Expand/collapse element (UIA ExpandCollapse). **Params:** `timeoutMs`, `overlay`. |
+| `desktop_select` | Destructive | Select element (UIA SelectionItem). **Params:** `timeoutMs`, `overlay`. |
+| `desktop_scroll_into_view` | Destructive | Scroll element into view (UIA ScrollItem). **Params:** `timeoutMs`, `overlay`. |
+| `desktop_scroll` | Destructive | Scroll container (UIA Scroll). **Params:** `timeoutMs`, `overlay`. |
+| `desktop_window_transform` | Destructive | Maximize/minimize/restore window. |
 
 ### Synthetic Input
-Real `SendInput`-backed actions. Input operations require an active lease and are blocked in `--read-only-mode`. See [Architecture and Safety](architecture-and-safety.md) for rationale.
+Real `SendInput`-backed actions. Require active lease, blocked in `--read-only-mode`.
 
-| Tool | Access | Description |
+| Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_input_status` | ReadOnly | Report the synthetic-input lease status without firing input. |
-| `desktop_set_caret` | Destructive | Position the text caret via UIA TextPattern (no OS input, no lease required). |
-| `desktop_select_text_range` | Destructive | Select a text range via UIA TextPattern (no OS input, no lease required). |
-| `desktop_type` | Destructive | Type text via SendInput. Paced by default. Requires active input lease. |
-| `desktop_paste_text` | Destructive | Paste text via atomic clipboard Ctrl+V. Best-effort restore. Requires active input lease. |
-| `desktop_key` | Destructive | Send one keyboard chord via SendInput. Requires active input lease. |
-| `desktop_click` | Destructive | Synthetic mouse click at an element's clickable point. Requires active input lease. |
-| `desktop_click_at` | Destructive | Synthetic mouse click at a window-relative point. Requires active input lease. |
-| `desktop_drag` | Destructive | Synthetic mouse drag between two window-relative points. Requires active input lease. |
+| `desktop_input_status` | ReadOnly | Report lease status. |
+| `desktop_set_caret` | Destructive | Position caret. Lease-exempt. |
+| `desktop_select_text_range` | Destructive | Select text range. Lease-exempt. |
+| `desktop_type` | Destructive | Type text. **Params:** `interKeyDelayMs` (pacing), `verify` (read-back check), `overlay`. |
+| `desktop_paste_text` | Destructive | Atomic Ctrl+V. **Params:** `verify`, `forceOverwriteClipboard`, `overlay`. |
+| `desktop_key` | Destructive | Send keyboard chord. **Params:** `ref`/`selector` (focus element first), `overlay`. |
+| `desktop_click` | Destructive | Click element. **Params:** `modifiers` (hold Ctrl/Shift/Alt), `overlay`. |
+| `desktop_click_at` | Destructive | Click absolute/window-relative point. **Params:** `modifiers`, `overlay`. |
+| `desktop_drag` | Destructive | Drag mouse. **Params:** `endWindow` (cross-window drag), `modifiers`, `overlay`. |
 
 ### Event Streaming (`desktop_watch`)
 Subscribe to UIA events instead of polling. Lease-exempt.
 
-| Tool | Access | Description |
+| Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_watch` | ReadOnly | Subscribe to UIA events (`window_opened`, `window_closed`, `focus_changed`, `structure_changed`). |
-| `desktop_unwatch` | ReadOnly | Stop a subscription. Idempotent. |
-| `desktop_list_watches` | ReadOnly | List active watch subscriptions. |
-| `desktop_drain_events` | ReadOnly | Fetch and clear buffered events for a subscription. Use if host doesn't surface push notifications. |
+| `desktop_watch` | ReadOnly | Subscribe to events (`window_opened`, `focus_changed`, etc.). **Params:** `scope` (restrict to subtree). |
+| `desktop_unwatch` | ReadOnly | Stop subscription. |
+| `desktop_list_watches` | ReadOnly | List active watches. |
+| `desktop_drain_events` | ReadOnly | Fetch buffered events. **Params:** `max` (limit count). |
 
 ### Opaque-App Access
-For apps that do not expose accessibility trees out-of-the-box. Lease-exempt.
+For apps lacking out-of-the-box trees. Lease-exempt.
 
-| Tool | Access | Description |
+| Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_wake_accessibility` | ReadOnly | Activate and hold an opaque Chromium/Electron window's native accessibility tree. |
-| `desktop_release_accessibility` | ReadOnly | Release a held wake. Idempotent. |
+| `desktop_wake_accessibility` | ReadOnly | Hydrate Chromium/Electron native tree. |
+| `desktop_release_accessibility` | ReadOnly | Release held wake. |
 | `desktop_list_wakes` | ReadOnly | List active wakes. |
-| `desktop_find_text` | ReadOnly | OCR a window/region for text matching a query. Returns click coordinates. |
-| `desktop_wait_for_text` | ReadOnly | Poll with OCR until a query appears or timeout. |
+| `desktop_find_text` | ReadOnly | OCR text matching query. |
+| `desktop_wait_for_text` | ReadOnly | Poll OCR until query appears. |
+
+## Advanced Interactions
+
+- **Cross-Window Dragging:** Use `desktop_drag` with `endWindow` to calculate the start coordinates relative to the source window and the end coordinates relative to a different window.
+- **Targeted Keystrokes:** Pass a `ref` or `selector` to `desktop_key` to guarantee focus is set on a specific element immediately before sending the keystroke.
+- **Subtree Diffing & Watching:** Pass `scope` (an element ref) to `desktop_snapshot_diff` or `desktop_watch` to constrain tree diffs and `structure_changed` events to a specific subset of the window, saving memory and CPU.
+
+## Verification & Safety
+
+- **Advisory Verification (`verify`):** Tools like `desktop_type` and `desktop_paste_text` use a `verify` flag (default true) to read back the text pattern and verify the typed text landed intact. If the UI garbles the input (common in reactive editors), the tool returns a soft-failure `mismatch: true` and a `recommendedFallbackTool` (like `desktop_set_value`), instead of throwing a hard error.
+- **TOCTOU Guards:** Input tools will abort with `ElementDisappearedDuringAction` if the target window loses foreground during the input sequence.
 
 ## Event Streaming Delivery
 
