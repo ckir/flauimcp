@@ -140,6 +140,31 @@ auto-discovers a plugin dir dropped in `~/.gemini/config/plugins/` with no CLI c
 UNVERIFIED agy confabulation-risk and is NOT relied upon here. Validate it during implementation; if true, it is
 a bonus simplification for the agy path, not a design dependency.)
 
+## Canonical ordered sequence (panel R6 — the single source of truth for step order)
+Five rounds pinned individual step positions across different sections; consolidate them here so a plan-writer
+follows ONE order, not scattered constraints. (Note: the migration sweep and the collision-remedy disable target
+DIFFERENT things — `claude mcp remove`/settings-file deletion vs `claude plugin disable` of a legacy marketplace
+copy — so their relative order is free; both simply precede registration.)
+
+**INSTALL (per present agent; an absent agent is skipped+reported, never aborts):**
+1. GENERATE the staging plugin dir `{app}\plugin\` — write `plugin.json`, `.mcp.json`, `.claude-plugin/
+   marketplace.json` (via `JsonSerializer`), and deploy the skill into `{app}\plugin\skills\driving-flaui-mcp\`.
+   (Fail the agent's install with a clear detail if generation fails — do not proceed to register an empty dir.)
+2. LEGACY CLEANUP (all idempotent / swallow-absent): the migration sweep — `AgyConfigWriter.Uninstall()`
+   (settings.json + mcp_config.json) and `ClaudeCodeConfigWriter.Uninstall()` (`claude mcp remove flaui-mcp`),
+   remove stray `.mcp.json`; AND (Claude only) `ClaudeCollisionRemedy` disable of legacy/`skills-dir` copies
+   (matcher EXCLUDES `flaui-mcp-marketplace`).
+3. REGISTER: agy → `agy plugin install "<stagingDir>"`; Claude → `claude plugin marketplace add "<stagingDir>"
+   --scope user` → `claude plugin install "flaui-mcp@flaui-mcp-marketplace" --scope user` → read-back active-state.
+   All CLI launches gated on the agent being present (NotFound ⇒ skip+report).
+
+**UNINSTALL:**
+1. DEREGISTER via CLIs (this removes the LOADED copies): `agy plugin uninstall flaui-mcp` (removes agy's MANAGED
+   copy), `claude plugin uninstall flaui-mcp` + `claude plugin marketplace remove flaui-mcp-marketplace`,
+   `ClaudeCollisionRemedy.Restore()` (re-enable what install disabled).
+2. If deregister SUCCEEDED, delete the staged build artifact `{app}\plugin\`. If it FAILED, LEAVE files and emit
+   a loud warning that NAMES BOTH the staged dir AND agy's managed copy (see Uninstall § two-copy note).
+
 ## Migration (existing installs)
 **ORDER: the migration sweep runs BEFORE the new registration, never after (panel R3).** On the Claude side the
 two are cross-namespace-safe (`claude mcp remove` touches the MCP-server list, not `claude plugin` registrations —
@@ -164,6 +189,16 @@ ORDER MATTERS (panel R1): deregister via the CLIs FIRST — `agy plugin uninstal
 staged plugin dir ONLY if deregistration succeeded. If a CLI deregister FAILS, LEAVE the files and emit a loud
 manual-cleanup warning: deleting a still-referenced marketplace/plugin dir leaves the agent pointing at a missing
 dir → startup errors. "Fail-open" means uninstall still COMPLETES (never blocks); it does NOT mean delete-regardless.
+
+**Two-copy model — the staged dir is NOT the loaded plugin (panel R6).** `agy plugin install "<stagingDir>"`
+COPIES the plugin into agy's MANAGED dir (`~/.gemini/config/plugins/flaui-mcp/`); Claude likewise resolves the
+plugin through its own registry, not from `{app}\plugin\`. So two copies exist: the staged BUILD ARTIFACT
+(`{app}\plugin\`) and each agent's managed/registered copy. The copy the agent actually LOADS is the managed one,
+and it is removed by the DEREGISTER step (`agy plugin uninstall` / `claude plugin uninstall`), NOT by deleting the
+staged dir. Therefore: deregister is the PRIMARY removal; the staged-dir delete is secondary cleanup of the build
+artifact. On a deregister FAILURE the still-loaded copy is the MANAGED one — so the manual-cleanup warning must
+name agy's managed dir (`~/.gemini/config/plugins/flaui-mcp/`), not merely the staged `{app}\plugin\`, or the
+operator cleans the wrong directory while the agent keeps loading the plugin.
 
 **The conditional delete lives in `CliRouter.cs`, NOT Inno (panel R3, code-grounded).** `installer/flaui-mcp.iss`
 `[UninstallRun]:44-47` blindly invokes `flaui-mcp uninstall --agent all` and waits — Inno cannot see the per-CLI
