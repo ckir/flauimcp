@@ -139,7 +139,11 @@ function Edit-InEditor {
     Set-Content -Path $tmp -Value $InitialContent -NoNewline -Encoding UTF8
     $editor = $env:EDITOR
     if ([string]::IsNullOrWhiteSpace($editor)) { $editor = 'notepad' }
-    & $editor $tmp | Out-Null
+    # Split so an $EDITOR carrying arguments (e.g. 'code --wait', 'subl -w') isn't treated as one exe name.
+    $editorParts = $editor.Trim() -split '\s+'
+    $editorExe   = $editorParts[0]
+    $editorArgs  = if ($editorParts.Count -gt 1) { $editorParts[1..($editorParts.Count - 1)] } else { @() }
+    & $editorExe @editorArgs $tmp | Out-Null
     $result = Get-Content $tmp -Raw
     Remove-Item $tmp -Force -ErrorAction SilentlyContinue
     $result
