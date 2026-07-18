@@ -317,4 +317,24 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   encoded in the `TabItem` accessible **Name** as a trailing `". Modified."` (e.g. `"<title>. Modified."`),
   while the tab's child `Text` node carries the clean title. Find unsaved tabs by that Name suffix (or the
   window title's leading `*`) — the child `Text` alone does not reveal dirty state. *(verified live 2026-07-15)*
+- **Find a CLI app in Windows Terminal — tab title is a fast HINT, never a complete filter.** Filter
+  `desktop_list_windows` to `ProcessName == WindowsTerminal` (also flagged by `Hint`), then `desktop_find <wt>
+  controlType:"TabItem"` lists every tab name in ONE cheap call (no full snapshot). An app that SETS its terminal
+  title (agy: a braille spinner + its task) is spotted instantly. BUT a tab named for its bare launcher
+  (`cmd.exe`/`PowerShell`) is NOT proof it's a shell — apps that DON'T set a title hide there (verified live:
+  nano ran in a `PowerShell` tab; a second Gemini/agy ran in a `cmd.exe` tab, while only the first agy titled
+  its tab). So to find a SPECIFIC app that isn't the distinctively-titled one, you MUST `desktop_read_terminal_tab`
+  the generic-titled tabs too — a distinctive tab present does NOT license skipping them. Don't assume the titled
+  tab is active/index 0; `read_terminal_tab` really switches + restores (`restoreConfidence` can drop to
+  `reduced` when switching through a full-screen TUI like nano). *(verified live 2026-07-17)*
+- Shell surfaces (Notification Center `Win+N`; Start/Search `Ctrl+Esc` — bare `Win` isn't a valid chord; likely Quick Settings `Win+A`) are NOT in `desktop_list_windows` — open the surface, then `desktop_get_focused_element` returns its hidden handle → snapshot/find/type it; the UIA walk is non-ephemeral; Start's `SearchTextBox` Edit types clean.
+- Win11 modern context menu = one/two empty `PopupHost` top-level windows (no items in UIA) — drive by keyboard (menu has focus: arrows+Enter) or `find_text`+`click_at`; DETECT a menu/popup open via `structure_changed` (poll `drain_events`), NOT `window_opened` (doesn't fire for PopupHost).
+- Read off-screen/virtualized list rows with `desktop_get_grid_cell(row,col)` — a details-view list (`[Grid]`) returns off-screen rows WITHOUT scrolling (snapshot shows only rendered items); the recovery for the off-screen catch-22; out-of-range error reveals dims.
+- Common file dialog ("Save as"/"Open"): the filename box is buried under ~20+ `System.ItemNameDisplay` file-list cells — target it by name `"File name:"` / automationId `1001`; recipe: `set_value` full path → click Save (automationId `"1"`). Modal file dialogs ARE enumerable top-level windows.
+- Rename a file (F2) opens a SEPARATE top-level window (title=filename) hosting the edit — `set_value` its `System.ItemNameDisplay` "Name" Edit → `Enter`. `explorer.exe <folderpath>` spawns a real new window+pid; launching Notepad instead TABS into the existing process (LaunchTimeout, but a same-pid tab-window appears).
+- Explorer address bar reads empty via `get_text` in breadcrumb mode — read the path from the breadcrumb SplitButton segments (lease-exempt), or `Ctrl+L` to morph it to an editable Edit that returns the full path (`Esc` restores).
+- No window move/resize verb — `desktop_focus_window` then `Win+Left`/`Win+Right` tiles to a half, `Win+Up` maximizes.
+- `wake_accessibility` on Chromium (Chrome) hydrates the browser CHROME (tabs/toolbars/buttons) but NOT the page DOM (stays empty Panes) — use `find_text` (OCR) for page content.
+- `desktop_clipboard_get` returns `""` for BOTH empty AND non-text (file/image) clipboards (no format signal); `desktop_paste_text` refuses `ClipboardHoldsNonText` (`forceOverwriteClipboard` to override).
+*(rules above verified live 2026-07-17)*
 <!-- AUTOTRAIN:GROWTH:END -->
