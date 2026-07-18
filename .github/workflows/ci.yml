@@ -41,3 +41,16 @@ jobs:
           ./scripts/new-tool.ps1 -Name DesktopCiSmoke
           if ($LASTEXITCODE -ne 0) { throw "new-tool.ps1 failed with exit $LASTEXITCODE" }
           dotnet build -c Release
+
+  pester:
+    name: Pester (scripts/)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          Install-Module Pester -RequiredVersion 5.8.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 5.8.0
+          $result = Invoke-Pester -Path scripts/ -CI -PassThru
+          if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) Pester test(s) failed." }
