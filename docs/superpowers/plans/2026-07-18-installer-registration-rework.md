@@ -203,18 +203,20 @@ public class CliInvokerTests
     [Fact]
     public void Present_cli_routed_through_cmd_slashC_with_discrete_args()
     {
-        var calls = new List<(string file, string[] args)>();
+        var calls = new List<(string file, string[] args, string? cwd)>();
         var invoker = new CliInvoker(
-            run: (file, args, cwd) => { calls.Add((file, args)); return new RunResult(0, "ok"); },
-            resolve: _ => @"C:\tools\agy.cmd"); // present
+            run: (file, args, cwd) => { calls.Add((file, args, cwd)); return new RunResult(0, "ok"); },
+            resolve: _ => @"C:\tools\agy.cmd"); // present, resolved in C:\tools
 
         var r = invoker.Invoke("agy", "plugin", "install", @"C:\App With Space\plugin");
 
         Assert.Equal(0, r.Code);
-        var (file, args) = Assert.Single(calls);
+        var (file, args, cwd) = Assert.Single(calls);
         Assert.Equal("cmd.exe", file);
         // Discrete elements — never one concatenated string; path stays its own element (quoted by .NET).
         Assert.Equal(new[] { "/C", "agy", "plugin", "install", @"C:\App With Space\plugin" }, args);
+        // cwd is the resolved CLI's directory so cmd finds the shim even off-PATH (plan-review R2).
+        Assert.Equal(@"C:\tools", cwd);
     }
 
     [Fact]
@@ -267,9 +269,15 @@ public sealed class CliInvoker
 
     public RunResult Invoke(string cli, params string[] args)
     {
-        if (_resolve(cli) is null) return new RunResult(ProcessRunner.NotFound, "");
+        var resolved = _resolve(cli);
+        if (resolved is null) return new RunResult(ProcessRunner.NotFound, "");
+        // Bare `cli` after /C (NOT the quoted full path): a quoted first token triggers cmd's two-quote-pair
+        // stripping when an arg also has spaces (e.g. a profile path under a username with a space). Instead set
+        // the child working directory to the resolved CLI's dir — cmd searches cwd BEFORE PATH, so bare `cli`
+        // resolves even when the CLI lives only in a fallback dir not on the inherited PATH. (plan-review R2.)
+        var cliDir = System.IO.Path.GetDirectoryName(resolved);
         var full = new[] { "/C", cli }.Concat(args).ToArray();
-        return _run("cmd.exe", full, null);
+        return _run("cmd.exe", full, cliDir);
     }
 }
 ```
@@ -365,16 +373,55 @@ public sealed class PluginArtifactWriter
     public void WriteMcpJson(string exePath)
     {
         Directory.CreateDirectory(_stagingDir);
+        var path = Path.Combine(_stagingDir, ".mcp.json");
+        // PRESERVE any runtime flags a prior overlay/autosound/presence verb set — only (re)write `command`, so a
+        // re-install / Generate() over an existing plugin never wipes the user's flags. (plan-review R2.)
+        var existingArgs = ReadExistingArgs(path);
         var model = new
         {
             mcpServers = new System.Collections.Generic.Dictionary<string, object>
             {
-                [PluginIds.PluginName] = new { command = exePath, args = System.Array.Empty<string>() }
+                [PluginIds.PluginName] = new { command = exePath, args = existingArgs }
             }
         };
-        File.WriteAllText(Path.Combine(_stagingDir, ".mcp.json"), JsonSerializer.Serialize(model, Pretty));
+        File.WriteAllText(path, JsonSerializer.Serialize(model, Pretty));
+    }
+
+    private static string[] ReadExistingArgs(string path)
+    {
+        if (!File.Exists(path)) return System.Array.Empty<string>();
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (doc.RootElement.TryGetProperty("mcpServers", out var servers)
+                && servers.TryGetProperty(PluginIds.PluginName, out var srv)
+                && srv.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Array)
+                return a.EnumerateArray().Select(e => e.GetString() ?? "").ToArray();
+        }
+        catch { /* malformed -> reseed fresh */ }
+        return System.Array.Empty<string>();
     }
 }
+```
+
+> Add `using System.Linq;` and `using System.Text.Json;` (for `JsonDocument`/`JsonValueKind`) to the file. Add this preservation test to `PluginArtifactWriterTests`:
+
+```csharp
+    [Fact]
+    public void WriteMcpJson_preserves_existing_args_and_only_updates_command()
+    {
+        var staging = TempDir();
+        var w = new PluginArtifactWriter(staging);
+        w.WriteMcpJson(@"C:\v1\flaui-mcp.exe");
+        w.MergeArgs(@"C:\v1\flaui-mcp.exe", add: new[] { "--overlay" }, remove: System.Array.Empty<string>());
+        w.WriteMcpJson(@"C:\v2\flaui-mcp.exe"); // re-install with a new exe path
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(staging, ".mcp.json")));
+        var srv = doc.RootElement.GetProperty("mcpServers").GetProperty("flaui-mcp");
+        Assert.Equal(@"C:\v2\flaui-mcp.exe", srv.GetProperty("command").GetString()); // command updated
+        var args = srv.GetProperty("args").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains("--overlay", args); // flags preserved across re-install
+    }
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1153,9 +1200,16 @@ private static IEnumerable<AgentResult> ApplyMerge(string agent, Paths paths, st
     var stagingDir = Environment.GetEnvironmentVariable("FLAUI_MCP_STAGING_DIR")
                      ?? Path.Combine(Path.GetDirectoryName(exePath)!, "plugin");
 
-    // Runtime flags live in the ONE staging .mcp.json shared by agy+claude — merge once...
+    // A flag verb may run BEFORE install, so ensure the FULL plugin dir exists (plugin.json + marketplace.json,
+    // not just .mcp.json — else ClaudePluginRegistrar.Register fails: `marketplace add` needs the manifest).
+    // Generate() is arg-preserving (WriteMcpJson keeps existing args), so it never wipes prior flags. Then merge.
+    // (plan-review R2.)
     if (agy || claude)
-        new PluginArtifactWriter(stagingDir).MergeArgs(exePath, addArgs, removeArgs);
+    {
+        var writer = new PluginArtifactWriter(stagingDir);
+        writer.Generate(exePath, ThisVersion());
+        writer.MergeArgs(exePath, addArgs, removeArgs);
+    }
     // ...then re-register the targeted agent(s) so they pick up the new args (agy copies; Claude re-reads).
     if (agy)
         results.Add(Isolate("agy", () => new AgyPluginRegistrar(AgyInvoker()).Register(stagingDir)));
