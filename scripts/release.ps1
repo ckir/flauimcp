@@ -103,8 +103,10 @@ function Assert-Preconditions {
     $branch = (git -C $RepoRoot rev-parse --abbrev-ref HEAD).Trim()
     if ($branch -ne 'master') { throw "Must be on 'master' to release (currently on '$branch')." }
 
-    # The earlier `git fetch origin --tags` also updated origin/master; refuse to release if local master is
-    # behind it, so we don't run the whole gate/draft/commit only to have `git push --atomic` reject non-fast-forward.
+    # Refuse to release if local master is behind origin/master (else the whole gate/draft/commit runs only for
+    # `git push --atomic` to reject non-fast-forward). The `--tags` fetch above already refreshes origin/master via
+    # the standard refspec; refetch explicitly so this stays correct even under a non-standard remote fetch config.
+    git -C $RepoRoot fetch origin master --quiet 2>$null
     $behind = (git -C $RepoRoot rev-list --count 'HEAD..origin/master' 2>$null)
     if ($LASTEXITCODE -eq 0 -and $behind -match '^\d+$' -and [int]$behind -gt 0) {
         throw "Local master is $behind commit(s) behind origin/master — pull/rebase before releasing (a 'git push --atomic' would be rejected non-fast-forward after all the work)."

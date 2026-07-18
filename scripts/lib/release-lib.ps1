@@ -279,6 +279,7 @@ function Invoke-Gate {
         [Parameter(Mandatory)][string]$RepoRoot,
         [scriptblock]$BuildCheck = {
             param($Root)
+            $env:DOTNET_CLI_UI_LANGUAGE = 'en-US'   # force English: the "N Warning(s)" summary parse below is locale-sensitive
             dotnet build (Join-Path $Root 'FlaUI.Mcp.slnx') -c Release 2>&1 | Out-String
         },
         [scriptblock]$TestCheck = {
