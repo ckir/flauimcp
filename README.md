@@ -40,7 +40,7 @@ When developing inside this repository, disable the globally installed skill for
 
 ## Contributing
 
-Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, the test loop, and how to add new MCP tools. Note: Your first PR triggers a one-click **[CLA](CLA.md)**.
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, the test loop, and how to add new MCP tools. Note: contributions require signing the **[CLA](CLA.md)**. Automated CLA enforcement isn't live yet, so the maintainer verifies sign-off manually on each PR until the bot is enabled.
 
 ## License
 

@@ -4,15 +4,19 @@ Thanks for your interest! FlaUI.Mcp welcomes **code contributions — especially
 This guide gets you from clone to a mergeable PR.
 
 > **License & CLA (read first).** FlaUI.Mcp is [PolyForm Noncommercial](LICENSE); the maintainer also
-> sells commercial licenses. So your **first PR triggers a one-click CLA** ([CLA.md](CLA.md)) granting
-> the maintainer the rights needed to relicense your contribution commercially. If you can't sign a CLA
-> for a non-OSI project, that's an honest deal-breaker — no hard feelings.
+> sells commercial licenses. So contributions require signing the **CLA** ([CLA.md](CLA.md)), granting
+> the maintainer the rights needed to relicense your contribution commercially. **Automated CLA
+> enforcement isn't live yet** — the bot workflow (`.github/workflows/cla.yml`) exists but its PR
+> triggers are disabled pending legal review and PAT provisioning, so the maintainer verifies your
+> sign-off manually on each PR for now. If you can't sign a CLA for a non-OSI project, that's an honest
+> deal-breaker — no hard feelings.
 
 ## Dev setup
 
 - **.NET 10 SDK** (the projects target `net10.0-windows`).
 - **Windows 10/11** with an interactive desktop (the UIA tests drive real windows).
 - Build: `dotnet build -c Release` — this is the strict gate CI runs (no new warnings).
+- Fast path: `pwsh -File DevelopersCockpit.ps1` — an interactive repo-root menu for build/test/scaffold/gate/release-preview/push/health-check.
 
 ## Running tests (the honest loop)
 
@@ -51,7 +55,9 @@ FlaUI.Mcp tools follow one regular pattern:
    ./scripts/new-tool.ps1 -Name DesktopFoo -ReadOnly  # safe read
    ```
    This stamps a method stub into a `Tools` class and a matching test file. Add `-WhatIf` to preview.
-   (Scaffolder tests use Pester: `Install-Module Pester -Scope CurrentUser -Force` if you don't have it.)
+   (Scaffolder tests use Pester 5.8.0 — CI and `DevelopersCockpit.ps1` pin this version:
+   `Install-Module Pester -RequiredVersion 5.8.0 -Scope CurrentUser -Force` if you don't have it,
+   then run with `Invoke-Pester -Path scripts/`.)
 2. **Fill the stub.** A tool is a method on a `[McpServerToolType] public sealed class XxxTools` in
    `src/FlaUI.Mcp.Server/Tools/`, annotated `[McpServerTool(ReadOnly = true | Destructive = true),
    Description("…")]`. The MCP SDK **auto-discovers** it — no registration to edit.
@@ -71,7 +77,7 @@ FlaUI.Mcp tools follow one regular pattern:
 
 - Keep PRs small and focused (one tool / one fix).
 - Fill the PR template checklist honestly (CLA, tests, docs, annotation).
-- Expect the CLA bot on your first PR.
+- The CLA bot isn't live yet — the maintainer checks your sign-off manually before merging.
 
 ## Reporting bugs / requesting tools
 
