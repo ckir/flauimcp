@@ -267,3 +267,54 @@ $commitList
 ## $diffSection
 "@
 }
+
+function Invoke-Gate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [scriptblock]$BuildCheck = {
+            param($Root)
+            dotnet build (Join-Path $Root 'FlaUI.Mcp.slnx') -c Release 2>&1 | Out-String
+        },
+        [scriptblock]$TestCheck = {
+            param($Root)
+            dotnet test (Join-Path $Root 'FlaUI.Mcp.slnx') -c Release --filter 'Category!=Desktop&Category!=SyntheticInput' --no-build 2>&1 | Out-String
+        },
+        [scriptblock]$PluginDriftCheck = {
+            param($Root)
+            & (Join-Path $Root 'scripts/build-plugin.ps1') | Out-Null
+            git -C $Root diff --quiet -- plugins/flaui-mcp
+            $global:LASTEXITCODE = $LASTEXITCODE
+            'plugin snapshot regenerated and diffed against the working tree'
+        }
+    )
+
+    $checks = @()
+
+    $buildOutput = & $BuildCheck $RepoRoot | Out-String
+    $warnMatch = [regex]::Match($buildOutput, '(?m)^\s*(\d+)\s+Warning\(s\)\s*$')
+    $warningCount = if ($warnMatch.Success) { [int]$warnMatch.Groups[1].Value } else { 0 }
+    $buildPassed = ($LASTEXITCODE -eq 0) -and ($warningCount -eq 0)
+    $checks += [pscustomobject]@{ Name = 'Build'; Passed = $buildPassed; Detail = $buildOutput.Trim() }
+
+    $testOutput = & $TestCheck $RepoRoot | Out-String
+    $testPassed = ($LASTEXITCODE -eq 0)
+    $checks += [pscustomobject]@{ Name = 'Test'; Passed = $testPassed; Detail = $testOutput.Trim() }
+
+    $sync = Get-VersionsInSync -RepoRoot $RepoRoot
+    $checks += [pscustomobject]@{ Name = 'VersionSync'; Passed = $sync.InSync; Detail = $sync.Message }
+
+    & $PluginDriftCheck $RepoRoot | Out-Null
+    $driftPassed = ($LASTEXITCODE -eq 0)
+    $driftDetail = if ($driftPassed) {
+        'no drift'
+    } else {
+        'plugins/flaui-mcp drifted from .claude source — scripts/build-plugin.ps1 was run and regenerated it; review + commit the diff'
+    }
+    $checks += [pscustomobject]@{ Name = 'PluginDrift'; Passed = $driftPassed; Detail = $driftDetail }
+
+    [pscustomobject]@{
+        Passed = -not [bool]($checks | Where-Object { -not $_.Passed })
+        Checks = $checks
+    }
+}

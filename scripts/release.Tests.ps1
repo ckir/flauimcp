@@ -278,3 +278,59 @@ Describe 'Get-ChangelogPrompt' {
         $p | Should -Match '- fix\(server\): correct a leak'
     }
 }
+
+Describe 'Invoke-Gate' {
+    BeforeEach {
+        $script:GateSandbox = Join-Path ([IO.Path]::GetTempPath()) ("gatebox_" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Force -Path (Join-Path $GateSandbox 'src/FlaUI.Mcp.Server') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $GateSandbox 'installer') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $GateSandbox 'plugins/flaui-mcp/.claude-plugin') | Out-Null
+        '<Project><PropertyGroup><Version>0.1.0</Version></PropertyGroup></Project>' | Set-Content (Join-Path $GateSandbox 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj')
+        '#define AppVersion "0.1.0"' | Set-Content (Join-Path $GateSandbox 'installer/flaui-mcp.iss')
+        '{"version": "0.1.0"}' | Set-Content (Join-Path $GateSandbox 'plugins/flaui-mcp/.claude-plugin/plugin.json')
+        $script:Pass = { param($Root) $global:LASTEXITCODE = 0; 'ok' }
+    }
+    AfterEach { if (Test-Path $script:GateSandbox) { Remove-Item -Recurse -Force $script:GateSandbox } }
+
+    It 'passes when all 4 checks pass' {
+        $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $Pass -TestCheck $Pass -PluginDriftCheck $Pass
+        $result.Passed | Should -BeTrue
+        ($result.Checks | Where-Object Name -eq 'Build').Passed       | Should -BeTrue
+        ($result.Checks | Where-Object Name -eq 'Test').Passed        | Should -BeTrue
+        ($result.Checks | Where-Object Name -eq 'VersionSync').Passed | Should -BeTrue
+        ($result.Checks | Where-Object Name -eq 'PluginDrift').Passed | Should -BeTrue
+    }
+
+    It 'fails overall when the build check fails' {
+        $fail = { param($Root) $global:LASTEXITCODE = 1; 'error: something broke' }
+        $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $fail -TestCheck $Pass -PluginDriftCheck $Pass
+        $result.Passed | Should -BeFalse
+        ($result.Checks | Where-Object Name -eq 'Build').Passed | Should -BeFalse
+    }
+
+    It 'fails VersionSync when the 3 files disagree' {
+        '#define AppVersion "0.2.0"' | Set-Content (Join-Path $GateSandbox 'installer/flaui-mcp.iss')
+        $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $Pass -TestCheck $Pass -PluginDriftCheck $Pass
+        $result.Passed | Should -BeFalse
+        ($result.Checks | Where-Object Name -eq 'VersionSync').Passed | Should -BeFalse
+    }
+
+    It 'treats a nonzero warning count as a build failure even when exit code is 0' {
+        $warnBuild = { param($Root) $global:LASTEXITCODE = 0; "Build succeeded.`n    2 Warning(s)`n    0 Error(s)" }
+        $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $warnBuild -TestCheck $Pass -PluginDriftCheck $Pass
+        ($result.Checks | Where-Object Name -eq 'Build').Passed | Should -BeFalse
+    }
+
+    It 'passes the build check on a real 0-warning summary line' {
+        $cleanBuild = { param($Root) $global:LASTEXITCODE = 0; "Build succeeded.`n    0 Warning(s)`n    0 Error(s)" }
+        $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $cleanBuild -TestCheck $Pass -PluginDriftCheck $Pass
+        ($result.Checks | Where-Object Name -eq 'Build').Passed | Should -BeTrue
+    }
+
+    It 'fails overall when the plugin-drift check fails' {
+        $fail = { param($Root) $global:LASTEXITCODE = 1; 'drift detected' }
+        $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $Pass -TestCheck $Pass -PluginDriftCheck $fail
+        $result.Passed | Should -BeFalse
+        ($result.Checks | Where-Object Name -eq 'PluginDrift').Passed | Should -BeFalse
+    }
+}
