@@ -27,19 +27,39 @@ content is the Claude marketplace source dir) containing:
 - `skills/driving-flaui-mcp/` — the driving skill. ALREADY deployed.
 - `.claude-plugin/marketplace.json` — a scoped Claude marketplace manifest (NEW) declaring this dir as a
   marketplace containing the `flaui-mcp` plugin, so `claude plugin marketplace add <dir>` + `claude plugin
-  install flaui-mcp@<marketplace>` works. (Mirrors clavity's generated `marketplace.install.json`.)
+  install flaui-mcp@flaui-mcp-marketplace` works. **Exact shape (pin it — panel R2):** because the staging dir
+  IS the plugin dir (flat, per Migration §), `source` MUST be `"."`, NOT clavity's nested
+  `"./plugins/<name>"`. Do NOT "mirror `marketplace.install.json`" (that file uses the nested layout for
+  clavity's multi-plugin AppDir and would point Claude at a non-existent `plugins/flaui-mcp`). Mirror the
+  FLAT variant (clavity's dev-clone `.claude-plugin/marketplace.json`, which uses `source: "."`):
+  ```json
+  { "$schema": "https://code.claude.com/schemas/marketplace.json",
+    "name": "flaui-mcp-marketplace", "owner": { "name": "ckir" },
+    "plugins": [ { "name": "flaui-mcp", "source": ".", "description": "…" } ] }
+  ```
+  **Pinned identifiers (invariant literals — panel R2):** plugin name = `flaui-mcp`; marketplace name =
+  `flaui-mcp-marketplace`. These exact strings are reused verbatim across the `.mcp.json`, the marketplace
+  manifest, every `claude plugin …` argv, and the read-back — never re-derived.
 
 ## Registration mechanism (replaces all hand-written config)
 `CliRouter.cs` shells out to the agent CLIs (idempotent remove-then-add + read-back verify, porting clavity's
 `plugin-registration.iss` logic to C#). It NO LONGER writes `mcpServers` into any config file.
 
+**Argv grammar oracle (panel R2 — do NOT re-derive):** port the EXACT argv strings from clavity's proven
+`installer/_shared/plugin-registration.iss` (`RegisterClaude`/`RegisterAgy`), which are live-verified. Note the
+grammar: `--scope user` (a SPACE, not `--scope=user`), and the `@`-joined `<plugin>@<marketplace>` install
+target quoted. The unit tests assert these exact strings (see Testing) so a grammar drift fails in CI, and the
+strings are grounded in a working installer rather than authored fresh.
 - **agy:** `agy plugin uninstall flaui-mcp` (swallow result) → `agy plugin install "<stagingDir>"` — where
   `<stagingDir>` is the ISOLATED staged dir, NOT `~/.gemini/config/plugins/`; `agy plugin install` copies it into
   its managed dir itself. Check exit code; capture stdout/stderr into the install-log detail.
-- **Claude:** `claude plugin marketplace remove <marketplace>` (swallow) → `claude plugin marketplace add
-  "<dir>" --scope user` → `claude plugin uninstall flaui-mcp` (swallow) → `claude plugin install
-  "flaui-mcp@<marketplace>" --scope user` → read-back `claude plugin list` and assert `flaui-mcp@<marketplace>`
-  is present (the existing Claude-running-clobber guard stays: refuse if Claude Code is running).
+- **Claude:** `claude plugin marketplace remove flaui-mcp-marketplace` (swallow) → `claude plugin marketplace
+  add "<dir>" --scope user` → `claude plugin uninstall flaui-mcp` (swallow) → `claude plugin install
+  "flaui-mcp@flaui-mcp-marketplace" --scope user` → read-back `claude plugin list` and assert the
+  `flaui-mcp@flaui-mcp-marketplace` line is present AND not in a `Disabled`/`Error` state (panel R2: a bare
+  substring "present" match is false-GREEN if the plugin lists but failed to load — clavity's oracle accepts the
+  substring match, so this active-state check is a cheap hardening beyond it, applied only if `plugin list`
+  surfaces state). The existing Claude-running-clobber guard stays: refuse if Claude Code is running.
 
 ### CLI resolution (install-context robustness)
 The installer is PER-USER, non-elevated (`installer/flaui-mcp.iss:13` `PrivilegesRequired=lowest`; installs to
@@ -49,6 +69,16 @@ elevation assumption; per-user install never triggers it.) Match clavity's PROVE
 `claude`/`agy` via a shell that inherits the user PATH (clavity does this and it works). If resolution fails,
 fall back to known locations (`%APPDATA%\npm`, `~/.cargo/bin`, `~/.local/bin`).
 On any launch failure, record a clear "could not launch <cli>" detail rather than silently succeeding.
+
+**Exact launch orchestration (panel R2 — do NOT leave "via a shell" hand-wavy):** `claude`/`agy` are npm/cargo
+shims (`claude.cmd`), which `CreateProcess` cannot launch by bare name, and `UseShellExecute=true` (the naive way
+to get PATH/shim resolution) is MUTUALLY EXCLUSIVE with stream redirection in .NET (`RedirectStandardOutput`
+throws `InvalidOperationException` when `UseShellExecute=true`). So neither half of "resolve the shim on PATH"
++ "capture stdout/stderr" is satisfiable naively. Port clavity's `ExecCaptured` shape
+(`plugin-registration.iss:107`): run **`cmd.exe /C "<cli> <params>"`** with `UseShellExecute=false` and
+`RedirectStandardOutput=true`/`RedirectStandardError=true` (or, matching clavity exactly, redirect to a temp file
+`> "<tmp>" 2>&1` and read it back). `cmd /C` resolves the `.cmd` shim via PATH; `UseShellExecute=false` permits
+the capture. This is the single supported orchestration — the seam (`ICliRunner`) encapsulates it.
 (NOTE: relying on the CLI is the design; a plugin-dir "drop + agent auto-discovery" — agy claims agy
 auto-discovers a plugin dir dropped in `~/.gemini/config/plugins/` with no CLI call, Claude does not — is
 UNVERIFIED agy confabulation-risk and is NOT relied upon here. Validate it during implementation; if true, it is
@@ -58,8 +88,11 @@ a bonus simplification for the agy path, not a design dependency.)
 On install, sweep any LEGACY hand-written `flaui-mcp` entries so the old and new mechanisms don't collide
 (the duplicate-server failure observed live). Delete a `flaui-mcp` `mcpServers` block from, if present:
 `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json`, and the Claude side via exactly `claude mcp
-remove flaui-mcp` (flaui-mcp's pre-rework Claude registration used `claude mcp add`, so this is the precise
-inverse). Also remove any stray hand-dropped `.mcp.json` the earlier debugging left.
+remove flaui-mcp` **(swallow result — panel R2)**: a fresh machine has no legacy entry and `claude mcp remove`
+exits non-zero for an absent server, so this step must NOT gate on its exit code (unlike a `RegisterClaude`
+install failure) or it would fatally abort every clean install. (flaui-mcp's pre-rework Claude registration used
+`claude mcp add`, so this is the precise inverse.) Also remove any stray hand-dropped `.mcp.json` the earlier
+debugging left.
 Idempotent: absent entries are a no-op.
 
 ## Uninstall
