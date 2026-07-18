@@ -140,4 +140,27 @@ Describe 'Get-VersionsInSync and Set-ProjectVersion' {
         Remove-Item (Join-Path $VerSandbox 'installer/flaui-mcp.iss')
         { Get-VersionsInSync -RepoRoot $VerSandbox } | Should -Throw
     }
+
+    It 'preserves each version file''s original BOM state' {
+        $csprojPath = Join-Path $VerSandbox 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj'
+        $issPath    = Join-Path $VerSandbox 'installer/flaui-mcp.iss'
+
+        $originalCsprojText = Get-Content $csprojPath -Raw
+        [System.IO.File]::WriteAllText($csprojPath, $originalCsprojText, [System.Text.UTF8Encoding]::new($true))
+
+        $originalIssText = Get-Content $issPath -Raw
+        [System.IO.File]::WriteAllText($issPath, $originalIssText, [System.Text.UTF8Encoding]::new($false))
+
+        Set-ProjectVersion -RepoRoot $VerSandbox -Version '0.17.0'
+
+        $csprojBytes = [System.IO.File]::ReadAllBytes($csprojPath)
+        $csprojHasBom = $csprojBytes.Length -ge 3 -and $csprojBytes[0] -eq 0xEF -and $csprojBytes[1] -eq 0xBB -and $csprojBytes[2] -eq 0xBF
+        $csprojHasBom | Should -BeTrue
+        (Get-Content $csprojPath -Raw) | Should -Match '<Version>0\.17\.0</Version>'
+
+        $issBytes = [System.IO.File]::ReadAllBytes($issPath)
+        $issHasBom = $issBytes.Length -ge 3 -and $issBytes[0] -eq 0xEF -and $issBytes[1] -eq 0xBB -and $issBytes[2] -eq 0xBF
+        $issHasBom | Should -BeFalse
+        (Get-Content $issPath -Raw) | Should -Match '#define AppVersion "0\.17\.0"'
+    }
 }

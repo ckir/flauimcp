@@ -134,6 +134,20 @@ function Get-VersionsInSync {
     }
 }
 
+function Set-FilePreservingBom {
+    # Write $Content to $Path as UTF-8, preserving whether the file currently has a UTF-8 BOM.
+    # WriteAllText writes exactly $Content (no appended newline), matching Set-Content -NoNewline.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Content
+    )
+    $bytes  = [System.IO.File]::ReadAllBytes($Path)
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    $encoding = [System.Text.UTF8Encoding]::new($hasBom)   # ctor arg = emit-BOM
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
 function Set-ProjectVersion {
     [CmdletBinding()]
     param(
@@ -150,17 +164,17 @@ function Set-ProjectVersion {
     $csproj = Get-Content $csprojPath -Raw
     if ($csproj -notmatch '<Version>\d+\.\d+\.\d+</Version>') { throw "Set-ProjectVersion: no <Version> element found in $csprojPath" }
     $newCsproj = [regex]::Replace($csproj, '<Version>\d+\.\d+\.\d+</Version>', "<Version>$Version</Version>")
-    Set-Content -Path $csprojPath -Value $newCsproj -NoNewline -Encoding UTF8
+    Set-FilePreservingBom -Path $csprojPath -Content $newCsproj
 
     $iss = Get-Content $issPath -Raw
     if ($iss -notmatch '#define AppVersion "\d+\.\d+\.\d+"') { throw "Set-ProjectVersion: no AppVersion found in $issPath" }
     $newIss = [regex]::Replace($iss, '#define AppVersion "\d+\.\d+\.\d+"', "#define AppVersion `"$Version`"")
-    Set-Content -Path $issPath -Value $newIss -NoNewline -Encoding UTF8
+    Set-FilePreservingBom -Path $issPath -Content $newIss
 
     $plugin = Get-Content $pluginPath -Raw
     if ($plugin -notmatch '"version":\s*"\d+\.\d+\.\d+"') { throw "Set-ProjectVersion: no version key found in $pluginPath" }
     $newPlugin = [regex]::Replace($plugin, '"version":\s*"\d+\.\d+\.\d+"', "`"version`": `"$Version`"")
-    Set-Content -Path $pluginPath -Value $newPlugin -NoNewline -Encoding UTF8
+    Set-FilePreservingBom -Path $pluginPath -Content $newPlugin
 
     Get-VersionsInSync -RepoRoot $RepoRoot
 }
