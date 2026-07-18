@@ -1000,19 +1000,22 @@ git commit -m "feat(install): canonical INSTALL sequence — generate->sweep->re
 - [ ] **Step 1: Write the failing test**
 
 ```csharp
+    // ALL Run() calls pass --config to isolate AgyServers/AgyPerms (no env override for them — see Task 7 test).
+    private string Cfg => Path.Combine(_root, "agy-mcp_config.json");
+
     [Fact]
     public void Uninstall_deletes_staging_on_success_and_writes_no_warning()
     {
         // Arrange: run install first (both present), then uninstall.
         var exe = Path.Combine(_root, "flaui-mcp.exe"); File.WriteAllText(exe, "");
-        CliRouter.Run(new[] { "install", "--agent", "all" }, exe, new StringWriter());
+        CliRouter.Run(new[] { "install", "--agent", "all", "--config", Cfg }, exe, new StringWriter());
         var staging = Path.Combine(_root, "plugin");
         Assert.True(Directory.Exists(staging));
 
-        var code = CliRouter.Run(new[] { "uninstall", "--agent", "all" }, exe, new StringWriter());
+        var code = CliRouter.Run(new[] { "uninstall", "--agent", "all", "--config", Cfg }, exe, new StringWriter());
 
         Assert.Equal(0, code);
-        Assert.False(Directory.Exists(staging)); // deleted on successful deregister
+        Assert.False(Directory.Exists(staging)); // deleted on successful full deregister
         Assert.False(File.Exists(Path.Combine(_root, "state", "uninstall-warnings.log")));
     }
 
@@ -1020,14 +1023,14 @@ git commit -m "feat(install): canonical INSTALL sequence — generate->sweep->re
     public void Uninstall_leaves_staging_and_warns_when_deregister_fails()
     {
         var exe = Path.Combine(_root, "flaui-mcp.exe"); File.WriteAllText(exe, "");
-        CliRouter.Run(new[] { "install", "--agent", "all" }, exe, new StringWriter());
+        CliRouter.Run(new[] { "install", "--agent", "all", "--config", Cfg }, exe, new StringWriter());
         var staging = Path.Combine(_root, "plugin");
 
         // Force agy deregister to FAIL for the uninstall run.
         Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_AGY_FAIL", "1");
         try
         {
-            CliRouter.Run(new[] { "uninstall", "--agent", "all" }, exe, new StringWriter());
+            CliRouter.Run(new[] { "uninstall", "--agent", "all", "--config", Cfg }, exe, new StringWriter());
         }
         finally { Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_AGY_FAIL", null); }
 
@@ -1035,6 +1038,20 @@ git commit -m "feat(install): canonical INSTALL sequence — generate->sweep->re
         var log = File.ReadAllText(Path.Combine(_root, "state", "uninstall-warnings.log"));
         Assert.Contains(@".gemini", log); // warning names agy's managed dir
         Assert.Contains("agy plugin uninstall", log); // instructs CLI-deregister before manual delete
+    }
+
+    [Fact]
+    public void Targeted_agy_uninstall_does_not_delete_shared_staging_that_claude_live_mounts()
+    {
+        var exe = Path.Combine(_root, "flaui-mcp.exe"); File.WriteAllText(exe, "");
+        CliRouter.Run(new[] { "install", "--agent", "all", "--config", Cfg }, exe, new StringWriter());
+        var staging = Path.Combine(_root, "plugin");
+        Assert.True(Directory.Exists(staging));
+
+        CliRouter.Run(new[] { "uninstall", "--agent", "agy", "--config", Cfg }, exe, new StringWriter());
+
+        // Claude (not targeted) still live-mounts staging — a targeted agy uninstall must not delete it. (R3.)
+        Assert.True(Directory.Exists(staging));
     }
 ```
 
@@ -1056,13 +1073,18 @@ case "uninstall":
     // Deregister is the PRIMARY removal (it drops the loaded copies). Delete the staged build artifact
     // ONLY if every present agent deregistered cleanly; else LEAVE it and warn (still-referenced dir).
     var deregisterFailed = uninstallResults.Any(r => r.Change == AgentChange.Failed);
-    if (!deregisterFailed)
-    {
-        try { if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true); } catch { /* leave on error */ }
-    }
-    else
+    // Delete the SHARED staging dir ONLY on a full uninstall: Claude live-mounts it (its marketplace points at
+    // the path), so a targeted `--agent agy` uninstall must NOT delete it out from under Claude, which was not
+    // targeted and still references it. The installer's own uninstall is always `--agent all` (flaui-mcp.iss:44).
+    // (plan-review R3.)
+    bool fullUninstall = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
+    if (deregisterFailed)
     {
         WriteUninstallWarning(paths.StateDir, stagingDir, paths.AgyPluginsDir);
+    }
+    else if (fullUninstall)
+    {
+        try { if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true); } catch { /* leave on error */ }
     }
 
     // (existing) sweep backups; purge data if requested — keep as-is at :113-119.
