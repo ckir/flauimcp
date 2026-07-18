@@ -442,7 +442,9 @@ try {
     $lastTag = (git -C $RepoRoot describe --tags --match 'v*' --abbrev=0 2>$null)
     $lastTagFound = ($LASTEXITCODE -eq 0) -and $lastTag
     $lastTagVersion = if ($lastTagFound) { $lastTag.Trim().TrimStart('v') } else { '0.0.0' }
-    $rangeArgs = if ($lastTagFound) { @("$($lastTag.Trim())..HEAD") } else { @() }
+    # @( if … ) — NOT `if { @(…) }`: an if-EXPRESSION enumerates its 1-element array output to a SCALAR string,
+    # and `@rangeArgs` on a string then splats its CHARACTERS ("v","0",".","1"…) as separate git args → empty log.
+    $rangeArgs = @( if ($lastTagFound) { "$($lastTag.Trim())..HEAD" } )
 
     $rawLog = (git -C $RepoRoot log @rangeArgs --format='%B%x1e' 2>$null | Out-String)
     $commitMessages = @($rawLog -split "`u{1e}" | Where-Object { $_.Trim() })
