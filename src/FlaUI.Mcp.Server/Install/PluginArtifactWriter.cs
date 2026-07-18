@@ -54,4 +54,45 @@ public sealed class PluginArtifactWriter
         catch { /* malformed -> reseed fresh */ }
         return System.Array.Empty<string>();
     }
+
+    public void Generate(string exePath, string version)
+    {
+        WriteMcpJson(exePath);
+        WritePluginJson(version);
+        WriteMarketplaceJson();
+        WriteSkill();
+    }
+
+    private void WritePluginJson(string version)
+    {
+        var model = new { name = PluginIds.PluginName, version, description = "Drive the Windows desktop via MCP." };
+        File.WriteAllText(Path.Combine(_stagingDir, "plugin.json"), JsonSerializer.Serialize(model, Pretty));
+    }
+
+    private void WriteMarketplaceJson()
+    {
+        var dir = Path.Combine(_stagingDir, ".claude-plugin");
+        Directory.CreateDirectory(dir);
+        var model = new
+        {
+            schema  = "https://code.claude.com/schemas/marketplace.json",
+            name    = PluginIds.MarketplaceName,
+            owner   = new { name = "ckir" },
+            plugins = new[] { new { name = PluginIds.PluginName, source = ".", description = "Drive the Windows desktop via MCP." } }
+        };
+        // "$schema" is not a valid C# member name — serialize then fix the key, or use a JsonObject.
+        var json = JsonSerializer.Serialize(model, Pretty).Replace("\"schema\":", "\"$schema\":");
+        File.WriteAllText(Path.Combine(dir, "marketplace.json"), json);
+    }
+
+    private void WriteSkill()
+    {
+        var target = Path.Combine(_stagingDir, "skills", "driving-flaui-mcp");
+        Directory.CreateDirectory(target);
+        // Read the embedded skill exactly as AgyConfigWriter.DeploySkill (AgyConfigWriter.cs:36) does.
+        using var stream = typeof(PluginArtifactWriter).Assembly.GetManifestResourceStream(PluginIds.SkillResource)
+            ?? throw new FileNotFoundException($"embedded skill resource missing: {PluginIds.SkillResource}");
+        using var reader = new StreamReader(stream);
+        File.WriteAllText(Path.Combine(target, "SKILL.md"), reader.ReadToEnd());
+    }
 }

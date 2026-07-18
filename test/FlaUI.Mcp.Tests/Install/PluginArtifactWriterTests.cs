@@ -48,4 +48,26 @@ public class PluginArtifactWriterTests
         var args = srv.GetProperty("args").EnumerateArray().Select(e => e.GetString()).ToList();
         Assert.Contains("--overlay", args); // flags preserved across re-install
     }
+
+    [Fact]
+    public void Generate_writes_all_four_artifacts_with_flat_marketplace_source_and_skill()
+    {
+        var staging = TempDir();
+        new PluginArtifactWriter(staging).Generate(@"C:\p\flaui-mcp.exe", version: "0.16.2");
+
+        Assert.True(File.Exists(Path.Combine(staging, ".mcp.json")));
+        Assert.True(File.Exists(Path.Combine(staging, "plugin.json")));
+
+        var mkt = Path.Combine(staging, ".claude-plugin", "marketplace.json");
+        Assert.True(File.Exists(mkt));
+        using var doc = JsonDocument.Parse(File.ReadAllText(mkt));
+        Assert.Equal("flaui-mcp-marketplace", doc.RootElement.GetProperty("name").GetString());
+        var plugin = doc.RootElement.GetProperty("plugins")[0];
+        Assert.Equal("flaui-mcp", plugin.GetProperty("name").GetString());
+        Assert.Equal(".", plugin.GetProperty("source").GetString()); // FLAT, not ./plugins/<name>
+
+        var skill = Path.Combine(staging, "skills", "driving-flaui-mcp", "SKILL.md");
+        Assert.True(File.Exists(skill));
+        Assert.Contains("Driving FlaUI.Mcp", File.ReadAllText(skill)); // real skill content from embedded resource
+    }
 }
