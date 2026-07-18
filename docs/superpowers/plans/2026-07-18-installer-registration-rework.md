@@ -808,16 +808,21 @@ public class CliRouterPluginRegistrationTests : IDisposable
         File.WriteAllText(exe, "");
         var sw = new StringWriter();
 
-        var code = CliRouter.Run(new[] { "install", "--agent", "all" }, exe, sw);
+        // CRITICAL isolation: pass --config to a DUMMY path. `AgyServers`/`AgyPerms`/`GenericPath` have NO
+        // env override — only --config overrides them — so WITHOUT this the migration sweep
+        // (AgyConfigWriter.Uninstall) runs against the dev's REAL ~/.gemini/config/mcp_config.json and deletes
+        // their live flaui-mcp entry. (agy plan-review finding.)
+        var isolatedConfig = Path.Combine(_root, "agy-mcp_config.json");
+        var code = CliRouter.Run(new[] { "install", "--agent", "all", "--config", isolatedConfig }, exe, sw);
 
         Assert.Equal(0, code);
         var staging = Path.Combine(_root, "plugin");
         Assert.True(File.Exists(Path.Combine(staging, ".mcp.json")));
         Assert.True(File.Exists(Path.Combine(staging, ".claude-plugin", "marketplace.json")));
         Assert.True(File.Exists(Path.Combine(staging, "skills", "driving-flaui-mcp", "SKILL.md")));
-        // NO hand-written agy config: mcp_config.json / settings.json must not carry a flaui-mcp mcpServers block.
-        var mcpConfig = Path.Combine(_root, "agy-cfg-unused");
-        Assert.False(File.Exists(mcpConfig));
+        // NO hand-written agy config: the installer must not write a flaui-mcp mcpServers block anywhere.
+        if (File.Exists(isolatedConfig))
+            Assert.DoesNotContain("flaui-mcp", File.ReadAllText(isolatedConfig));
     }
 }
 ```
@@ -855,17 +860,21 @@ if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
 if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
     results.Add(Isolate("claude", () =>
     {
-        var remedy = new ClaudeCollisionRemedy(ClaudeRunner(() => TimeSpan.Zero, ClaudeBudget), paths.StateDir);
+        var sw2 = System.Diagnostics.Stopwatch.StartNew(); // preserve the live budget clock (CliRouter.cs:255-256)
+        var remedy = new ClaudeCollisionRemedy(ClaudeRunner(() => sw2.Elapsed, ClaudeBudget), paths.StateDir);
         if (install)
         {
             new PluginArtifactWriter(stagingDir).Generate(exePath, ThisVersion()); // idempotent if agy already ran
-            new ClaudeCodeConfigWriter(ClaudeRunner(() => TimeSpan.Zero, ClaudeBudget)).Uninstall(); // sweep: claude mcp remove
+            new ClaudeCodeConfigWriter(ClaudeRunner(() => sw2.Elapsed, ClaudeBudget)).Uninstall(); // sweep: claude mcp remove
             new ClaudeSkillDeployer(paths.ClaudeConfigDir).Remove(); // drop legacy ~/.claude/skills/flaui-mcp (skill now ships in plugin)
-            remedy.Apply(); // disable legacy flaui-mcp@flaui-mcp copies (id differs from our new one -> never self-disables)
-            return new ClaudePluginRegistrar(ClaudeInvoker()).Register(stagingDir);
+            var collisionWarning = remedy.Apply(); // disable legacy flaui-mcp@flaui-mcp copies (id differs -> never self-disables)
+            var reg = new ClaudePluginRegistrar(ClaudeInvoker()).Register(stagingDir);
+            return FoldWarning(reg, collisionWarning); // don't silently drop the disable warning (agy plan-review)
         }
-        // uninstall handled in Task 8
-        return new ClaudePluginRegistrar(ClaudeInvoker()).Unregister();
+        // UNINSTALL: deregister, then Restore() the copies install disabled (spec canonical UNINSTALL step 1).
+        var unreg = new ClaudePluginRegistrar(ClaudeInvoker()).Unregister();
+        var restoreWarning = remedy.Restore();
+        return FoldWarning(unreg, restoreWarning);
     }));
 ```
 
@@ -874,6 +883,15 @@ Add the supporting helpers to `CliRouter`:
 ```csharp
 private static string ThisVersion() =>
     System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+
+// Merge an extra warning (e.g. ClaudeCollisionRemedy.Apply/Restore) into a registrar's AgentResult
+// so the operator still sees the disable/restore detail. Mirrors the old fold at CliRouter.cs:291.
+private static AgentResult FoldWarning(AgentResult r, string? extra)
+{
+    if (string.IsNullOrEmpty(extra)) return r;
+    var combined = string.IsNullOrEmpty(r.Warning) ? extra : $"{r.Warning} {extra}";
+    return r with { Warning = combined };
+}
 
 // Build a CliInvoker for agy/claude. run honors the FAKE_*_PRESENT/MISSING env seams like ClaudeRunner;
 // resolve honors presence seams so e2e tests need no real CLI.
@@ -1053,7 +1071,121 @@ git commit -m "feat(install): canonical UNINSTALL — deregister-first, conditio
 
 ---
 
-### Task 9: Update operator-manual + README to the plugin model
+### Task 9: Rewire ApplyMerge (overlay/autosound/presence) to the plugin model
+
+**Why (agy plan-review — spec gap):** `CliRouter.ApplyMerge` (`CliRouter.cs:407-431`) backs the `overlay`/`autosound`/`presence` flag verbs. It currently delegates to `AgyConfigWriter.Install(exePath, addArgs, removeArgs)` and `ClaudeCodeConfigWriter.Install(exePath, addArgs, removeArgs)` — the RETIRED write-paths. After the rework those write dead config and never update the active plugin's args. The runtime flags now live in the single staging `.mcp.json`; `ApplyMerge` must merge there and re-register. (The spec's canonical sequence covers install/uninstall but not these flag verbs — this task closes that gap consistently with the plugin model.)
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Server/Install/PluginArtifactWriter.cs` (add `MergeArgs`)
+- Modify: `src/FlaUI.Mcp.Server/Install/CliRouter.cs:407-431` (`ApplyMerge`)
+- Test: `test/FlaUI.Mcp.Tests/Install/PluginArtifactWriterTests.cs`
+
+**Step 0 — state-check:** confirm `ApplyMerge` (`CliRouter.cs:407-431`) still delegates to the `Install(exePath, addArgs, removeArgs)` merge overloads of `AgyConfigWriter`/`ClaudeCodeConfigWriter`, and that `overlay`/`autosound`/`presence` route to it (not `Apply`). If not, STOP: `STATE_MISMATCH`.
+
+- [ ] **Step 1: Write the failing test** (add to `PluginArtifactWriterTests`)
+
+```csharp
+    [Fact]
+    public void MergeArgs_adds_removes_and_preserves_other_flags_idempotently()
+    {
+        var staging = TempDir();
+        var exe = @"C:\p\flaui-mcp.exe";
+        var w = new PluginArtifactWriter(staging);
+        w.MergeArgs(exe, add: new[] { "--overlay" },   remove: System.Array.Empty<string>()); // seeds .mcp.json if missing
+        w.MergeArgs(exe, add: new[] { "--autosound" }, remove: System.Array.Empty<string>());
+        w.MergeArgs(exe, add: new[] { "--autosound" }, remove: System.Array.Empty<string>()); // idempotent (no dup)
+        w.MergeArgs(exe, add: System.Array.Empty<string>(), remove: new[] { "--overlay" });    // remove
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(staging, ".mcp.json")));
+        var args = doc.RootElement.GetProperty("mcpServers").GetProperty("flaui-mcp").GetProperty("args");
+        var list = new System.Collections.Generic.List<string?>();
+        foreach (var e in args.EnumerateArray()) list.Add(e.GetString());
+        Assert.Equal(new[] { "--autosound" }, list); // overlay removed, autosound present exactly once
+    }
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.sln --filter "FullyQualifiedName~PluginArtifactWriterTests"`
+Expected: FAIL — `MergeArgs` not defined.
+
+- [ ] **Step 3: Implement `MergeArgs`** (add to `PluginArtifactWriter`; needs `using System.Linq;` and `using System.Text.Json.Nodes;`)
+
+```csharp
+    /// Merge runtime flag args into the staging .mcp.json's server args (idempotent: removals win, no dups),
+    /// preserving flags other verbs set. Seeds the file (args:[]) if it does not exist yet.
+    public void MergeArgs(string exePath, IReadOnlyList<string> add, IReadOnlyList<string> remove)
+    {
+        var path = Path.Combine(_stagingDir, ".mcp.json");
+        if (!File.Exists(path)) WriteMcpJson(exePath);
+
+        var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        var server = root["mcpServers"]![PluginIds.PluginName]!;
+        var existing = server["args"]!.AsArray();
+
+        var kept = existing.Select(a => a!.GetValue<string>())
+                           .Where(a => !remove.Contains(a) && !add.Contains(a))
+                           .Concat(add.Where(a => !remove.Contains(a)))
+                           .ToList();
+
+        var arr = new System.Text.Json.Nodes.JsonArray();
+        foreach (var a in kept) arr.Add(a);
+        server["args"] = arr;
+        File.WriteAllText(path, root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    }
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `dotnet test FlaUI.Mcp.sln --filter "FullyQualifiedName~PluginArtifactWriterTests"`
+Expected: `Passed!  - Failed: 0`.
+
+- [ ] **Step 5: Rewire `ApplyMerge` (`CliRouter.cs:407-431`)** to merge into the staging plugin and re-register, instead of the retired writers:
+
+```csharp
+private static IEnumerable<AgentResult> ApplyMerge(string agent, Paths paths, string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs)
+{
+    var results = new List<AgentResult>();
+    bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
+    bool agy = all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase);
+    bool claude = all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase);
+
+    var stagingDir = Environment.GetEnvironmentVariable("FLAUI_MCP_STAGING_DIR")
+                     ?? Path.Combine(Path.GetDirectoryName(exePath)!, "plugin");
+
+    // Runtime flags live in the ONE staging .mcp.json shared by agy+claude — merge once...
+    if (agy || claude)
+        new PluginArtifactWriter(stagingDir).MergeArgs(exePath, addArgs, removeArgs);
+    // ...then re-register the targeted agent(s) so they pick up the new args (agy copies; Claude re-reads).
+    if (agy)
+        results.Add(Isolate("agy", () => new AgyPluginRegistrar(AgyInvoker()).Register(stagingDir)));
+    if (claude)
+        results.Add(Isolate("claude", () => new ClaudePluginRegistrar(ClaudeInvoker()).Register(stagingDir)));
+    if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
+        results.Add(Isolate("generic", () =>
+        {
+            var w = new GenericMcpConfigWriter();
+            return w.Install(paths.GenericPath, exePath, addArgs, removeArgs); // generic file is unchanged by the rework
+        }));
+    return results;
+}
+```
+
+- [ ] **Step 6: Run the full default gate**
+
+Run: `dotnet test FlaUI.Mcp.sln --filter "Category!=Desktop&Category!=SyntheticInput"`
+Expected: `Passed!  - Failed: 0`. (Any existing `overlay`/`autosound` test asserting the OLD `AgyConfigWriter.Install` merge behavior must be updated here — list them in the commit.)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Server/Install/PluginArtifactWriter.cs src/FlaUI.Mcp.Server/Install/CliRouter.cs test/FlaUI.Mcp.Tests/Install/PluginArtifactWriterTests.cs
+git commit -m "feat(install): rewire ApplyMerge (overlay/autosound/presence) to staging .mcp.json + re-register"
+```
+
+---
+
+### Task 10: Update operator-manual + README to the plugin model
 
 **Files:**
 - Modify: `docs/operator-manual.md` (§Register `:36-48`, §What-the-installer-changes `:155-162`, env var `:88`, §Uninstall `:165-175`)
@@ -1083,7 +1215,7 @@ git commit -m "docs: operator-manual + README to the plugin/CLI registration mod
 
 ---
 
-### Task 10: Bundled clavity fix — commonmemory.iss Excludes
+### Task 11: Bundled clavity fix — commonmemory.iss Excludes
 
 **Files:**
 - Modify: `C:\Users\user\Development\Rust\clavity\commonmemory\installer\commonmemory.iss` (line ~31-32, the `Source: "..\*"` `[Files]` entry)
@@ -1105,7 +1237,7 @@ cd /c/Users/user/Development/Rust/clavity && git add commonmemory/installer/comm
 
 ---
 
-### Task 11: Version bump + final integration verification
+### Task 12: Version bump + final integration verification
 
 **Files:**
 - Modify: `src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj` (version 0.16.1 → 0.16.2)
@@ -1145,7 +1277,8 @@ git commit -m "chore(release): bump to v0.16.2 (installer registration rework)"
 - ClaudeCollisionRemedy (disable-before-register, exclude-self by id distinctness, preserve Restore) → Task 7 (Apply) + existing Restore untouched.
 - ClaudeSkillDeployer repoint→drop legacy (skill ships in staging) → Tasks 4 (staging skill) + 7 (`.Remove()` legacy).
 - Two-copy uninstall + warning to state log → Task 8.
-- Docs update → Task 9. Bundled clavity fix → Task 10. Version → Task 11.
+- Runtime-flag verbs (overlay/autosound/presence) merge into staging .mcp.json + re-register → Task 9 (agy plan-review gap).
+- Docs update → Task 10. Bundled clavity fix → Task 11. Version → Task 12.
 
 **Placeholder scan:** no "TBD"/"handle errors"; every code step shows the code; the three `> NOTE:` blocks are Step-0 state-checks (implementer verifies exact line/idiom against live code), not deferred logic.
 
