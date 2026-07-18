@@ -350,7 +350,8 @@ function Resolve-HalfFinishedRelease {
 
     Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land)."
     $ans = Read-Host "[P]ush the existing commit+tag now / e[X]it and leave as-is?"
-    if ($ans.Substring(0,1).ToUpperInvariant() -eq 'P') {
+    $choice = if ([string]::IsNullOrWhiteSpace($ans)) { 'X' } else { $ans.Substring(0,1).ToUpperInvariant() }
+    if ($choice -eq 'P') {
         if (-not $tagExistsLocally) { git -C $RepoRoot tag $tag }
         git -C $RepoRoot push --atomic origin master $tag
         if ($LASTEXITCODE -ne 0) { throw "push --atomic failed again (exit $LASTEXITCODE). Local state is unchanged; re-run to retry." }
