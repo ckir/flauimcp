@@ -217,6 +217,67 @@ function Get-OrCreateDraft {
     [pscustomobject]@{ DraftPath = $draftPath; Body = $body }
 }
 
+function Invoke-DraftReview {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$DraftPath,
+        [Parameter(Mandatory)][string]$Prompt,
+        [string]$Model = 'haiku',
+        [switch]$Yes
+    )
+
+    while ($true) {
+        $body = Get-Content $DraftPath -Raw
+
+        if ($Yes) {
+            $key = 'A'
+        } else {
+            Write-Host "`n--- Draft changelog body for v$Version ---`n$body`n---`n"
+            $ans = Read-Host "[A]ccept (default) / [R]egenerate / [E]dit / e[X]it-abort"
+            $key = if ([string]::IsNullOrWhiteSpace($ans)) { 'A' } else { $ans.Substring(0,1).ToUpperInvariant() }
+        }
+
+        if ($key -eq 'A') {
+            $validBody = (-not [string]::IsNullOrWhiteSpace($body)) -and ($body -match '(?m)^###\s')
+            if ($validBody) { return [pscustomobject]@{ Action = 'Accept'; Body = $body } }
+
+            if ($Yes) {
+                throw "Accepted body for v$Version failed validation (empty, or no '### ' section) — cannot loop back to Review unattended under -Yes."
+            }
+            Write-Warning "Draft is empty or has no '### ' section — a heading-only release entry is not allowed. Opening `$EDITOR to fix."
+            $body = Edit-InEditor -InitialContent $body
+            Set-Content -Path $DraftPath -Value $body -NoNewline -Encoding UTF8
+            continue
+        }
+
+        if ($key -eq 'X') {
+            Write-Host "Aborted. Draft left at $DraftPath for a later resume."
+            return [pscustomobject]@{ Action = 'Abort'; Body = $null }
+        }
+
+        if ($key -eq 'R') {
+            $llm = Invoke-ChangelogLlm -Prompt $Prompt -Model $Model
+            $body = if ($llm.Success) {
+                $llm.Body
+            } else {
+                Write-Warning $llm.Reason
+                Edit-InEditor -InitialContent (Get-EmptyChangelogTemplate)
+            }
+            Set-Content -Path $DraftPath -Value $body -NoNewline -Encoding UTF8
+            continue
+        }
+
+        if ($key -eq 'E') {
+            $body = Edit-InEditor -InitialContent $body
+            Set-Content -Path $DraftPath -Value $body -NoNewline -Encoding UTF8
+            continue
+        }
+
+        Write-Warning "Unrecognized choice '$ans' — enter A, R, E, or X."
+    }
+}
+
 if ($Help) { Show-Usage; exit 0 }
 
 try {
@@ -282,7 +343,10 @@ try {
     $hasCommits = ($commitMessages.Count -gt 0)
     $draft = Get-OrCreateDraft -Version $next.Version -Prompt $prompt -HasCommits $hasCommits -Model $Model -Yes:$Yes
 
-    # --- review (Task 10) / reconciliation + commit/tag/push (Task 11) appended below ---
+    $review = Invoke-DraftReview -Version $next.Version -DraftPath $draft.DraftPath -Prompt $prompt -Model $Model -Yes:$Yes
+    if ($review.Action -eq 'Abort') { exit 0 }
+
+    # --- reconciliation + commit/tag/push (Task 11) appended below ---
 }
 catch {
     Write-Error $_
