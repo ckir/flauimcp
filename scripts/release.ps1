@@ -278,10 +278,139 @@ function Invoke-DraftReview {
     }
 }
 
+function Get-ReleaseReconciliationState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+
+    git -C $RepoRoot fetch origin master --quiet 2>$null
+    $remoteHead = (git -C $RepoRoot rev-parse origin/master 2>$null)
+    $remoteHead = if ($remoteHead) { $remoteHead.Trim() } else { $null }
+    $localHead  = (git -C $RepoRoot rev-parse HEAD).Trim()
+    $headOnRemote = ($remoteHead -and ($remoteHead -eq $localHead))
+
+    $headSubject = (git -C $RepoRoot log -1 --format='%s').Trim()
+    $releaseMatch = [regex]::Match($headSubject, '^chore\(release\):\s*v(?<v>\d+\.\d+\.\d+)')
+    $headIsUnpushedRelease = $releaseMatch.Success -and -not $headOnRemote
+    $headReleaseVersion = if ($releaseMatch.Success) { $releaseMatch.Groups['v'].Value } else { $null }
+
+    $localTagsAtHead = @(git -C $RepoRoot tag --points-at HEAD | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' })
+    $orphanTags = @()
+    foreach ($t in $localTagsAtHead) {
+        $remoteHas = [bool](git -C $RepoRoot ls-remote --tags origin $t)
+        if (-not $remoteHas) { $orphanTags += $t }
+    }
+
+    [pscustomobject]@{
+        HalfFinished          = $headIsUnpushedRelease -or ($orphanTags.Count -gt 0)
+        HeadIsUnpushedRelease = $headIsUnpushedRelease
+        HeadReleaseVersion    = $headReleaseVersion
+        LocalOnlyTagsAtHead   = $orphanTags
+    }
+}
+
+function Resolve-HalfFinishedRelease {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][pscustomobject]$Reconciliation,
+        [switch]$Yes,
+        [switch]$WhatIf
+    )
+
+    $targetVersion = if ($Reconciliation.HeadReleaseVersion) {
+        $Reconciliation.HeadReleaseVersion
+    } else {
+        $Reconciliation.LocalOnlyTagsAtHead[0].TrimStart('v')
+    }
+    $tag = "v$targetVersion"
+
+    $tagExistsLocally = [bool](git -C $RepoRoot tag -l $tag)
+    $tagPointsAtHead = $false
+    if ($tagExistsLocally) {
+        $tagSha = (git -C $RepoRoot rev-parse "$tag^{commit}" 2>$null)
+        $headSha = (git -C $RepoRoot rev-parse HEAD).Trim()
+        $tagPointsAtHead = ($tagSha -and ($tagSha.Trim() -eq $headSha))
+    }
+
+    if ($tagExistsLocally -and -not $tagPointsAtHead) {
+        throw "Tag $tag exists locally but does NOT point at HEAD — likely orphaned by a 'git commit --amend' after a failed push. Refusing to auto-reconcile. Inspect manually: git log --oneline $tag HEAD~3..HEAD, then either move the tag or reset HEAD by hand."
+    }
+
+    # -WhatIf takes precedence over -Yes when both are somehow passed: -WhatIf's contract is "no writes,
+    # ever" (including the -Yes hard-fail's exit 1, which is itself a mutation-adjacent unattended
+    # decision), so it must win to preserve the read-only guarantee.
+    if ($WhatIf) {
+        Write-Host "[-WhatIf] Half-finished release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land). -WhatIf makes no changes; re-run without -WhatIf to reconcile."
+        return
+    }
+
+    if ($Yes) {
+        throw "Half-finished prior release detected for $tag — refusing to auto-mutate git history under -Yes. Re-run without -Yes to reconcile interactively."
+    }
+
+    Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land)."
+    $ans = Read-Host "[P]ush the existing commit+tag now / e[X]it and leave as-is?"
+    if ($ans.Substring(0,1).ToUpperInvariant() -eq 'P') {
+        if (-not $tagExistsLocally) { git -C $RepoRoot tag $tag }
+        git -C $RepoRoot push --atomic origin master $tag
+        if ($LASTEXITCODE -ne 0) { throw "push --atomic failed again (exit $LASTEXITCODE). Local state is unchanged; re-run to retry." }
+        Write-Host "Pushed $tag."
+        exit 0
+    }
+    Write-Host "Left as-is. Re-run scripts/release.ps1 when ready to retry the push."
+    exit 0
+}
+
+function Invoke-ReleaseCommit {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$Version,
+        [switch]$Yes
+    )
+
+    if (-not $Yes) {
+        $ans = Read-Host "Cut release v$Version — commit, tag, and push to origin? [y/N]"
+        if ($ans -notmatch '^[Yy]') { Write-Host "Aborted — nothing committed."; exit 0 }
+    }
+
+    $tag = "v$Version"
+    git -C $RepoRoot add `
+        CHANGELOG.md `
+        src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj `
+        installer/flaui-mcp.iss `
+        plugins/flaui-mcp/.claude-plugin/plugin.json
+    if ($LASTEXITCODE -ne 0) { throw "git add failed (exit $LASTEXITCODE)." }
+
+    git -C $RepoRoot commit -m "chore(release): $tag"
+    if ($LASTEXITCODE -ne 0) { throw "git commit failed (exit $LASTEXITCODE)." }
+
+    git -C $RepoRoot tag $tag
+    if ($LASTEXITCODE -ne 0) { throw "git tag $tag failed (exit $LASTEXITCODE)." }
+
+    git -C $RepoRoot push --atomic origin master $tag
+    if ($LASTEXITCODE -ne 0) {
+        throw "git push --atomic origin master $tag FAILED (exit $LASTEXITCODE). Both refs were rejected together (--atomic working as intended) — the local commit + tag are intact. Re-run scripts/release.ps1 to retry; it will detect this half-finished state and offer to re-push."
+    }
+
+    $remoteUrl = (git -C $RepoRoot remote get-url origin).Trim()
+    $slug = if ($remoteUrl -match 'github\.com[:/](?<slug>[^/]+/[^/.]+)') { $Matches.slug } else { $null }
+    if ($slug) {
+        Write-Host "Pushed. Watch CI: https://github.com/$slug/actions"
+    } else {
+        Write-Host "Pushed $tag to origin/master."
+    }
+}
+
 if ($Help) { Show-Usage; exit 0 }
 
 try {
     Assert-Preconditions -RepoRoot $RepoRoot
+
+    $recon = Get-ReleaseReconciliationState -RepoRoot $RepoRoot
+    if ($recon.HalfFinished) {
+        Resolve-HalfFinishedRelease -RepoRoot $RepoRoot -Reconciliation $recon -Yes:$Yes -WhatIf:$WhatIf
+    }
 
     $sync = Get-VersionsInSync -RepoRoot $RepoRoot
     if (-not $sync.InSync) { throw "Version files are out of sync: $($sync.Message). Fix before releasing." }
@@ -346,7 +475,12 @@ try {
     $review = Invoke-DraftReview -Version $next.Version -DraftPath $draft.DraftPath -Prompt $prompt -Model $Model -Yes:$Yes
     if ($review.Action -eq 'Abort') { exit 0 }
 
-    # --- reconciliation + commit/tag/push (Task 11) appended below ---
+    Add-ChangelogSection -ChangelogPath (Join-Path $RepoRoot 'CHANGELOG.md') -Version $next.Version -Body $review.Body
+    Set-ProjectVersion -RepoRoot $RepoRoot -Version $next.Version
+
+    Invoke-ReleaseCommit -RepoRoot $RepoRoot -Version $next.Version -Yes:$Yes
+
+    Remove-Item $draft.DraftPath -Force -ErrorAction SilentlyContinue
 }
 catch {
     Write-Error $_
