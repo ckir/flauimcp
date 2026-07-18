@@ -290,6 +290,7 @@ function Get-ReleaseReconciliationState {
     param([Parameter(Mandatory)][string]$RepoRoot)
 
     git -C $RepoRoot fetch origin master --quiet 2>$null
+    if ($LASTEXITCODE -ne 0) { Write-Warning "Reconciliation: couldn't refresh origin/master (network?) — using cached remote state; a stale cache may cause a spurious 'half-finished release' prompt." }
     $remoteHead = (git -C $RepoRoot rev-parse origin/master 2>$null)
     $remoteHead = if ($remoteHead) { $remoteHead.Trim() } else { $null }
     $localHead  = (git -C $RepoRoot rev-parse HEAD).Trim()
@@ -303,8 +304,10 @@ function Get-ReleaseReconciliationState {
     $localTagsAtHead = @(git -C $RepoRoot tag --points-at HEAD | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' })
     $orphanTags = @()
     foreach ($t in $localTagsAtHead) {
-        $remoteHas = [bool](git -C $RepoRoot ls-remote --tags origin $t)
-        if (-not $remoteHas) { $orphanTags += $t }
+        $lsRemote = git -C $RepoRoot ls-remote --tags origin $t 2>$null
+        # Only conclude "orphan" when ls-remote SUCCEEDED and returned nothing — a failed ls-remote (network)
+        # must not be misread as "tag absent from remote", which would fabricate a half-finished-release prompt.
+        if ($LASTEXITCODE -eq 0 -and -not $lsRemote) { $orphanTags += $t }
     }
 
     [pscustomobject]@{
