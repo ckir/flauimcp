@@ -19,11 +19,17 @@ with a `.mcp.json`, installed via those CLIs, and its MCP server loads in BOTH C
   `src/FlaUI.Mcp.Server/Install/CliRouter.cs` (C#, testable, self-contained).
 
 ## The unified plugin artifact
-The installer deploys ONE plugin directory (target `~/.gemini/config/plugins/flaui-mcp/` for agy; the same
-content is the Claude marketplace source dir) containing:
+The installer generates ONE plugin directory in the ISOLATED staging path `{localappdata}\Programs\FlaUI.Mcp\
+plugin\` (under `{app}`, per Migration/Uninstall §§ — NOT the agent-managed `~/.gemini/config/plugins/`). That one
+staging dir is BOTH the source `agy plugin install` copies from AND the Claude marketplace source dir. It
+contains:
 - `plugin.json` — metadata (name `flaui-mcp`, version, description). ALREADY deployed.
 - `.mcp.json` — the MCP server declaration (NEW): `{ "mcpServers": { "flaui-mcp": { "command": "<abs exe
   path>", "args": [] } } }`. This is the single source of the server; read by both agents' plugin loaders.
+  **Write it via `JsonSerializer`, NOT string interpolation (panel R4):** the abs exe path is a Windows path
+  (`C:\Users\…\flaui-mcp.exe`) whose backslashes MUST be JSON-escaped (`C:\\Users\\…`); raw interpolation emits
+  invalid escapes (`\U`, `\P`, …) and corrupts the manifest. Same for `marketplace.json`. (The live file today is
+  correctly double-escaped — replicate that via a serializer, not by hand.)
 - `skills/driving-flaui-mcp/` — the driving skill. ALREADY deployed.
 - `.claude-plugin/marketplace.json` — a scoped Claude marketplace manifest (NEW) declaring this dir as a
   marketplace containing the `flaui-mcp` plugin, so `claude plugin marketplace add <dir>` + `claude plugin
@@ -56,10 +62,14 @@ writing config"):** the install path today constructs `AgyConfigWriter` (`:249`/
 (`:257`/`:421`), `ClaudeSkillDeployer` (`:259`/`:270`), `ClaudeCollisionRemedy` (`:260`). The rework must specify,
 per class: **REMOVE/REPLACE** `AgyConfigWriter` (hand-writes agy config — the root-cause bug) and
 `ClaudeCodeConfigWriter` (`claude mcp add/remove` — superseded by `claude plugin`); **RE-EVALUATE**
-`ClaudeSkillDeployer` (under the plugin model the skill ships INSIDE the plugin dir — a separate deploy to
-`~/.claude/skills/flaui-mcp` would DUAL-DEPLOY the same skill and risk a collision; decide one home) and
-`ClaudeCollisionRemedy` (may still be wanted to disable stale marketplace copies — keep or fold into the new
-migration). This is NOT a blanket delete-all-four; the plan states the disposition of each.
+`ClaudeSkillDeployer` — **determinate, NOT a "decide later" (panel R4):** REPOINT it to write the skill into the
+staging plugin dir (`{app}\plugin\skills\driving-flaui-mcp\`) so the skill ships INSIDE the plugin and both
+`agy plugin install` and `claude plugin install` distribute it; DROP the separate legacy deploy to
+`~/.claude/skills/flaui-mcp`. Leaving the deployer on the legacy path is a silent-break landmine: the staging dir
+would lack `skills/`, `agy plugin install` copies an incomplete plugin, and agy gets the MCP server with NO
+driving skill (Claude, still on the legacy path, would look fine — masking it). `ClaudeCollisionRemedy` — may
+still be wanted to disable stale marketplace copies; keep or fold into the new migration (state which in the
+plan). This is NOT a blanket delete-all-four; the plan states the disposition of each.
 
 ## Registration mechanism (replaces all hand-written config)
 `CliRouter.cs` shells out to the agent CLIs (idempotent remove-then-add + read-back verify, porting clavity's
@@ -94,11 +104,16 @@ On any launch failure, record a clear "could not launch <cli>" detail rather tha
 shims (`claude.cmd`), which `CreateProcess` cannot launch by bare name, and `UseShellExecute=true` (the naive way
 to get PATH/shim resolution) is MUTUALLY EXCLUSIVE with stream redirection in .NET (`RedirectStandardOutput`
 throws `InvalidOperationException` when `UseShellExecute=true`). So neither half of "resolve the shim on PATH"
-+ "capture stdout/stderr" is satisfiable naively. Port clavity's `ExecCaptured` shape
-(`plugin-registration.iss:107`): run **`cmd.exe /C "<cli> <params>"`** with `UseShellExecute=false` and
-`RedirectStandardOutput=true`/`RedirectStandardError=true` (or, matching clavity exactly, redirect to a temp file
-`> "<tmp>" 2>&1` and read it back). `cmd /C` resolves the `.cmd` shim via PATH; `UseShellExecute=false` permits
-the capture. This is the single supported orchestration — the seam (`ICliRunner`) encapsulates it.
++ "capture stdout/stderr" is satisfiable naively. Reuse the EXISTING `ProcessRunner.Run(file, string[] args, …)`
+(`ProcessRunner.cs`) which already sets `UseShellExecute=false` + `RedirectStandardOutput/Error` (pipe capture)
+and feeds args via `psi.ArgumentList`. Launch through `cmd.exe`: `Run("cmd.exe", ["/C", "claude", "plugin",
+"install", "flaui-mcp@flaui-mcp-marketplace", "--scope", "user"], …)` — `cmd /C` resolves the `.cmd` shim via
+PATH. **Two ArgumentList pitfalls (panel R4, code-grounded):** (1) pass the command as DISCRETE elements — never
+one concatenated `"claude plugin install …"` string; a single element gets quoted whole and `cmd` treats the
+quoted blob as the executable name and fails. `--scope user` is TWO elements (`"--scope","user"`). (2) Do NOT
+copy clavity's `> "<tmp>" 2>&1` shell redirect — that is Inno-specific; through `ArgumentList` a `>` is a literal
+argument, not a redirect. It is also UNNECESSARY: `ProcessRunner` already captures both streams via pipes. The
+seam (`ICliRunner`) wraps this single orchestration.
 (NOTE: relying on the CLI is the design; a plugin-dir "drop + agent auto-discovery" — agy claims agy
 auto-discovers a plugin dir dropped in `~/.gemini/config/plugins/` with no CLI call, Claude does not — is
 UNVERIFIED agy confabulation-risk and is NOT relied upon here. Validate it during implementation; if true, it is
