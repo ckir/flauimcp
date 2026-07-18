@@ -69,6 +69,25 @@ plugin dir ONLY if deregistration succeeded. If a CLI deregister FAILS, LEAVE th
 manual-cleanup warning: deleting a still-referenced marketplace/plugin dir leaves the agent pointing at a missing
 dir → startup errors. "Fail-open" means uninstall still COMPLETES (never blocks); it does NOT mean delete-regardless.
 
+## Documentation update (IN SCOPE — user-added)
+The operator-facing docs describe the OLD hand-written mechanism and MUST be rewritten to the plugin model in
+the same change (they are wrong the moment the code lands). Concrete edits (verified against the files as they
+exist now):
+- `docs/operator-manual.md:36-48` — "Register with Claude Code" / agy sections: replace `claude mcp` +
+  "static plugin under `%USERPROFILE%\.gemini\config\plugins\flaui-mcp\` … Restart agy" with the unified-plugin
+  registration via `claude plugin marketplace add/install` + `agy plugin install`.
+- `docs/operator-manual.md:155-162` ("What the installer changes") — the Antigravity row (line 162) documents
+  appending to `~/.gemini/settings.json` **and a `antigravity-cli/settings.json` that does not exist** (a stale/
+  fabricated path); replace both agent rows with "registers via the agent CLI; writes NO agent config file."
+- `docs/operator-manual.md:88` — `FLAUI_MCP_AGY_PLUGINS_DIR` (overrides the agy plugins dir) is repurposed to
+  the STAGING dir under `{localappdata}` (the installer no longer writes the agent-managed dir directly); update
+  its description and default, or retire it if the staging dir is no longer user-overridable.
+- `docs/operator-manual.md:165-175` (Uninstall) — reflect CLI-first deregistration + fail-open leave-and-warn.
+- `README.md:18` — the quick-start "It configures Claude Code and Antigravity automatically" stays true but
+  should not imply hand-written config; keep it accurate to the plugin model.
+The doc edits are a task in the implementation plan, gated on the code change so citations don't drift. Verify
+each line citation again at plan-authoring time (PLAN-vs-SPEC discipline) — line numbers may shift.
+
 ## Bundled clavity fixes (verified in the installer review — in scope per "clavity repo is in scope")
 1. `commonmemory/installer/commonmemory.iss:32` — add `.claude-plugin` to `Excludes` so `Source: "..\*"` stops
    shipping the dev-clone `marketplace.json` into the production plugin dir (nested-manifest violation; a risk
@@ -86,6 +105,9 @@ dir → startup errors. "Fail-open" means uninstall still COMPLETES (never block
 4. A machine with a stale `settings.json` flaui-mcp entry is cleaned on the next install (no duplicate-server).
 5. The installer's xUnit tests cover the new registration path (CLI invocation is seam-injected/faked so the
    tests stay headless — no real `claude`/`agy` required in CI).
+6. `docs/operator-manual.md` + `README.md` describe ONLY the plugin/CLI registration model — no lingering
+   reference to hand-written `settings.json`/`mcp_config.json`, the drop-in plugins dir, or the fabricated
+   `antigravity-cli/settings.json` path.
 
 ## Constraints
 - Never rename the literal flags `--read-only-mode` / `--allow-shells`.
