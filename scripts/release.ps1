@@ -109,6 +109,114 @@ function Assert-Preconditions {
     Write-Host "Preconditions OK: on master, tracked tree clean, tags fetched."
 }
 
+function Get-EmptyChangelogTemplate {
+    @"
+### Added
+- 
+
+### Fixed
+- 
+
+### Changed
+- 
+"@
+}
+
+function Edit-InEditor {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$InitialContent)
+
+    $tmp = [IO.Path]::GetTempFileName() -replace '\.tmp$', '.md'
+    Set-Content -Path $tmp -Value $InitialContent -NoNewline -Encoding UTF8
+    $editor = $env:EDITOR
+    if ([string]::IsNullOrWhiteSpace($editor)) { $editor = 'notepad' }
+    & $editor $tmp | Out-Null
+    $result = Get-Content $tmp -Raw
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    $result
+}
+
+function Invoke-ChangelogLlm {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [string]$Model = 'haiku',
+        [int]$TimeoutSeconds = 120
+    )
+
+    $job = Start-Job -ScriptBlock {
+        param($PromptText, $ModelName)
+        $out = $PromptText | & claude -p --model $ModelName --output-format text 2>&1 | Out-String
+        [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
+    } -ArgumentList $Prompt, $Model
+
+    $finished = Wait-Job -Job $job -Timeout $TimeoutSeconds
+    if (-not $finished) {
+        Stop-Job $job | Out-Null
+        Remove-Job $job -Force | Out-Null
+        return [pscustomobject]@{ Success = $false; Body = $null; Reason = "claude -p timed out after ${TimeoutSeconds}s" }
+    }
+
+    $result = Receive-Job $job
+    Remove-Job $job -Force | Out-Null
+
+    if (-not $result -or $result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.Output)) {
+        $reason = if ($result) { "claude -p exited $($result.ExitCode): $($result.Output)" } else { "claude -p produced no result" }
+        return [pscustomobject]@{ Success = $false; Body = $null; Reason = $reason }
+    }
+
+    [pscustomobject]@{ Success = $true; Body = $result.Output.Trim(); Reason = $null }
+}
+
+function Get-OrCreateDraft {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$Prompt,
+        [Parameter(Mandatory)][bool]$HasCommits,
+        [string]$Model = 'haiku',
+        [switch]$Yes
+    )
+
+    $draftPath = Join-Path ([IO.Path]::GetTempPath()) "flaui-mcp-release-draft-$Version.md"
+
+    if (Test-Path $draftPath) {
+        $resume = [bool]$Yes
+        if (-not $Yes) {
+            $ans = Read-Host "Found an existing draft for v$Version from a previous run. Resume it? [Y/n]"
+            $resume = ($ans -eq '' -or $ans -match '^[Yy]')
+        }
+        if ($resume) {
+            Write-Host "Resuming draft from $draftPath"
+            return [pscustomobject]@{ DraftPath = $draftPath; Body = (Get-Content $draftPath -Raw) }
+        }
+        Remove-Item $draftPath -Force
+    }
+
+    if (-not $HasCommits) {
+        if ($Yes) {
+            throw "Zero-commit release with -Yes: nothing for the LLM to summarize, and no interactive `$EDITOR fallback is allowed unattended. Re-run without -Yes, or edit CHANGELOG.md by hand."
+        }
+        Write-Warning "No commits in range — nothing to summarize. Opening `$EDITOR on an empty template."
+        $body = Edit-InEditor -InitialContent (Get-EmptyChangelogTemplate)
+        Set-Content -Path $draftPath -Value $body -NoNewline -Encoding UTF8
+        return [pscustomobject]@{ DraftPath = $draftPath; Body = $body }
+    }
+
+    $llm = Invoke-ChangelogLlm -Prompt $Prompt -Model $Model
+    if (-not $llm.Success) {
+        if ($Yes) {
+            throw "claude -p failed unattended (-Yes): $($llm.Reason). No interactive `$EDITOR fallback is allowed under -Yes."
+        }
+        Write-Warning "claude -p failed: $($llm.Reason). Falling back to `$EDITOR on an empty template."
+        $body = Edit-InEditor -InitialContent (Get-EmptyChangelogTemplate)
+    } else {
+        $body = $llm.Body
+    }
+    Set-Content -Path $draftPath -Value $body -NoNewline -Encoding UTF8
+    [pscustomobject]@{ DraftPath = $draftPath; Body = $body }
+}
+
 if ($Help) { Show-Usage; exit 0 }
 
 try {
@@ -171,7 +279,10 @@ try {
         exit 0
     }
 
-    # --- draft (Task 9) / review (Task 10) / reconciliation + commit/tag/push (Task 11) appended below ---
+    $hasCommits = ($commitMessages.Count -gt 0)
+    $draft = Get-OrCreateDraft -Version $next.Version -Prompt $prompt -HasCommits $hasCommits -Model $Model -Yes:$Yes
+
+    # --- review (Task 10) / reconciliation + commit/tag/push (Task 11) appended below ---
 }
 catch {
     Write-Error $_
