@@ -27,7 +27,7 @@ function Get-NextVersion {
         [Parameter(Mandatory)][string]$CurrentVersion,
         [AllowEmptyCollection()][string[]]$CommitMessages = @(),
         [string]$OverrideVersion,
-        [ValidateSet('major','minor','patch')][string]$OverrideBump
+        [string]$OverrideBump
     )
 
     $conventionalPattern = '^(?<type>[a-zA-Z]+)(\((?<scope>[^)]+)\))?(?<bang>!)?:\s*(?<subject>.+)$'
@@ -67,6 +67,9 @@ function Get-NextVersion {
         }
     }
     if ($OverrideBump) {
+        if ($OverrideBump -notin @('major','minor','patch')) {
+            throw "Get-NextVersion: -OverrideBump must be 'major', 'minor', or 'patch' (got '$OverrideBump')."
+        }
         return [pscustomobject]@{
             Version = (Step-SemVer -Version $CurrentVersion -Component $OverrideBump)
             Level = $OverrideBump; Trigger = 'override'

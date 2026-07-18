@@ -83,6 +83,23 @@ Describe 'Get-NextVersion' {
         $r.Version | Should -Be '0.16.3'
         $r.Level   | Should -Be 'patch'
     }
+
+    It 'treats an empty-string -OverrideBump as no override (the unset-orchestrator-param idiom)' {
+        # release.ps1 passes its $Bump verbatim; an unset [string] param is '' (not $null). '' must mean "no override".
+        $r = Get-NextVersion -CurrentVersion '0.16.2' -CommitMessages @('feat: add x') -OverrideBump ''
+        $r.Version | Should -Be '0.17.0'
+        $r.Level   | Should -Be 'minor'
+    }
+
+    It 'treats an empty-string -OverrideVersion as no override' {
+        $r = Get-NextVersion -CurrentVersion '0.16.2' -CommitMessages @('fix: y') -OverrideVersion ''
+        $r.Version | Should -Be '0.16.3'
+        $r.Level   | Should -Be 'patch'
+    }
+
+    It 'still rejects a non-empty invalid -OverrideBump' {
+        { Get-NextVersion -CurrentVersion '0.16.2' -CommitMessages @() -OverrideBump 'bogus' } | Should -Throw
+    }
 }
 
 Describe 'Get-VersionsInSync and Set-ProjectVersion' {
