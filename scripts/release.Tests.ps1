@@ -164,3 +164,46 @@ Describe 'Get-VersionsInSync and Set-ProjectVersion' {
         (Get-Content $issPath -Raw) | Should -Match '#define AppVersion "0\.17\.0"'
     }
 }
+
+Describe 'Get-TopChangelogSection' {
+    BeforeEach {
+        $script:ClPath = Join-Path ([IO.Path]::GetTempPath()) ("changelog_" + [guid]::NewGuid() + '.md')
+        @'
+# Changelog
+
+All notable changes to this project are documented here.
+
+## [0.2.0] - 2026-07-20
+
+### Added
+- Thing two.
+
+## [0.1.0] - 2026-07-01
+
+### Added
+- Thing one.
+'@ | Set-Content $ClPath
+    }
+    AfterEach { Remove-Item $script:ClPath -Force -ErrorAction SilentlyContinue }
+
+    It 'extracts only the top section by default' {
+        $top = Get-TopChangelogSection -ChangelogPath $ClPath
+        $top | Should -Match '^## \[0\.2\.0\] - 2026-07-20'
+        $top | Should -Match 'Thing two\.'
+        $top | Should -Not -Match 'Thing one\.'
+        $top | Should -Not -Match '## \[0\.1\.0\]'
+    }
+
+    It 'returns the last 2 sections with -Count 2' {
+        $top2 = Get-TopChangelogSection -ChangelogPath $ClPath -Count 2
+        $top2 | Should -Match 'Thing two\.'
+        $top2 | Should -Match 'Thing one\.'
+    }
+
+    It 'throws when the file has no ## [ section' {
+        $empty = Join-Path ([IO.Path]::GetTempPath()) ("empty_" + [guid]::NewGuid() + '.md')
+        '# Changelog' | Set-Content $empty
+        { Get-TopChangelogSection -ChangelogPath $empty } | Should -Throw
+        Remove-Item $empty -Force
+    }
+}

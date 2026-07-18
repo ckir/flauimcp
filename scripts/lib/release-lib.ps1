@@ -178,3 +178,23 @@ function Set-ProjectVersion {
 
     Get-VersionsInSync -RepoRoot $RepoRoot
 }
+
+function Get-TopChangelogSection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ChangelogPath,
+        [int]$Count = 1
+    )
+
+    $lines = Get-Content $ChangelogPath
+    $headingIdx = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^## \[') { $headingIdx += $i }
+    }
+    if ($headingIdx.Count -eq 0) { throw "Get-TopChangelogSection: no '## [' section found in $ChangelogPath" }
+
+    $take = [Math]::Min($Count, $headingIdx.Count)
+    $start = $headingIdx[0]
+    $end = if ($headingIdx.Count -gt $take) { $headingIdx[$take] - 1 } else { $lines.Count - 1 }
+    ($lines[$start..$end] -join "`n").TrimEnd()
+}
