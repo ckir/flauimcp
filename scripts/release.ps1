@@ -366,14 +366,8 @@ function Invoke-ReleaseCommit {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
-        [Parameter(Mandatory)][string]$Version,
-        [switch]$Yes
+        [Parameter(Mandatory)][string]$Version
     )
-
-    if (-not $Yes) {
-        $ans = Read-Host "Cut release v$Version — commit, tag, and push to origin? [y/N]"
-        if ($ans -notmatch '^[Yy]') { Write-Host "Aborted — nothing committed."; exit 0 }
-    }
 
     $tag = "v$Version"
     git -C $RepoRoot add `
@@ -476,10 +470,15 @@ try {
     $review = Invoke-DraftReview -Version $next.Version -DraftPath $draft.DraftPath -Prompt $prompt -Model $Model -Yes:$Yes
     if ($review.Action -eq 'Abort') { exit 0 }
 
+    if (-not $Yes) {
+        $ans = Read-Host "Cut release v$($next.Version) — write CHANGELOG, bump versions, commit, tag, and push to origin? [y/N]"
+        if ($ans -notmatch '^[Yy]') { Write-Host "Aborted — nothing written or committed."; exit 0 }
+    }
+
     Add-ChangelogSection -ChangelogPath (Join-Path $RepoRoot 'CHANGELOG.md') -Version $next.Version -Body $review.Body
     Set-ProjectVersion -RepoRoot $RepoRoot -Version $next.Version
 
-    Invoke-ReleaseCommit -RepoRoot $RepoRoot -Version $next.Version -Yes:$Yes
+    Invoke-ReleaseCommit -RepoRoot $RepoRoot -Version $next.Version
 
     Remove-Item $draft.DraftPath -Force -ErrorAction SilentlyContinue
 }
