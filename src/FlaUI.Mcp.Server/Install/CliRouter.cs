@@ -243,57 +243,46 @@ public static class CliRouter
         var results = new List<AgentResult>();
         bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
 
+        // The isolated staging dir the plugin artifacts are generated into. Default {app}\plugin (next
+        // to the exe); FLAUI_MCP_STAGING_DIR redirects it so tests never touch a real install tree.
+        var stagingDir = Environment.GetEnvironmentVariable("FLAUI_MCP_STAGING_DIR")
+                         ?? Path.Combine(Path.GetDirectoryName(exePath)!, "plugin");
+
+        // agy branch — canonical INSTALL: generate the plugin dir, sweep any retired hand-written
+        // config, then register via `agy plugin install`. No hand-written agy config anymore.
         if (all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase))
             results.Add(Isolate("agy", () =>
             {
-                var w = new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir);
-                return install ? w.Install(exePath, extraArgs) : w.Uninstall();
+                if (install)
+                {
+                    new PluginArtifactWriter(stagingDir).Generate(exePath, ThisVersion());
+                    // Legacy cleanup (migration sweep) — reuse the retired writer's Uninstall(); swallow.
+                    new AgyConfigWriter(paths.AgyServers, paths.AgyPerms, paths.AgyPluginsDir).Uninstall();
+                    RemoveStrayAgyPluginMcpJson(paths.AgyPluginsDir);
+                    return new AgyPluginRegistrar(AgyInvoker()).Register(stagingDir);
+                }
+                return new AgyPluginRegistrar(AgyInvoker()).Unregister();
             }));
+
+        // claude branch — canonical INSTALL: generate, sweep the retired `claude mcp` server + legacy
+        // skills dir, disable any colliding legacy copy, then register the local marketplace plugin.
         if (all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase))
             results.Add(Isolate("claude", () =>
             {
-                var sw = System.Diagnostics.Stopwatch.StartNew();
-                var runner = ClaudeRunner(() => sw.Elapsed, ClaudeBudget);
-                var w = new ClaudeCodeConfigWriter(runner);
-                var r = install ? w.Install(exePath, extraArgs) : w.Uninstall();
-                var deployer = new ClaudeSkillDeployer(paths.ClaudeConfigDir);
-                var remedy = new ClaudeCollisionRemedy(runner, paths.StateDir);
-
-                string? skillWarning, collisionWarning;
+                var sw2 = System.Diagnostics.Stopwatch.StartNew(); // preserve the live budget clock (was :255-256)
+                var remedy = new ClaudeCollisionRemedy(ClaudeRunner(() => sw2.Elapsed, ClaudeBudget), paths.StateDir);
                 if (install)
                 {
-                    // Gate the DEPLOY — and only the deploy — on the client existing. Deploying a
-                    // skill for a client we could not register is pointless by construction, and with
-                    // --agent all as the installer's default, an unguarded write would leave an
-                    // orphaned skills dir on every agy-only machine.
-                    if (r.Change == AgentChange.NotFound) return r;
-                    skillWarning = deployer.Deploy();
-                    // Do NOT disable the incumbent marketplace copy unless our replacement actually
-                    // landed. If Deploy failed (non-null warning), disabling the working copy would
-                    // leave the user with NO driving skill — the exact outcome this remedy exists to
-                    // prevent. A later successful re-install runs Apply() normally; with Apply skipped
-                    // no marker is written, so uninstall's Restore() stays a correct no-op.
-                    collisionWarning = skillWarning is null ? remedy.Apply() : null;
+                    new PluginArtifactWriter(stagingDir).Generate(exePath, ThisVersion()); // idempotent if agy already ran
+                    new ClaudeCodeConfigWriter(ClaudeRunner(() => sw2.Elapsed, ClaudeBudget)).Uninstall(); // sweep retired `claude mcp` server
+                    new ClaudeSkillDeployer(paths.ClaudeConfigDir).Remove(); // drop legacy ~/.claude/skills/flaui-mcp (skill now ships in the plugin)
+                    var collisionWarning = remedy.Apply();
+                    var reg = new ClaudePluginRegistrar(ClaudeInvoker()).Register(stagingDir);
+                    return FoldWarning(reg, collisionWarning);
                 }
-                else
-                {
-                    // NO such gate on uninstall, deliberately. Removing the skill dir is pure file
-                    // I/O and needs no CLI at all — gating it would strand the skill on disk, telling
-                    // the agent to call desktop_* tools that no longer exist. And skipping Restore()
-                    // would ORPHAN the marker and leave the user's plugin disabled forever: the exact
-                    // permanent-loss outcome R1/R2 exist to prevent, triggered by nothing worse than
-                    // `claude` being off PATH for a minute. Restore() handles a missing CLI itself —
-                    // it reports and KEEPS the marker rather than consuming it.
-                    skillWarning = deployer.Remove();
-                    collisionWarning = remedy.Restore();
-                }
-
-                var combined = string.Join(" ", new[] { r.Warning, skillWarning, collisionWarning }.Where(x => x is not null));
-                return r with
-                {
-                    Detail = install ? $"{r.Detail}; {deployer.SkillRoot}" : r.Detail,
-                    Warning = combined.Length == 0 ? null : combined,
-                };
+                var unreg = new ClaudePluginRegistrar(ClaudeInvoker()).Unregister();
+                var restoreWarning = remedy.Restore();
+                return FoldWarning(unreg, restoreWarning);
             }));
         if (all || agent.Equals("generic", StringComparison.OrdinalIgnoreCase))
             results.Add(Isolate("generic", () =>
@@ -483,6 +472,49 @@ public static class CliRouter
     private static bool HasFlag(string[] args, string name) =>
         Array.Exists(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
 
+    // 3-part semver: the plugin manifests (PluginArtifactWriter/ClaudeSkillDeployer) want Major.Minor.Build,
+    // and the user-facing `--version` / log header read cleaner without the trailing revision.
     private static string ThisVersion() =>
-        typeof(CliRouter).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+        typeof(CliRouter).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+
+    // Merge an extra warning (e.g. ClaudeCollisionRemedy.Apply/Restore) into a registrar's AgentResult
+    // so the operator still sees the disable/restore detail. Mirrors the old fold at the retired :291.
+    private static AgentResult FoldWarning(AgentResult r, string? extra)
+    {
+        if (string.IsNullOrEmpty(extra)) return r;
+        var combined = string.IsNullOrEmpty(r.Warning) ? extra : $"{r.Warning} {extra}";
+        return r with { Warning = combined };
+    }
+
+    // Build a CliInvoker for agy/claude. `run` honors the FAKE_*_PRESENT/MISSING env seams like ClaudeRunner;
+    // `resolve` honors the presence seams so e2e tests need no real CLI.
+    private static CliInvoker AgyInvoker()    => BuildInvoker("agy",    "FLAUI_MCP_FAKE_AGY_PRESENT",    "FLAUI_MCP_FAKE_AGY_MISSING");
+    private static CliInvoker ClaudeInvoker() => BuildInvoker("claude", "FLAUI_MCP_FAKE_CLAUDE_PRESENT", "FLAUI_MCP_FAKE_CLAUDE_MISSING");
+
+    private static CliInvoker BuildInvoker(string cli, string presentVar, string missingVar)
+    {
+        var forcedPresent = Environment.GetEnvironmentVariable(presentVar) == "1";
+        var forcedMissing = Environment.GetEnvironmentVariable(missingVar) == "1";
+        Func<string, string?> resolve = c =>
+            forcedMissing ? null : forcedPresent ? $"<fake:{c}>" : CliResolver.Resolve(c);
+        Func<string, string[], string?, RunResult> run = (file, args, cwd) =>
+            forcedPresent ? new RunResult(0, FakeCliOutput(args))
+                          : ProcessRunner.Run(file, args, cwd, ProcessRunner.DefaultTimeout);
+        return new CliInvoker(run, resolve);
+    }
+
+    // Under the PRESENT seam, `plugin list` must report our marketplace id as active so the read-back passes.
+    private static string FakeCliOutput(string[] args) =>
+        System.Array.IndexOf(args, "list") >= 0 ? $"{PluginIds.InstallTarget}  enabled" : "";
+
+    // Best-effort migration cleanup: delete a stray {AgyPluginsDir}/flaui-mcp/.mcp.json a prior build left.
+    private static void RemoveStrayAgyPluginMcpJson(string agyPluginsDir)
+    {
+        try
+        {
+            var stray = Path.Combine(agyPluginsDir, "flaui-mcp", ".mcp.json");
+            if (File.Exists(stray)) File.Delete(stray);
+        }
+        catch { /* best-effort migration cleanup */ }
+    }
 }
