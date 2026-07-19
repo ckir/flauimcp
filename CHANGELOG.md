@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.1] - 2026-07-19
+
+### Fixed
+- **Status command false-negative for Claude integration.** After the v0.17.0 installer rework migrated
+  Claude registration to the plugin model, `flaui-mcp status` still probed the retired `~/.claude/skills/`
+  directory to check whether the driving skill was deployed. A correctly plugin-installed machine would
+  report "NOT deployed" (because the old skill dir no longer existed), and suggest a re-install that would
+  recreate the now-unused directory as a duplicate. Status now uses the same plugin registration oracle
+  that `install` does ΓÇö checking `claude plugin list` for active registration ΓÇö and reports the legacy
+  directory only as a retired aside if it happens to still exist.
+
 ## [0.17.0] - 2026-07-18
 
 ### Added
