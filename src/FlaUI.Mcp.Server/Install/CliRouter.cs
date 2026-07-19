@@ -32,8 +32,13 @@ public static class CliRouter
                 return 0;
 
             case "status":
-                outp.WriteLine(InstallStatus.Describe(exePath, paths.AgyPluginsDir, paths.DataDir, paths.ClaudeConfigDir, paths.StateDir));
+            {
+                // Same registrar/invoker plumbing `install` uses (:300) — the read-back oracle
+                // (present AND not Disabled/Error) must not be reimplemented here as a second regex.
+                var claudePluginStatus = new ClaudePluginRegistrar(ClaudeInvoker()).ReadStatus();
+                outp.WriteLine(InstallStatus.Describe(exePath, paths.AgyPluginsDir, paths.DataDir, paths.ClaudeConfigDir, paths.StateDir, claudePluginStatus));
                 return 0;
+            }
 
             case "install":
                 Report(Apply(agent, paths, install: true, exePath), "install", paths.DataDir, outp);
