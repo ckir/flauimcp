@@ -5,8 +5,27 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [0.17.0] - 2026-07-18
 
+### Added
+- **One-command releases** — `scripts/release.ps1` computes the next version from conventional commits, runs
+  the full gate (build/test/version-sync/plugin-drift), drafts the CHANGELOG via `claude -p`, then commits,
+  tags, and pushes atomically. `release.yml` now sources the GitHub Release body from `CHANGELOG.md`.
+- **`DevelopersCockpit.ps1`** — an interactive dev menu (build, test, scaffold a tool, gate, release preview,
+  push, health check).
+- **`docs/docs-spec.md`** — the canonical documentation convention (role-scoped, terse voice).
+- A CI Pester job covering the `scripts/` PowerShell suite.
+
+### Changed
+- **Installer registration reworked.** The installer registers the MCP server + `driving-flaui-mcp` skill as a
+  unified plugin through each agent's own CLI (`claude plugin marketplace add`/`plugin install`,
+  `agy plugin install`) instead of hand-writing agent config — so it survives Antigravity's config-path
+  migrations. Uninstall deregisters via the CLIs first.
+- Human-facing docs rationalized into role-scoped documents (README router → operator-manual, agent-contract,
+  architecture-and-safety) in a terse voice, and audited for accuracy against the code.
+- Regenerated the shipped `driving-flaui-mcp` plugin skill snapshot to match the current driving rules.
+
 ### Fixed
-- The release automation script (`release.ps1`) was aborting with "zero commits in range," blocking all releases despite pending changes. A PowerShell if-expression that built the git log range argument returned a single-element array, but automatic enumeration converted it to a scalar string ΓÇö the splatted result then became individual characters passed to `git log`, returning nothing. Wrapping the if-expression in `@()` preserves it as an array and restores correct commit enumeration. This eluded unit tests (which inject commits directly) and `-WhatIf` (which exits before the zero-commit check).
+- Unified the headless unit-test filter (`Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect`)
+  across CI, the release gate, and the cockpit, which had drifted apart.
 
 ## [0.16.1] - 2026-07-18
 
