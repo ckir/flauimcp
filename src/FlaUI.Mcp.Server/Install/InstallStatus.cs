@@ -18,7 +18,7 @@ public static class InstallStatus
 {
     public const string LogName = "install.log";
 
-    public static string Describe(string exePath, string agyPluginsDir, string dataDir, string claudeConfigDir, string stateDir)
+    public static string Describe(string exePath, string agyPluginsDir, string dataDir, string claudeConfigDir, string stateDir, ClaudePluginStatus claudePluginStatus)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"flaui-mcp {typeof(InstallStatus).Assembly.GetName().Version}");
@@ -31,7 +31,7 @@ public static class InstallStatus
         sb.AppendLine();
 
         sb.AppendLine("Driving skill (Claude Code):");
-        sb.AppendLine("  " + DescribeClaudeSkill(new ClaudeSkillDeployer(claudeConfigDir).SkillRoot));
+        sb.AppendLine("  " + DescribeClaudeSkill(new ClaudeSkillDeployer(claudeConfigDir).SkillRoot, claudePluginStatus));
         sb.AppendLine();
 
         var collisions = DescribeCollisions(stateDir);
@@ -43,19 +43,34 @@ public static class InstallStatus
         return sb.ToString().TrimEnd();
     }
 
-    /// <summary>Same shape as the agy seed report, but a different tree and a different manifest
-    /// location — Claude Code's manifest lives in `.claude-plugin/`.</summary>
-    private static string DescribeClaudeSkill(string skillRoot)
+    /// <summary>
+    /// Post-installer-rework, the Claude driving skill ships INSIDE the `flaui-mcp@flaui-mcp-marketplace`
+    /// plugin — `install` no longer copies a skill dir to <paramref name="skillRoot"/>. So the PRIMARY
+    /// signal here is the already-computed plugin registration state (threaded in by the caller, which
+    /// built the `CliInvoker`/`ClaudePluginRegistrar` the same way `install` does — this class does not
+    /// shell out itself, so its existing hermetic unit tests stay hermetic). A leftover copy at
+    /// <paramref name="skillRoot"/> from the old model is mentioned only as a retired aside, never as
+    /// the primary deployed/not-deployed signal — probing it as ground truth is exactly the false-negative
+    /// bug this replaced (a plugin-installed machine reported "NOT deployed").
+    /// </summary>
+    private static string DescribeClaudeSkill(string skillRoot, ClaudePluginStatus claudePluginStatus)
     {
-        var skill = Path.Combine(skillRoot, "skills", "driving-flaui-mcp", "SKILL.md");
-        if (!File.Exists(skill))
-            return $"NOT deployed — nothing at {skillRoot}. If you installed Claude Code after " +
-                   "flaui-mcp, run: flaui-mcp install --agent claude";
-        // ReadDeployedVersion ALREADY EXISTS in this class (InstallStatus.cs:51) and takes the
-        // manifest path as a parameter, so it is location-agnostic — reuse it, do not write a second
-        // JSON parser. (A panel seat called this an undefined symbol; it is defined at :51.)
-        var deployed = ReadDeployedVersion(Path.Combine(skillRoot, ".claude-plugin", "plugin.json"));
-        return $"deployed ({deployed}) at {skillRoot}";
+        var legacySkill = Path.Combine(skillRoot, "skills", "driving-flaui-mcp", "SKILL.md");
+        var legacyNote = File.Exists(legacySkill)
+            ? $" (a retired copy from the old skill-directory model also sits at {skillRoot} — no longer read; safe to delete)"
+            : "";
+
+        return claudePluginStatus switch
+        {
+            ClaudePluginStatus.CliNotFound =>
+                "claude CLI not found on PATH (can't check plugin registration)" + legacyNote,
+            ClaudePluginStatus.Active =>
+                $"deployed as plugin ({PluginIds.InstallTarget})" + legacyNote,
+            ClaudePluginStatus.NotRegistered =>
+                "NOT deployed — plugin not registered. If you installed Claude Code after flaui-mcp, " +
+                "run: flaui-mcp install --agent claude" + legacyNote,
+            _ => "unknown claude plugin status" + legacyNote,
+        };
     }
 
     /// <summary>The R5 channel: a plugin we disabled on the user's behalf is otherwise invisible —

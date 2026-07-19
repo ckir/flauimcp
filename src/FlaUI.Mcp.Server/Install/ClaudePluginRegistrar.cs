@@ -2,6 +2,14 @@ using System;
 
 namespace FlaUI.Mcp.Server.Install;
 
+/// <summary>
+/// Tri-state read-back for the `status` verb — distinguishes "can't even check" (no `claude` on
+/// PATH) from the two checkable outcomes. This is the canonical signal for whether the Claude
+/// driving skill is deployed post-installer-rework: it ships as a plugin now, not a copied skill
+/// dir, so status must ask the plugin registry, not probe a retired path.
+/// </summary>
+public enum ClaudePluginStatus { CliNotFound, Active, NotRegistered }
+
 /// Registers flaui-mcp with Claude Code as a local marketplace. Idempotent remove-then-add, then a
 /// read-back that requires the plugin to be present AND active (a bare substring "present" is
 /// false-GREEN if it listed but failed to load). Absent claude => NotFound (skip+report).
@@ -33,6 +41,17 @@ public sealed class ClaudePluginRegistrar
                 $"read-back FAILED: {PluginIds.InstallTarget} not active after install: {list.Output}");
 
         return new AgentResult("claude", AgentChange.Created, $"installed {PluginIds.InstallTarget}");
+    }
+
+    /// <summary>Read-back only, no mutation — the `status` verb's entry point into the same oracle
+    /// <see cref="Register"/> applies post-install (present AND not Disabled/Error). Returns
+    /// <see cref="ClaudePluginStatus.CliNotFound"/> rather than guessing when `claude` isn't on
+    /// PATH, since `plugin list` cannot mean anything without it.</summary>
+    public ClaudePluginStatus ReadStatus()
+    {
+        if (!_cli.IsPresent(Claude)) return ClaudePluginStatus.CliNotFound;
+        var list = _cli.Invoke(Claude, "plugin", "list");
+        return list.Code == 0 && IsActive(list.Output) ? ClaudePluginStatus.Active : ClaudePluginStatus.NotRegistered;
     }
 
     public AgentResult Unregister()

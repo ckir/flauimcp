@@ -21,7 +21,9 @@ public class InstallStatusTests
             .Install(@"C:\flaui-mcp.exe");
         new ClaudeSkillDeployer(claude).Deploy();   // deploy both skills so nothing reads "NOT deployed"
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        // Claude's primary signal is the plugin registration (not the skills dir above), so pass
+        // Active directly -- matches a correctly plugin-installed machine, per InstallStatusClaudeTests.
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.Active);
 
         Assert.Contains("deployed", s);
         Assert.DoesNotContain("NOT deployed", s);
@@ -35,7 +37,7 @@ public class InstallStatusTests
     {
         var (plugins, dataDir, claude, state) = TempPaths();
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
 
         Assert.Contains("NOT deployed", s);
         Assert.Contains("no record yet", s);   // no install.log either
@@ -53,7 +55,7 @@ public class InstallStatusTests
             "[claude] Created: somewhere",
         });
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
 
         Assert.Contains("[agy] Failed: something broke", s);
         Assert.Contains("[claude] Created: somewhere", s);
@@ -69,6 +71,9 @@ public class InstallStatusTests
         var dataDir = Path.Combine(Path.GetTempPath(), $"flaui-data-{Guid.NewGuid():N}");
         var prev = Environment.GetEnvironmentVariable("FLAUI_MCP_DATA_DIR");
         Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", dataDir);
+        // `status` now also reads the Claude plugin registration -- force the "absent" seam so this
+        // stays hermetic instead of shelling out to whatever `claude` happens to be on the host PATH.
+        Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", "1");
         try
         {
             CliRouter.Run(new[] { "install", "--agent", "agy", "--config", cfg }, @"C:\x\flaui-mcp.exe", new StringWriter());
@@ -82,6 +87,7 @@ public class InstallStatusTests
         finally
         {
             Environment.SetEnvironmentVariable("FLAUI_MCP_DATA_DIR", prev);
+            Environment.SetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING", null);
             if (Directory.Exists(dataDir)) Directory.Delete(dataDir, true);
             foreach (var f in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(cfg) + "*")) File.Delete(f);
         }
@@ -104,7 +110,7 @@ public class InstallStatusTests
         Directory.CreateDirectory(state);
         File.WriteAllText(CollisionMarker.PathIn(state), "{ torn half-written");
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
 
         Assert.Contains("unreadable", s);
     }
@@ -116,7 +122,7 @@ public class InstallStatusTests
         Directory.CreateDirectory(state);
         File.WriteAllText(CollisionMarker.PathIn(state), """{ "version": 2, "disabled": [] }""");
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
 
         Assert.Contains("newer flaui-mcp", s);
     }
@@ -127,7 +133,7 @@ public class InstallStatusTests
         var (plugins, dataDir, claude, state) = TempPaths();
         CollisionMarker.Record(state, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) });
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
 
         // Byte-identical to today's output (round-4 Regression): header + entry line unchanged.
         Assert.Contains("Conflicting plugins we disabled (they will be re-enabled if you uninstall flaui-mcp):", s);
@@ -139,7 +145,7 @@ public class InstallStatusTests
     {
         var (plugins, dataDir, claude, state) = TempPaths();
 
-        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
 
         Assert.DoesNotContain("Conflicting", s);
         Assert.DoesNotContain("unreadable", s);
@@ -152,11 +158,11 @@ public class InstallStatusTests
         Directory.CreateDirectory(state);
 
         File.WriteAllText(CollisionMarker.PathIn(state), "{ torn");
-        var corrupt = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        var corrupt = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
         Assert.Contains(CollisionMarker.PathIn(state), corrupt);
 
         File.WriteAllText(CollisionMarker.PathIn(state), """{ "version": 2, "disabled": [] }""");
-        var future = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state);
+        var future = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
         Assert.Contains(CollisionMarker.PathIn(state), future);
     }
 }
