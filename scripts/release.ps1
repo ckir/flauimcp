@@ -447,7 +447,10 @@ try {
     $rangeArgs = @( if ($lastTagFound) { "$($lastTag.Trim())..HEAD" } )
 
     $rawLog = (git -C $RepoRoot log @rangeArgs --format='%B%x1e' 2>$null | Out-String)
-    $commitMessages = @($rawLog -split "`u{1e}" | Where-Object { $_.Trim() })
+    # Trim EACH message: git log puts a newline between entries, so splitting on the %x1e separator leaves a
+    # leading "`n" on every message but the first — which would make ($msg -split "`n")[0] (the subject) empty,
+    # emptying both the conventional-commit parse and the LLM changelog's commit list.
+    $commitMessages = @($rawLog -split "`u{1e}" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
     $next = Get-NextVersion -CurrentVersion $lastTagVersion -CommitMessages $commitMessages -OverrideVersion $Version -OverrideBump $Bump
 
