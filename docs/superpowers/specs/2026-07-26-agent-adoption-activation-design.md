@@ -135,11 +135,45 @@ exactly four artifacts into the install staging dir:
 There is **no `hooks/` and no `scripts/`**. The installed plugin therefore carries no hooks at all.
 
 This is not a hazard introduced by M1 — it is already true today: the existing `flaui-curate-nudge.sh`
-`Stop` hook has never reached an installed user either. It works only for someone running Claude Code
-inside the repo checkout, which is why it appeared to work during dogfooding.
+`Stop` hook has never reached an installed user either.
+
+**G7 — the split brain: `plugins/flaui-mcp/` is registered NOWHERE.**
+*(Round 3. This corrects round 2's own wording, which said the hooks "work for someone running Claude
+Code inside the repo checkout". Measured — they work for nobody, including the maintainer.)*
+
+| | |
+| --- | --- |
+| Registered marketplace | `flaui-mcp-marketplace` → `%LOCALAPPDATA%\Programs\FlaUI.Mcp\plugin` (`~/.claude/settings.json:162-167`) |
+| That directory contains | `.claude-plugin/marketplace.json` · `.mcp.json` · `plugin.json` · `skills/driving-flaui-mcp/SKILL.md` — **four files, no hooks, no scripts** |
+| Repo's `.claude-plugin/marketplace.json` | names marketplace `flaui-mcp`, source `./plugins/flaui-mcp` — **not present in `known_marketplaces.json`** |
+
+Three consequences, each correcting something earlier in this spec:
+
+1. The `flaui-mcp:driving-flaui-mcp` skill the agent sees comes from the **staging dir**, not from
+   `plugins/flaui-mcp/`. So **`plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md` is registered
+   nowhere** — G4's table called it "repo-checkout registration only"; it is neither shipped nor live.
+   The two live registrations are the `.claude/skills` copy and the *staged* copy.
+2. **Measured in the field:** the shipped skill at
+   `%LOCALAPPDATA%\Programs\FlaUI.Mcp\plugin\skills\driving-flaui-mcp\SKILL.md` **contains the broken
+   single-prefix load line right now.** G3 is not theoretical; it is live on the installed machine.
+3. Editing `plugins/flaui-mcp/` — which is what §5.2 literally instructs for M1 — changes nothing for
+   anyone. A maintainer would have to register the repo marketplace manually to see their own hook fire,
+   and "it works on my machine" would then still say nothing about the shipped artifact.
 
 **Consequence:** M1 is undeliverable as specified. Shipping hooks is a **precondition** of M1, not an
-implementation detail — see the new hard requirement in §5.2 and criterion 8 in §7.
+implementation detail — see the hard requirements in §5.2 and criteria 7–9 in §7.
+
+**The propagation chain M0/M2 must travel** (nothing in the spec gated this before round 3):
+
+```
+edit .claude/skills/…/SKILL.md → rebuild exe (csproj:8 embeds it) → ship installer
+  → user runs `flaui-mcp install` → PluginArtifactWriter.Generate() rewrites the staging dir
+  → ClaudePluginRegistrar: `claude plugin marketplace add` + `plugin install`
+```
+
+Every skill change therefore requires a **rebuild and a reinstall** to reach anyone. The plan must add a
+staleness signal to `flaui-mcp status` (installed `plugin.json` version vs running assembly version), or
+users will silently run an old skill against a new server.
 
 **G5 — `jq` is a real distribution dependency.** The existing hook shape pipes through `jq`, which
 resolves on the maintainer's machine only via a portable toolchain (`/c/!PORTABLES/!BIN/jq`, 1.8.1 —
@@ -200,8 +234,13 @@ plugin and direct registration.
 ### 5.2 M1 — SessionStart payload injection (fixes 1, 4, 5)
 
 New `SessionStart` entry in `plugins/flaui-mcp/hooks/hooks.json` → new
-`plugins/flaui-mcp/scripts/flaui-activation.sh`, following the shape of the existing
-`flaui-curate-nudge.sh` (stdin JSON → `jq -n` → `hookSpecificOutput.additionalContext`).
+`plugins/flaui-mcp/scripts/flaui-activation.sh`, following the *output shape* of the existing
+`flaui-curate-nudge.sh` (`hookSpecificOutput.additionalContext`) but **not** its input shape — see the
+no-`jq`/no-stdin requirement below.
+
+**Those repo paths are the build input, not a live plugin.** Per G7, `plugins/flaui-mcp/` is registered
+nowhere; editing it changes nothing until the packaging requirement below makes it the embedded source of
+the staged artifact. Writing the hook without that is writing a file no runtime will ever read.
 
 **It injects a payload, not a signpost.** Required content, in this order — the anti-pattern rule comes
 FIRST because it is the genuinely novel instruction:
@@ -247,12 +286,24 @@ FIRST because it is the genuinely novel instruction:
   registry, so requiring "reachable" would be an impossible constraint. Installed-but-not-registered is
   an accepted false-positive: it is rare, and its cost (one stale hint) is far below the cost of a probe
   that is slow or hangs at session start.
-- **The hook must actually SHIP (G6) — this is a precondition, not a detail.** `PluginArtifactWriter`
-  must additionally stage `hooks/hooks.json` and `scripts/`, or M1 exists only in the repo checkout.
-  Because this also fixes the *existing* undelivered `Stop` curate-nudge hook, the plan must treat
-  "plugin hooks are distributed" as its own task with its own test, sequenced **before** the M1 hook is
-  written — building M1 first would produce a mechanism that demonstrably works for the maintainer and
-  for nobody else, which is the most expensive kind of green.
+- **The hook must actually SHIP (G6/G7) — a precondition, not a detail.** `PluginArtifactWriter` must
+  additionally stage `hooks/hooks.json` and `scripts/`. Because this also fixes the *existing*
+  undelivered `Stop` curate-nudge hook, the plan must treat "plugin hooks are distributed" as its own
+  task with its own test, sequenced **before** the M1 hook is written.
+
+- **Staged by EMBEDDING, not by re-authoring — fidelity, not presence.** *(Round 3; the driver's
+  Distribution Realist seat and agy's Q3/Q4 converged.)* The hooks and scripts must be embedded as
+  resources from the repo tree — exactly as `csproj:8` already does for `SKILL.md` — and extracted
+  byte-for-byte. They must **not** be re-authored as C# string literals in `PluginArtifactWriter`, which
+  is the path of least resistance and would create a third independently-drifting source of truth on top
+  of G4's pair. The repo tree must be the strict build input.
+
+  Two concrete failure modes this closes, both of which would pass a presence-only test:
+  - **Line endings.** A `.sh` extracted with CRLF breaks `#!/usr/bin/env bash` at the shebang. This repo
+    actively converts LF→CRLF on checkout (git warned on the round-2 commit of this very file), so it is
+    the default outcome, not an edge case. The extraction must pin LF.
+  - **Drift.** A staged copy authored separately from the tested copy means the maintainer tests one
+    artifact and ships another.
 
 - **M1 must NOT depend on `jq`.** *(Round 2.)* `jq` is required by `flaui-curate-nudge.sh` because that
   hook **parses** stdin to derive a session id. M1 parses nothing: its gate is a file test and its payload
@@ -432,11 +483,20 @@ capability to game a client-side UX heuristic.
    net-new construction, not edits** — measured in round 2: `.claude/recommended-tools.json` does not
    exist, and `installer/flaui-mcp.iss` has no prerequisite-check mechanism at all (its only `Check:` is
    `NeedsAddPath`). The plan must size this as building a check, not extending one.
-7. **Plugin hooks and scripts are distributed (G6).** A test asserts that the staging dir produced by
-   `PluginArtifactWriter.Generate()` contains `hooks/hooks.json` and the referenced scripts, and that the
-   hook commands resolve under `${CLAUDE_PLUGIN_ROOT}` as staged. Without this criterion every other M1
+7. **Plugin hooks and scripts are distributed (G6/G7).** A test asserts that the staging dir produced by
+   `PluginArtifactWriter.Generate()` contains `hooks/hooks.json` and every script it references, and that
+   the hook commands resolve under `${CLAUDE_PLUGIN_ROOT}` as staged. Without this, every other M1
    criterion can pass while M1 reaches nobody.
-8. The repo's default gate stays green with zero new warnings.
+8. **Fidelity, not presence.** *(Round 3.)* A test asserts each staged hook/script is **byte-identical to
+   its repo-tree source**, and that staged `.sh` files contain **no CRLF**. Criterion 7 alone is
+   satisfiable by writing hardcoded strings from C#, which passes CI, works in the maintainer's manual
+   test, and ships something else.
+9. **The propagation chain is gated end to end.** A test drives `PluginArtifactWriter.Generate()` into a
+   temp dir and asserts the result is a well-formed plugin (manifest + skill + hooks + scripts). The
+   `claude plugin install` step itself has no CI equivalent and is **not** claimed as gated — it stays a
+   manual install-smoke step, named as such in the plan rather than assumed. Recording this honestly is
+   the point: round 3 found that *nothing* connected the build input to the installed artifact.
+10. The repo's default gate stays green with zero new warnings.
 
 **Not mechanically verifiable — stated honestly rather than faked:** whether the agent actually reaches
 for the tool. The observational signal (agy's, accepted): in a fresh session needing desktop context, a
@@ -529,6 +589,29 @@ Solo panel + agy escalation. Round 2 went looking for defect-classes round 1 nev
 
 **Round 2 verdict:** NOT GREEN — 8 findings folded, two of them corrections to round-1 ground truth
 (#14 inverted G4; #16 reversed M1's stated weakness). Resource Vampire: no new findings.
+
+### Round 3 — bespoke seat: Distribution Realist (the standard palette was exhausted in rounds 1–2)
+
+Solo panel + agy escalation. Round 3 corrected round 2's own G6 wording, and again found the defect was
+worse than the previous round had recorded.
+
+| # | Finding | Seat(s) | Fold |
+| --- | --- | --- | --- |
+| 21 | **G7 — split brain.** The registered marketplace points at `%LOCALAPPDATA%\…\FlaUI.Mcp\plugin` (4 files); the repo's own `.claude-plugin/marketplace.json` is not registered at all. So `plugins/flaui-mcp/` is live for **nobody**, not merely "repo-checkout only", and `plugins/flaui-mcp/skills/…/SKILL.md` is registered nowhere. | Distribution Realist (driver); Axiom Breaker + Distribution Realist (agy) — convergent | New G7 with the registration table; §5.2 opening corrected to say the repo paths are build input, not a live plugin. |
+| 22 | **G3 confirmed in the field.** The shipped skill on the installed machine contains the broken single-prefix load line right now. | Distribution Realist (driver) | G7 consequence 2 — recorded as measured, not theoretical. |
+| 23 | Nothing connects the build input to the installed artifact. The edit→build→install→register chain has no gate at any link. | Q1 (agy); driver | New criterion 9, including the honest admission that `claude plugin install` has no CI equivalent and stays a manual smoke step. |
+| 24 | **Presence ≠ fidelity.** Criterion 7 is satisfiable by re-authoring hooks as C# string literals: CI passes, the maintainer's manual test passes, and a different artifact ships. CRLF on extraction would also break the shebang silently. | Q4 (agy); Distribution Realist (driver) | §5.2 — hooks/scripts must be **embedded** from the repo tree and extracted byte-for-byte with LF pinned; new criterion 8 asserts byte-identity and no CRLF. |
+| 25 | Every skill change needs a rebuild **and** a reinstall to reach anyone, with no staleness signal. | Distribution Realist (driver) | G7 — propagation chain written out; `status` must compare installed `plugin.json` version against the running assembly version. |
+
+**Round 3 verdict:** NOT GREEN — 5 findings folded.
+
+**REFUTED BY MEASUREMENT — do not re-raise.** agy's Q5 headline was "silent plugin registration failure
+due to installer PATH isolation: InnoSetup runs elevated, so `claude` on the user's npm PATH is invisible,
+and `ClaudePluginRegistrar` silently skips." Both legs fail: `installer/flaui-mcp.iss:13` sets
+`PrivilegesRequired=lowest`, so the installer never elevates; and `CliResolver` (`:6-8`, `:41-43`)
+already falls back to `%APPDATA%\npm` and userprofile dirs precisely so PATH absence cannot break
+resolution. The residual case — Claude Code installed *after* flaui-mcp — is already handled and
+reported by `InstallStatus.DescribeClaudeSkill`, which tells the user to re-run `install --agent claude`.
 
 **Negotiation record for #13.** agy named the right defect from the wrong evidence: it cited
 `ClaudeSkillDeployer.cs:33-51` as "the sole mechanism that writes the plugin on install". Measured, that
