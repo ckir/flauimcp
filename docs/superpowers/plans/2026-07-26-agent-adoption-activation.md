@@ -323,7 +323,7 @@ Replace `src/FlaUI.Mcp.Server/Install/PluginArtifactWriter.cs` line 13 with:
 
 - [ ] **Step 4: Replace `Generate` and `WriteSkill`**
 
-Replace `PluginArtifactWriter.cs` lines 81–120 with:
+Replace `PluginArtifactWriter.cs` lines **81–121** with the block below. The file is **121 lines**; line 120 closes `WriteSkill` and line 121 closes the class. The replacement block ends with its own class-closing `}`, so replacing only through 120 would leave a duplicate brace and fail with **CS1022**.
 
 ```csharp
     public void Generate(string exePath, string version)
@@ -747,6 +747,12 @@ The verb must return before any MCP/DI initialisation. `CliRouter.cs:29-31` (`pr
 **Files:**
 - Modify: `src/FlaUI.Mcp.Server/Install/CliRouter.cs:29-31`
 
+> **Two gates, not one.** `Program.cs:13` dispatches to the router only when
+> `CliRouter.IsInstallerVerb(args)` returns true, and that method (`CliRouter.cs:11`) tests a hardcoded
+> `Verbs` HashSet at `CliRouter.cs:8-10`. **Adding a `case` to the switch is not sufficient** — a verb
+> missing from `Verbs` falls straight through to MCP server startup, so the hook would hang at every
+> session start instead of printing JSON. Both edits are required.
+
 - [ ] **Step 1: Write the failing test**
 
 Append to `test/FlaUI.Mcp.Tests/Install/ActivationPayloadTests.cs` (inside the class):
@@ -755,12 +761,34 @@ Append to `test/FlaUI.Mcp.Tests/Install/ActivationPayloadTests.cs` (inside the c
     [Fact]
     public void The_verb_name_is_stable()
         => Assert.Equal("activation-payload", ActivationPayload.Verb);
+
+    [Fact]
+    public void The_router_recognises_the_verb_as_an_installer_verb()
+        => Assert.True(CliRouter.IsInstallerVerb(new[] { ActivationPayload.Verb }),
+            "verb missing from CliRouter.Verbs — Program.cs would start the MCP server instead of printing the payload");
+
+    [Fact]
+    public void The_router_prints_the_payload_json_and_exits_zero()
+    {
+        var outp = new StringWriter();
+        var code = CliRouter.Run(new[] { ActivationPayload.Verb }, @"C:\fake\flaui-mcp.exe", outp);
+
+        Assert.Equal(0, code);
+        using var doc = JsonDocument.Parse(outp.ToString().Trim());
+        Assert.Equal("SessionStart",
+            doc.RootElement.GetProperty("hookSpecificOutput").GetProperty("hookEventName").GetString());
+    }
 ```
+
+> Add `using System.IO;` to the test file — `StringWriter`.
+>
+> These two tests are the point of the task: `The_verb_name_is_stable` alone would pass **without** any
+> router change, and a test that cannot fail is worse than no test.
 
 - [ ] **Step 2: Run it to confirm it fails**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ActivationPayloadTests"`
-Expected: FAIL — `ActivationPayload.Verb` does not exist.
+Expected: FAIL — `ActivationPayload.Verb` does not exist (compile error), and once it does, both router tests fail.
 
 - [ ] **Step 3: Add the constant**
 
@@ -772,7 +800,16 @@ In `src/FlaUI.Mcp.Server/Install/ActivationPayload.cs`, immediately after `publi
     public const string Verb = "activation-payload";
 ```
 
-- [ ] **Step 4: Add the router case**
+- [ ] **Step 4a: Register the verb (REQUIRED — the switch case alone does nothing)**
+
+In `src/FlaUI.Mcp.Server/Install/CliRouter.cs`, replace the `Verbs` initializer at lines 8–10 with:
+
+```csharp
+    private static readonly HashSet<string> Verbs =
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "status", "unlock", "lock", "overlay", "autosound", "presence", ActivationPayload.Verb, "--version", "-v", "--help", "-h" };
+```
+
+- [ ] **Step 4b: Add the router case**
 
 In `src/FlaUI.Mcp.Server/Install/CliRouter.cs`, immediately after the `print-config` case (which ends `return 0;` at line 31), insert:
 
@@ -1195,6 +1232,28 @@ dotnet run --project src/FlaUI.Mcp.Server -c Release -- activation-payload
 
 Expected: one line of JSON with `"hookEventName":"SessionStart"`.
 
+- [ ] **Step 2b: Measure hook latency on an IDLE machine — the spec owes this number**
+
+§5.2 records ~380 ms warm / ~3.9 s cold as an explicitly **unverified lower bound**: every prior attempt was taken at 100% CPU. `SessionStart` hooks block the first turn (measured), so this is latency the user waits through at every session start *and every compaction*. Take the real number.
+
+Close other workloads, confirm the machine is idle, then run:
+
+```powershell
+$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+"CPU load: $cpu%"    # abort and retry later if this is not in single digits
+$exe = "$env:LOCALAPPDATA\Programs\FlaUI.Mcp\flaui-mcp.exe"
+$t = 1..8 | ForEach-Object {
+  $sw=[Diagnostics.Stopwatch]::StartNew(); & $exe activation-payload | Out-Null; $sw.Stop()
+  [int]$sw.ElapsedMilliseconds
+}
+"samples ms: $($t -join ', ')"
+"warm median ms: $(($t | Sort-Object)[[int]($t.Count/2)])"
+```
+
+Record the CPU load, the full sample list, the cold (first) sample and the warm median **in the PR description**. Then update §5.2 of the spec, replacing the lower-bound paragraph with the measured figures and dropping the "a true idle measurement is still owed" sentence.
+
+**If the warm median exceeds ~500 ms**, do not silently accept it: report it, because a blocking per-session cost of that size is a design question (§5.2's cost budget), not an implementation detail.
+
 - [ ] **Step 3: Manual install smoke — NOT CI-gatable, do not skip**
 
 `claude plugin install` has no CI equivalent. Run by hand and record the result:
@@ -1238,6 +1297,23 @@ git commit -m "chore: post-smoke fixes for agent-adoption activation"
 
 **One spec citation corrected.** Spec §9 lists the skill's frontmatter `description` at `SKILL.md:20`; it is actually at **line 3** (verified in both copies). The plan uses the correct line. This is a stale citation in the spec, not a design defect — no re-green owed.
 
-**Deliberately deferred to execution, with owners.** (a) Whether the client repeats the orphaned-hook warning every session — Task 13's manual smoke observes it; the spec already records it as cosmetic. (b) An idle latency measurement for the `activation-payload` verb — Task 13 Step 2 is the natural place, and the spec records ~380 ms warm as an unverified floor.
+**Deliberately deferred to execution, with owners.** (a) Whether the client repeats the orphaned-hook warning every session — Task 13's manual smoke observes it; the spec already records it as cosmetic. (b) The idle latency measurement — **Task 13 Step 2b**, with the exact command, the abort condition, and instructions to update spec §5.2 with the result.
+
+---
+
+## Plan review — folded (agy, convergent line-by-line)
+
+Fired per AGY-AFTER. The consult timed out as `possible_modal`; recovered by (1) reading agy's terminal tab directly with `desktop_read_terminal_tab` — it was **idle, no modal**, in a tab titled `C:\WINDOWS\system32\cmd.exe`, which is *exactly* the launcher-not-the-program trap M3 exists to fix — and (2) a retrieval-only re-ask, which returned the full review intact. Both recoveries were the user's suggestion; neither had occurred to the driver.
+
+| Finding | Verdict | Fold |
+|---|---|---|
+| Task 4 Step 4 replaces lines 81–120, leaving a duplicate class brace → CS1022 | **Confirmed** (file is 121 lines, not agy's stated 122) | Range corrected to 81–121 with the reason stated |
+| Task 8's only test asserts a constant and would pass without the router change | **Confirmed** — a test that cannot fail | Two real router tests added, exercising `CliRouter.Run` |
+| Task 13 claims to cover the idle latency measurement but never takes it | **Confirmed** | Step 2b added with the command, abort condition, and spec-update instruction |
+| **Missed by both panels** — `Program.cs:13` gates on `CliRouter.IsInstallerVerb`, whose `Verbs` set (`CliRouter.cs:8-10`) would not contain the new verb, so the switch case would never execute and the hook would hang at every session start | **Found while verifying agy's citations** | Step 4a added registering the verb; a test asserts `IsInstallerVerb` accepts it |
+
+agy reported *Ordering hazard* and *Type/signature inconsistency* as clean.
+
+**Pattern, third occurrence this subproject:** agy's conclusion was right and its cited number was wrong (122 vs 121 lines). Verifying the citation rather than the claim is what surfaced the fourth finding — the one that would have cost the most to debug.
 
 **Type consistency.** `ActivationPayload.Text` / `.ToJson()` / `.Verb` are used identically in Tasks 7, 8, 9, 11. `PluginIds` resource constants introduced in Task 4 are reused verbatim in Tasks 4 and 9. `Extract(resource, relativePath)` is defined once (Task 4) and used in Tasks 4 and 9. `RepoPaths.At(...)` is defined in Task 2 and used in Tasks 5 and 6. `Stage()` is defined in Task 4 and reused in Task 9.
