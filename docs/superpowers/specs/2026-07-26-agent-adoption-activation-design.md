@@ -242,6 +242,37 @@ no-`jq`/no-stdin requirement below.
 nowhere; editing it changes nothing until the packaging requirement below makes it the embedded source of
 the staged artifact. Writing the hook without that is writing a file no runtime will ever read.
 
+#### Decided in round 4 — the hook command is the PRODUCT'S OWN EXECUTABLE, not a shell script
+
+The fork was put to agy neutrally, with no lean disclosed. Both panels chose the executable independently.
+
+| | Option A — `bash …/flaui-activation.sh` | **Option B — `flaui-mcp.exe activation-payload`** |
+| --- | --- | --- |
+| Needs `bash` on a stock Windows host | yes | **no** |
+| Needs `jq` | (removed, but the shape invites it) | **no** |
+| CRLF / exec-bit hazards through packaging | yes — and they are **live today**, see below | **none — nothing is extracted** |
+| Install gate | a `test -f` for the exe | **the exe running IS the gate** |
+| Payload kept correct over time | a string in a shipped script | **a compiled constant, reachable by the criterion-1 reflection test** |
+
+The absolute exe path is written into `hooks.json` at install time by the same generator that already
+writes it into `.mcp.json` — a proven mechanism, not a new one. This also means `hooks.json` is
+**generated** rather than embedded, so the byte-identity/CRLF requirements below apply only to whatever
+scripts remain (ideally none).
+
+**agy's argument against its own choice, and why it does not stand.** agy warned that if unregistration
+fails, a `SessionStart` hook pointing at a deleted absolute exe path fires every session, and that Option
+A degrades better because its script "gracefully runs a `test -f` first". Measured, the asymmetry is not
+real: the script would live in the same deleted plugin tree, so `${CLAUDE_PLUGIN_ROOT}/scripts/…` is
+equally gone and `bash` equally fails to start. **The orphaned-hook hazard is symmetric**, and it is
+therefore not a reason to prefer A.
+
+The residual hazard is real but narrower than agy framed it, and it is **not** the PATH/elevation story
+(refuted in §10): it materialises only when `Unregister()` returns `NotFound` — e.g. the user removes
+Claude Code *before* uninstalling this product (`ClaudePluginRegistrar.cs:57-59`). The plan must
+(a) confirm the client's behaviour when a hook command's binary is missing, and (b) require that failure
+mode to be loud-but-non-blocking. Since the hook ships *inside* the plugin, removing the plugin removes
+the hook — orphaning requires unregistration to fail specifically.
+
 **It injects a payload, not a signpost.** Required content, in this order — the anti-pattern rule comes
 FIRST because it is the genuinely novel instruction:
 
@@ -250,6 +281,16 @@ FIRST because it is the genuinely novel instruction:
 2. The trigger list, covering the whole surface: see what's on screen · check an app is running/
    responding · read a background terminal or console tab · click/type/fill a dialog in a GUI app ·
    confirm a change landed in the real app.
+
+   **The payload must split this list by lease requirement.** *(Round 4 — the trigger list and the
+   safety framing contradicted each other.)* `desktop_read_terminal_tab` is declared
+   `[McpServerTool(Destructive = true)]` (`ContentTools.cs:86`) — it *switches* tabs and restores them,
+   and is blocked in `--read-only-mode`. So "read a background terminal tab", which item 2 advertises,
+   is **not** covered by item 4's "read-only, no lease, cannot disturb the user". A payload that lists
+   the trigger and then blankets the whole list in the read-only reassurance tells the agent it may
+   switch a user's terminal tabs without a lease. Items 2 and 4 must be explicitly zoned: perception
+   (`list_windows` / `snapshot` / `get_text`) is lease-free; **background-tab reading and everything in
+   item 5 require a lease.**
 3. The **ready-to-run load line** — the dual-prefix `select:` form per M0. *(Round 2: an earlier draft
    said "keyword form per M0", contradicting §5.1, which explicitly **rejected** the keyword form. The
    `select:` form is the chosen one, here and everywhere.)*
@@ -398,9 +439,40 @@ becoming a second copy of the skill:
 3. It is **specific to this tool**, not general driving advice.
 4. It fits in **one sentence**.
 
+**Fifth criterion, added in round 4 — the trap must live in THIS TOOL'S OWN RETURNED DATA**, not in the
+target application's behaviour generally. Without it, rule 3 ("specific to this tool") admits every quirk
+of every app the tools can drive, and the descriptions become an unbounded encyclopedia that exhausts the
+length budget the moment a second application needs driving notes. Raised by agy as *domain-boundary
+corruption*; accepted, with the boundary drawn here rather than by dropping the mechanism. App-specific
+driving lore stays in the skill's growth region; only "this tool's output will mislead you in this exact
+way" earns a description slot.
+
 Confirmed initial member (the observed failure): a Windows Terminal tab title is the **launcher, not the
 program** — a bare `cmd.exe`/`PowerShell` tab may host a running CLI agent; enumerate and read every
-candidate. Applies to `desktop_list_windows` and `desktop_read_terminal_tab`.
+candidate. Applies to `desktop_list_windows` and `desktop_read_terminal_tab`. It passes the fifth
+criterion: the misleading artifact *is* the title string these tools return.
+
+**Round 4 — the uncomfortable measurement M3 has to answer.** `desktop_list_windows` **already carries a
+Windows Terminal hint** (`WindowTools.cs:23`): *"A Hint field may accompany multiplexer windows (e.g.
+Windows Terminal) noting the listing shows only the active tab."* And `desktop_read_terminal_tab` already
+says *"enumerate tabs with desktop_snapshot first"* (`ContentTools.cs:86`). **The motivating failure
+happened anyway, with both of those already in place.**
+
+This does not kill M3, but it refutes the framing that placement alone is sufficient — which is the claim
+§5.4 opened with. The existing text states a *limitation* ("the listing shows only the active tab") and a
+*procedure* ("enumerate first"); neither says the thing that would have prevented the failure: **the title
+tells you nothing about what is running inside — read every candidate before concluding it is absent.**
+
+Two consequences the plan must carry:
+
+- Hoisted facts must be written as **actionable imperatives with the wrong default named**, not as passive
+  notes. "X may occur" does not change behaviour; "do not conclude Y from X — do Z" does.
+- The invariant test cannot assert mere keyword presence (that would already pass today on
+  `desktop_list_windows`). It must assert the **specific imperative clause**, so the test fails on the
+  current text rather than green-lighting it.
+
+M3 remains the only mechanism addressing correct driving once activated, so it stays — but its expected
+effect is now stated as *contingent on how the fact is phrased*, not on where it sits.
 
 The plan must audit the remaining 47 tools against the four-part rule and admit only what passes; the
 expected yield is small (single digits).
@@ -487,10 +559,18 @@ capability to game a client-side UX heuristic.
    `PluginArtifactWriter.Generate()` contains `hooks/hooks.json` and every script it references, and that
    the hook commands resolve under `${CLAUDE_PLUGIN_ROOT}` as staged. Without this, every other M1
    criterion can pass while M1 reaches nobody.
-8. **Fidelity, not presence.** *(Round 3.)* A test asserts each staged hook/script is **byte-identical to
-   its repo-tree source**, and that staged `.sh` files contain **no CRLF**. Criterion 7 alone is
-   satisfiable by writing hardcoded strings from C#, which passes CI, works in the maintainer's manual
-   test, and ships something else.
+8. **Fidelity, not presence.** *(Round 3, corrected in round 4.)* For any script that still ships, a test
+   asserts it is byte-identical to its repo-tree source **normalized to LF**, and that the staged file
+   contains no CRLF. Criterion 7 alone is satisfiable by writing hardcoded strings from C#, which passes
+   CI, works in the maintainer's manual test, and ships something else.
+
+   *Round-4 correction:* the round-3 wording demanded byte-identity to the repo-tree source **and** no
+   CRLF — **jointly unsatisfiable**, because the working-tree source is CRLF today
+   (`plugins/flaui-mcp/scripts/flaui-curate-nudge.sh` measured as CRLF; the repo has **no
+   `.gitattributes`**). A test writer would have had to fail the build permanently or quietly drop the
+   byte-identity half. Both panels caught this independently. The plan must also add a `.gitattributes`
+   pinning `*.sh eol=lf`. Under the Option-B decision this criterion may end up vacuous — that is the
+   preferred outcome, and vacuous-because-nothing-ships must be asserted, not assumed.
 9. **The propagation chain is gated end to end.** A test drives `PluginArtifactWriter.Generate()` into a
    temp dir and asserts the result is a well-formed plugin (manifest + skill + hooks + scripts). The
    `claude plugin install` step itself has no CI equivalent and is **not** claimed as gated — it stays a
@@ -604,6 +684,27 @@ worse than the previous round had recorded.
 | 25 | Every skill change needs a rebuild **and** a reinstall to reach anyone, with no staleness signal. | Distribution Realist (driver) | G7 — propagation chain written out; `status` must compare installed `plugin.json` version against the running assembly version. |
 
 **Round 3 verdict:** NOT GREEN — 5 findings folded.
+
+### Round 4 — bespoke seat: Operator Realist; Mechanism Gamer re-seated on criteria 7–9 only
+
+| # | Finding | Seat(s) | Fold |
+| --- | --- | --- | --- |
+| 26 | **Criterion 8 was jointly unsatisfiable** — byte-identity to a CRLF source AND no CRLF. The working tree is CRLF and the repo has no `.gitattributes`. | Mechanism Gamer (driver + agy, convergent) | Criterion 8 — identity against the **LF-normalized** source; `.gitattributes` pinning `*.sh eol=lf` added to the plan. |
+| 27 | **The prototype M1 is modelled on has never worked.** `flaui-curate-nudge.sh` is CRLF (bash chokes on `\r`) and hard-depends on `jq`, which is absent from a stock host — and per G7 it was never registered, so nobody found out. | Operator Realist (driver); Q2 (agy) | Fed the Option-B decision below: the spec stops treating that script's shape as a proven baseline. |
+| 28 | **M1's trigger list contradicts its own safety framing.** Item 2 advertises "read a background terminal tab"; item 4 blankets the list in "read-only, no lease, cannot disturb the user". But `desktop_read_terminal_tab` is `Destructive = true` and switches tabs. | Axiom Breaker (driver) | §5.2 item 2 — the list is now zoned by lease requirement. |
+| 29 | **M3's confirmed trap fact is ALREADY partly shipped and did not prevent the motivating failure.** `WindowTools.cs:23` carries a Windows Terminal hint; `ContentTools.cs:86` already says "enumerate tabs first". | Operator Realist (driver) | §5.4 — the "placement is sufficient" framing withdrawn; hoisted facts must be actionable imperatives naming the wrong default, and the invariant test must assert the specific clause so it **fails on today's text** instead of green-lighting it. |
+| 30 | M3's selection rule admits every quirk of every drivable app — an unbounded encyclopedia against a fixed budget. | Axiom Breaker / Q4 (agy) | §5.4 — fifth criterion: the trap must live in **this tool's own returned data**. App lore stays in the skill. |
+| 31 | Design fork: shell script vs. product executable as the hook command. | Both panels, independently → **Option B** | §5.2 — decided in-spec with the comparison table. agy's counter-argument (orphaned hook favours A) **refuted**: the script lives in the same deleted tree, so the hazard is symmetric. |
+
+**Round 4 verdict:** NOT GREEN — 6 findings folded, including one design fork decided. Two of the six
+(#28, #29) are defects in mechanisms rounds 1–3 had left unexamined.
+
+**RE-RAISED AND REFUTED A SECOND TIME — do not raise again.** agy's round-4 Cascade Analyst and Q3/Q5 all
+rest on the elevated-installer PATH premise that the round-3 ledger already recorded as refuted, and which
+the payload it was sent restated as refuted. It is wrong for the same measured reason
+(`installer/flaui-mcp.iss:13` is `PrivilegesRequired=lowest`; `CliResolver.cs:41-43` falls back to
+`%APPDATA%\npm`). The *orphaned-hook* consequence it hangs on that premise is real on its own narrower
+footing and is folded above; the premise is not.
 
 **REFUTED BY MEASUREMENT — do not re-raise.** agy's Q5 headline was "silent plugin registration failure
 due to installer PATH isolation: InnoSetup runs elevated, so `claude` on the user's npm PATH is invisible,
