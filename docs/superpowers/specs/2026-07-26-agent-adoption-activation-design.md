@@ -1,6 +1,8 @@
 # Agent adoption — make reaching for the tool the default move
 
 **Status:** design, approved 2026-07-26 (user delegated approval to the driver as the consuming agent).
+Revised after adversarial panel round 2 — see §10. Round 2 corrected two round-1 ground truths, one of
+them inverted (G4), and added G6, which is a precondition for M1 shipping at all.
 **Motivating ROADMAP items:** AA1 (activation) + AA2 (skill-freshness). B4 explicitly out of scope.
 
 ## 1. Problem
@@ -87,17 +89,57 @@ This is the most damaging defect in the set, because of *where* it sits: the age
 other barrier and finally does the right thing is punished with a failure on first contact. It converts
 one correct instinct into evidence that the tool doesn't work.
 
-**G4 — the skill is registered TWICE, and BOTH copies are live.** Both
-`.claude/skills/driving-flaui-mcp/SKILL.md` and `plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md` are
-git-tracked and currently byte-identical, despite `0369549` describing the `.claude/skills` dir as
-retired. Measured: the consuming agent's available-skills list shows **two separately registered entries**
-— bare `driving-flaui-mcp` (the `.claude/skills` copy) and `flaui-mcp:driving-flaui-mcp` (the plugin
-copy). This is not a dormant leftover; it is a live duplicate that the agent can match either way.
+**G4 — the skill is registered TWICE, and the copy this spec called "retired" is the one that SHIPS.**
+*(Corrected in panel round 2 — the round-1 reading was backwards.)*
 
-This is the literal "two copies, one goes stale" hazard AA2 was written about, and it is currently only
-latent because the two files happen to be identical. **Consequences for this spec:** every skill edit
-below MUST land in both copies, and the plan MUST resolve the duplication outright (delete the retired
-copy, or generate one from the other) rather than leaving two independently-editable live skills.
+Both `.claude/skills/driving-flaui-mcp/SKILL.md` and `plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md`
+are git-tracked and currently byte-identical (md5 `29af5418…`, measured). The consuming agent's
+available-skills list shows **two separately registered entries** — bare `driving-flaui-mcp` and
+`flaui-mcp:driving-flaui-mcp`. But the two copies do **not** have equal standing:
+
+| Copy | Role | Reaches installed users? |
+| --- | --- | --- |
+| `.claude/skills/driving-flaui-mcp/SKILL.md` | **Build input.** `src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj:8` embeds this exact path as `FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md`. `PluginArtifactWriter.WriteSkill()` (`:111`) reads that resource and writes it into the install staging dir, which `ClaudePluginRegistrar` then feeds to `claude plugin marketplace add`. | **YES — this is the canonical shipped copy.** |
+| `plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md` | Repo-checkout skill registration only. Nothing packages it. | **No.** |
+
+Two further measurements:
+
+- **`ClaudeSkillDeployer.Deploy()` has zero call sites** (measured across `src/`). The old skill-directory
+  deployment model is fully retired; the class and its embedded-resource consumer are dead code. The
+  `0369549` commit message that led round 1 to label `.claude/skills` "retired" was describing the *status
+  reporting*, not the build graph.
+- The csproj `Include` is a **literal path, not a glob**.
+
+**Consequences — these replace the round-1 conclusions:**
+
+1. Every skill edit below MUST land in **both** tracked copies (unchanged).
+2. The M0/M2 edits only reach installed users through the **`.claude/skills` copy → rebuild → reinstall**
+   chain. A user who updates the plugin without updating the exe keeps the broken load line.
+3. **Acceptance criterion 3's "delete the retired copy" is unsafe as written** and is corrected in §7: the
+   `.claude/skills` copy cannot be deleted without also editing `csproj:8-10`, and deleting it while
+   leaving the csproj alone breaks the build. Deleting it *and* the csproj entry would silently stop
+   shipping the skill to users. The duplication must be resolved by making one copy **generated from** the
+   other, not by deletion.
+
+**G6 — the plugin's hooks and scripts are NOT distributed. M1 as specified reaches 0% of installed users.**
+*(Round 2. Raised independently by agy and confirmed by measurement — though via a different code path than
+agy cited: agy blamed the dead `ClaudeSkillDeployer`; the live path is `PluginArtifactWriter`.)*
+
+`PluginArtifactWriter.Generate()` (`src/FlaUI.Mcp.Server/Install/PluginArtifactWriter.cs:80-86`) writes
+exactly four artifacts into the install staging dir:
+
+```
+.mcp.json · plugin.json · .claude-plugin/marketplace.json · skills/driving-flaui-mcp/SKILL.md
+```
+
+There is **no `hooks/` and no `scripts/`**. The installed plugin therefore carries no hooks at all.
+
+This is not a hazard introduced by M1 — it is already true today: the existing `flaui-curate-nudge.sh`
+`Stop` hook has never reached an installed user either. It works only for someone running Claude Code
+inside the repo checkout, which is why it appeared to work during dogfooding.
+
+**Consequence:** M1 is undeliverable as specified. Shipping hooks is a **precondition** of M1, not an
+implementation detail — see the new hard requirement in §5.2 and criterion 8 in §7.
 
 **G5 — `jq` is a real distribution dependency.** The existing hook shape pipes through `jq`, which
 resolves on the maintainer's machine only via a portable toolchain (`/c/!PORTABLES/!BIN/jq`, 1.8.1 —
@@ -169,17 +211,31 @@ FIRST because it is the genuinely novel instruction:
 2. The trigger list, covering the whole surface: see what's on screen · check an app is running/
    responding · read a background terminal or console tab · click/type/fill a dialog in a GUI app ·
    confirm a change landed in the real app.
-3. The **ready-to-run load line** (keyword form per M0).
+3. The **ready-to-run load line** — the dual-prefix `select:` form per M0. *(Round 2: an earlier draft
+   said "keyword form per M0", contradicting §5.1, which explicitly **rejected** the keyword form. The
+   `select:` form is the chosen one, here and everywhere.)*
 4. A **3-line read-only recipe**: `desktop_list_windows(includeHandles:true)` → `desktop_snapshot wN` →
    `desktop_get_text wN eN`, plus the fact that read-only perception needs **no lease** and cannot
    disturb the user.
 5. One line pointing at the `driving-flaui-mcp` skill for input (type/click/drag), which does need a lease.
 
-6. **A fallback for load-line failure.** If the load line returns `No matching deferred tools found`,
-   the payload must tell the agent to retry with a keyword `ToolSearch` (e.g. `desktop window snapshot`)
-   and use whatever names come back. Without this, a future prefix change re-creates G3 *inside the very
-   mechanism built to prevent it*, and the agent cascades straight back to asking the human. This is what
-   makes M1 self-healing against registration drift rather than merely correct today.
+6. **A fallback for load-line failure — constrained to a named allow-list.** If the load line returns
+   `No matching deferred tools found`, the payload tells the agent to retry with a keyword `ToolSearch`
+   (e.g. `desktop window snapshot`) **and to use only tools whose bare names appear in the recipe's
+   allow-list — `desktop_list_windows`, `desktop_open_window`, `desktop_snapshot`, `desktop_get_text`,
+   `desktop_input_status` — discarding every other name the search returns.** If the allow-listed tools
+   are not among the results, the agent must say the tool is unavailable, NOT substitute a similar name.
+
+   **Round 2 — why the unconstrained form was dangerous.** The earlier wording ("use whatever names come
+   back") composed badly with item 4's "read-only, no lease, cannot disturb the user". Measured this
+   session, the keyword query `desktop window snapshot` returned 8 tools, of which **three mutate**:
+   `desktop_close_window`, `desktop_focus_window`, `desktop_window_transform`. It also did **not** return
+   `desktop_get_text`. So the composed instructions handed the agent a window-closing tool under a banner
+   promising it could not disturb the user, while omitting a tool the recipe needs. Raised independently
+   by the driver's Boundary Smuggler seat and agy's Cascade Analyst seat.
+
+   The fallback is kept rather than deleted because it is the **only** defence against prefix-algorithm
+   drift — a failure mode the CI gate in §7 provably cannot catch (see criterion 1's scope note).
 
 **Hard requirements:**
 
@@ -191,9 +247,33 @@ FIRST because it is the genuinely novel instruction:
   registry, so requiring "reachable" would be an impossible constraint. Installed-but-not-registered is
   an accepted false-positive: it is rare, and its cost (one stale hint) is far below the cost of a probe
   that is slow or hangs at session start.
-- **`jq` is a declared prerequisite** (G5, user decision). The plan must add it to the installer's
-  prerequisite check and to `.claude/recommended-tools.json`, so a missing `jq` surfaces at install time
-  rather than as a silently dead hook.
+- **The hook must actually SHIP (G6) — this is a precondition, not a detail.** `PluginArtifactWriter`
+  must additionally stage `hooks/hooks.json` and `scripts/`, or M1 exists only in the repo checkout.
+  Because this also fixes the *existing* undelivered `Stop` curate-nudge hook, the plan must treat
+  "plugin hooks are distributed" as its own task with its own test, sequenced **before** the M1 hook is
+  written — building M1 first would produce a mechanism that demonstrably works for the maintainer and
+  for nobody else, which is the most expensive kind of green.
+
+- **M1 must NOT depend on `jq`.** *(Round 2.)* `jq` is required by `flaui-curate-nudge.sh` because that
+  hook **parses** stdin to derive a session id. M1 parses nothing: its gate is a file test and its payload
+  is a compile-time constant. It must therefore emit **pre-escaped literal JSON** via a here-doc and take
+  no dependency on `jq` at all. This deletes an entire failure class from the mechanism that runs at every
+  session start, on every machine.
+
+  `jq` remains a declared prerequisite per G5 and the user's decision — the `Stop` hook still needs it —
+  but M1's correctness must not rest on the prerequisite check having been honoured. The plan must add it
+  to the installer's prerequisite check and to `.claude/recommended-tools.json` (both of which are
+  **net-new**; see §7 criterion 6).
+
+- **Never exit non-zero.** The hook must `exit 0` on every path, writing diagnostics to stderr. A
+  `set -euo pipefail` script that dies on a missing dependency runs at *session start*; if a non-zero exit
+  is treated as fatal by the client, a missing tool would brick every session in the project. Failing
+  loudly must never mean failing closed.
+
+- **The payload must not interpolate anything read from stdin.** It is a constant. M1 has no reason to
+  read stdin at all, and the hook shape it is modelled on does — so an implementer following that shape
+  will add a read that is both unnecessary and an untrusted-input path into the agent's own context
+  window. The invariant is testable: no stdin-derived value may appear in the emitted `additionalContext`.
 - **Fail LOUDLY, not silently.** The original "silent on all paths" requirement is withdrawn: it
   engineered an undebuggable failure. Correct behaviour — silent on the *negative gate* (server not
   installed: nothing to say), but **diagnosable on error** (missing `jq`, malformed JSON, unreadable
@@ -205,13 +285,31 @@ FIRST because it is the genuinely novel instruction:
   **`"SessionStart"`**. Called out because the script this one is modelled on emits `"Stop"`, and a
   copy-paste implementation will ship the wrong value.
 
-**Honest limitation — M1 is the weakest of the four mechanisms, and the spec does not pretend otherwise.**
-`SessionStart` text is the *oldest* content in the context window, so it is among the first evicted under
-compaction — and the motivating failure explicitly involved a truncated/compacted context. A payload
-degrades better than a signpost (a skimmed payload still leaves an executable line behind; a skimmed
-signpost leaves nothing), but neither survives eviction. **This is precisely why M3 is non-negotiable:**
-tool descriptions re-enter context every time a tool loads, so they are the only mechanism here that is
-immune to compaction. M1 raises the floor early in a session; M3 holds it late.
+**Limitation — restated after round 2, because the round-1 version was wrong.**
+
+Round 1 recorded: *"`SessionStart` text is the oldest content in the window, so it is among the first
+evicted under compaction — and the motivating failure involved a compacted context."* The eviction half is
+true. The conclusion drawn from it was not.
+
+**Measured, live, in the session that produced this revision: `SessionStart` hooks re-fire on compaction.**
+The compaction that ran mid-review emitted `SessionStart:compact hook success: flaui-autotrain: …` from
+this repo's own sibling hook. `SessionStart` fires on **startup, resume, clear, and compact** — so the
+event that evicts the payload is the same event that re-injects it.
+
+**Consequences:**
+
+- M1 must be registered for **all** `SessionStart` sources, not just startup. If the plan filters on
+  `source`, it must filter *in* `compact` and `resume` — the highest-value firings, since those are
+  exactly the moments the agent has just lost its context.
+- M1 is **self-healing under compaction**, which was the single property round 1 said it lacked. It is no
+  longer accurate to call it the weakest mechanism on that ground.
+- M3 remains non-negotiable, but for a different and narrower reason than round 1 gave: not "M1 dies at
+  compaction and M3 doesn't", but that **M3 is the only mechanism that addresses driving *correctly* once
+  activated** (§5.4). M0–M2 all address activation. That is the real division of labour.
+
+The honest residual weakness is different and smaller: between eviction and the next compaction boundary,
+there is a window in which the payload is gone and nothing re-injects it. M3 covers that window for any
+agent that has already loaded a tool; nothing covers it for an agent that has not.
 
 ### 5.3 M2 — monologue-matched skill frontmatter (fixes 3)
 
@@ -298,26 +396,47 @@ capability to game a client-side UX heuristic.
 
 **Mechanically verifiable in CI (gate on these):**
 
-1. **Load-line derivability test** — the headline gate. A test parses the `ToolSearch` line out of
-   `SKILL.md`, extracts the comma-separated tool names, and asserts every extracted name is derivable
-   from the server's **live `[McpServerTool]` reflection data** as either `mcp__flaui-mcp__` + tool name
-   or `mcp__plugin_flaui-mcp_flaui-mcp__` + tool name. *An earlier draft's criterion — "run it verbatim
-   and confirm it resolves" — is withdrawn as compliance theater:* `ToolSearch` is a client-internal
-   command with no CI equivalent, so that check would be satisfied by a human ticking a box once and
-   would rot at the next prefix change. The reflection test is a real gate, and it additionally catches
-   tool **renames**, which the manual check never would.
+1. **Load-line derivability test** — a test parses **every** `ToolSearch` load line in **every** tracked
+   artifact that carries one (both `SKILL.md` copies **and** the M1 hook script's payload), extracts the
+   comma-separated tool names, and asserts each is derivable from the server's **live `[McpServerTool]`
+   reflection data** as either `mcp__flaui-mcp__` + tool name or `mcp__plugin_flaui-mcp_flaui-mcp__` +
+   tool name.
+
+   *An earlier draft's criterion — "run it verbatim and confirm it resolves" — stays withdrawn as
+   compliance theater.* But round 2 also **narrows what this test can honestly claim**, per agy's
+   Mechanism Gamer seat: the test hardcodes the same prefix algorithm the spec assumes, so it validates
+   the spec against itself on that axis. **If the client's prefixing algorithm changes, this test still
+   passes and the load line still breaks.** What it does gate, genuinely, is tool **renames** and typos —
+   the drift that actually happens in this repo. Prefix-algorithm drift is uncoverable in CI, and is
+   covered instead by M1's allow-listed fallback (§5.2 item 6). Neither mechanism alone is sufficient;
+   the criterion is written down with its true scope rather than an inflated one.
+
+   *Scope note:* criterion 2's negative check does not subsume this. A payload naming
+   `desktop_snapshsot` contains no single-prefix form and would pass criterion 2 while being broken.
 2. No occurrence of the single-prefix `select:mcp__flaui-mcp__` form remains in any tracked file.
-3. G4 is resolved: exactly ONE live registration of the skill remains, or a test asserts the two copies
-   are byte-identical. Two independently-editable live skills is a failing state.
+3. **G4 is resolved without breaking the build.** *(Corrected in round 2.)* `.claude/skills/…/SKILL.md` is
+   the build input at `csproj:8` and the source of the copy shipped to users, so "delete the retired
+   copy" is not available. Acceptable resolutions: (a) one copy is **generated from** the other by the
+   build, with a test asserting they match; or (b) both remain tracked and a test asserts they are
+   byte-identical. Deleting either copy without a corresponding csproj change is a failing state, and so
+   is two independently-editable live skills.
 4. `flaui-activation.sh`: emits well-formed JSON with `hookEventName == "SessionStart"` when the exe
-   file-gate passes; emits nothing when it fails; emits a **diagnosable error** when `jq` is missing or
-   input is malformed; injected text is ≤ 15 lines / ≤ 1200 characters.
+   file-gate passes; emits nothing when it fails; **exits 0 on every path** (diagnostics to stderr);
+   **invokes no `jq`** and reads no stdin; injected text is ≤ 15 lines / ≤ 1200 characters, and every
+   tool name in it is allow-listed per §5.2 item 6.
 5. The M3 invariant test passes: every required trap fact is present in its named tool's `[Description]`,
    and **no description exceeds 1200 characters** (the current longest, `desktop_read_terminal_tab`, is
    the practical ceiling — the plan must measure it and set the budget at or just above it, so hoisting
    cannot silently metastasize).
-6. `jq` is declared in the installer prerequisite check and `.claude/recommended-tools.json`.
-7. The repo's default gate stays green with zero new warnings.
+6. `jq` is declared in the installer prerequisite check and `.claude/recommended-tools.json`. **Both are
+   net-new construction, not edits** — measured in round 2: `.claude/recommended-tools.json` does not
+   exist, and `installer/flaui-mcp.iss` has no prerequisite-check mechanism at all (its only `Check:` is
+   `NeedsAddPath`). The plan must size this as building a check, not extending one.
+7. **Plugin hooks and scripts are distributed (G6).** A test asserts that the staging dir produced by
+   `PluginArtifactWriter.Generate()` contains `hooks/hooks.json` and the referenced scripts, and that the
+   hook commands resolve under `${CLAUDE_PLUGIN_ROOT}` as staged. Without this criterion every other M1
+   criterion can pass while M1 reaches nobody.
+8. The repo's default gate stays green with zero new warnings.
 
 **Not mechanically verifiable — stated honestly rather than faked:** whether the agent actually reaches
 for the tool. The observational signal (agy's, accepted): in a fresh session needing desktop context, a
@@ -328,8 +447,11 @@ This is a manual dogfooding gate, not a CI check, and it is the only signal that
 
 - **B4** (`desktop_list_terminal_processes` / WT tab-discovery cost) — genuine feature work; unrelated to
   adoption. Stays backlog.
-- **Resolving G4** (deleting or generating the duplicate skill copy) — flagged here, decided in the plan;
-  this spec only requires that edits land in both copies.
+- **Resolving G4** — no longer open-ended. Round 2 closed the design fork: deletion is unavailable
+  (`csproj:8`), so the plan chooses between *generate-one-from-the-other* and *both-tracked-plus-identity-
+  test*, per criterion 3. Edits must land in both copies regardless.
+- **Distributing the flaui-learn/flaui-curate skills** — the adjacent packaging gap noted in §9. G6's fix
+  must not entrench it, but closing it is separate work.
 - Any change to the 49-tool surface, per §6.3.
 
 ## 9. References — verified against the tree at design time (2026-07-26)
@@ -342,6 +464,25 @@ This is a manual dogfooding gate, not a CI check, and it is the only signal that
 - `src/FlaUI.Mcp.Server/Tools/WindowTools.cs:23` — `desktop_list_windows` description (M3 target).
 - `src/FlaUI.Mcp.Server/Tools/ContentTools.cs:86` — `desktop_read_terminal_tab` description (M3 target).
 - `test/FlaUI.Mcp.Tests/Server/ToolReadOnlyInvariantTests.cs` — the invariant-test model for M3.
+
+Added in round 2 (all measured, 2026-07-26):
+
+- `src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj:8-10` — embeds `.claude/skills/driving-flaui-mcp/SKILL.md`
+  as `FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md`. Literal path, not a glob (G4).
+- `src/FlaUI.Mcp.Server/Install/PluginArtifactWriter.cs:80-86` — `Generate()`; the four staged artifacts
+  (G6). `:111` — `WriteSkill()` reads the embedded resource.
+- `src/FlaUI.Mcp.Server/Install/ClaudePluginRegistrar.cs:23-43` — the live install path
+  (`marketplace add` → `plugin install` → read-back).
+- `src/FlaUI.Mcp.Server/Install/ClaudeSkillDeployer.cs` — dead code, zero call sites (G4).
+- `src/FlaUI.Mcp.Server/Install/CliRouter.cs:33` — the `status` verb §5.2 extends.
+- `installer/flaui-mcp.iss:34` — the only `Check:` in the installer (criterion 6).
+- Round-2 panel payload: `.clavity/seams/agent-adoption-round3-panel.md` — local scratch, gitignored.
+
+**Adjacent defect, NOT folded (out of scope, worth a ROADMAP entry):** `plugin.json` advertises "plus the
+flaui-learn/flaui-curate autotrain loop", but `PluginArtifactWriter.WriteSkill()` stages only
+`driving-flaui-mcp`. The autotrain skills do not ship to installed users either. Same root cause as G6,
+different symptom; it is not this spec's problem to fix, but the plan should not "fix" packaging in a way
+that silently entrenches it.
 - Negotiation record: `.clavity/seams/agent-adoption-activation.md` and
   `.clavity/seams/agent-adoption-round2.md` — **local scratch, `.clavity` is gitignored**, so these are
   not available to a reader of the repo. The substance that matters is reproduced in §4 and §10; the
@@ -369,3 +510,31 @@ into the sections above; recorded here so later rounds hunt new defect-classes.
 
 **Round 1 verdict:** NOT GREEN — 12 findings folded, including two internal contradictions in the spec's
 own reasoning (#3, #4).
+
+### Round 2 — rotation seats: Boundary Smuggler, State Corruptor, Resource Vampire
+
+Solo panel + agy escalation. Round 2 went looking for defect-classes round 1 never seated, and found that
+**two of round 1's own ground truths were wrong** — one of them inverted.
+
+| # | Finding | Seat(s) | Fold |
+| --- | --- | --- | --- |
+| 13 | **G6 — the plugin ships no hooks or scripts.** `PluginArtifactWriter.Generate()` stages only `.mcp.json`, `plugin.json`, `marketplace.json`, `SKILL.md`. M1 would reach 0% of installed users; the existing `Stop` hook already does. | Axiom Breaker (agy, via a mis-cited path); confirmed by driver measurement | New G6; hard requirement in §5.2; new criterion 7. Packaging sequenced BEFORE the M1 hook. |
+| 14 | **G4 was backwards.** `.claude/skills/…/SKILL.md` is the build input (`csproj:8`) and the source of the shipped copy — not the retired one. `ClaudeSkillDeployer.Deploy()` has zero call sites. | State Corruptor (driver); Q4 (agy) | G4 rewritten with the role table; criterion 3 corrected — deletion is off the table, generation-with-test replaces it. |
+| 15 | **The fallback hands the agent mutating tools under a "cannot disturb the user" banner.** Measured: the keyword query returns `desktop_close_window`, `desktop_focus_window`, `desktop_window_transform`, and omits `desktop_get_text`. | Boundary Smuggler (driver); Cascade Analyst (agy) — independent convergence | §5.2 item 6 — fallback constrained to a five-tool allow-list; substitution forbidden. |
+| 16 | **`SessionStart` re-fires on compaction** (measured live this session). Round 1's "M1 is weakest because compaction evicts it" was wrong. | State Corruptor (driver) — agy could not determine | §5.2 limitation rewritten; M1 registered for all sources; M3's rationale narrowed to its real one. |
+| 17 | §5.2 item 3 said "keyword form per M0" — the form §5.1 explicitly rejected. | Axiom Breaker (driver) | §5.2 item 3 — corrected to the dual-prefix `select:` form. |
+| 18 | Criterion 1 validates the spec's prefix assumption against a test hardcoding the same assumption — passes green while the load line breaks. | Mechanism Gamer (agy) | Criterion 1 — claim narrowed honestly to renames/typos; prefix drift explicitly delegated to the M1 fallback, which is why #15 fixes the fallback rather than deleting it. |
+| 19 | M1 needs no `jq`: its gate is a file test and its payload a constant. Depending on `jq` imports a failure class into a hook that runs at every session start. | Cascade Analyst (driver) | §5.2 — M1 emits literal JSON, no `jq`, no stdin read; `exit 0` on every path so a missing dependency cannot brick session start. |
+| 20 | Criterion 6 gates two things that do not exist — `.claude/recommended-tools.json`, and any installer prerequisite-check mechanism. | Literal Implementer (driver); Q3 (agy) | Criterion 6 — flagged as net-new construction so the plan sizes it correctly. |
+
+**Round 2 verdict:** NOT GREEN — 8 findings folded, two of them corrections to round-1 ground truth
+(#14 inverted G4; #16 reversed M1's stated weakness). Resource Vampire: no new findings.
+
+**Negotiation record for #13.** agy named the right defect from the wrong evidence: it cited
+`ClaudeSkillDeployer.cs:33-51` as "the sole mechanism that writes the plugin on install". Measured, that
+class has **zero call sites** — it is dead code from the retired skill-directory model. The live path is
+`PluginArtifactWriter` → `ClaudePluginRegistrar` → `claude plugin marketplace add`. The conclusion
+survived the correction and was folded; the cited mechanism did not. This is the second time in this
+review that agy has built a confident structural claim on an unverified architectural assumption and been
+right about the consequence anyway — the finding is worth taking seriously, the citation is not worth
+trusting.
