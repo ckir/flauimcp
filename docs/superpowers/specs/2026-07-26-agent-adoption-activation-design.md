@@ -233,10 +233,12 @@ plugin and direct registration.
 
 ### 5.2 M1 — SessionStart payload injection (fixes 1, 4, 5)
 
-New `SessionStart` entry in `plugins/flaui-mcp/hooks/hooks.json` → new
-`plugins/flaui-mcp/scripts/flaui-activation.sh`, following the *output shape* of the existing
-`flaui-curate-nudge.sh` (`hookSpecificOutput.additionalContext`) but **not** its input shape — see the
-no-`jq`/no-stdin requirement below.
+A new `SessionStart` entry in the plugin's `hooks/hooks.json`, whose command is the **`activation-payload`
+verb on `flaui-mcp.exe`** (decided in round 4, below). It reuses the *output shape* of the existing
+`flaui-curate-nudge.sh` — `hookSpecificOutput.additionalContext` — and nothing else about it.
+
+*(Earlier drafts of this section specified a `flaui-activation.sh` script. Round 4 replaced it; that name
+should not appear anywhere in the plan.)*
 
 **Those repo paths are the build input, not a live plugin.** Per G7, `plugins/flaui-mcp/` is registered
 nowhere; editing it changes nothing until the packaging requirement below makes it the embedded source of
@@ -348,9 +350,11 @@ FIRST because it is the genuinely novel instruction:
 
 - **M1 must NOT depend on `jq`.** *(Round 2.)* `jq` is required by `flaui-curate-nudge.sh` because that
   hook **parses** stdin to derive a session id. M1 parses nothing: its gate is a file test and its payload
-  is a compile-time constant. It must therefore emit **pre-escaped literal JSON** via a here-doc and take
-  no dependency on `jq` at all. This deletes an entire failure class from the mechanism that runs at every
-  session start, on every machine.
+  is a compile-time constant. Under the Option-B decision it emits that JSON from C# using the standard
+  .NET serializer, taking no dependency on `jq` — or on any shell — at all. This deletes an entire failure
+  class from the mechanism that runs at every session start, on every machine. *(An earlier draft said
+  "pre-escaped literal JSON via a here-doc"; that was written for the rejected script implementation and
+  is meaningless in C#.)*
 
   `jq` remains a declared prerequisite per G5 and the user's decision — the `Stop` hook still needs it —
   but M1's correctness must not rest on the prerequisite check having been honoured. The plan must add it
@@ -361,12 +365,25 @@ FIRST because it is the genuinely novel instruction:
   said "exit 0 on every path". Under Option B the dangerous case is one the hook cannot handle at all:
   if the executable is **missing**, the hook never runs and the client sees a spawn failure, so no
   in-process `exit 0` can help. Split the requirement:
-  - **When it runs:** the verb exits 0 on every path, diagnostics to stderr.
-  - **When it cannot run:** this is the orphaned-hook case (§5.2 fork discussion). The plan must
-    determine empirically what the client does with a hook whose command cannot be spawned — warn once,
-    warn every session, or block — and must not ship M1 until that behaviour is known to be
-    non-blocking. This is the one place where Option B is genuinely worse than a script, and it is
-    recorded rather than argued away.
+  - **When it runs:** the verb exits 0 on every path, diagnostics to stderr. *(Round 6 correction: the
+    original justification — "a non-zero exit would brick every session" — is disproven by the experiment
+    below. The requirement stands on the weaker but real ground of hygiene: a failing hook prints a
+    visible error block, and one per session forever is its own kind of harm.)*
+  - **When it cannot run — RESOLVED BY EXPERIMENT, 2026-07-26.** This was the spec's one blocking
+    unknown. Measured directly: an isolated project was given a `SessionStart` hook whose command pointed
+    at a non-existent executable (`C:/Nonexistent/Path/flaui-mcp-missing.exe`), validated as well-formed
+    settings JSON, and a headless session was run against it. **The session started normally, the model
+    responded, and the process exited 0.** A hook command that cannot be spawned is therefore
+    **non-blocking**.
+
+    Corroborating evidence from interactive mode, observed in the session that produced this revision: a
+    `PreCompact` hook emitting schema-invalid JSON produced a visible error block and the session
+    continued unaffected. So hook failures are **surfaced but never fatal**, in both modes.
+
+    **Consequence:** the orphaned-hook hazard is downgraded from *session-bricking* to *cosmetic noise*
+    — a warning the user may see each session until they remove the stale registration. That is a real
+    but minor cost, and it no longer counts against the Option-B decision. The residual work is a UX
+    question (does the warning repeat every session?), not a shipping blocker.
 
 - **The payload must not interpolate anything read from stdin.** It is a constant. M1 has no reason to
   read stdin at all, and the hook shape it is modelled on does — so an implementer following that shape
@@ -385,14 +402,24 @@ FIRST because it is the genuinely novel instruction:
   - The `activation-payload` verb must return **before** any MCP/DI/server initialisation — the earliest
     possible branch in the CLI router, alongside `--version`.
   - No network, no filesystem work beyond emitting the constant.
-  - The plan must **measure** hook latency on an idle machine and record it, and must determine whether a
-    `SessionStart` hook blocks the first turn or runs alongside it. If it blocks, the cold-start cost is a
-    user-visible regression at every session start and needs an explicit accept/reject decision.
+  - **`SessionStart` hooks DO block the first turn — measured, 2026-07-26.** An isolated project was given
+    a `SessionStart` hook that slept 5 seconds and then injected a unique marker string; the model's very
+    first response confirmed the marker was already in its context. The client therefore **waits** for
+    hook output before generating the first turn.
 
-  **Indicative measurements (NOT authoritative — the machine was under heavy load, and the user flagged
-  this at the time; re-measure on an idle box before relying on any number):** the installed exe printed
-  `--version` in ~3.9 s cold and ~0.4–0.6 s warm; Git Bash started in ~1.4 s; Windows PowerShell 5.1 in
-  ~1.4–3.1 s. The ordering favoured the exe, but the absolute figures are contaminated.
+    This settles two things at once. There is **no race** in which the agent commits to asking the human
+    before the payload lands — the mechanism is sound. But it also means the hook's runtime is **added
+    latency the user waits through at every session start and every compaction**, which is precisely why
+    the early-return requirement above is load-bearing rather than tidiness.
+
+  **Measurements — a LOWER BOUND, not a figure to design against.** Two runs were taken; a repeat attempt
+  recorded **100% CPU** on both samples, so the machine could not be quiesced. Best observed warm sample
+  for the installed exe: **383 ms**; median under full load: **~1.5 s**; worst sample **3.3 s**; cold
+  start **~3.9 s**. For comparison under the same conditions, Git Bash ~1.4 s and Windows PowerShell 5.1
+  ~1.4–3.1 s — the ordering favoured the exe throughout, which is the load-independent part of the result.
+
+  Treat **~380 ms warm / ~3.9 s cold** as the optimistic floor. A true idle measurement is still owed and
+  remains a plan task; it is recorded here as unmeasured rather than quietly rounded down.
 
 - **Load-independent finding that strengthens Option B.** A hook command of the form `bash "…"` does not
   have a determinate interpreter on Windows. Measured on this machine, bare `bash` resolves **first** to
@@ -592,10 +619,11 @@ capability to game a client-side UX heuristic.
    build, with a test asserting they match; or (b) both remain tracked and a test asserts they are
    byte-identical. Deleting either copy without a corresponding csproj change is a failing state, and so
    is two independently-editable live skills.
-4. `flaui-activation.sh`: emits well-formed JSON with `hookEventName == "SessionStart"` when the exe
-   file-gate passes; emits nothing when it fails; **exits 0 on every path** (diagnostics to stderr);
-   **invokes no `jq`** and reads no stdin; injected text is ≤ 15 lines / ≤ 1200 characters, and every
-   tool name in it is allow-listed per §5.2 item 6.
+4. **The `activation-payload` verb** — *not* a `flaui-activation.sh` script, which the round-4 decision
+   removed from the design: emits well-formed JSON with `hookEventName == "SessionStart"`, serialized by
+   the standard .NET serializer; **exits 0 on every path** (diagnostics to stderr); **invokes no `jq`,
+   no shell**, and reads no stdin; returns before any MCP/DI initialisation; injected text is ≤ 15 lines
+   / ≤ 1200 characters, and every tool name in it is allow-listed per §5.2 item 6.
 5. The M3 invariant test passes: every required trap fact is present in its named tool's `[Description]`,
    and **no description exceeds 1200 characters** (the current longest, `desktop_read_terminal_tab`, is
    the practical ceiling — the plan must measure it and set the budget at or just above it, so hoisting
@@ -639,8 +667,18 @@ This is a manual dogfooding gate, not a CI check, and it is the only signal that
 - **Resolving G4** — no longer open-ended. Round 2 closed the design fork: deletion is unavailable
   (`csproj:8`), so the plan chooses between *generate-one-from-the-other* and *both-tracked-plus-identity-
   test*, per criterion 3. Edits must land in both copies regardless.
-- **Distributing the flaui-learn/flaui-curate skills** — the adjacent packaging gap noted in §9. G6's fix
-  must not entrench it, but closing it is separate work.
+- ~~**Distributing the flaui-learn/flaui-curate skills**~~ — **SCOPED BACK IN, round 6.** This was listed
+  as adjacent work in §9 and excluded here. That is no longer tenable: §5.2 makes shipping the plugin's
+  hooks a precondition, and the hooks being shipped include the existing `Stop` curate-nudge, whose entire
+  function is to tell the agent to run the `flaui-curate` skill. Shipping a hook that nags for a skill the
+  user does not have is a broken, self-contradicting UX — and G6's fix creates that state the moment it
+  lands, because today the hook is inert.
+
+  The plan must therefore either (a) stage `flaui-learn`/`flaui-curate` alongside `driving-flaui-mcp`, or
+  (b) not stage the curate-nudge hook. **(a) is recommended** — it also makes `plugin.json`'s existing
+  description ("plus the flaui-learn/flaui-curate autotrain loop") true, which it currently is not.
+  Raised by the Reversal Advocate seat; this is exactly the class of scope decision that a round-3
+  precondition silently invalidated.
 - Any change to the 49-tool surface, per §6.3.
 
 ## 9. References — verified against the tree at design time (2026-07-26)
@@ -759,6 +797,25 @@ worse than the previous round had recorded.
 
 **Round 5 verdict:** NOT GREEN — 4 findings folded. Note that #33 and #34 are both consequences of
 round 4's own decision: each round has now corrected its predecessor.
+
+### Round 6 (final) — bespoke seat: Reversal Advocate, attacking §6 and §8
+
+| # | Finding | Seat(s) | Fold |
+| --- | --- | --- | --- |
+| 36 | **Stale Option-A residue.** Three places still specified the rejected script: §5.2's opening named `flaui-activation.sh`, §5.2 told the implementer to emit JSON "via a here-doc" (meaningless in C#), and criterion 4 gated the script by name. | Axiom Breaker / Q4 (agy) | All three rewritten to the `activation-payload` verb. This was edit debt from rounds 2–3 that the round-4 decision orphaned — not a design defect, but the single most likely place an implementer would have built the wrong thing. |
+| 37 | **§8 scoped OUT a hard dependency of work scoped IN.** Shipping the plugin's hooks (a §5.2 precondition) ships the `Stop` curate-nudge, whose only job is to tell the agent to run `flaui-curate` — a skill §8 declined to distribute. | Reversal Advocate / Q2 (agy) | §8 — curate/learn distribution **scoped back in**, with staging them recommended over dropping the hook. Also makes `plugin.json`'s existing description true. |
+| 38 | The "never exit non-zero" rule was justified by a session-bricking risk that measurement disproved. | Q3 (agy) | §5.2 — requirement kept, rationale downgraded to hygiene (avoiding a visible error block every session). |
+| 39 | **No latency race.** `SessionStart` hooks block the first turn — measured with a 5-second sleeping hook whose marker was present in the model's first response. | Cascade Analyst (agy) — **refuted**, but productively | §5.2 — the race is disproven, *and* the same measurement converts the early-return requirement from tidiness into a load-bearing constraint, since the user waits through the hook. |
+
+**Q1 result — §6 survives.** All three rejected approaches were re-examined against everything learned in
+rounds 2–5, and every rejection premise still holds: the `Stop`-hook interlock still fires after
+commitment, AA2's gate is still circular under G2, and tool-surface shrinking is still unactionable under
+G1. No reversal warranted. §6 is the only section to come through a dedicated adversarial seat unchanged.
+
+**Round 6 verdict:** NOT GREEN — 4 findings folded, but the character has changed. Three of the four are
+**edit debt** (stale text, a stale rationale, a scope line invalidated by a later round) rather than
+defects in the design. The design itself drew one finding, and the section deliberately targeted for
+reversal survived intact.
 
 **REFUTED BY MEASUREMENT (round 5) — do not re-raise.** agy's Parity Auditor claimed M2 never reaches agy
 users, who would be "permanently stranded". False: `AgyConfigWriter.DeploySkill()` (`:36-52`) deploys the
