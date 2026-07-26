@@ -135,7 +135,40 @@ exactly four artifacts into the install staging dir:
 There is **no `hooks/` and no `scripts/`**. The installed plugin therefore carries no hooks at all.
 
 This is not a hazard introduced by M1 — it is already true today: the existing `flaui-curate-nudge.sh`
-`Stop` hook has never reached an installed user either.
+`Stop` hook has never reached an installed *user* either.
+
+**G8 — a FOURTH registration path exists, and it works. Two round-3/4 conclusions are hereby retracted.**
+*(Measured 2026-07-27, when the `Stop` hook fired live during this very review.)*
+
+`.claude/settings.json` (tracked, 11 lines) registers hooks **directly**, bypassing the plugin entirely:
+
+```json
+"SessionStart": [ { "matcher": "startup|clear|compact",
+    "hooks": [ { "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/flaui-learn-reminder.sh\"" } ] } ],
+"Stop":         [ { "hooks": [ { "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/flaui-curate-nudge.sh\"" } ] } ]
+```
+
+Those scripts live in `.claude/hooks/` — a **third** copy of the nudge script, byte-identical to
+`plugins/flaui-mcp/scripts/` today (measured) but guarded by no test.
+
+**Retracted:**
+
+1. **"No hook in this repo has ever run" (G7 consequence) is FALSE.** The `Stop` nudge fired during this
+   review and wrote its session sentinel; the `SessionStart` learn-reminder fired at this session's
+   compaction. Hooks work for the maintainer — through `.claude/settings.json`, not the plugin.
+2. **"The prototype has never worked — CRLF + `jq`" (round-4 finding #27) is FALSE.** The live script is
+   **CRLF** (measured) and runs correctly: Git Bash tolerates the `\r` here, and `jq` resolves via the
+   maintainer's portable toolchain. Task 1's LF pinning remains justified as **portability hygiene** for
+   a script about to ship to arbitrary machines — WSL bash and other shells are far less forgiving — but
+   it is **not** a bug fix, and nothing downstream may claim the hook is currently broken.
+
+**What survives unchanged:** G6 and G7's narrow claims. `PluginArtifactWriter` still stages four files;
+the staging dir still contains no hooks; `plugins/flaui-mcp/` is still registered nowhere. **Installed
+users still receive no hooks at all** — which is the finding M1 actually depends on.
+
+**What this ADDS to the design:** a working, tracked `SessionStart` hook whose matcher is
+`"startup|clear|compact"` — precisely the multi-source registration §5.2 requires — already exists in
+this repo. M1 should copy that proven shape rather than invent one.
 
 **G7 — the split brain: `plugins/flaui-mcp/` is registered NOWHERE.**
 *(Round 3. This corrects round 2's own wording, which said the hooks "work for someone running Claude

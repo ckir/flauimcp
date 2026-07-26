@@ -48,11 +48,18 @@ Expected: `Passed!  - Failed: 0` with zero new warnings.
 
 ## Task 1: Pin shell line endings
 
-The repo has no `.gitattributes`, and `plugins/flaui-mcp/scripts/flaui-curate-nudge.sh` is CRLF in the working tree. `bash` fails on `\r` (`exit 0\r` → `numeric argument required`). Nothing ships today so nobody noticed; Task 3 makes it ship.
+The repo has no `.gitattributes`, and both copies of `flaui-curate-nudge.sh` are CRLF in the working tree.
+
+**This is hygiene, not a bug fix — do not claim the hook is broken.** Measured 2026-07-27: the live copy at `.claude/hooks/flaui-curate-nudge.sh` is CRLF **and runs correctly** (Git Bash tolerates the `\r`; it fired during plan review and wrote its session sentinel). The justification for pinning LF is *portability of a script that is about to ship to arbitrary machines* — bare `bash` on Windows resolves to the WSL launcher before Git Bash, and that path is far less forgiving. Task 3 makes this script ship for the first time, which is what raises the stakes.
 
 **Files:**
 - Create: `.gitattributes`
 - Modify: `plugins/flaui-mcp/scripts/flaui-curate-nudge.sh` (normalize to LF)
+
+> **Third copy alert.** There are now **two** tracked copies of this script — `.claude/hooks/` (live,
+> registered by `.claude/settings.json`) and `plugins/flaui-mcp/scripts/` (registered nowhere, and the one
+> Task 3 embeds). They are byte-identical today, guarded by no test. Step 5 below adds that guard; without
+> it, a future edit to the live copy would ship the stale one.
 
 - [ ] **Step 1: Create `.gitattributes`**
 
@@ -79,11 +86,31 @@ file plugins/flaui-mcp/scripts/flaui-curate-nudge.sh
 
 Expected: output no longer contains `CRLF`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Guard the two script copies against drift**
+
+Append to `test/FlaUI.Mcp.Tests/Install/PluginDistributionTests.cs` (inside the class). This needs `RepoPaths` from Task 2, so run Task 2 first if executing out of order:
+
+```csharp
+    [Fact]
+    public void The_two_tracked_copies_of_the_nudge_script_are_byte_identical()
+    {
+        // .claude/hooks/ is the LIVE copy (registered by .claude/settings.json and proven to fire);
+        // plugins/flaui-mcp/scripts/ is the copy that gets EMBEDDED and shipped. Identical today,
+        // and nothing enforced it — a future edit to the live copy would silently ship the stale one.
+        Assert.Equal(
+            File.ReadAllBytes(RepoPaths.At(".claude", "hooks", "flaui-curate-nudge.sh")),
+            File.ReadAllBytes(RepoPaths.At("plugins", "flaui-mcp", "scripts", "flaui-curate-nudge.sh")));
+    }
+```
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~The_two_tracked_copies_of_the_nudge_script"`
+Expected: PASS (they are identical today — this test exists to keep them that way).
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add .gitattributes plugins/flaui-mcp/scripts/flaui-curate-nudge.sh
-git commit -m "build: pin *.sh to LF so shipped hook scripts are executable"
+git add .gitattributes .claude/hooks/flaui-curate-nudge.sh plugins/flaui-mcp/scripts/flaui-curate-nudge.sh test/FlaUI.Mcp.Tests/Install/PluginDistributionTests.cs
+git commit -m "build: pin *.sh to LF and guard the two nudge-script copies against drift"
 ```
 
 ---
@@ -899,6 +926,10 @@ Expected: FAIL — the staged `hooks.json` has no `SessionStart` key.
         {
             new JsonObject
             {
+                // matcher copied from the WORKING SessionStart hook already in this repo
+                // (.claude/settings.json) — a proven shape, not an invented one. All three sources
+                // matter: compact and clear are exactly when the agent has just lost its context.
+                ["matcher"] = "startup|clear|compact",
                 ["hooks"] = new JsonArray
                 {
                     new JsonObject
