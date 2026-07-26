@@ -357,10 +357,16 @@ FIRST because it is the genuinely novel instruction:
   to the installer's prerequisite check and to `.claude/recommended-tools.json` (both of which are
   **net-new**; see §7 criterion 6).
 
-- **Never exit non-zero.** The hook must `exit 0` on every path, writing diagnostics to stderr. A
-  `set -euo pipefail` script that dies on a missing dependency runs at *session start*; if a non-zero exit
-  is treated as fatal by the client, a missing tool would brick every session in the project. Failing
-  loudly must never mean failing closed.
+- **Never exit non-zero — restated for Option B.** *(Round 5.)* The rule was written for a script and
+  said "exit 0 on every path". Under Option B the dangerous case is one the hook cannot handle at all:
+  if the executable is **missing**, the hook never runs and the client sees a spawn failure, so no
+  in-process `exit 0` can help. Split the requirement:
+  - **When it runs:** the verb exits 0 on every path, diagnostics to stderr.
+  - **When it cannot run:** this is the orphaned-hook case (§5.2 fork discussion). The plan must
+    determine empirically what the client does with a hook whose command cannot be spawned — warn once,
+    warn every session, or block — and must not ship M1 until that behaviour is known to be
+    non-blocking. This is the one place where Option B is genuinely worse than a script, and it is
+    recorded rather than argued away.
 
 - **The payload must not interpolate anything read from stdin.** It is a constant. M1 has no reason to
   read stdin at all, and the hook shape it is modelled on does — so an implementer following that shape
@@ -371,7 +377,30 @@ FIRST because it is the genuinely novel instruction:
   installed: nothing to say), but **diagnosable on error** (missing `jq`, malformed JSON, unreadable
   input). The plan must also surface activation-hook health in the existing `flaui-mcp status` output, so
   "why is the hint not appearing?" is answerable without reading hook source.
-- **Cheap.** A file test plus a static string; no network, no process spawn beyond `jq`.
+- **Cost — restated in round 5, because the Option-B decision made the old wording false.** The previous
+  requirement read *"a file test plus a static string; no network, no process spawn beyond `jq`"*. Option B
+  **is** a process spawn, of a 140 MB single-file .NET executable, at every session start — including
+  every compaction. The requirement is therefore rewritten as a **budget**, not a prohibition:
+
+  - The `activation-payload` verb must return **before** any MCP/DI/server initialisation — the earliest
+    possible branch in the CLI router, alongside `--version`.
+  - No network, no filesystem work beyond emitting the constant.
+  - The plan must **measure** hook latency on an idle machine and record it, and must determine whether a
+    `SessionStart` hook blocks the first turn or runs alongside it. If it blocks, the cold-start cost is a
+    user-visible regression at every session start and needs an explicit accept/reject decision.
+
+  **Indicative measurements (NOT authoritative — the machine was under heavy load, and the user flagged
+  this at the time; re-measure on an idle box before relying on any number):** the installed exe printed
+  `--version` in ~3.9 s cold and ~0.4–0.6 s warm; Git Bash started in ~1.4 s; Windows PowerShell 5.1 in
+  ~1.4–3.1 s. The ordering favoured the exe, but the absolute figures are contaminated.
+
+- **Load-independent finding that strengthens Option B.** A hook command of the form `bash "…"` does not
+  have a determinate interpreter on Windows. Measured on this machine, bare `bash` resolves **first** to
+  `C:\WINDOWS\system32\bash.exe` — the **WSL** launcher — with `C:\Program Files\Git\bin\bash.exe` only
+  third in `PATH`. WSL bash sees a different filesystem and would receive a Windows path it cannot
+  interpret as intended. So Option A's real defect is not merely "bash may be absent" but "*which* bash
+  is unknowable from the hook command", which no amount of packaging care fixes. This conclusion does not
+  depend on timing and survives the load caveat.
 - **Bounded length.** Hard budget: **≤ 15 lines / ≤ 1200 characters** of injected text.
 - **Correct event name.** The emitted JSON must set `hookSpecificOutput.hookEventName` to
   **`"SessionStart"`**. Called out because the script this one is modelled on emits `"Stop"`, and a
@@ -488,10 +517,30 @@ M0, M2 and M3 are agent-agnostic — the skill and the MCP tool descriptions are
 and agy. **M1 is Claude-Code-specific** (`SessionStart` hooks).
 
 **Decision (not deferred): ship M1 for Claude Code only in this increment, and record the agy gap in the
-ROADMAP.** Rationale: M0/M2/M3 — three of the four mechanisms, including the compaction-immune one —
-already reach agy unchanged, so agy is not left on the old path. Building a second hook integration for a
-different agent runtime doubles the surface for the weakest mechanism (§5.2). The ROADMAP entry is the
-deliverable, not a placeholder.
+ROADMAP.**
+
+**Round 5 — the original rationale was invalid and the decision is re-argued from scratch.** It read:
+*"building a second hook integration doubles the surface for the weakest mechanism (§5.2)."* Round 2's
+finding #16 retracted "weakest mechanism", so §5.5 was resting on a premise the document had already
+withdrawn — a stale cross-reference deciding a real question. Caught by agy's Axiom Breaker and Q1.
+
+The decision survives, but on different and narrower grounds:
+
+- **agy has no hook surface at all.** `AgyConfigWriter.cs:32` states it directly: *"agy has no hooks."*
+  This is not a cost trade-off, as the old rationale implied — there is no equivalent integration to
+  build. M1 is unavailable for agy, not declined for agy.
+- **The other three mechanisms genuinely do reach agy.** Measured: `AgyConfigWriter.DeploySkill()`
+  (`:36-52`) writes **the same embedded seed resource** into agy's plugin dir. So M0 (load line) and M2
+  (frontmatter) ship to agy through the same build input as Claude, and M3 rides in the tool descriptions.
+- **What agy actually loses** is therefore only the session-start priming. The ROADMAP entry should record
+  that specific gap — "agy gets M0/M2/M3, has no session-start injection point" — not a vague parity TODO.
+
+**Refuted while folding this.** agy's Parity Auditor claimed M2 "silently fails to serve the second agent
+runtime" and that agy users would be "permanently stranded on the broken skill frontmatter". Measured
+false: `AgyConfigWriter.DeploySkill()` deploys the identical embedded resource
+(`FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md`) that `PluginArtifactWriter.WriteSkill()` uses. Both
+runtimes are fed from the same build input, so an M0/M2 fix reaches both or neither. The stranding claim
+is wrong; the hook-parity gap it was attached to is real and is recorded above.
 
 ## 6. Explicitly rejected
 
@@ -698,6 +747,22 @@ worse than the previous round had recorded.
 
 **Round 4 verdict:** NOT GREEN — 6 findings folded, including one design fork decided. Two of the six
 (#28, #29) are defects in mechanisms rounds 1–3 had left unexamined.
+
+### Round 5 — bespoke seat: Parity Auditor; focused on §5.3 and §5.5, the least-reviewed sections
+
+| # | Finding | Seat(s) | Fold |
+| --- | --- | --- | --- |
+| 32 | **§5.5's parity decision rested on a retracted premise** — it justified excluding agy by calling M1 "the weakest mechanism", which round 2 finding #16 had already withdrawn. | Axiom Breaker / Q1 (agy) | §5.5 re-argued from scratch. Decision stands, grounds replaced: `AgyConfigWriter.cs:32` — *"agy has no hooks"* — so M1 is **unavailable** for agy, not declined. ROADMAP entry sharpened to the specific gap. |
+| 33 | **Option B broke three of §5.2's own requirements** — "no process spawn", "the gate is a `test -f`", and "never exit non-zero". | Cascade Analyst / Q2 (agy) | §5.2 — cost requirement rewritten as a measured budget; the gate restated (the exe running *is* the gate); the exit rule split into "when it runs" vs. "when it cannot be spawned", the latter being a blocking unknown the plan must resolve empirically. |
+| 34 | **`bash` has no determinate meaning in a hook command on Windows.** Bare `bash` resolves first to `C:\WINDOWS\system32\bash.exe` (WSL), with Git Bash only third in `PATH`. | Cascade Analyst (driver) | §5.2 — recorded as a load-independent argument strengthening the Option-B decision. Option A's defect is not "bash may be absent" but "*which* bash is unknowable". |
+| 35 | Hook latency was asserted, never measured; and the measurements taken were contaminated. | Parity Auditor (driver); user | §5.2 — indicative figures recorded **with an explicit non-authoritative caveat** (the machine was under heavy load at measurement time, flagged by the user), plus a requirement to re-measure idle and to determine whether `SessionStart` blocks the first turn. |
+
+**Round 5 verdict:** NOT GREEN — 4 findings folded. Note that #33 and #34 are both consequences of
+round 4's own decision: each round has now corrected its predecessor.
+
+**REFUTED BY MEASUREMENT (round 5) — do not re-raise.** agy's Parity Auditor claimed M2 never reaches agy
+users, who would be "permanently stranded". False: `AgyConfigWriter.DeploySkill()` (`:36-52`) deploys the
+**same embedded seed resource** as the Claude path, so M0/M2 reach both runtimes from one build input.
 
 **RE-RAISED AND REFUTED A SECOND TIME — do not raise again.** agy's round-4 Cascade Analyst and Q3/Q5 all
 rest on the elevated-installer PATH premise that the round-3 ledger already recorded as refuted, and which
