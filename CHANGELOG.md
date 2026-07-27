@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.19.0] - 2026-07-28
+
+` is correctly accepted. Trailing chatter containing a closing tag is still refused ΓÇö the tag legitimately appears on both sides of the real body, and closing at the first line-anchored tag (not a mid-line prose mention) disambiguates them.
+- **The nudge hook fired unattended and broke release runs.** The `flaui-autotrain curate-nudge` hook stays silent under `FLAUI_MCP_NO_NUDGE` or in CI, so that `--safe-mode` isolation is the only safeguard callers outside this repo depend on.
+- **The activation-hook status and documentation claimed effects the plugin cannot guarantee.** `status wired` reported that the hook was loaded into the running client, but `status` observes only files it wrote itself. Claude Code registers plugin hooks only at CLIENT STARTUP; a hook installed or upgraded during the current session stays inert until the client is quit and restarted. The wired message, install output, and operator manual now state this standing rule rather than predicting a future action ΓÇö the distinction lets `status` stay accurate before and after a restart, and operators can verify the hook works without guessing whether they restarted correctly.
+
+### Changed
+- The release pipeline runs with `--safe-mode` to isolate the draft from all modifiers (hooks, plugins, skills, MCP servers) so neither inline chatter nor hook responses are captured.
+- `-Yes` resumes a draft only if it still begins with `### ` (a valid changelog header), so a hand-staged body survives but a chatter-contaminated draft is discarded and regenerated.
+- The CommonMark fence scan is now one shared function, `Get-ChangelogVersionHeadingIndex`, used by both the duplicate guard and the insert-point logic. Reader and writer disagreeing on what is a real section was exactly how a release section ended up inside a code block; shared logic prevents that recurrence.
+
 ## [0.18.0] - 2026-07-27
 
 ### Added
