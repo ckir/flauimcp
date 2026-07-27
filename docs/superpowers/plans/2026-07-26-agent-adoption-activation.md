@@ -676,13 +676,19 @@ public class ActivationPayloadTests
         Assert.False(string.IsNullOrWhiteSpace(hook.GetProperty("additionalContext").GetString()));
     }
 
+    /// REVISED DURING EXECUTION. The original asserted `Text.Length <= 1200` — unmeetable by this
+    /// plan's own payload (measured 1434, of which the irreducible load line is 456). The budget now
+    /// measures PROSE ONLY, excluding the load line, because a raw total conflates mechanical API
+    /// verbosity with conceptual bloat; the line count is the real anti-creep guard. See spec §5.2
+    /// "Bounded length". Do NOT revert this to a total-length check.
     [Fact]
-    public void Stays_within_the_injected_text_budget()
+    public void Prose_stays_within_the_injected_text_budget()
     {
-        Assert.True(ActivationPayload.Text.Length <= 1200,
-            $"payload is {ActivationPayload.Text.Length} chars (budget 1200)");
-        var lines = ActivationPayload.Text.Split('\n').Length;
-        Assert.True(lines <= 15, $"payload is {lines} lines (budget 15)");
+        var lines = ActivationPayload.Text.Split('\n');
+        var prose = string.Join("\n", lines.Where(l => !l.StartsWith("ToolSearch ", StringComparison.Ordinal)));
+
+        Assert.True(prose.Length <= 1100, $"payload prose is {prose.Length} chars (budget 1100)");
+        Assert.True(lines.Length <= 15, $"payload is {lines.Length} lines (budget 15)");
     }
 
     [Fact]
@@ -1334,7 +1340,13 @@ git commit -m "chore: post-smoke fixes for agent-adoption activation"
 
 **Placeholders.** None remain. The one open item (Task 11's staging-dir derivation) was closed by reading `CliRouter.cs:273-274` rather than guessed, and hardened into a single shared `PluginIds.StagingDir(exePath)` so `install` and `status` cannot drift apart.
 
-**Known tight constraint — flagged, not hidden.** The activation payload's 1200-char budget is nearly exhausted by design: the dual-prefix load line alone is ~445 characters (10 fully-qualified tool names), leaving ~750 for all prose. Task 7's test enforces the budget, and its Step 4 note directs the implementer to shorten prose rather than drop a prefix pair — dropping one would silently reintroduce G3, the defect this whole plan exists to fix. If the budget genuinely cannot be met, that is a spec change (§5.2), not an implementer decision.
+**Known tight constraint — flagged, not hidden.** ~~The activation payload's 1200-char budget is nearly exhausted by design: the dual-prefix load line alone is ~445 characters (10 fully-qualified tool names), leaving ~750 for all prose.~~
+
+**RESOLVED DURING EXECUTION — the budget could NOT be met, and the escalation clause below fired.** Measured: the load line is **456** characters (not ~445) and the payload as specified is **1434** against a 1200 budget — this plan's own content missed its own budget by 19%, and neither the 8-round panel nor agy's plan review caught it. Compressing the prose to fit landed on *exactly* 1200 with zero headroom.
+
+Diagnosis: the instrument was wrong, not just the number. A raw character count conflates mechanical API verbosity (456 chars expressing one concept) with conceptual bloat. **Resolution (agy consulted, user decided): budget the PROSE only, at ≤ 1100 chars excluding the load line, keeping ≤ 15 lines as the primary anti-creep guard.** Measured on landing: 973 prose chars, 8 lines. Rejected: raising the total to 1500 — it re-creates the same squeeze the first time a sixth tool joins the allow-list. Spec §5.2 and §7 criterion 4 updated.
+
+The rule that made this work is retained: shorten prose rather than drop a prefix pair — dropping one would silently reintroduce G3, the defect this whole plan exists to fix. If a budget genuinely cannot be met, that is a spec change (§5.2), not an implementer decision.
 
 **Verified citations.** Every line reference in this plan was read before writing: `csproj:7-11`, `PluginArtifactWriter.cs:13/81-120`, `CliRouter.cs:29-31/39/233/273-274/428`, `InstallStatus.cs:30-34`, `WindowTools.cs:23`, `ContentTools.cs:86`, `ToolReadOnlyInvariantTests.cs`, `installer/flaui-mcp.iss:34`, both `SKILL.md` copies (`:3`, `:25`), and `AgySkillDeployTests.cs:1-5` for the namespace convention.
 

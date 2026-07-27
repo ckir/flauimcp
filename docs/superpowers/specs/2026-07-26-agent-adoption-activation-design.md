@@ -502,7 +502,25 @@ FIRST because it is the genuinely novel instruction:
   interpret as intended. So Option A's real defect is not merely "bash may be absent" but "*which* bash
   is unknowable from the hook command", which no amount of packaging care fixes. This conclusion does not
   depend on timing and survives the load caveat.
-- **Bounded length.** Hard budget: **≤ 15 lines / ≤ 1200 characters** of injected text.
+- **Bounded length.** Hard budget: **≤ 15 lines**, and **≤ 1100 characters of PROSE**, excluding the
+  `ToolSearch` load line.
+
+  **Revised during execution (2026-07-27) after measurement — the original "≤ 1200 characters" total was
+  unmeetable by this spec's own content.** The payload as designed measures 1434 characters, of which the
+  load line alone is **456** (5 tools × 2 registration prefixes) and is irreducible: dropping either
+  prefix form reinstates G3, the defect M0 exists to fix. Compressing the prose to fit 1200 landed on
+  *exactly* 1200 with zero headroom, which is brittle by construction — the next word added would force
+  deleting a safety rule.
+
+  The instrument was wrong, not just the number. A raw character count conflates **mechanical API
+  verbosity** with **conceptual bloat**: the load line is 456 characters expressing exactly one concept
+  ("load these tools"). The line count is the real anti-creep guard, and the prose count now measures the
+  only part that can actually bloat. The load line cannot grow unbounded — §7 criterion 4's allow-list
+  caps it at the five named tools.
+
+  Measured on landing: prose **973** characters (headroom 127), **8** lines. Rejected alternative: raising
+  the total to 1500. It would have re-created the same failure the first time a sixth tool joined the
+  allow-list, because prose would again be cut to pay for a tool name.
 - **Correct event name.** The emitted JSON must set `hookSpecificOutput.hookEventName` to
   **`"SessionStart"`**. Called out because the script this one is modelled on emits `"Stop"`, and a
   copy-paste implementation will ship the wrong value.
@@ -697,7 +715,8 @@ capability to game a client-side UX heuristic.
    removed from the design: emits well-formed JSON with `hookEventName == "SessionStart"`, serialized by
    the standard .NET serializer; **exits 0 on every path** (diagnostics to stderr); **invokes no `jq`,
    no shell**, and reads no stdin; returns before any MCP/DI initialisation; injected text is ≤ 15 lines
-   / ≤ 1200 characters, and every tool name in it is allow-listed per §5.2 item 6.
+   and ≤ 1100 characters of **prose excluding the load line** (revised from a 1200-character total during
+   execution — see §5.2 "Bounded length"), and every tool name in it is allow-listed per §5.2 item 6.
 5. The M3 invariant test passes: every required trap fact is present in its named tool's `[Description]`,
    and **no description exceeds 1200 characters** (the current longest, `desktop_read_terminal_tab`, is
    the practical ceiling — the plan must measure it and set the budget at or just above it, so hoisting
@@ -812,7 +831,7 @@ into the sections above; recorded here so later rounds hunt new defect-classes.
 | 7 | `jq` is an unstated distribution dependency | Dependency Cynic (agy) | G5 + §5.2 + §7 criterion 6 — promoted to a declared prerequisite (user decision). |
 | 8 | Copying the `Stop` hook ships the wrong `hookEventName` | Protocol Pedant (driver) | §5.2 — `"SessionStart"` pinned explicitly with the rationale. |
 | 9 | M1 is weakest under compaction — the exact condition of the motivating failure | Axiom Breaker (driver) | §5.2 — limitation stated plainly; M3 identified as the compaction-immune mechanism and therefore non-negotiable. |
-| 10 | Unspecified length budgets are trivially satisfiable | Mechanism Gamer (driver) | §7 criteria 4–5 — pinned at ≤ 15 lines / ≤ 1200 chars. |
+| 10 | Unspecified length budgets are trivially satisfiable | Mechanism Gamer (driver) | §7 criteria 4–5 — pinned at ≤ 15 lines / ≤ 1200 chars. **Superseded during execution:** the 1200 total was unmeetable by the spec's own payload (measured 1434, of which 456 is the irreducible load line). Now ≤ 15 lines / ≤ 1100 chars of prose excluding the load line — see §5.2 "Bounded length". The finding stands; only the instrument changed. |
 | 11 | Architectural decisions deferred to "the plan" | Literal Implementer (agy) | §5.5 agy-parity decided in-spec; §5.1 prefix-drift resolved by criterion 1. The 47-tool audit remains plan-level as enumeration work, not a design decision. |
 | 12 | `.claude/skills` duplicate may be dead or live — undetermined | Dependency Cynic (driver) | Measured live: two separately registered skills. G4 upgraded from "flag" to a blocking acceptance criterion (§7 criterion 3). |
 
