@@ -195,6 +195,47 @@ generic launcher title (`cmd.exe`/`PowerShell`) is never proof of a bare shell.
 
 ---
 
+## 🔴 DEFECT (v0.18.0) — the activation hook does not fire. M1 is inert as shipped.
+
+*Found 2026-07-27 by the observational check, immediately after releasing 0.18.0 and restarting.
+**M0, M2 and M3 are unaffected and working** — only the SessionStart hook (M1) is dead.*
+
+**Reproduce:** in a directory with no `.claude/settings.json` (so the plugin hook is the only possible
+source), start a session and ask whether the context contains text beginning *"flaui-mcp is installed"*.
+Answer: **no**. Confirmed twice.
+
+**Everything we control is correct, which is why every gate passed:**
+
+| Check | Result |
+|---|---|
+| `flaui-mcp status` | `Activation hook: wired (SessionStart -> flaui-mcp activation-payload)` |
+| `claude plugin list` | `flaui-mcp@flaui-mcp-marketplace` v0.18.0, **enabled** |
+| cached `hooks/hooks.json` | correct SessionStart entry, matcher `startup\|clear\|compact`, installed exe path |
+| the command, run standalone | `bash -c '<exact string>'` → valid JSON, exit 0 |
+| the plugin's skills | load correctly (M0/M2/M3 all live) |
+
+**Root cause: not yet identified.** Refuted so far — a missing `.claude-plugin/plugin.json` (added to
+both the staging dir and the cache; no change), a malformed command string (runs fine under `bash` and
+`sh`), and a `hooks` declaration in the manifest (agy-autotrain has none either).
+
+**Working control:** `agy-autotrain` is also a plugin, also loaded from its cache, and **its**
+SessionStart hook does reach the model. Its commands take the form
+`bash "${CLAUDE_PLUGIN_ROOT}/hooks/x.sh"` with the scripts beside `hooks.json`; ours invokes an absolute
+`.exe` path **outside** the plugin tree. That is the largest remaining difference and the next thing to
+test.
+
+**Also wrong, and shipped:** `docs/operator-manual.md` states *"Claude references the staging dir in
+place; it does not copy it."* It does copy it —
+`~/.claude/plugins/installed_plugins.json` records
+`installPath: ~/.claude/plugins/cache/flaui-mcp-marketplace/flaui-mcp/<version>`. Editing the staging dir
+has no effect until reinstall. Pre-existing claim from the installer rework; repeated here unverified.
+
+**Lesson for the gate, not just the bug:** every test we wrote asserts what the installer *stages*.
+None asserts what the client *executes*. `status` reporting "wired" is our own bookkeeping. Only a real
+session can close that gap, and that is the one check that could not run until after release.
+
+---
+
 ## Agent-adoption reliability — make correct usage the STRUCTURAL default ✅ DELIVERED (2026-07-27)
 
 > **Shipped on `feat/agent-adoption-activation`.** Both AAs are implemented as four mechanisms, plus a
