@@ -125,8 +125,7 @@ public static class CliRouter
                 // still hold a live reference we must not yank out from under it — AND (b) this is a full
                 // (`--agent all`) uninstall, never a targeted `--agent agy`/`--agent claude` one. On failure,
                 // leave the dir and write a durable warning instead of guessing. (plan-review R3.)
-                var stagingDirForUninstall = Environment.GetEnvironmentVariable("FLAUI_MCP_STAGING_DIR")
-                                 ?? Path.Combine(Path.GetDirectoryName(exePath)!, "plugin");
+                var stagingDirForUninstall = PluginIds.StagingDir(exePath);
                 var deregisterFailed = uninstallResults.Any(r => r.Change == AgentChange.Failed);
                 bool fullUninstall = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
                 if (deregisterFailed)
@@ -274,10 +273,7 @@ public static class CliRouter
         var results = new List<AgentResult>();
         bool all = agent.Equals("all", StringComparison.OrdinalIgnoreCase);
 
-        // The isolated staging dir the plugin artifacts are generated into. Default {app}\plugin (next
-        // to the exe); FLAUI_MCP_STAGING_DIR redirects it so tests never touch a real install tree.
-        var stagingDir = Environment.GetEnvironmentVariable("FLAUI_MCP_STAGING_DIR")
-                         ?? Path.Combine(Path.GetDirectoryName(exePath)!, "plugin");
+        var stagingDir = PluginIds.StagingDir(exePath);
 
         // agy branch — canonical INSTALL: generate the plugin dir, sweep any retired hand-written
         // config, then register via `agy plugin install`. No hand-written agy config anymore.
@@ -431,8 +427,7 @@ public static class CliRouter
         bool agy = all || agent.Equals("agy", StringComparison.OrdinalIgnoreCase);
         bool claude = all || agent.Equals("claude", StringComparison.OrdinalIgnoreCase);
 
-        var stagingDir = Environment.GetEnvironmentVariable("FLAUI_MCP_STAGING_DIR")
-                         ?? Path.Combine(Path.GetDirectoryName(exePath)!, "plugin");
+        var stagingDir = PluginIds.StagingDir(exePath);
 
         // A flag verb may run BEFORE install, so ensure the FULL plugin dir exists (plugin.json + marketplace.json,
         // not just .mcp.json — else ClaudePluginRegistrar.Register fails: `marketplace add` needs the manifest).

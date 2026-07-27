@@ -15,6 +15,14 @@ internal static class PluginIds
     public const string CurateSkill     = "FlaUI.Mcp.Server.seed.flaui-curate.SKILL.md";
     public const string HooksJson       = "FlaUI.Mcp.Server.seed.hooks.hooks.json";
     public const string CurateNudgeSh   = "FlaUI.Mcp.Server.seed.scripts.flaui-curate-nudge.sh";
+
+    /// The isolated staging dir the plugin artifacts are generated into — the SINGLE definition,
+    /// shared by install/uninstall (CliRouter) and status (InstallStatus) so they can never disagree
+    /// about which directory to write and inspect. FLAUI_MCP_STAGING_DIR redirects it so tests never
+    /// touch a real install tree.
+    public static string StagingDir(string exePath)
+        => System.Environment.GetEnvironmentVariable("FLAUI_MCP_STAGING_DIR")
+           ?? System.IO.Path.Combine(System.IO.Path.GetDirectoryName(exePath)!, "plugin");
 }
 
 /// Generates the unified plugin directory in the isolated staging dir at install time.

@@ -32,6 +32,7 @@ public static class InstallStatus
 
         sb.AppendLine("Driving skill (Claude Code):");
         sb.AppendLine("  " + DescribeClaudeSkill(new ClaudeSkillDeployer(claudeConfigDir).SkillRoot, claudePluginStatus));
+        sb.AppendLine("  Activation hook: " + DescribeActivationHook(PluginIds.StagingDir(exePath)));
         sb.AppendLine();
 
         var collisions = DescribeCollisions(stateDir);
@@ -41,6 +42,22 @@ public static class InstallStatus
         sb.AppendLine("Last install/uninstall run:");
         sb.Append(DescribeLog(log));
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Answers "why is the activation hint not appearing?" without reading hook source.
+    /// Reads the STAGED hooks.json — the artifact the client actually loads — not the repo tree,
+    /// which is registered nowhere.</summary>
+    public static string DescribeActivationHook(string pluginStagingDir)
+    {
+        var hooks = Path.Combine(pluginStagingDir, "hooks", "hooks.json");
+        if (!File.Exists(hooks))
+            return "not staged — run `flaui-mcp install --agent claude` to (re)generate the plugin";
+
+        var text = File.ReadAllText(hooks);
+        if (!text.Contains(ActivationPayload.Verb, StringComparison.Ordinal))
+            return "staged but NOT wired — hooks.json has no SessionStart entry; reinstall to regenerate";
+
+        return "wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ")";
     }
 
     /// <summary>
