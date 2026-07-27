@@ -218,27 +218,43 @@ function Add-ChangelogSection {
     # below throws. Same class as the zero-byte draft in release.ps1, and a [string] cast does NOT fix it.
     $content = "$(Get-Content $ChangelogPath -Raw)"
 
-    # Match the VERSION, not the whole heading. The heading carries today's date, so re-cutting a version on a
-    # later day produced no match and the guard silently appended a second '## [X.Y.Z]' section instead of
-    # refusing. Anchored, so a version merely mentioned inside a body never trips it -- except inside a fenced
-    # block, where an entry documenting the changelog format would show a real heading at line start and block
-    # that version's release. Fenced blocks are illustration, not structure, so drop them before matching.
-    $guardTarget = $content -replace '(?s)```.*?```', ''
-    if ($guardTarget -match ('(?m)^## \[' + [regex]::Escape($Version) + '\]')) {
-        throw "Add-ChangelogSection: a '## [$Version]' section already exists in $ChangelogPath — refusing to add a duplicate."
-    }
-
     # @() forces an array. A one-line CHANGELOG.md makes Get-Content return a scalar STRING, and the range
     # index below then slices CHARACTERS: $lines[0..0] yielded '#', so the file's only release section was
     # overwritten by a single character. Same unwrap footgun as $distinct in Get-VersionsInSync.
     $lines = @(Get-Content $ChangelogPath)
-    $firstSectionLine = ($lines | Select-String -Pattern '^## \[' | Select-Object -First 1).LineNumber
+
+    # Mark the lines inside fenced blocks, and let that ONE answer drive both the duplicate guard and the
+    # insert point. A changelog that documents its own format shows a real '## [X.Y.Z]' at line start inside a
+    # fence; treating it as a section blocked that version's release, and -- worse -- made it the insert point,
+    # so the new entry was written INTO the code block, splitting it.
+    #
+    # This is a line scan, not a regex over the whole file, because fences are a LINE construct. A regex pairing
+    # ```...``` across the file reads two inline code spans in separate entries as one long fence and swallows
+    # every real heading between them, blinding the guard and letting a genuine duplicate through (measured).
+    # Scanning also picks up ~~~ fences for free.
+    $inFence = New-Object bool[] $lines.Count
+    $open = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        # A fence delimiter is the first thing on its line (up to three spaces of indent, per CommonMark).
+        if ($lines[$i] -match '^\s{0,3}(```|~~~)') { $inFence[$i] = $true; $open = -not $open; continue }
+        $inFence[$i] = $open
+    }
+    $sectionLines = @(0..($lines.Count - 1) | Where-Object { $lines.Count -gt 0 -and -not $inFence[$_] -and $lines[$_] -match '^## \[' })
+
+    # Match the VERSION, not the whole heading. The heading carries today's date, so re-cutting a version on a
+    # later day produced no match and the guard silently appended a second '## [X.Y.Z]' section.
+    $versionPattern = '^## \[' + [regex]::Escape($Version) + '\]'
+    if ($sectionLines | Where-Object { $lines[$_] -match $versionPattern }) {
+        throw "Add-ChangelogSection: a '## [$Version]' section already exists in $ChangelogPath — refusing to add a duplicate."
+    }
+
     $section = "$heading`n`n$($Body.Trim())`n"
 
-    if (-not $firstSectionLine) {
-        $newContent = $content.TrimEnd() + "`n`n" + $section
+    if ($sectionLines.Count -eq 0) {
+        # Guard the empty-file case separately, else the join leaves the section behind two blank lines.
+        $newContent = if ($content.Trim()) { $content.TrimEnd() + "`n`n" + $section } else { $section }
     } else {
-        $insertAt = $firstSectionLine - 1   # 0-based index of the first '## [' line
+        $insertAt = $sectionLines[0]   # 0-based index of the first real '## [' line
         # Guard the PowerShell negative-range footgun: when the first section is line 1, $insertAt is 0 and
         # $lines[0..($insertAt-1)] is $lines[0..-1], which WRAPS to the whole array (duplicating the file).
         $before = if ($insertAt -eq 0) { '' } else { ($lines[0..($insertAt - 1)] -join "`n").TrimEnd() }

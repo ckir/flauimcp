@@ -688,6 +688,36 @@ Describe 'Add-ChangelogSection edge cases' {
             Should -Throw -ExpectedMessage '*already exists*'
     }
 
+    It 'never inserts INTO a fenced block in the preamble' {
+        # The guard and the insert point must agree. When only the guard ignored fences, the insert point still
+        # landed on the fenced heading and the new entry was written inside the code block, splitting it.
+        $f = [string][char]0x60 * 3
+        Set-Content -Path $Cl -Value "# Changelog`n`nFormat:`n${f}markdown`n## [2.0.0] - 2026-01-01`n${f}`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.3.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-28')
+        $after = Get-Content $Cl -Raw
+        # The fence stays intact: its opening line is still immediately followed by the example heading.
+        $normalised = $after.Replace("`r`n", "`n")
+        $normalised.Contains("${f}markdown`n## [2.0.0]") | Should -BeTrue
+        # And the new section lands after the fence but before the real first section.
+        $after.IndexOf('## [0.3.0]') | Should -BeGreaterThan $after.IndexOf('## [2.0.0]')
+        $after.IndexOf('## [0.3.0]') | Should -BeLessThan $after.IndexOf('## [0.1.0]')
+    }
+
+    It 'is not blinded by two inline triple-backtick spans in separate entries' {
+        # A regex pairing fences across the whole file read these as one long fence and swallowed the real
+        # headings between them, so a genuine duplicate sailed through. Measured: two '## [0.5.0]' sections.
+        $f = [string][char]0x60 * 3
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.9.0] - 2026-05-01`n### Added`n- Use ${f} for fences.`n`n## [0.5.0] - 2026-02-01`n### Added`n- Also ${f} here.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.5.0' -Body "### Added`n- Dup." -Date ([datetime]'2026-07-28') } |
+            Should -Throw -ExpectedMessage '*already exists*'
+    }
+
+    It 'treats a tilde fence the same as a backtick fence' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- Fmt:`n~~~markdown`n## [1.0.0] - 2026-01-01`n~~~`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '1.0.0' -Body "### Added`n- Real." -Date ([datetime]'2026-07-28') } |
+            Should -Not -Throw
+    }
+
     It 'still inserts normally into a multi-section changelog' {
         Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
         Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')
