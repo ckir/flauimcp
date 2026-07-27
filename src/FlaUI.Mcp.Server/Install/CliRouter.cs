@@ -6,7 +6,7 @@ namespace FlaUI.Mcp.Server.Install;
 public static class CliRouter
 {
     private static readonly HashSet<string> Verbs =
-        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "status", "unlock", "lock", "overlay", "autosound", "presence", "--version", "-v", "--help", "-h" };
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "status", "unlock", "lock", "overlay", "autosound", "presence", ActivationPayload.Verb, "--version", "-v", "--help", "-h" };
 
     public static bool IsInstallerVerb(string[] args) => args.Length > 0 && Verbs.Contains(args[0]);
 
@@ -29,6 +29,12 @@ public static class CliRouter
             // `status` is where human-readable deployment state lives.
             case "print-config":
                 outp.WriteLine(new GenericMcpConfigWriter().PrintConfig(exePath));
+                return 0;
+
+            // Emitted into a SessionStart hook. Returns HERE, before any MCP/DI/server setup: the
+            // client BLOCKS the first turn on hook output, so every millisecond is user-visible wait.
+            case ActivationPayload.Verb:
+                outp.WriteLine(ActivationPayload.ToJson());
                 return 0;
 
             case "status":

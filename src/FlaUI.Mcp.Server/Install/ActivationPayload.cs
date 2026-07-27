@@ -15,6 +15,10 @@ namespace FlaUI.Mcp.Server.Install;
 /// and must never grow into a second copy of the skill.</summary>
 public static class ActivationPayload
 {
+    /// The CLI verb the generated SessionStart hook invokes. Named once so hooks.json generation and
+    /// the router can never drift apart.
+    public const string Verb = "activation-payload";
+
     private const string P = "mcp__flaui-mcp__desktop_";
     private const string Q = "mcp__plugin_flaui-mcp_flaui-mcp__desktop_";
 

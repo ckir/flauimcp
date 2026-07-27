@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using FlaUI.Mcp.Server.Install;
@@ -55,4 +56,25 @@ public class ActivationPayloadTests
     [Fact]
     public void Tells_the_agent_not_to_delegate_observation_to_the_human()
         => Assert.Contains("Never ask the user", ActivationPayload.Text, StringComparison.Ordinal);
+
+    [Fact]
+    public void The_verb_name_is_stable()
+        => Assert.Equal("activation-payload", ActivationPayload.Verb);
+
+    [Fact]
+    public void The_router_recognises_the_verb_as_an_installer_verb()
+        => Assert.True(CliRouter.IsInstallerVerb(new[] { ActivationPayload.Verb }),
+            "verb missing from CliRouter.Verbs — Program.cs would start the MCP server instead of printing the payload");
+
+    [Fact]
+    public void The_router_prints_the_payload_json_and_exits_zero()
+    {
+        var outp = new StringWriter();
+        var code = CliRouter.Run(new[] { ActivationPayload.Verb }, @"C:\fake\flaui-mcp.exe", outp);
+
+        Assert.Equal(0, code);
+        using var doc = JsonDocument.Parse(outp.ToString().Trim());
+        Assert.Equal("SessionStart",
+            doc.RootElement.GetProperty("hookSpecificOutput").GetProperty("hookEventName").GetString());
+    }
 }
