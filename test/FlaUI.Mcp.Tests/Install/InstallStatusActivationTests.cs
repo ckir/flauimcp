@@ -70,9 +70,10 @@ public class InstallStatusActivationTests : IDisposable
     /// so this method reports "wired" for a hook that is inert in every already-running session — and
     /// the bare wording sent the maintainer hunting a product defect that did not exist.
     ///
-    /// Asserted separately from the StartsWith check above BECAUSE that check cannot see the clause:
-    /// delete the caveat and every other test in this file stays green. Two vacuous assertions have
-    /// already shipped in this feature; this is the third place the same hole would have opened.
+    /// Retained as a POLICY LOCK, not for coverage. The Assert.Equal above now pins this clause too, so
+    /// this test is redundant against an accidental edit — but not against a deliberate one: changing
+    /// the code and the exact-match assertion TOGETHER to reintroduce a pending-restart prediction
+    /// keeps that test green, and only this one fails. The wording rule outlives the current string.
     ///
     /// The negative assertion is load-bearing. The clause must state the client's STANDING RULE, never
     /// predict a pending restart: `status` cannot tell whether the user has already restarted, so
