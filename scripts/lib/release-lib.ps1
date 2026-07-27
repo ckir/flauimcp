@@ -285,7 +285,10 @@ function Add-ChangelogSection {
         throw "Add-ChangelogSection: a '## [$Version]' section already exists in $ChangelogPath — refusing to add a duplicate."
     }
 
-    $section = "$heading`n`n$($Body.Trim())`n"
+    # Normalise the body's newlines. Out-String in the draft job returns CRLF (measured), while everything
+    # below joins with LF -- so the model's bullets carried CRLF into a file assembled with LF, leaving mixed
+    # endings INSIDE the new entry. Normalise here, once, rather than at the seam that happens to notice.
+    $section = "$heading`n`n$(($Body -replace "`r`n", "`n").Trim())`n"
 
     if ($sectionLines.Count -eq 0) {
         # Guard the empty-file case separately, else the join leaves the section behind two blank lines.
@@ -299,7 +302,15 @@ function Add-ChangelogSection {
         $newContent = if ($before) { "$before`n`n$section`n$after" } else { "$section`n$after" }
     }
 
-    Set-FilePreservingBom -Path $ChangelogPath -Content ($newContent.TrimEnd() + "`n")
+    # Restore the file's OWN line endings. Get-Content discards them and every join above is LF, so writing
+    # $newContent straight out rewrites a CRLF file wholesale -- and this repo's core.autocrlf hands the next
+    # checkout exactly that, so a release would land a whole-file diff on top of the real change. Decide by
+    # what the file already used; a file with no newline at all keeps LF.
+    $out = $newContent.TrimEnd() + "`n"
+    if (([regex]::Matches($content, "`r`n")).Count -gt ([regex]::Matches($content, "(?<!`r)`n")).Count) {
+        $out = $out -replace "(?<!`r)`n", "`r`n"
+    }
+    Set-FilePreservingBom -Path $ChangelogPath -Content $out
 }
 
 function Get-ChangelogPrompt {

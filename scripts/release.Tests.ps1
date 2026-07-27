@@ -631,6 +631,25 @@ Describe 'Headless isolation contract' {
         # Presence is not state: a policy lock that only proves the line EXISTS stays green when a later
         # assignment overrides it. Exactly one assignment, so there is nothing to override it with.
         ([regex]::Matches($src, '\[\s*Console\s*\]\s*::\s*OutputEncoding\s*=')).Count | Should -Be 1
+
+        # ...and text presence still is not EXECUTION. Measured: 'if ($false) { [Console]::OutputEncoding = ...}'
+        # kept every regex above green while the job decoded as cp437 again. So assert against the AST that the
+        # assignment is an UNCONDITIONAL statement of the job scriptblock, not buried in a branch or a loop.
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $Repo 'scripts/release.ps1'), [ref]$null, [ref]$null)
+        $assign = $ast.Find({
+            param($a) $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                      $a.Left.Extent.Text -replace '\s', '' -eq '[Console]::OutputEncoding'
+        }, $true)
+        $assign | Should -Not -BeNullOrEmpty
+        $conditional = @()
+        for ($p = $assign.Parent; $null -ne $p; $p = $p.Parent) {
+            if ($p -is [System.Management.Automation.Language.IfStatementAst] -or
+                $p -is [System.Management.Automation.Language.LoopStatementAst] -or
+                $p -is [System.Management.Automation.Language.TryStatementAst] -or
+                $p -is [System.Management.Automation.Language.SwitchStatementAst]) { $conditional += $p.GetType().Name }
+        }
+        $conditional -join ',' | Should -BeNullOrEmpty
     }
 
     It 'pins the decode semantics the fix depends on' {
@@ -674,6 +693,86 @@ Describe 'Draft review gate' {
         $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
         $lib | Should -Not -Match "'\(\?m\)\^###"
         ([regex]::Matches($src, "-match\s+'\^(\\s\*)?###")).Count | Should -BeGreaterOrEqual 2
+    }
+}
+
+Describe 'Invoke-DraftReview at runtime' {
+    # Capstone round 2, finding D: every gate pin above is a SOURCE-level regex, and agy named two mutations
+    # that keep them green while breaking the gate ('$validBody = $true -or (...)', and burying the assignment
+    # in 'if ($false) { }'). A source pin proves the text is present, never that it EXECUTES. release.ps1
+    # cannot be dot-sourced (it runs on load), so lift the function out of its AST and call it for real.
+    # -Yes is the key: it takes the branch that never touches Read-Host or $EDITOR, so nothing can hang.
+    BeforeAll {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $Repo 'scripts/release.ps1'), [ref]$null, [ref]$null)
+        $fn = $ast.Find({
+            param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Invoke-DraftReview'
+        }, $true)
+        if (-not $fn) { throw "Invoke-DraftReview not found in release.ps1" }
+        $script:DraftReviewText = $fn.Extent.Text
+    }
+
+    It 'accepts a well-formed body unattended' {
+        . ([scriptblock]::Create($script:DraftReviewText))
+        $d = Join-Path ([IO.Path]::GetTempPath()) ("dr-ok-" + [guid]::NewGuid().ToString('N') + ".md")
+        Set-Content -Path $d -Value "### Fixed`n- A bug." -NoNewline -Encoding UTF8
+        try {
+            $r = Invoke-DraftReview -Version '9.9.9' -DraftPath $d -Prompt 'x' -Yes
+            $r.Action | Should -Be 'Accept'
+        } finally { Remove-Item $d -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'throws on a head-truncated body unattended' {
+        # THE v0.19.0 SHAPE, at runtime: begins mid-sentence, carries a later '### Changed'. Under the old
+        # '(?m)' gate this returned Accept and went straight into CHANGELOG.md.
+        . ([scriptblock]::Create($script:DraftReviewText))
+        $d = Join-Path ([IO.Path]::GetTempPath()) ("dr-bad-" + [guid]::NewGuid().ToString('N') + ".md")
+        Set-Content -Path $d -Value "` is correctly accepted. Trailing chatter.`n`n### Changed`n- A change." -NoNewline -Encoding UTF8
+        try {
+            { Invoke-DraftReview -Version '9.9.9' -DraftPath $d -Prompt 'x' -Yes } | Should -Throw
+        } finally { Remove-Item $d -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'accepts a hand-staged draft saved with a UTF-8 BOM' {
+        # I suspected a defect here and MEASURED IT AWAY: .Trim() does not strip U+FEFF (Char.IsWhiteSpace is
+        # false for it), so a BOM'd draft would fail the '^\s*###\s' gate -- but Get-Content -Raw strips the
+        # BOM while decoding, so it never reaches the gate. This test exists to keep that true: switching the
+        # read to [IO.File]::ReadAllText, which does NOT strip it, would silently discard an operator's
+        # pre-staged draft and regenerate it. A characterisation pin, not a bug fix.
+        . ([scriptblock]::Create($script:DraftReviewText))
+        $d = Join-Path ([IO.Path]::GetTempPath()) ("dr-bom-" + [guid]::NewGuid().ToString('N') + ".md")
+        [IO.File]::WriteAllText($d, "### Fixed`n- A bug.", [Text.UTF8Encoding]::new($true))
+        try {
+            $r = Invoke-DraftReview -Version '9.9.9' -DraftPath $d -Prompt 'x' -Yes
+            $r.Action | Should -Be 'Accept'
+        } finally { Remove-Item $d -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Changelog line endings' {
+    # Capstone round 2, finding C, confirmed by measurement: Out-String in the job returns the body with CRLF,
+    # while Add-ChangelogSection joins with LF -- so the new entry carried a stray CRLF, and the ENTIRE existing
+    # file was rewritten LF. This repo's core.autocrlf hands the next checkout a CRLF working tree, so the next
+    # release would produce a whole-file diff on top of the real change.
+    It 'normalises a CRLF body into an LF file' {
+        $clog = Join-Path ([IO.Path]::GetTempPath()) ("eol-lf-" + [guid]::NewGuid().ToString('N') + ".md")
+        [IO.File]::WriteAllText($clog, "# Changelog`n`n## [0.1.0] - 2026-01-01`n`n### Added`n- old`n", [Text.UTF8Encoding]::new($false))
+        try {
+            Add-ChangelogSection -ChangelogPath $clog -Version '0.2.0' -Date '2026-07-28' -Body "### Fixed`r`n- A bullet."
+            $t = [IO.File]::ReadAllText($clog)
+            ([regex]::Matches($t, "`r`n")).Count | Should -Be 0
+        } finally { Remove-Item $clog -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'leaves a CRLF file entirely CRLF' {
+        $clog = Join-Path ([IO.Path]::GetTempPath()) ("eol-crlf-" + [guid]::NewGuid().ToString('N') + ".md")
+        [IO.File]::WriteAllText($clog, "# Changelog`r`n`r`n## [0.1.0] - 2026-01-01`r`n`r`n### Added`r`n- old`r`n", [Text.UTF8Encoding]::new($false))
+        try {
+            Add-ChangelogSection -ChangelogPath $clog -Version '0.2.0' -Date '2026-07-28' -Body "### Fixed`r`n- A bullet."
+            $t = [IO.File]::ReadAllText($clog)
+            ([regex]::Matches($t, "(?<!`r)`n")).Count | Should -Be 0
+            ([regex]::Matches($t, "`r`n")).Count | Should -BeGreaterThan 0
+        } finally { Remove-Item $clog -Force -ErrorAction SilentlyContinue }
     }
 }
 
