@@ -71,7 +71,9 @@ FLOW
   1. Preconditions: on master, tracked tree clean, tags fetched.
   2. Compute the next version from conventional commits since the last v* tag.
   3. Gate: dotnet build/test, 3-file version sync, plugin-snapshot drift.
-  4. Draft the CHANGELOG body with 'claude -p' (heading is script-owned).
+  4. Draft the CHANGELOG body with 'claude -p --safe-mode' (heading is script-owned). Safe-mode keeps
+     the draft run free of hooks/plugins/CLAUDE.md; the body is read from <changelog> tags, so any
+     chatter or stderr around it is discarded rather than becoming the changelog.
   5. You review: Accept / Regenerate / Edit / Abort.
   6. Confirm: "Cut release vX.Y.Z?" (skipped under -Yes).
   7. Commit chore(release), tag vX.Y.Z, 'git push --atomic origin master vX.Y.Z'.
@@ -166,9 +168,16 @@ function Invoke-ChangelogLlm {
         [int]$TimeoutSeconds = 120
     )
 
+    # --safe-mode runs the draft with every customization off (CLAUDE.md, skills, plugins, HOOKS, MCP servers,
+    # custom commands/agents) while auth, model selection and built-in tools keep working. Without it the
+    # headless run inherits this repo's hooks: the flaui-autotrain Stop hook fires, the model answers the nudge
+    # instead of stopping, and that conversational reply becomes the last message — i.e. the "changelog".
+    # NOT --bare: it skips keychain reads and demands ANTHROPIC_API_KEY, which breaks the operator's OAuth.
+    # FLAUI_MCP_NO_NUDGE is belt-and-braces for the same class (see .claude/hooks/flaui-curate-nudge.sh).
     $job = Start-Job -ScriptBlock {
         param($PromptText, $ModelName)
-        $out = $PromptText | & claude -p --model $ModelName --output-format text 2>&1 | Out-String
+        $env:FLAUI_MCP_NO_NUDGE = '1'
+        $out = $PromptText | & claude -p --safe-mode --model $ModelName --output-format text 2>&1 | Out-String
         [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
     } -ArgumentList $Prompt, $Model
 
@@ -186,7 +195,19 @@ function Invoke-ChangelogLlm {
             return [pscustomobject]@{ Success = $false; Body = $null; Reason = $reason }
         }
 
-        [pscustomobject]@{ Success = $true; Body = $result.Output.Trim(); Reason = $null }
+        # The raw capture is not the body — extract the delimited payload and drop chatter and any stderr that
+        # `2>&1` folded in (keep the redirect: the failure Reason above is built from that same stream). A body
+        # that cannot be extracted is a FAILURE, so nothing unvalidated is ever persisted as a draft.
+        $body = Get-ChangelogBodyFromLlmOutput -RawOutput $result.Output
+        if ($null -eq $body) {
+            return [pscustomobject]@{
+                Success = $false
+                Body    = $null
+                Reason  = "claude -p returned no usable <changelog> body (chatter, or missing '### ' section). Raw output:`n$($result.Output.Trim())"
+            }
+        }
+
+        [pscustomobject]@{ Success = $true; Body = $body; Reason = $null }
     }
     finally {
         if ($job) { Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue }

@@ -308,7 +308,8 @@ Describe 'Get-ChangelogPrompt' {
 
     It 'instructs body-only output and includes the style exemplar and commit list' {
         $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $Commits -DiffText 'd' -DiffStatText 's' -StyleExemplar $Exemplar
-        $p | Should -Match 'Output ONLY'
+        # Wording changed when the body moved inside <changelog> tags; the contract it pins did not.
+        $p | Should -Match 'ONLY the body sections'
         $p | Should -Match '(?s)no.*heading'
         $p | Should -Match ([regex]::Escape($Exemplar))
         $p | Should -Match '- feat\(release\): add release script'
@@ -375,5 +376,75 @@ Describe 'Invoke-Gate' {
         $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $Pass -TestCheck $Pass -SkipPluginDrift
         ($result.Checks | Where-Object Name -eq 'PluginDrift') | Should -BeNullOrEmpty
         $result.Passed | Should -BeTrue
+    }
+}
+
+Describe 'Get-ChangelogBodyFromLlmOutput' {
+    It 'extracts a clean delimited body' {
+        $raw = "<changelog>`n### Added`n- A thing.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
+    It 'discards conversational chatter that follows the body' {
+        # Regression: Invoke-DraftReview's '^###\s' guard is a PARTIAL match, so a valid body with a chatty
+        # trailer passed validation and the trailer was committed verbatim into CHANGELOG.md.
+        $raw = "<changelog>`n### Fixed`n- A bug.`n</changelog>`n`nLet me know if you'd like me to adjust the wording!"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Fixed`n- A bug."
+    }
+
+    It 'discards preamble that precedes the body' {
+        $raw = "Sure — here is the changelog you asked for:`n`n<changelog>`n### Changed`n- A change.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Changed`n- A change."
+    }
+
+    It 'discards stderr folded in by 2>&1' {
+        $raw = "Warning: an update to claude is available`n<changelog>`n### Added`n- A thing.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
+    It 'returns null for the live v0.19.0 contamination (a hook reply, no tags at all)' {
+        # Verbatim from the run that blocked v0.19.0: a Stop hook fired inside `claude -p`, the model answered
+        # the hook instead of stopping, and that reply became the last message -- i.e. the "changelog".
+        $raw = "The CHANGELOG.md body for v0.19.0 is ready above. I see the flaui-autotrain inbox has pending observations - I can run flaui-curate when you'd like, or proceed with whatever's next for the release."
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'returns null when the tags are present but hold no "### " section' {
+        $raw = "<changelog>`nNothing much changed this release.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'returns null when the tags are empty' {
+        Get-ChangelogBodyFromLlmOutput -RawOutput "<changelog></changelog>" | Should -BeNullOrEmpty
+    }
+
+    It 'returns null when the closing tag is missing' {
+        Get-ChangelogBodyFromLlmOutput -RawOutput "<changelog>`n### Added`n- A thing." | Should -BeNullOrEmpty
+    }
+
+    It 'returns null on empty, whitespace and null input' {
+        Get-ChangelogBodyFromLlmOutput -RawOutput ''      | Should -BeNullOrEmpty
+        Get-ChangelogBodyFromLlmOutput -RawOutput "  `n " | Should -BeNullOrEmpty
+        Get-ChangelogBodyFromLlmOutput -RawOutput $null   | Should -BeNullOrEmpty
+    }
+
+    It 'takes the last complete pair when the model self-corrects' {
+        $raw = "<changelog>`n### Added`n- Draft one.`n</changelog>`nOn reflection:`n<changelog>`n### Added`n- Draft two.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- Draft two."
+    }
+
+    It 'strips a code fence the model wrapped inside the tags' {
+        $raw = "<changelog>`n``````markdown`n### Added`n- A thing.`n```````n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+}
+
+Describe 'Get-ChangelogPrompt delimiter contract' {
+    It 'instructs the model to wrap the body in <changelog> tags' {
+        $p = Get-ChangelogPrompt -Version '9.9.9' -CommitMessages @('feat: a thing') -StyleExemplar 'exemplar'
+        $p | Should -BeLike '*<changelog>*'
+        $p | Should -BeLike '*</changelog>*'
+        # The extractor drops everything outside the tags, so the prompt must say the tags are mandatory.
+        $p | Should -BeLike '*discarded*'
     }
 }
