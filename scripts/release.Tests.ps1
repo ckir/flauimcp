@@ -487,10 +487,23 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
     }
 
-    It 'skips an unclosed opening tag in trailing chatter' {
-        # Binding to the orphan would drop a perfectly good body. Walk back to the tag that actually closes.
+    It 'refuses when a second opening tag sits outside the body' {
+        # Superseded a round-3 behaviour, deliberately. This input was recovered then, on the reading that the
+        # second tag is only chatter. But a cut-off second draft looks exactly the same, and recovering there
+        # ships a body the model had already replaced -- silently. Nothing in the text separates the two, so
+        # both now fail loudly into $EDITOR with the raw output in hand.
         $raw = "<changelog>`n### Added`n- A thing.</changelog>`nNote: the <changelog> wrapper is required."
-        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'refuses a stale older block when a later draft was cut off unclosed' {
+        $raw = "<changelog>`n### Stale`n- old.`n</changelog>`n<changelog>`n### Cut off mid"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'refuses when trailing chatter names both tags' {
+        $raw = "<changelog>`n### Added`n- A.`n</changelog>`nI wrapped it in <changelog>...</changelog> tags!"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
     }
 
     It 'does not promote a stale sibling block when the newest one is heading-less' {
@@ -498,6 +511,10 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         # since replaced; silently promoting it discards the model's final intent and ships a stale changelog.
         $raw = "<changelog>`n### Stale`n- old.`n</changelog>`n<changelog>forgot heading</changelog>"
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+        # ...and not even when the stale block happens to name the tag in its own prose, which an earlier
+        # string-containment version of this rule was fooled by. Position decides, not content.
+        $withTag = "<changelog>`n### Stale`n- We now use <changelog>.`n</changelog>`n<changelog>forgot heading</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $withTag | Should -BeNullOrEmpty
     }
 
     It 'recovers a body that mentions the OPENING tag in prose' {

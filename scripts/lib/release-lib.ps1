@@ -331,7 +331,6 @@ function Get-ChangelogBodyFromLlmOutput {
     # Walk opening tags newest-first and take the first that actually closes. Skipping unclosed ones matters:
     # chatter after a well-formed block can mention <changelog>, and binding to that orphan would drop a
     # perfectly good body.
-    $skipped = $false
     $opens = [regex]::Matches($RawOutput, '<changelog>')
     for ($k = $opens.Count - 1; $k -ge 0; $k--) {
         $tail = $RawOutput.Substring($opens[$k].Index + $opens[$k].Length)
@@ -342,32 +341,36 @@ function Get-ChangelogBodyFromLlmOutput {
         # to the editor with the raw output in hand.
         if ($anchored.Count -gt 1) { return $null }
         if ($anchored.Count -eq 1) {
-            $candidate = $tail.Substring(0, $anchored[0].Index)
+            $closeOffset = $anchored[0].Index
         } else {
             # No line-anchored close: accept an inline one (a model closing on the same line as its last bullet).
-            $inline = $tail.LastIndexOf('</changelog>')
-            if ($inline -lt 0) { continue }
-            $candidate = $tail.Substring(0, $inline)
+            $closeOffset = $tail.LastIndexOf('</changelog>')
+            # An opening tag with no close at all is not a competing block -- just a tag named in passing.
+            # Skip it WITHOUT recording a competitor, so it cannot poison an older tag that does close.
+            if ($closeOffset -lt 0) { continue }
         }
-        $candidate = $candidate.Trim()
+        $closeIndex = $opens[$k].Index + $opens[$k].Length + $closeOffset
+        $candidate = $tail.Substring(0, $closeOffset).Trim()
 
         # Tolerate a fenced block inside the tags: the prompt forbids fences, but wrapping output in ``` is a
         # strong model habit and stripping it is cheaper than failing an otherwise-good body.
         if ($candidate -match '(?s)^```[^\r\n]*\r?\n(.*?)\r?\n?```$') { $candidate = $Matches[1].Trim() }
 
-        # Validate INSIDE the walk, and keep walking outward on failure. A body that mentions the opening tag
-        # in prose ("- Use <changelog> to wrap.") makes the innermost tag a false start: its tail yields a
-        # heading-less fragment. Giving up there would reject a perfectly good body; stepping out to the real
-        # opening tag recovers it.
+        # Validate INSIDE the walk. A body that mentions the opening tag in prose ("- Use <changelog> to
+        # wrap.") makes the innermost tag a false start: its tail yields a heading-less fragment. Giving up
+        # there would reject a perfectly good body, so keep walking outward -- but only for a genuinely NESTED
+        # tag, decided by POSITION: the failed tag must lie inside the span we are about to accept.
         #
-        # But only a NESTED tag is a false start. An older SIBLING block is a stale draft the model has since
-        # replaced, and silently promoting it would discard the model's final intent -- so an outer candidate
-        # counts only if it actually contains the tag we skipped. In the prose case it does (the mention is
-        # inside the body); for a sibling it does not, and we correctly end at $null.
+        # Any later opening tag lying OUTSIDE that span is a rival, and a rival is indistinguishable from the
+        # model's own second attempt -- whether it closed and failed validation, or was cut off mid-draft, or
+        # is only chatter naming the tag again. Nothing in the text separates those. Promoting the older block
+        # would silently ship a draft the model had already replaced, so refuse: the operator gets the editor
+        # and the raw output instead. That costs a recoverable body when the later tag really was just chatter;
+        # it costs it LOUDLY, which is the trade this whole function exists to make.
         if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -match '(?m)^###\s') {
-            if (-not $skipped -or $candidate.Contains('<changelog>')) { return $candidate }
+            if ($opens[$opens.Count - 1].Index -lt $closeIndex) { return $candidate }
+            return $null
         }
-        $skipped = $true
     }
 
     $null
