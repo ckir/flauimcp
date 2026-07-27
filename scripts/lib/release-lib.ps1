@@ -341,21 +341,28 @@ function Get-ChangelogBodyFromLlmOutput {
         # silently and still leaves a '### ' heading, so nothing downstream catches it. $null sends the caller
         # to the editor with the raw output in hand.
         if ($anchored.Count -gt 1) { return $null }
-        if ($anchored.Count -eq 1) { $body = $tail.Substring(0, $anchored[0].Index).Trim(); break }
-        # No line-anchored close: accept an inline one (a model closing on the same line as its last bullet).
-        $inline = $tail.LastIndexOf('</changelog>')
-        if ($inline -ge 0) { $body = $tail.Substring(0, $inline).Trim(); break }
+        if ($anchored.Count -eq 1) {
+            $candidate = $tail.Substring(0, $anchored[0].Index)
+        } else {
+            # No line-anchored close: accept an inline one (a model closing on the same line as its last bullet).
+            $inline = $tail.LastIndexOf('</changelog>')
+            if ($inline -lt 0) { continue }
+            $candidate = $tail.Substring(0, $inline)
+        }
+        $candidate = $candidate.Trim()
+
+        # Tolerate a fenced block inside the tags: the prompt forbids fences, but wrapping output in ``` is a
+        # strong model habit and stripping it is cheaper than failing an otherwise-good body.
+        if ($candidate -match '(?s)^```[^\r\n]*\r?\n(.*?)\r?\n?```$') { $candidate = $Matches[1].Trim() }
+
+        # Validate INSIDE the walk, and keep walking outward on failure. A body that mentions the opening tag
+        # in prose ("- Use <changelog> to wrap.") makes the innermost tag a false start: its tail yields a
+        # heading-less fragment. Giving up there would reject a perfectly good body; stepping out to the real
+        # opening tag recovers it.
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -match '(?m)^###\s') { return $candidate }
     }
-    if ($null -eq $body) { return $null }
 
-    # Tolerate a fenced block inside the tags: the prompt forbids fences, but wrapping output in ``` is a
-    # strong model habit and stripping it is cheaper than failing an otherwise-good body.
-    if ($body -match '(?s)^```[^\r\n]*\r?\n(.*?)\r?\n?```$') { $body = $Matches[1].Trim() }
-
-    if ([string]::IsNullOrWhiteSpace($body)) { return $null }
-    if ($body -notmatch '(?m)^###\s') { return $null }
-
-    $body
+    $null
 }
 
 function Invoke-Gate {

@@ -240,7 +240,11 @@ function Get-OrCreateDraft {
         # a hand-staged body resumes, a chatter draft is thrown away.
         $resume = $false
         if ($Yes) {
-            $staged = (Get-Content $draftPath -Raw).Trim()
+            # Interpolate before Trim. Get-Content -Raw on a 0-byte file (a run that died between creating the
+            # draft and writing it) emits PowerShell's no-output sentinel, and calling .Trim() on that throws
+            # under ErrorActionPreference=Stop, killing the release. A [string] CAST does not help -- casting
+            # the sentinel yields $null, not '' -- but interpolation does. Both were measured.
+            $staged = "$(Get-Content $draftPath -Raw)".Trim()
             $resume = $staged -match '^###\s'
             if ($resume) {
                 Write-Host "Resuming the pre-staged draft for v$Version (unattended)."

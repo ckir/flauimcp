@@ -3,6 +3,20 @@ BeforeAll {
     $script:Repo = Split-Path -Parent $PSScriptRoot
     $script:Lib  = Join-Path $PSScriptRoot 'lib/release-lib.ps1'
     . $script:Lib
+
+    # Source with every comment removed, via the PowerShell tokenizer.
+    #
+    # The source-level contract tests below pin behaviour that lives in files this suite cannot dot-source
+    # (release.ps1 executes on load). Matching raw text for them is a trap that has now bitten five times on
+    # this branch: a line-comment, then an inline comment, then a block comment each left the pinned string
+    # present while the code it named was dead. Stripping comment tokens kills all three forms at once --
+    # a match against this text is necessarily a match against executable code.
+    function script:Get-CodeWithoutComments {
+        param([Parameter(Mandatory)][string]$Path)
+        $tokens = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$null)
+        ($tokens | Where-Object { $_.Kind -ne 'Comment' } | ForEach-Object { $_.Text }) -join ' '
+    }
 }
 
 Describe 'release-lib.ps1 harness' {
@@ -473,6 +487,13 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
     }
 
+    It 'recovers a body that mentions the OPENING tag in prose' {
+        # The innermost tag is a false start: its tail yields a heading-less fragment. Giving up there would
+        # reject a good body, so the walk validates each candidate and steps outward on failure.
+        $raw = "<changelog>`n### Added`n- Use <changelog> to wrap the body.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- Use <changelog> to wrap the body."
+    }
+
     It 'takes the last complete pair when the model self-corrects' {
         $raw = "<changelog>`n### Added`n- Draft one.`n</changelog>`nOn reflection:`n<changelog>`n### Added`n- Draft two.`n</changelog>"
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- Draft two."
@@ -503,21 +524,19 @@ Describe 'Headless isolation contract' {
         # whole-file 'Should -Not -Match' would fail on the warning rather than on a real invocation.
         # Strip each line at its first '#', else the invocation survives as a trailing comment and this stays
         # green with safe-mode disabled -- both the whole-line and inline forms of that trap were measured.
-        $invocations = @(Get-Content (Join-Path $Repo 'scripts/release.ps1') |
-            ForEach-Object { ($_ -split '#', 2)[0] } |
-            Where-Object { $_ -match '&\s+claude\s+-p' })
-        $invocations.Count | Should -Be 1
-        $invocations[0] | Should -Match '&\s+claude\s+-p\s+--safe-mode'
+        # Token text is joined with single spaces, so match the flattened invocation rather than a line.
+        $code = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        ([regex]::Matches($code, '&\s+claude\s+-p')).Count | Should -Be 1
+        $code | Should -Match '&\s+claude\s+-p\s+--safe-mode'
         # --bare would skip keychain reads and demand ANTHROPIC_API_KEY, breaking the operator's OAuth.
-        $invocations[0] | Should -Not -Match '--bare'
+        $code | Should -Not -Match '--bare'
     }
 
     It 'sets the nudge opt-out for the child process' {
         # Must pin the ASSIGNMENT, not a mention: the comment above it names the variable, so a bare
         # 'Should -Match FLAUI_MCP_NO_NUDGE' stays green after the assignment is deleted (measured).
-        # Anchor to start-of-line: without it the assignment can be commented out and this stays green.
-        $src = Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw
-        $src | Should -Match '(?m)^\s*\$env:FLAUI_MCP_NO_NUDGE\s*=\s*''1'''
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $src | Should -Match '\$env:FLAUI_MCP_NO_NUDGE\s*=\s*''1'''
     }
 
     It 'has a curate-nudge hook that honours the opt-out and CI' {
@@ -550,9 +569,9 @@ Describe 'Unattended pre-staged draft' {
         # Discarding unconditionally broke a real workflow (pre-stage interactively, finish from CI with -Yes)
         # and on the zero-commit path walked into a hard throw, since -Yes forbids the $EDITOR fallback.
         # Resuming unconditionally let a stale chatter draft ship unreviewed. The heading gate keeps both.
-        $src = (Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw)
-        $src | Should -Match '(?m)^\s*\$resume\s*=\s*\$staged\s+-match\s+''\^###'
-        $src | Should -Not -Match '(?m)^\s*\$resume\s*=\s*\[bool\]\$Yes'
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $src | Should -Match '\$resume\s*=\s*\$staged\s+-match\s+''\^###'
+        $src | Should -Not -Match '\$resume\s*=\s*\[bool\]\$Yes'
     }
 
     It 'documents that gate in both the help block and the usage text' {
@@ -561,5 +580,24 @@ Describe 'Unattended pre-staged draft' {
         $src = (Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw)
         ([regex]::Matches($src, "starts with '### '|still starts with a '### ' heading")).Count |
             Should -BeGreaterOrEqual 2
+    }
+}
+
+Describe 'Draft file edge cases' {
+    It 'does not throw on a zero-byte draft under -Yes' {
+        # Get-Content -Raw yields $null for an empty file (a run that died between creating and writing the
+        # draft); $null.Trim() throws under ErrorActionPreference=Stop, killing the release.
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $src | Should -Match '"\$\(Get-Content \$draftPath -Raw\)"'
+        # Pin the semantics the guard depends on. A [string] CAST looks like the obvious fix and does NOT
+        # work: casting PowerShell's no-output sentinel yields $null, not ''. Only interpolation does.
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ("draftbox_" + [guid]::NewGuid() + ".md")
+        New-Item -ItemType File -Path $tmp | Out-Null
+        try {
+            { (Get-Content $tmp -Raw).Trim() }             | Should -Throw
+            { ([string](Get-Content $tmp -Raw)).Trim() }   | Should -Throw
+            { "$(Get-Content $tmp -Raw)".Trim() }          | Should -Not -Throw
+            "$(Get-Content $tmp -Raw)".Trim()              | Should -BeNullOrEmpty
+        } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
     }
 }
