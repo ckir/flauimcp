@@ -49,7 +49,45 @@ public class InstallStatusActivationTests : IDisposable
         // StartsWith, NOT Contains("wired") — the negative message is "staged but NOT wired", which
         // CONTAINS "wired". A Contains assertion here is satisfied by the failure string, so it cannot
         // tell wired from not-wired: it would stay green if this method never reported success again.
-        Assert.StartsWith("wired", text, StringComparison.Ordinal);
+        //
+        // Pins the message WHOLE, deliberately. Two rounds of partial assertions each left a hole that
+        // was then MEASURED to be exploitable while the suite stayed green:
+        //   StartsWith("wired")          → the entire "(SessionStart -> flaui-mcp <verb>)" mapping could
+        //                                  be deleted; 751/0 green. No other test asserts the verb
+        //                                  reaches the STATUS string (the other `activation-payload`
+        //                                  assertions all target the generated hooks.json).
+        //   prefix + suffix assertions   → the bridge between them was unpinned, so
+        //                                  "wired (...) GARBAGE only at client startup" passed all 14.
+        // Every partial pin invites the next gap. This string is a contract the operator manual mirrors
+        // verbatim, so equality is the honest assertion and its brittleness is the intended alarm.
+        // Built from ActivationPayload.Verb so renaming the verb cannot silently desync the two.
+        Assert.Equal("wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ") — "
+                     + "Claude Code loads hooks only at client startup", text);
+    }
+
+    /// The success string must keep saying that "wired" is a claim about the STAGED FILE, not about the
+    /// running client. Measured 2026-07-27: Claude Code registers plugin hooks only at client startup,
+    /// so this method reports "wired" for a hook that is inert in every already-running session — and
+    /// the bare wording sent the maintainer hunting a product defect that did not exist.
+    ///
+    /// Retained as a POLICY LOCK, not for coverage. The Assert.Equal above now pins this clause too, so
+    /// this test is redundant against an accidental edit — but not against a deliberate one: changing
+    /// the code and the exact-match assertion TOGETHER to reintroduce a pending-restart prediction
+    /// keeps that test green, and only this one fails. The wording rule outlives the current string.
+    ///
+    /// The negative assertion is load-bearing. The clause must state the client's STANDING RULE, never
+    /// predict a pending restart: `status` cannot tell whether the user has already restarted, so
+    /// "restart to activate" wording keeps printing afterwards and reads as "your restart did not take".
+    [Fact]
+    public void The_wired_message_states_the_client_loads_hooks_only_at_startup()
+    {
+        var staging = Temp();
+        new PluginArtifactWriter(staging).Generate(@"C:\fake\flaui-mcp.exe", "9.9.9");
+
+        var text = InstallStatus.DescribeActivationHook(staging);
+
+        Assert.Contains("only at client startup", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("next full", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

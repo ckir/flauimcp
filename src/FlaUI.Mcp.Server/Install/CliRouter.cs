@@ -49,6 +49,7 @@ public static class CliRouter
             case "install":
                 Report(Apply(agent, paths, install: true, exePath), "install", paths.DataDir, outp);
                 outp.WriteLine("If you configured agy, restart it to load the new tools.");
+                outp.WriteLine("If you configured Claude Code, quit the client completely and relaunch — it registers plugin hooks only at startup, so a new session is not enough.");
                 outp.WriteLine("Tip: to WATCH the agent act on screen, run  flaui-mcp overlay on  (off by default; " +
                     "flaui-mcp overlay off to disable), then reconnect. See the README's \"Watching & auditing the agent\" section.");
                 return 0;
