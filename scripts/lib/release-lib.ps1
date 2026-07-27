@@ -416,7 +416,12 @@ function Get-ChangelogBodyFromLlmOutput {
     # "<changelog>forgot heading</changelog>" sitting after a complete block is a second draft the model has
     # since written, and if it stops counting as a rival, the older block is silently promoted and a stale
     # changelog ships. Narrowing the START scan must not narrow the RIVAL scan with it.
-    $opens   = @([regex]::Matches($RawOutput, '(?m)^[ \t]*<changelog>[ \t\r]*$'))
+    # The \uFEFF? is not cosmetic: '(?m)^' matches offset 0, so a BOM on the capture sits BETWEEN the anchor
+    # and the tag and hides the only opening tag -- refusing a perfectly good body into $EDITOR. The unanchored
+    # scan this replaced was immune, so anchoring must not import the cost. Written as an ESCAPE, never as a
+    # literal BOM: an invisible character in a regex is unreviewable and a stray edit deletes it silently.
+    # Only the OPEN needs it; a BOM can only occur at offset 0, which no closing tag can occupy.
+    $opens   = @([regex]::Matches($RawOutput, '(?m)^\uFEFF?[ \t]*<changelog>[ \t\r]*$'))
     $allTags = @([regex]::Matches($RawOutput, '<changelog>'))
     for ($k = $opens.Count - 1; $k -ge 0; $k--) {
         $tail = $RawOutput.Substring($opens[$k].Index + $opens[$k].Length)

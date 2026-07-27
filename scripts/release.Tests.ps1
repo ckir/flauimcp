@@ -502,6 +502,15 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
     }
 
+    It 'extracts a body whose opening tag is preceded by a UTF-8 BOM' {
+        # Regression introduced BY the anchoring fix and caught in capstone round 1: '(?m)^' matches index 0,
+        # but a BOM sits between that anchor and the tag, so the only opening tag becomes invisible and a
+        # perfectly good body is refused into $EDITOR. The old unanchored scan was immune (measured), so this
+        # is a cost the fix must not carry. Only the OPEN needs it: a BOM can only appear at offset 0.
+        $raw = "$([char]0xFEFF)<changelog>`n### Added`n- A thing.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
     It 'refuses a head-truncated fragment even when a later heading survives' {
         # The gate itself, independent of which tag scan produced the fragment. '(?m)^###\s' asserts only that
         # a heading exists SOMEWHERE, which is what let the v0.19.0 fragment through; a changelog body's very
@@ -619,6 +628,9 @@ Describe 'Headless isolation contract' {
         $job = ([regex]::Match($src, 'Start-Job\s+-ScriptBlock\s*\{(?<body>.*?)\}\s*-ArgumentList', 'Singleline')).Groups['body'].Value
         $job | Should -Not -BeNullOrEmpty
         $job | Should -Match $assign
+        # Presence is not state: a policy lock that only proves the line EXISTS stays green when a later
+        # assignment overrides it. Exactly one assignment, so there is nothing to override it with.
+        ([regex]::Matches($src, '\[\s*Console\s*\]\s*::\s*OutputEncoding\s*=')).Count | Should -Be 1
     }
 
     It 'pins the decode semantics the fix depends on' {
@@ -640,6 +652,28 @@ Describe 'Headless isolation contract' {
         $a = Get-Content (Join-Path $Repo '.claude/hooks/flaui-curate-nudge.sh') -Raw
         $b = Get-Content (Join-Path $Repo 'plugins/flaui-mcp/scripts/flaui-curate-nudge.sh') -Raw
         $b | Should -Be $a
+    }
+}
+
+Describe 'Draft review gate' {
+    # Found by a mutation sweep and independently by capstone round 1: EVERY body test targets the extractor,
+    # so reverting Invoke-DraftReview's gate to '(?m)' kept all tests green while the last line of defence
+    # before CHANGELOG.md silently accepted head-truncated fragments again. Pinned at the source level rather
+    # than by mocking $EDITOR/Read-Host, which would hang the runner on a leaked mock.
+    It 'anchors the accept gate to the START of the body' {
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $src | Should -Match '\$validBody\s*=.*\$body\s+-match\s+''\^\\s\*###'
+        # The mutation itself: a multiline gate anywhere in the accept path is the defect, by construction.
+        $src | Should -Not -Match '\$body\s+-match\s+''\(\?m\)'
+    }
+
+    It 'keeps all three body gates consistent' {
+        # Extractor, unattended resume, and interactive accept must agree; a body that one accepts and another
+        # rejects is how a fragment reached CHANGELOG.md while every individual gate "looked right".
+        $lib = Get-CodeWithoutComments (Join-Path $Repo 'scripts/lib/release-lib.ps1')
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $lib | Should -Not -Match "'\(\?m\)\^###"
+        ([regex]::Matches($src, "-match\s+'\^(\\s\*)?###")).Count | Should -BeGreaterOrEqual 2
     }
 }
 
