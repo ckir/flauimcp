@@ -190,8 +190,12 @@ Three consequences, each correcting something earlier in this spec:
    `%LOCALAPPDATA%\Programs\FlaUI.Mcp\plugin\skills\driving-flaui-mcp\SKILL.md` **contains the broken
    single-prefix load line right now.** G3 is not theoretical; it is live on the installed machine.
 3. Editing `plugins/flaui-mcp/` — which is what §5.2 literally instructs for M1 — changes nothing for
-   anyone. A maintainer would have to register the repo marketplace manually to see their own hook fire,
-   and "it works on my machine" would then still say nothing about the shipped artifact.
+   anyone until the packaging fix lands. *(Round 7 correction: an earlier version of this bullet added
+   "a maintainer would have to register the repo marketplace manually to see their own hook fire." That
+   is **false** — per G8 the maintainer's hooks fire through `.claude/settings.json`, which needs no
+   marketplace registration at all. The surviving point is narrower and unaffected: a hook that fires
+   for the maintainer via `.claude/settings.json` still says nothing about the shipped artifact, because
+   the shipped artifact contains no hooks.)*
 
 **Consequence:** M1 is undeliverable as specified. Shipping hooks is a **precondition** of M1, not an
 implementation detail — see the hard requirements in §5.2 and criteria 7–9 in §7.
@@ -285,7 +289,7 @@ The fork was put to agy neutrally, with no lean disclosed. Both panels chose the
 | --- | --- | --- |
 | Needs `bash` on a stock Windows host | yes | **no** |
 | Needs `jq` | (removed, but the shape invites it) | **no** |
-| CRLF / exec-bit hazards through packaging | yes — and they are **live today**, see below | **none — nothing is extracted** |
+| CRLF / exec-bit hazards through packaging | yes — a real risk once it ships, though **not** a current breakage (G8) | **none — nothing is extracted** |
 | Install gate | a `test -f` for the exe | **the exe running IS the gate** |
 | Payload kept correct over time | a string in a shipped script | **a compiled constant, reachable by the criterion-1 reflection test** |
 
@@ -375,9 +379,15 @@ FIRST because it is the genuinely novel instruction:
   of G4's pair. The repo tree must be the strict build input.
 
   Two concrete failure modes this closes, both of which would pass a presence-only test:
-  - **Line endings.** A `.sh` extracted with CRLF breaks `#!/usr/bin/env bash` at the shebang. This repo
-    actively converts LF→CRLF on checkout (git warned on the round-2 commit of this very file), so it is
-    the default outcome, not an edge case. The extraction must pin LF.
+  - **Line endings.** This repo actively converts LF→CRLF on checkout, so a CRLF `.sh` is the *default*
+    outcome, not an edge case, and the extraction must pin LF.
+
+    *Round 7 correction — do not overstate this.* An earlier version claimed CRLF "breaks
+    `#!/usr/bin/env bash` at the shebang". Measured (G8), that is **wrong twice over**: the live CRLF
+    script runs correctly under Git Bash, and the hook invokes `bash "<script>"` explicitly, so the
+    shebang is never consulted. The real risk is narrower but still worth pinning: CRLF tolerance is
+    **interpreter-specific**, and bare `bash` on Windows resolves to the WSL launcher before Git Bash —
+    a far less forgiving path that the maintainer's machine happens never to exercise.
   - **Drift.** A staged copy authored separately from the tested copy means the maintainer tests one
     artifact and ships another.
 
@@ -463,8 +473,20 @@ FIRST because it is the genuinely novel instruction:
   That is acceptable and needs no design escalation, but it is not free — it is the reason the
   early-return requirement above is mandatory rather than tidiness.
 
-  **Two caveats, stated rather than rounded away.** (1) 45–65% CPU is *low load*, not idle; a pristine
-  measurement would likely come in under the 227 ms floor, so these figures remain conservative.
+  **Two caveats, stated rather than rounded away.** (1) 45–65% CPU is *low load*, not idle. An earlier
+  draft called the figures "conservative" on the assumption that idle is strictly faster. **That was
+  asserted, not reasoned** — two mechanisms pull in opposite directions:
+
+  - *Contention* inflates the measurement: other work steals CPU from the spawn.
+  - *Power states* deflate it: at 45–65% the CPU is already in C0 and clock-boosted, whereas from deep
+    idle a spawn pays C-state exit and a frequency ramp. (Raised by agy's Measurement Skeptic seat.)
+
+  The mechanism is real, but the **magnitude settles it**: this spec's own data shows contention
+  dominating by an order of magnitude — the same command measured **~1.5 s median at 100% CPU** versus
+  **313 ms at 45–65%**, a 5× swing from load alone. C-state exit is microseconds and frequency ramp is
+  single-digit milliseconds, against a ~300 ms spawn dominated by image loading, host startup and JIT.
+  So a true idle figure should land **at or modestly below 313 ms** — but that is now stated as a
+  reasoned expectation, not as "conservative by construction", and it remains unmeasured.
   (2) **Cold start is still unmeasured at low load** — the binary was warm in the file cache throughout,
   and re-creating a genuine cold start needs a reboot. The only cold figure available is ~3.9 s, taken at
   100% CPU, and it should be treated as a heavily pessimistic outlier rather than the expected first-run
@@ -698,8 +720,13 @@ capability to game a client-side UX heuristic.
    (`plugins/flaui-mcp/scripts/flaui-curate-nudge.sh` measured as CRLF; the repo has **no
    `.gitattributes`**). A test writer would have had to fail the build permanently or quietly drop the
    byte-identity half. Both panels caught this independently. The plan must also add a `.gitattributes`
-   pinning `*.sh eol=lf`. Under the Option-B decision this criterion may end up vacuous — that is the
-   preferred outcome, and vacuous-because-nothing-ships must be asserted, not assumed.
+   pinning `*.sh eol=lf`.
+
+   *Round 7 correction:* an earlier version said this criterion "may end up vacuous under Option B,
+   because nothing ships". That contradicted §8, which scoped the `Stop` curate-nudge **script** back in.
+   A `.sh` therefore always ships and the criterion is **never vacuous** — it always has
+   `flaui-curate-nudge.sh` to validate. Option B removes the shell dependency from **M1**, not from the
+   plugin as a whole.
 9. **The propagation chain is gated end to end.** A test drives `PluginArtifactWriter.Generate()` into a
    temp dir and asserts the result is a well-formed plugin (manifest + skill + hooks + scripts). The
    `claude plugin install` step itself has no CI equivalent and is **not** claimed as gated — it stays a
@@ -724,7 +751,9 @@ This is a manual dogfooding gate, not a CI check, and it is the only signal that
   hooks a precondition, and the hooks being shipped include the existing `Stop` curate-nudge, whose entire
   function is to tell the agent to run the `flaui-curate` skill. Shipping a hook that nags for a skill the
   user does not have is a broken, self-contradicting UX — and G6's fix creates that state the moment it
-  lands, because today the hook is inert.
+  lands, because today the hook is inert **for installed users**. *(Round 7: the unqualified "the hook is
+  inert" survived the retraction of its premise — per G8 it fires for the maintainer via
+  `.claude/settings.json`. The conclusion is unaffected: it is inert for the users G6 is about.)*
 
   The plan must therefore either (a) stage `flaui-learn`/`flaui-curate` alongside `driving-flaui-mcp`, or
   (b) not stage the curate-nudge hook. **(a) is recommended** — it also makes `plugin.json`'s existing
@@ -829,7 +858,7 @@ worse than the previous round had recorded.
 | # | Finding | Seat(s) | Fold |
 | --- | --- | --- | --- |
 | 26 | **Criterion 8 was jointly unsatisfiable** — byte-identity to a CRLF source AND no CRLF. The working tree is CRLF and the repo has no `.gitattributes`. | Mechanism Gamer (driver + agy, convergent) | Criterion 8 — identity against the **LF-normalized** source; `.gitattributes` pinning `*.sh eol=lf` added to the plan. |
-| 27 | **The prototype M1 is modelled on has never worked.** `flaui-curate-nudge.sh` is CRLF (bash chokes on `\r`) and hard-depends on `jq`, which is absent from a stock host — and per G7 it was never registered, so nobody found out. | Operator Realist (driver); Q2 (agy) | Fed the Option-B decision below: the spec stops treating that script's shape as a proven baseline. |
+| 27 | ~~**The prototype M1 is modelled on has never worked.**~~ **RETRACTED in round 7 — see G8.** The claim was that `flaui-curate-nudge.sh` is CRLF (so bash chokes on `\r`), depends on `jq`, and was never registered. Measured: it **runs correctly** and fires for the maintainer via `.claude/settings.json`. | Operator Realist (driver); Q2 (agy) | The Option-B decision it fed **survives on independent grounds** (bash is non-deterministic on Windows — finding #34 — and Option B has no shell dependency at all). Nothing downstream may cite this row as live. |
 | 28 | **M1's trigger list contradicts its own safety framing.** Item 2 advertises "read a background terminal tab"; item 4 blankets the list in "read-only, no lease, cannot disturb the user". But `desktop_read_terminal_tab` is `Destructive = true` and switches tabs. | Axiom Breaker (driver) | §5.2 item 2 — the list is now zoned by lease requirement. |
 | 29 | **M3's confirmed trap fact is ALREADY partly shipped and did not prevent the motivating failure.** `WindowTools.cs:23` carries a Windows Terminal hint; `ContentTools.cs:86` already says "enumerate tabs first". | Operator Realist (driver) | §5.4 — the "placement is sufficient" framing withdrawn; hoisted facts must be actionable imperatives naming the wrong default, and the invariant test must assert the specific clause so it **fails on today's text** instead of green-lighting it. |
 | 30 | M3's selection rule admits every quirk of every drivable app — an unbounded encyclopedia against a fixed budget. | Axiom Breaker / Q4 (agy) | §5.4 — fifth criterion: the trap must live in **this tool's own returned data**. App lore stays in the skill. |
@@ -863,6 +892,31 @@ round 4's own decision: each round has now corrected its predecessor.
 rounds 2–5, and every rejection premise still holds: the `Stop`-hook interlock still fires after
 commitment, AA2's gate is still circular under G2, and tool-surface shrinking is still unactionable under
 G1. No reversal warranted. §6 is the only section to come through a dedicated adversarial seat unchanged.
+
+### Round 7 (re-green) — bespoke seats: Retraction Auditor, Measurement Skeptic
+
+Required by the operator after G8 and the latency measurement changed the artifact. Scope was bound to
+the new/changed material only; settled design was explicitly closed.
+
+| # | Finding | Seat(s) | Fold |
+| --- | --- | --- | --- |
+| 40 | G7 consequence 3 claimed a maintainer must register the repo marketplace to see a hook fire | Retraction Auditor (driver) | Corrected — `.claude/settings.json` needs no marketplace. The surviving point is narrower: a maintainer-side hook says nothing about the shipped artifact. |
+| 41 | The Option A/B table called CRLF hazards "live today" | Retraction Auditor (driver) | Softened to a shipping risk, not a current breakage. |
+| 42 | §5.2 claimed CRLF "breaks the shebang" | Retraction Auditor (driver) | Wrong twice over: the live CRLF script runs, **and** the hook invokes `bash "<script>"` so the shebang is never consulted. Restated as interpreter-specific risk (WSL bash). |
+| 43 | Round-4 ledger row #27 still asserted "the prototype has never worked" | Retraction Auditor (driver) | Struck through and marked RETRACTED, noting Option B survives on independent grounds (#34). |
+| 44 | **Criterion 8's "may end up vacuous under Option B" contradicts §8**, which scoped the curate-nudge *script* back in — so a `.sh` always ships and the criterion is never vacuous | Axiom Breaker (agy) | Criterion 8 corrected. Option B removes the shell dependency from **M1**, not from the plugin. |
+| 45 | §8's "today the hook is inert" survived the retraction of its premise | Retraction Auditor (agy) | Qualified to "inert **for installed users**" — the conclusion is unaffected. |
+| 46 | Calling the latency figures "conservative" was **asserted, not reasoned**: from deep idle a spawn pays C-state exit and frequency ramp, so idle is not automatically faster | Measurement Skeptic (agy) | Mechanism accepted, conclusion **rejected on magnitude**: this spec's own data shows load dominating 5× (1.5 s @ 100% vs 313 ms @ 45–65%), against microsecond C-state exits. Restated as a reasoned expectation, not a construction. |
+| 47 | The plan embedded `plugins/.../scripts/` — the copy registered nowhere — rather than the live copy the maintainer executes | Q4/Q5 (agy) | Plan Task 3 now embeds `.claude/hooks/flaui-curate-nudge.sh`, mirroring how the skill's build input is handled. |
+
+**Round 7 verdict:** NOT GREEN — 8 findings folded. Six are retraction debt (consequences that outlived
+the premise G8 removed), which is exactly what the bespoke seat was seated to find; two are substantive
+(#44's contradiction, #47's wrong build input).
+
+**Negotiation record for #46.** agy's mechanism is correct and worth keeping in the document, but its
+conclusion — "the figures are optimistic" — does not follow: it never weighed the two effects. Contention
+is measured here at ~1.2 s of swing; C-state exit and clock ramp are microseconds-to-milliseconds against
+a ~300 ms spawn. Folded as a correction to the *reasoning*, not a reversal of the *number*.
 
 **Round 6 verdict:** NOT GREEN — 4 findings folded, but the character has changed. Three of the four are
 **edit debt** (stale text, a stale rationale, a scope line invalidated by a later round) rather than

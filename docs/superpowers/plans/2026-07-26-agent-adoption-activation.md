@@ -56,10 +56,10 @@ The repo has no `.gitattributes`, and both copies of `flaui-curate-nudge.sh` are
 - Create: `.gitattributes`
 - Modify: `plugins/flaui-mcp/scripts/flaui-curate-nudge.sh` (normalize to LF)
 
-> **Third copy alert.** There are now **two** tracked copies of this script — `.claude/hooks/` (live,
-> registered by `.claude/settings.json`) and `plugins/flaui-mcp/scripts/` (registered nowhere, and the one
-> Task 3 embeds). They are byte-identical today, guarded by no test. Step 5 below adds that guard; without
-> it, a future edit to the live copy would ship the stale one.
+> **Third copy alert.** There are **two** tracked copies of this script — `.claude/hooks/` (live,
+> registered by `.claude/settings.json`, proven to fire) and `plugins/flaui-mcp/scripts/` (registered
+> nowhere). They are byte-identical today, guarded by no test. Task 3 embeds the **live** copy, so the
+> shipped artifact derives from proven-working code; Step 4 below guards the twin against drift.
 
 - [ ] **Step 1: Create `.gitattributes`**
 
@@ -260,7 +260,11 @@ Replace `src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj` lines 7–11 with:
     <EmbeddedResource Include="..\..\plugins\flaui-mcp\hooks\hooks.json">
       <LogicalName>FlaUI.Mcp.Server.seed.hooks.hooks.json</LogicalName>
     </EmbeddedResource>
-    <EmbeddedResource Include="..\..\plugins\flaui-mcp\scripts\flaui-curate-nudge.sh">
+    <!-- The LIVE copy is the build input, not plugins/flaui-mcp/scripts/. .claude/settings.json
+         registers this path, so it is the copy the maintainer actually executes and tests; embedding
+         it makes the shipped artifact strictly derived from proven-working code. Same principle as
+         the driving skill above. Task 1's identity test keeps the plugins/ twin from drifting. -->
+    <EmbeddedResource Include="..\..\.claude\hooks\flaui-curate-nudge.sh">
       <LogicalName>FlaUI.Mcp.Server.seed.scripts.flaui-curate-nudge.sh</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
