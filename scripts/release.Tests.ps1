@@ -472,11 +472,42 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
     }
 
-    It 'falls back to an inline closing tag when none is line-anchored' {
-        # A model closing on the same line as its final bullet. No competing prose tag exists in this input,
-        # so the inline fallback is unambiguous.
+    It 'refuses an inline closing tag when none is line-anchored' {
+        # SUPERSEDES a round-8 behaviour, deliberately. The inline-close fallback was accepted then, on the
+        # reading that a model closing on the same line as its final bullet is unambiguous. It is not: with the
+        # open anchored and the anchored close simply forgotten, a PROSE mention of the closing tag is the last
+        # inline candidate, so the body is truncated at the TAIL -- and unlike a head-truncation, the fragment
+        # still STARTS with a valid '### ' heading, so the start-anchored gate below cannot see it. There is no
+        # backstop on that side, so the fallback goes. Costs a recoverable run; costs it LOUDLY.
         Get-ChangelogBodyFromLlmOutput -RawOutput "<changelog>`n### Added`n- A thing.</changelog>" |
-            Should -Be "### Added`n- A thing."
+            Should -BeNullOrEmpty
+    }
+
+    It 'keeps a body whose prose mentions the OPENING tag before a later section' {
+        # THE LIVE v0.19.0 DEFECT, verbatim in shape. The opening scan matched ANY occurrence and walked
+        # newest-first, so this body's own prose mention of the tag -- present because the release documented
+        # the tag contract -- became the start. The head was sliced mid-sentence, but the tail still held the
+        # LATER '### Changed' heading, so the multiline gate passed it and it shipped: committed, tagged, and
+        # published to the GitHub release notes. Anchoring the opening scan is what makes the mention inert.
+        $raw = "<changelog>`n### Fixed`n- A body that mentions <changelog> is correctly accepted.`n`n### Changed`n- A change.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw |
+            Should -Be "### Fixed`n- A body that mentions <changelog> is correctly accepted.`n`n### Changed`n- A change."
+    }
+
+    It 'refuses an inline opening tag that is only a prose example' {
+        # The mirror hazard, and why the opening scan gets NO inline fallback. The model forgets the real
+        # opening tag but shows one inside a prose example; the example's tail begins with a real heading, so
+        # a fallback start would pass the gate and ship the example's INVENTED content as the changelog.
+        $raw = "Avoid formatting like this:`n``<changelog>### Added`n- Some fake feature```n`nHere is the real one (I forgot the opening tag):`n`n### Fixed`n- The actual bug.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'refuses a head-truncated fragment even when a later heading survives' {
+        # The gate itself, independent of which tag scan produced the fragment. '(?m)^###\s' asserts only that
+        # a heading exists SOMEWHERE, which is what let the v0.19.0 fragment through; a changelog body's very
+        # first content must BE a heading.
+        $raw = "<changelog>`n is correctly accepted. Trailing chatter is refused.`n`n### Changed`n- A change.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
     }
 
     It 'refuses to guess when the body itself holds a line-anchored closing tag' {
@@ -574,6 +605,35 @@ Describe 'Headless isolation contract' {
         $hook = Get-Content (Join-Path $Repo '.claude/hooks/flaui-curate-nudge.sh') -Raw
         $hook | Should -Match '(?m)^case\s+"\$\{FLAUI_MCP_NO_NUDGE:-\}".*exit 0.*esac$'
         $hook | Should -Match '(?m)^\[ -n "\$\{CI:-\}" \] && exit 0$'
+    }
+
+    It 'decodes the child process stdout as UTF-8' {
+        # Live defect: the v0.19.0 entry shipped with 'ΓÇö' where em dashes belonged. The parent host runs
+        # UTF-8, but a Start-Job runspace does NOT inherit that -- it came up on cp437, so claude's UTF-8
+        # stdout was decoded with the OEM code page. Pin the ASSIGNMENT, and pin it INSIDE the job: setting it
+        # in the parent is what already looked correct while the corruption shipped.
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        # Token text is joined with single spaces by the helper, so the operators are spaced out here.
+        $assign = '\[\s*Console\s*\]\s*::\s*OutputEncoding\s*=\s*\[\s*(System\s*\.\s*)?Text\s*\.\s*Encoding\s*\]\s*::\s*UTF8'
+        $src | Should -Match $assign
+        $job = ([regex]::Match($src, 'Start-Job\s+-ScriptBlock\s*\{(?<body>.*?)\}\s*-ArgumentList', 'Singleline')).Groups['body'].Value
+        $job | Should -Not -BeNullOrEmpty
+        $job | Should -Match $assign
+    }
+
+    It 'pins the decode semantics the fix depends on' {
+        # Why that one line is the whole fix, and why the shipped mojibake identifies the culprit code page.
+        $emDash = [byte[]](0xE2, 0x80, 0x94)
+        [Text.Encoding]::GetEncoding(437).GetString($emDash)   | Should -Be 'ΓÇö'   # what shipped => cp437
+        # Ruled out by that signature: cp1252 (0x94 -> U+201D) and cp850 both decode these bytes differently.
+        [Text.Encoding]::GetEncoding(1252).GetString($emDash)  |
+            Should -Be ([string][char]0x00E2 + [char]0x20AC + [char]0x201D)
+        [Text.Encoding]::GetEncoding(850).GetString($emDash)   | Should -Be 'ÔÇö'
+        [Text.Encoding]::UTF8.GetString($emDash)               | Should -Be '—'
+        # And the mechanism: the assignment inside the runspace is what makes the decode correct.
+        $j = Start-Job -ScriptBlock { [Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::OutputEncoding.CodePage }
+        try { (Wait-Job $j | Receive-Job) | Should -Be 65001 }
+        finally { Remove-Job $j -Force -ErrorAction SilentlyContinue }
     }
 
     It 'ships the hook to the plugin byte-identically' {
