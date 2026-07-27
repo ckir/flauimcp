@@ -235,6 +235,21 @@ Plugins registered in earlier client lifetimes fire; plugins installed or upgrad
 one do not — regardless of layout, command form, or manifest placement. So the structural differences
 listed above are almost certainly red herrings, and the shipped artifact may be correct.
 
+**Plugin hooks ARE supported — the design is sound.** `agy-curate-nudge.sh` is declared *only* in
+agy-autotrain's plugin `hooks.json`; it is **not** in `~/.claude/settings.json`, and its output reaches
+the model. So a plugin-supplied SessionStart hook does work, and M1's premise is not a misread
+precedent. (Ruled out by inspecting the user-level hook registrations directly.)
+
+Corroborating: Claude reports hook *failures* loudly — a malformed hook shows as
+`PreCompact [...] failed: Hook JSON output validation failed`. For flaui-mcp there is **no output and no
+error**, which fits "never invoked" rather than "invoked and failed".
+
+Worth noting the two working plugins differ in how they deliver hooks: `agy-autotrain` ships them inside
+the plugin (its cache copy contains `hooks/hooks.json`), while `clavity-dotnet` — which also ships an MCP
+server, the closest analogue to flaui-mcp — has **no `hooks/` in its cache at all** and installs its
+hooks to `~/.claude/hooks/` registered via user settings. If the restart test fails, that user-level
+route is the proven fallback for shipping a hook alongside an MCP server.
+
 **Prediction to confirm:** after a FULL Claude Code restart (quit the client, not just a new session),
 both `flaui-mcp`'s activation hook and the `hooktest` marker should fire. If both do, this is a client
 registration-timing behaviour, not a product defect, and the only real bug here is that our docs and
