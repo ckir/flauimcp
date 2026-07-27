@@ -468,10 +468,12 @@ FIRST because it is the genuinely novel instruction:
   conditions, Git Bash ~1.4 s and Windows PowerShell 5.1 ~1.4–3.1 s — the exe led throughout, which is the
   load-independent part of that result.
 
-  **Design conclusion: a warm activation hook costs roughly a third of a second**, and `SessionStart`
-  blocks the first turn, so the user waits it out at every session start, resume, clear and compaction.
-  That is acceptable and needs no design escalation, but it is not free — it is the reason the
-  early-return requirement above is mandatory rather than tidiness.
+  **Design conclusion (SUPERSEDED — see the direct measurement below): a warm activation hook costs
+  roughly a third of a second**, and `SessionStart` blocks the first turn, so the user waits it out at
+  every session start, resume, clear and compaction. That is acceptable and needs no design escalation,
+  but it is not free — it is the reason the early-return requirement above is mandatory rather than
+  tidiness. *(The ~⅓ s figure came from the `--version` proxy. Measuring the real verb put it at ~0.4 s;
+  the "acceptable, no escalation" judgement survives, the number does not.)*
 
   **Two caveats, stated rather than rounded away.** (1) 45–65% CPU is *low load*, not idle. An earlier
   draft called the figures "conservative" on the assumption that idle is strictly faster. **That was
@@ -495,17 +497,40 @@ FIRST because it is the genuinely novel instruction:
   *Measured against the `--version` verb, which shares the `activation-payload` verb's code path exactly:
   both are early-return cases in the same switch that print one line before any MCP/DI initialisation.*
 
-  **Post-implementation confirmation run — ATTEMPTED AND CORRECTLY ABORTED (2026-07-27).** The real
-  `activation-payload` verb now exists, so the proxy is no longer needed. The Release build was produced
-  and the verb verified functionally: it emits valid JSON with `hookEventName == "SessionStart"` and
-  exits 0. **The timing half was not taken** — CPU sampled at 100% across six consecutive readings, and
-  the plan's Step 2b aborts unless load is in single digits. Recording a figure under those conditions is
-  the precise error that produced the superseded ~1.5 s median above, so it was not repeated.
+  **⚠️ THE PROXY INFERENCE ABOVE IS REFUTED — measured against the REAL verb, 2026-07-27.**
 
-  ▶ **STILL OWED, both opportunistic:** (a) a warm confirmation run against the real verb at genuinely
-  low load, expected to land in the same band as the 313 ms proxy; (b) a cold-start reading after the
-  next reboot. Neither blocks the design — the proxy measurement stands and the code path is shared by
-  construction — but neither should be quietly marked done.
+  Once `activation-payload` existed it was measured directly, interleaved round-robin with the proxy and
+  with `print-config`, 12 samples each, at 22–33% CPU:
+
+  | verb | min | median | max | Δ vs `--version` |
+  | --- | --- | --- | --- | --- |
+  | `--version` | 217 | **251** | 316 | — |
+  | `print-config` | 258 | **292** | 406 | +41 |
+  | **`activation-payload`** | 337 | **425** | 506 | **+174** |
+
+  **The two verbs do NOT cost the same.** The real verb is ~1.7× the proxy, so the 313 ms figure
+  understates the true blocking cost. `print-config` — which also serializes JSON but has nothing to do
+  with the payload — carries only +41 ms of that gap, so generic `System.Text.Json` initialisation
+  explains under a quarter of it. **The remaining ~133 ms is unattributed and would need profiling.**
+  Recorded as an open question rather than guessed at.
+
+  **Revised design conclusion: a warm activation hook costs roughly 0.4 s**, not a third of a second,
+  and `SessionStart` blocks the first turn — so that is what a user waits at every start, resume, clear
+  and compaction. Still acceptable, still no design escalation, but ~35% worse than this spec previously
+  documented. If it ever needs reducing, the measured candidate is serializer initialisation
+  (a source-generated `JsonSerializerContext`), worth ~40 ms of the 174.
+
+  **Two methodology lessons, both learned by getting this wrong first:**
+  1. *The measuring agent shares the CPU.* Step 2b's "abort unless load is in single digits" is
+     **unsatisfiable on this machine** — with the driver fully idle for 20 minutes the floor never fell
+     below ~25–32%. A gate that can never open is not a safeguard; it blocked this reading three times
+     before the condition itself was questioned. Measure at the achievable floor and record it.
+  2. *Measure verbs INTERLEAVED, never in blocks.* A first attempt ran them in sequence while background
+     load fell 61%→30%, making whichever verb ran first look ~200 ms slower; that contaminated figure was
+     briefly reported as fact. Round-robin distributes drift equally across all verbs.
+
+  ▶ **Still owed, opportunistic:** a cold-start reading after the next reboot. The only cold figure is
+  ~3.9 s at 100% CPU and remains a heavily pessimistic outlier.
 
 - **Load-independent finding that strengthens Option B.** A hook command of the form `bash "…"` does not
   have a determinate interpreter on Windows. Measured on this machine, bare `bash` resolves **first** to
