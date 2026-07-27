@@ -45,7 +45,11 @@ public class InstallStatusActivationTests : IDisposable
         new PluginArtifactWriter(staging).Generate(@"C:\fake\flaui-mcp.exe", "9.9.9");
 
         var text = InstallStatus.DescribeActivationHook(staging);
-        Assert.Contains("wired", text);
+
+        // StartsWith, NOT Contains("wired") — the negative message is "staged but NOT wired", which
+        // CONTAINS "wired". A Contains assertion here is satisfied by the failure string, so it cannot
+        // tell wired from not-wired: it would stay green if this method never reported success again.
+        Assert.StartsWith("wired", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -70,5 +74,35 @@ public class InstallStatusActivationTests : IDisposable
             """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo activation-payload"}]}]}}""");
 
         Assert.Contains("NOT wired", InstallStatus.DescribeActivationHook(staging));
+    }
+
+    /// `status` is what a user runs when the install is ALREADY broken, so it must never be the thing
+    /// that throws. Each of these is valid JSON of the wrong SHAPE — the cases where JsonNode's string
+    /// indexer and GetValue<string>() raise InvalidOperationException rather than returning null.
+    [Theory]
+    [InlineData("""{"hooks":42}""")]                                                    // hooks not an object
+    [InlineData("""[]""")]                                                              // root not an object
+    [InlineData("""{"hooks":{"SessionStart":42}}""")]                                   // SessionStart a scalar
+    [InlineData("""{"hooks":{"SessionStart":[{"hooks":42}]}}""")]                       // inner hooks not an array
+    [InlineData("""{"hooks":{"SessionStart":[{"hooks":[{"command":42}]}]}}""")]         // command not a string
+    [InlineData("""{"hooks":{"SessionStart":[{"hooks":[{"type":"command"}]}]}}""")]     // command absent
+    public void Degrades_to_a_message_instead_of_throwing_on_valid_json_of_the_wrong_shape(string json)
+    {
+        var staging = Temp();
+        Directory.CreateDirectory(Path.Combine(staging, "hooks"));
+        File.WriteAllText(Path.Combine(staging, "hooks", "hooks.json"), json);
+
+        Assert.Contains("NOT wired", InstallStatus.DescribeActivationHook(staging));
+    }
+
+    [Fact]
+    public void Reports_wired_when_SessionStart_is_a_single_entry_object_rather_than_an_array()
+    {
+        var staging = Temp();
+        Directory.CreateDirectory(Path.Combine(staging, "hooks"));
+        File.WriteAllText(Path.Combine(staging, "hooks", "hooks.json"),
+            """{"hooks":{"SessionStart":{"matcher":"startup","hooks":[{"type":"command","command":"x activation-payload"}]}}}""");
+
+        Assert.StartsWith("wired", InstallStatus.DescribeActivationHook(staging), StringComparison.Ordinal);
     }
 }

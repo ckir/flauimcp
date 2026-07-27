@@ -173,8 +173,24 @@ public sealed class PluginArtifactWriter
         };
 
         var hooks = root["hooks"]!.AsObject();
-        if (hooks["SessionStart"] is JsonArray existing) existing.Add(entry);
-        else hooks["SessionStart"] = new JsonArray { entry };
+        switch (hooks["SessionStart"])
+        {
+            case JsonArray existing:
+                existing.Add(entry);
+                break;
+
+            // A single entry OBJECT is the other shape this key can legitimately take. Assigning over
+            // it would silently delete a working hook — the exact defect the array branch above exists
+            // to avoid — so promote it into an array and keep both. DeepClone because a JsonNode cannot
+            // be re-parented while still attached to its current parent.
+            case JsonObject single:
+                hooks["SessionStart"] = new JsonArray { single.DeepClone(), entry };
+                break;
+
+            default:
+                hooks["SessionStart"] = new JsonArray { entry };
+                break;
+        }
     }
 
     /// Copy an embedded resource to a staging-relative path BYTE FOR BYTE. Deliberately a raw stream

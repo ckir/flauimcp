@@ -63,15 +63,36 @@ public static class InstallStatus
         try { root = JsonNode.Parse(File.ReadAllText(hooks)); }
         catch (JsonException) { return "staged but UNREADABLE — hooks.json is not valid JSON; reinstall to regenerate"; }
 
-        var wired = root?["hooks"]?["SessionStart"] is JsonArray entries
-                    && entries.Any(e => e?["hooks"] is JsonArray commands
-                        && commands.Any(c => c?["command"]?.GetValue<string>()
-                                              ?.Contains(ActivationPayload.Verb, StringComparison.Ordinal) == true));
+        // Every step is a TYPE TEST, never a cast or a string indexer on an unknown node.
+        // JsonNode's string indexer throws InvalidOperationException when the node is not a JsonObject,
+        // and GetValue<string>() throws when the value is not a string — so `{"hooks":42}` or
+        // `{"command":42}` would crash the one command a user runs to diagnose a broken install.
+        // Valid-JSON-but-wrong-shape must degrade to "NOT wired", not to a stack trace.
+        var wired = root is JsonObject rootObj
+                    && rootObj["hooks"] is JsonObject hookMap
+                    && SessionStartEntries(hookMap["SessionStart"]).Any(entry =>
+                        entry is JsonObject entryObj
+                        && entryObj["hooks"] is JsonArray commands
+                        && commands.Any(c => c is JsonObject cmd
+                            && cmd["command"] is JsonValue v
+                            && v.TryGetValue<string>(out var s)
+                            && s.Contains(ActivationPayload.Verb, StringComparison.Ordinal)));
 
         return wired
             ? "wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ")"
             : "staged but NOT wired — no SessionStart entry invokes the verb; reinstall to regenerate";
     }
+
+    /// Normalizes the two shapes a hooks.json `SessionStart` key can legitimately take — an array of
+    /// entries, or a single entry object — into one sequence. Kept in step with
+    /// PluginArtifactWriter.MergeActivationHook, which must PRESERVE whichever shape it finds; if these
+    /// two disagreed, `status` would report "NOT wired" for a hook that fires perfectly well.
+    private static IEnumerable<JsonNode?> SessionStartEntries(JsonNode? sessionStart) => sessionStart switch
+    {
+        JsonArray a  => a,
+        JsonObject o => new JsonNode?[] { o },
+        _            => Array.Empty<JsonNode?>(),
+    };
 
     /// <summary>
     /// Post-installer-rework, the Claude driving skill ships INSIDE the `flaui-mcp@flaui-mcp-marketplace`

@@ -103,4 +103,36 @@ public class PluginDistributionTests
         Assert.Contains("pre-existing", entries[0]!["hooks"]![0]!["command"]!.GetValue<string>());
         Assert.Contains("activation-payload", entries[1]!["hooks"]![0]!["command"]!.GetValue<string>());
     }
+
+    /// A single entry OBJECT is the other legal shape for this key. Assigning over it would silently
+    /// delete a working hook — the same defect the array branch exists to prevent, one shape over.
+    [Fact]
+    public void Merging_promotes_a_single_object_SessionStart_instead_of_deleting_it()
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(
+            """{"hooks":{"SessionStart":{"matcher":"startup","hooks":[{"type":"command","command":"pre-existing"}]}}}""")!;
+
+        PluginArtifactWriter.MergeActivationHook(root, @"C:\fake\flaui-mcp.exe");
+
+        var entries = root["hooks"]!["SessionStart"]!.AsArray();
+        Assert.Equal(2, entries.Count);
+        Assert.Contains("pre-existing", entries[0]!["hooks"]![0]!["command"]!.GetValue<string>());
+        Assert.Contains("activation-payload", entries[1]!["hooks"]![0]!["command"]!.GetValue<string>());
+    }
+
+    /// The matcher is what makes the hook FIRE. Nothing else asserted it, so changing it to "nonsense"
+    /// passed every other test in this suite while the hook would never trigger in production —
+    /// a green build over a dead feature. `compact` and `clear` matter most: those are exactly the
+    /// moments the agent has just lost its context and needs the payload re-injected.
+    [Fact]
+    public void Staged_hooks_json_pins_the_SessionStart_matcher()
+    {
+        var json = File.ReadAllText(Path.Combine(Stage(), "hooks", "hooks.json"));
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+        var matcher = doc.RootElement.GetProperty("hooks").GetProperty("SessionStart")[0]
+                         .GetProperty("matcher").GetString();
+
+        Assert.Equal("startup|clear|compact", matcher);
+    }
 }
