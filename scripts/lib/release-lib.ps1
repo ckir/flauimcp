@@ -220,8 +220,11 @@ function Add-ChangelogSection {
 
     # Match the VERSION, not the whole heading. The heading carries today's date, so re-cutting a version on a
     # later day produced no match and the guard silently appended a second '## [X.Y.Z]' section instead of
-    # refusing. Anchored, so a version merely mentioned inside a body never trips it.
-    if ($content -match ('(?m)^## \[' + [regex]::Escape($Version) + '\]')) {
+    # refusing. Anchored, so a version merely mentioned inside a body never trips it -- except inside a fenced
+    # block, where an entry documenting the changelog format would show a real heading at line start and block
+    # that version's release. Fenced blocks are illustration, not structure, so drop them before matching.
+    $guardTarget = $content -replace '(?s)```.*?```', ''
+    if ($guardTarget -match ('(?m)^## \[' + [regex]::Escape($Version) + '\]')) {
         throw "Add-ChangelogSection: a '## [$Version]' section already exists in $ChangelogPath — refusing to add a duplicate."
     }
 

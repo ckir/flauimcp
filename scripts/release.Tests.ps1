@@ -676,6 +676,18 @@ Describe 'Add-ChangelogSection edge cases' {
         $after | Should -Match '(?m)^## \[0\.2\.0\]'
     }
 
+    It 'ignores a heading inside a fenced block' {
+        # A fenced example documenting the changelog format shows a real '## [X.Y.Z]' at line start. It is
+        # illustration, not structure -- treating it as a section blocked that version's release outright.
+        $f = [string][char]0x60 * 3
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- The format is:`n${f}markdown`n## [1.0.0] - 2026-01-01`n${f}`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '1.0.0' -Body "### Added`n- Real." -Date ([datetime]'2026-07-28') } |
+            Should -Not -Throw
+        # ...but a REAL section outside a fence is still refused.
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.1.0' -Body "### Added`n- Dup." -Date ([datetime]'2026-07-28') } |
+            Should -Throw -ExpectedMessage '*already exists*'
+    }
+
     It 'still inserts normally into a multi-section changelog' {
         Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
         Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')
