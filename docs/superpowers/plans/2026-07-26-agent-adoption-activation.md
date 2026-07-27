@@ -1316,10 +1316,18 @@ Expected: `status` reports the plugin active **and** `Activation hook: wired`. T
 
 ```bash
 ls "$LOCALAPPDATA/Programs/FlaUI.Mcp/plugin/hooks/hooks.json"
-grep -c "select:mcp__plugin_flaui-mcp" "$LOCALAPPDATA/Programs/FlaUI.Mcp/plugin/skills/driving-flaui-mcp/SKILL.md"
+grep -c "mcp__plugin_flaui-mcp_flaui-mcp__" "$LOCALAPPDATA/Programs/FlaUI.Mcp/plugin/skills/driving-flaui-mcp/SKILL.md"
 ```
 
-Expected: the hooks file exists; the grep returns `1` (the shipped skill now carries the fixed load line).
+Expected: the hooks file exists; the grep returns `6` — five plugin-prefixed tool names in the load
+line, plus one mention in the explanatory paragraph beneath it.
+
+> **The original command here was wrong and would have looked like a failure.** It grepped for
+> `select:mcp__plugin_flaui-mcp`, which **cannot match**: `select:` is immediately followed by the
+> **bare** prefix, because the bare form leads each pair. Run against a correctly-shipped skill it
+> returns `0`. This is the same misconception that made Task 5's original
+> `DoesNotContain("select:mcp__flaui-mcp__")` assertion unsatisfiable — caught here only because the
+> smoke was actually executed against a real install.
 
 - [ ] **Step 4: Observational check — the only signal that measures the actual goal**
 
