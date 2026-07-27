@@ -3,6 +3,56 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] - 2026-07-27
+
+### Added
+- **Activation hook.** The plugin now installs a `SessionStart` hook that injects a short reminder the
+  desktop tools exist, plus the one `ToolSearch` call that loads them. It fires on `startup`, `clear` and
+  `compact` — the moments an agent has just lost its context. The payload is a compiled-in constant
+  emitted by a new `activation-payload` CLI verb; it takes no arguments, reads no stdin, and touches
+  nothing. Motivated by a live failure in which a capable agent had the server installed and the recipe
+  documented, and still asked a human to look at the screen.
+- **`flaui-mcp status` reports activation-hook health.** A new `Activation hook:` line distinguishes
+  `wired`, `not staged`, `staged but NOT wired`, `staged but MALFORMED`, and `staged but UNREADABLE`, so
+  "why is the hint not appearing?" is answerable without reading hook source. It parses the staged
+  `hooks.json` rather than substring-matching it, and degrades to a message on a locked or malformed file
+  instead of throwing — status is what an operator runs when something is already wrong.
+- **`jq` declared as an optional prerequisite.** The installer now notes when `jq` is absent, and
+  `.claude/recommended-tools.json` declares it. Only the autotrain nudge hook needs it; without `jq` that
+  hook silently never fires and everything else works.
+
+### Fixed
+- **The documented tool-load line matched nothing under plugin registration.** The shipped skill told the
+  agent to run `ToolSearch "select:mcp__flaui-mcp__desktop_*"`, but under plugin registration the tools
+  are named `mcp__plugin_flaui-mcp_flaui-mcp__*` — so at the one moment an agent did the right thing, the
+  recipe returned no tools. The load line now lists both prefix forms for all five orientation tools;
+  `select:` ignores names it cannot match, so it resolves correctly under either registration.
+- **The plugin shipped no hooks at all.** Plugin generation staged only four files — server config, plugin
+  and marketplace manifests, and the driving skill — so every hook mechanism in the repository reached 0%
+  of installed users, including the existing curate-nudge `Stop` hook. Generation now also stages
+  `hooks/`, `scripts/`, and the `flaui-learn` / `flaui-curate` skills, extracted byte-for-byte from
+  resources embedded in the binary.
+- **The driving skill activated too late.** Its frontmatter described *driving or dogfooding the server* —
+  matching only once an agent had already decided to drive. It is now question-shaped around the decision
+  point: what is on screen, whether an app is running or responding, what a background terminal tab shows,
+  and clicking or typing in a real GUI.
+- **The terminal-tab trap is now stated in the tool descriptions themselves.** `desktop_list_windows` and
+  `desktop_read_terminal_tab` say plainly that a tab title names the launcher, not the program — a tab
+  titled `cmd.exe` may host a running CLI agent — and to read every candidate before concluding a program
+  is absent. Descriptions are the one surface an agent cannot skim, hold stale, or lose to compaction.
+- Two em dashes in the 0.17.1 changelog entry were stored as mojibake. Release drafting feeds recent
+  entries to the model as a style exemplar, so the corruption was being offered as an example to imitate.
+
+### Changed
+- `hooks.json` is now generated at install time rather than extracted verbatim, so its `SessionStart`
+  command can carry the installed executable's absolute path — the same value `.mcp.json` already
+  receives. The embedded copy still supplies every other hook, and an existing `SessionStart` entry is
+  preserved rather than overwritten.
+- `*.sh` is pinned to LF via `.gitattributes`, so shipped hook scripts do not depend on the checkout
+  machine's `core.autocrlf`.
+- The plugin staging directory is derived in exactly one place, shared by `install`, `uninstall` and
+  `status`, so they cannot disagree about which directory to write and inspect.
+
 ## [0.17.1] - 2026-07-19
 
 ### Fixed
