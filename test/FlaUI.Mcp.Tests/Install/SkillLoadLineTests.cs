@@ -90,4 +90,38 @@ public class SkillLoadLineTests
         => Assert.Equal(
             File.ReadAllBytes(RepoPaths.At(BuildInput.Split('/'))),
             File.ReadAllBytes(RepoPaths.At(RepoTwin.Split('/'))));
+
+    private static string Frontmatter(string rel)
+    {
+        var text = Read(rel);
+        var end = text.IndexOf("\n---", 4, StringComparison.Ordinal);
+        Assert.True(end > 0, $"{rel}: no closing frontmatter fence");
+        return text[..end];
+    }
+
+    [Theory]
+    [MemberData(nameof(BothCopies))]
+    public void Frontmatter_does_not_embed_the_over_indexing_process_token(string rel)
+        => Assert.DoesNotContain("Get-Process", Frontmatter(rel), StringComparison.OrdinalIgnoreCase);
+
+    [Theory]
+    [MemberData(nameof(BothCopies))]
+    public void Frontmatter_is_decision_point_shaped_not_mechanism_shaped(string rel)
+    {
+        var fm = Frontmatter(rel);
+        Assert.DoesNotContain("Use when driving or dogfooding", fm);
+        // Four trigger surfaces the description must name: perception, liveness, background console,
+        // actuation. "screen" (not "on screen") — the description reads "on the Windows screen", and a
+        // bigram check would force the prose to contort to satisfy the test rather than the reverse.
+        foreach (var cue in new[] { "screen", "running", "terminal", "click" })
+            Assert.Contains(cue, fm, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [MemberData(nameof(BothCopies))]
+    public void Frontmatter_description_stays_within_budget(string rel)
+    {
+        var desc = Frontmatter(rel).Split('\n').First(l => l.StartsWith("description:", StringComparison.Ordinal));
+        Assert.True(desc.Length <= 600, $"{rel}: description is {desc.Length} chars (budget 600)");
+    }
 }

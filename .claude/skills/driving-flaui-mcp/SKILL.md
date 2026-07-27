@@ -1,6 +1,6 @@
 ---
 name: driving-flaui-mcp
-description: Use when driving or dogfooding this project's installed FlaUI.Mcp desktop-automation MCP server — inspecting live desktop state (windows, accessibility tree) or firing synthetic input (type/click/key/drag) against real apps, including lease unlock and focus/ref recovery.
+description: Use when you need to know what is on the Windows screen, whether a desktop app is running or responding, what a background terminal or console tab shows, or when you need to click, type into, or confirm a change landed in a real GUI app. Look and act yourself with the installed flaui-mcp desktop_* tools rather than asking the user to observe or operate their desktop for you. Covers read-only perception, synthetic input under a lease, and focus/ref recovery.
 ---
 
 # Driving FlaUI.Mcp (live server)
