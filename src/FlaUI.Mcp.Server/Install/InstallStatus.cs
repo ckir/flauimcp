@@ -1,4 +1,6 @@
+using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace FlaUI.Mcp.Server.Install;
@@ -32,6 +34,7 @@ public static class InstallStatus
 
         sb.AppendLine("Driving skill (Claude Code):");
         sb.AppendLine("  " + DescribeClaudeSkill(new ClaudeSkillDeployer(claudeConfigDir).SkillRoot, claudePluginStatus));
+        sb.AppendLine("  Activation hook: " + DescribeActivationHook(PluginIds.StagingDir(exePath)));
         sb.AppendLine();
 
         var collisions = DescribeCollisions(stateDir);
@@ -42,6 +45,64 @@ public static class InstallStatus
         sb.Append(DescribeLog(log));
         return sb.ToString().TrimEnd();
     }
+
+    /// <summary>Answers "why is the activation hint not appearing?" without reading hook source.
+    /// Reads the STAGED hooks.json — the artifact the client actually loads — not the repo tree,
+    /// which is registered nowhere.
+    ///
+    /// Parses rather than substring-matching: a bare Contains() over the file text reports "wired"
+    /// when the verb appears inside some UNRELATED hook, which is a false green on the one signal a
+    /// user consults when the activation hint fails to show up.</summary>
+    public static string DescribeActivationHook(string pluginStagingDir)
+    {
+        var hooks = Path.Combine(pluginStagingDir, "hooks", "hooks.json");
+        if (!File.Exists(hooks))
+            return "not staged — run `flaui-mcp install --agent claude` to (re)generate the plugin";
+
+        // Broad catch, matching this file's own convention (DescribeLog, DescribeVersion): a locked or
+        // permission-denied file must not crash the command a user runs BECAUSE something is wrong.
+        string raw;
+        try { raw = File.ReadAllText(hooks); }
+        catch (Exception e) { return $"staged but UNREADABLE — {e.Message}"; }
+
+        JsonNode? root;
+        try { root = JsonNode.Parse(raw); }
+        catch (JsonException) { return "staged but UNREADABLE — hooks.json is not valid JSON; reinstall to regenerate"; }
+
+        // Distinguished from "NOT wired" on purpose: a structurally broken file and a structurally
+        // sound one that simply lacks the hook need different actions from the operator, and reporting
+        // the same sentence for both hides the corruption behind a routine-looking message.
+        if (root is not JsonObject rootObj || rootObj["hooks"] is not JsonObject hookMap)
+            return "staged but MALFORMED — hooks.json has no top-level \"hooks\" object; reinstall to regenerate";
+
+        // Every step is a TYPE TEST, never a cast or a string indexer on an unknown node.
+        // JsonNode's string indexer throws InvalidOperationException when the node is not a JsonObject,
+        // and GetValue<string>() throws when the value is not a string — so `{"hooks":42}` or
+        // `{"command":42}` would crash the one command a user runs to diagnose a broken install.
+        // Valid-JSON-but-wrong-shape must degrade to "NOT wired", not to a stack trace.
+        var wired = SessionStartEntries(hookMap["SessionStart"]).Any(entry =>
+                        entry is JsonObject entryObj
+                        && entryObj["hooks"] is JsonArray commands
+                        && commands.Any(c => c is JsonObject cmd
+                            && cmd["command"] is JsonValue v
+                            && v.TryGetValue<string>(out var s)
+                            && s.Contains(ActivationPayload.Verb, StringComparison.Ordinal)));
+
+        return wired
+            ? "wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ")"
+            : "staged but NOT wired — no SessionStart entry invokes the verb; reinstall to regenerate";
+    }
+
+    /// Normalizes the two shapes a hooks.json `SessionStart` key can legitimately take — an array of
+    /// entries, or a single entry object — into one sequence. Kept in step with
+    /// PluginArtifactWriter.MergeActivationHook, which must PRESERVE whichever shape it finds; if these
+    /// two disagreed, `status` would report "NOT wired" for a hook that fires perfectly well.
+    private static IEnumerable<JsonNode?> SessionStartEntries(JsonNode? sessionStart) => sessionStart switch
+    {
+        JsonArray a  => a,
+        JsonObject o => new JsonNode?[] { o },
+        _            => Array.Empty<JsonNode?>(),
+    };
 
     /// <summary>
     /// Post-installer-rework, the Claude driving skill ships INSIDE the `flaui-mcp@flaui-mcp-marketplace`

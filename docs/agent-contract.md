@@ -43,7 +43,7 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 ### Window Lifecycle
 | Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_list_windows` | ReadOnly | List top-level desktop windows. Opt-ins: `includeBounds`, `includeHandles`. |
+| `desktop_list_windows` | ReadOnly | List top-level desktop windows. Opt-ins: `includeBounds`, `includeHandles`. A terminal tab title names the **launcher, not the program** — a tab titled `cmd.exe` may host a running CLI agent, so enumerate tabs and read every candidate before concluding a program is absent. |
 | `desktop_open_window` | ReadOnly | Open window by pid/title, returns handle (e.g. `w1`). |
 | `desktop_launch_app` | Destructive | Launch app, returns handle. Blocked in `--read-only-mode`. |
 | `desktop_focus_window` | Destructive | Bring window to foreground. Blocked in `--read-only-mode`. |
@@ -70,7 +70,7 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 | `desktop_get_grid_cell` | ReadOnly | Read one grid/table cell by `(row,col)`. |
 | `desktop_grid_select` | Destructive | Select cell by `(row,col)`. |
 | `desktop_get_text` | ReadOnly | Read element's text. **Params:** `selectionOnly`, `maxLength`, `fromEnd`. |
-| `desktop_read_terminal_tab` | Destructive | Read terminal tab. **Params:** `tabIndex`, `restoreFocus`, `fromEnd`, `maxLength`. |
+| `desktop_read_terminal_tab` | Destructive | Read terminal tab. **Params:** `tabIndex`, `restoreFocus`, `fromEnd`, `maxLength`. The tab title names the **launcher, not the program** — read every candidate tab before concluding the program you want is not running. |
 | `desktop_clipboard_get` | ReadOnly | Read system clipboard as text. |
 | `desktop_clipboard_set` | Destructive | Write text to clipboard. |
 

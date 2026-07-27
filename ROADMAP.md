@@ -140,6 +140,134 @@ app control — **prioritized** within Track B.
 Synthesize `IDataObject` / `IDropTarget` to drop files into apps (the real need: uploading files into a
 UI). Complex, error-prone COM injection; rated **YAGNI-High**. Kept on the list but lowest priority.
 
+### B4 — Reduce the visible-switch cost of WT multi-tab app discovery — **low / opportunistic**
+
+*Dogfooding note, 2026-07-26 — logged honestly after a driver error, NOT a missing-capability claim.*
+The capability to find a CLI app hiding in a **generic-titled** Windows Terminal tab **already ships**
+(v0.13.0 `desktop_read_terminal_tab` + the `driving-flaui-mcp` growth recipe *"tab title is a HINT, never
+a filter"*). Confirmed live: a consuming agent (Claude, via the clavity-ls ↔ Antigravity pairing) located
+the exact `agy` session clavity-ls was driving — in a tab titled bare `C:\WINDOWS\system32\cmd.exe` —
+by reading each candidate tab (`PONG-9F2C` diagnostic round-trip). Two agy/Gemini instances were running
+in *separate* bare-`cmd.exe` tabs; only a third titled its tab (braille spinner + task). The initial
+"can't find it" was a **driver error** — trusting titles instead of reading candidates, the exact trap
+the skill's trap-table names — **not a product gap.** No skill change needed; the recipe is correct and
+was simply not applied.
+
+**Genuine residual (modest, real-but-hard):** the recipe costs **one visible tab-switch per candidate**
+(`read_terminal_tab` selects → reads → restores — `restoreConfidence` even dropped to `reduced` here),
+which flickers the human's screen and is O(generic-tabs). A less-disruptive identification path would
+remove both the flicker and the N-call cost:
+- map each `TabItem` to its **hosted process/pid** (so "the agy tab" is found by process, no buffer read
+  or switch at all), and/or
+- a single composite that scans **all** tab buffers for a query string and returns the matching
+  `tabIndex`.
+
+Both are constrained by WT's UIA model (only the *active* tab's `Custom→Text` buffer is populated, so any
+buffer scan must still select each tab). Low priority — the shipped recipe is sufficient; this only trims
+disruption. **Driver-side lesson (already in the skill, re-underscored):** read EVERY candidate tab; a
+generic launcher title (`cmd.exe`/`PowerShell`) is never proof of a bare shell.
+
+**Recommended approach (for a future brainstorm — not yet decided):**
+
+- **Primary — process-based tab identity, ZERO switch.** WT spawns a ConPTY child process per tab/pane;
+  the real program (agy = a `gemini`/node process; `pwsh`; `cmd`; …) is a **descendant of the
+  `WindowsTerminal.exe` PID.** Enumerate that descendant tree (Win32 `CreateToolhelp32Snapshot` +
+  parent-PID walk, command line via `NtQueryInformationProcess`/WMI) to answer the agent's ACTUAL
+  question — *"is app X running under this WT, how many instances, and each one's command line?"* —
+  **without selecting a single tab (no flicker).** Expose as e.g.
+  `desktop_list_terminal_processes {window} → [{pid, name, commandLine, …}]`. Standalone win even if the
+  last mile below is hard.
+  - **Hard last mile:** PID → **tab ordinal.** ConPTY doesn't obviously expose which tab hosts which
+    child, and UIA `TabItem`s carry no PID. Investigate: correlate the active pane's UIA `ProcessId`
+    after a switch (defeats "no switch"), read WT's own session state, or **accept process-level identity
+    without the ordinal** and only switch when interaction (not identification) is actually required.
+- **Fallback — single composite `desktop_find_terminal_tab {window, query}`** that owns the
+  select→read→match→restore loop internally and returns the matching `tabIndex` in ONE call. Does NOT
+  remove the flicker (a buffer scan must select each tab), but collapses N agent calls to 1 and
+  centralizes the `restoreConfidence` handling. Ship if the ordinal last-mile is infeasible.
+- **Cross-tool synergy to weigh:** the clavity driver already knows agy's LS port/PID (it reads
+  `cli.log`); if the driver passes that PID, the process-list approach resolves *"which WT hosts agy"*
+  directly — the highest-leverage version pairs `desktop_list_terminal_processes` (flaui) with the driver
+  supplying the target PID (clavity).
+- **Lean going in:** ship `desktop_list_terminal_processes` **first** — a pure, non-disruptive win that
+  unblocks "find agy without flicker"; treat the ordinal-precise composite as a follow-on gated on a real
+  need to *interact with* (not merely identify) a background tab.
+
+---
+
+## Agent-adoption reliability — make correct usage the STRUCTURAL default ✅ DELIVERED (2026-07-27)
+
+> **Shipped on `feat/agent-adoption-activation`.** Both AAs are implemented as four mechanisms, plus a
+> packaging precondition that turned out to block the whole thing: `PluginArtifactWriter` staged only
+> four files, so **the plugin shipped no hooks at all** — every hook mechanism reached 0% of installed
+> users. Fixing distribution came first.
+>
+> | | Mechanism | Result |
+> |---|---|---|
+> | **M0** | Fix the broken tool-load line | The documented `ToolSearch` line named `mcp__flaui-mcp__*`, but under plugin registration the tools are `mcp__plugin_flaui-mcp_flaui-mcp__*` — it **matched nothing**. Now lists both prefixes; `select:` ignores names it cannot match. |
+> | **M1** | `SessionStart` activation hook | Compiled-in payload + `activation-payload` verb + generated `hooks.json`. Fires on `startup\|clear\|compact`. |
+> | **M2** | Decision-point frontmatter | Rewritten question-shaped: *what is on screen, is an app responding, what a background terminal shows*. |
+> | **M3** | Traps in tool descriptions | The launcher-not-the-program trap stated as an **imperative** in `desktop_list_windows` + `desktop_read_terminal_tab`. |
+>
+> **The AA2 hypothesis above was half right.** M3 is indeed the cheapest, highest-coverage lever. But
+> AA2's other half — the *"read me fresh before driving"* gate — was **rejected as circular**: an agent
+> that doesn't read the skill won't read a notice telling it to. M0 also had to come first: without it,
+> every other mechanism pointed at a load line that returned nothing.
+>
+> **Measured, so it stays settled:** the activation hook costs ~0.5 s and blocks the first turn, but that
+> is **below the noise floor** of a ~35 s session start. A `cmd /c type` variant (62 ms) and a light Rust
+> binary (62 ms) measure identically — the floor is Windows process creation, not the runtime — so the
+> hook is **not worth optimising in any language**. See spec §5.2.
+>
+> ▶ Still open: the observational check (does an agent reach for the tools unprompted?) is a dogfooding
+> gate, not a test, and can only be judged in live use.
+
+*Motivated by a live dogfooding failure, 2026-07-26: a capable consuming agent (Claude) had flaui-mcp
+available and the recipe documented, yet (a) did NOT reach for the tool — it asked the human to eyeball
+agy's console instead — and (b) drove on a **truncated/remembered** copy of the skill, missed the
+growth-region recipe, and "gave up" on an already-solved problem (finding a CLI agent in a bare-titled
+Windows Terminal tab). Neither is a one-off agent quirk. Both are **activation/discoverability gaps the
+product can close.** The current design silently assumes the agent will discover the tool and read the
+skill as-is; when that assumption fails, the tool goes unused or misused with no signal. The fix is
+structural — don't rely on agent discipline; make the right move the path of least resistance and the
+wrong assumption impossible to hold. Each gets its own spec.*
+
+### AA1 — Activation: surface the tool at the DECISION point, not only after the agent commits to driving
+
+The agent under-reaches because the tools are **deferred** (must be `ToolSearch`-loaded → out of sight,
+out of mind) and the skill activates on *"driving flaui-mcp"* — i.e. only once the agent has ALREADY
+decided to drive. The moment that actually matters is earlier: *"I need to see/verify on-screen state,
+confirm a message reached another app's console, or check whether an app is running."* Investigate:
+- Broaden the skill's frontmatter `description` to trigger at that **decision point** (need-to-perceive
+  the desktop / verify another app's state), not just the **action point** (already-driving).
+- Ship a lightweight **hook** in the flaui-mcp plugin (precedent: agy-autotrain ships reminder hooks)
+  that nudges *"verify on-screen state with flaui-mcp instead of asking the human"* when the agent is
+  about to ask a human to visually confirm desktop state — plus a SessionStart one-liner that the desktop
+  tools exist and when to load them.
+
+### AA2 — Skill-freshness: make a stale/partial skill copy unable to cause the failure
+
+The agent trusted a remembered/truncated skill instead of reading it as-is — and the skill's most
+load-bearing trap (*"a WT tab title is a launcher HINT, never a filter — read every candidate"*) lives in
+prose + the frequently-updated GROWTH region: exactly the parts most likely to be stale or cut from a
+compacted context. Two complementary fixes:
+- **A prominent "read me fresh before driving" gate** at the skill top: skills evolve and a context copy
+  may be truncated — Read the current file (incl. its growth region) before driving; never rely on a
+  remembered version. Optionally a **first-use PreToolUse hook** on the `desktop_*` tools that reminds
+  once per session.
+- **Hoist the highest-leverage traps into the TOOL DESCRIPTIONS** — the one surface an agent cannot skip
+  or hold stale, because descriptions are always in-context whenever the tool is loaded. `desktop_list_windows`
+  / `desktop_read_terminal_tab` should say, *in the description itself:* a WT tab title is the launcher,
+  not the program — a bare `cmd.exe`/`PowerShell` tab may hide a CLI agent; read every candidate. An agent
+  that never opened the skill still can't miss it. (Design tension: description length/noise vs.
+  guaranteed visibility — encode only the few genuinely trap-class facts, not the whole skill.)
+
+Both AAs serve one principle: **the failure was structural, not personal** — so close it in the product
+(activation + un-skippable placement of load-bearing facts) rather than re-teaching each new agent
+session. A future session should measure which lever moves the needle most (the honest hypothesis:
+AA2's "traps in tool descriptions" is the cheapest, highest-coverage fix, since it needs neither a hook
+nor the agent opening the skill).
+
 ---
 
 ## Opportunistic hardening (fold in when adjacent)

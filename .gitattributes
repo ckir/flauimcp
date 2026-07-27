@@ -1,0 +1,7 @@
+* text=auto
+
+# Shell scripts ship inside the plugin and are executed by whatever `bash` the
+# host resolves. Git Bash tolerates CRLF; other interpreters do not, and on
+# Windows a bare `bash` resolves to the WSL launcher before Git Bash. Pin LF so
+# the shipped bytes do not depend on the checkout machine's core.autocrlf.
+*.sh text eol=lf

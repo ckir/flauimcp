@@ -76,6 +76,33 @@ begin
   Result := '';
 end;
 
+// --- Optional prerequisite: jq. The plugin's Stop hook parses stdin JSON with it; without jq that
+// hook silently never fires. Informational only — flaui-mcp installs and runs fine without it, so
+// this must never block or fail the install. MB_OK auto-answers under /VERYSILENT.
+
+function JqOnPath(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec('cmd.exe', '/C where jq >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+            and (ResultCode = 0);
+end;
+
+procedure CheckOptionalPrereqs();
+begin
+  if not JqOnPath() then
+    MsgBox('Optional prerequisite missing: jq is not on PATH.'#13#10#13#10 +
+           'flaui-mcp installs and runs fine without it, but the autotrain nudge hook ' +
+           'will not fire. Install it later with:  winget install jqlang.jq',
+           mbInformation, MB_OK);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    CheckOptionalPrereqs();
+end;
+
 // --- Uninstall: ask whether to also remove user config/backups, and clean the PATH entry. ---
 
 function InitializeUninstall(): Boolean;

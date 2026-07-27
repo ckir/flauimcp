@@ -7,6 +7,7 @@ This manual covers installing, configuring, running, and auditing the `flaui-mcp
 - **OS:** Windows 10/11, x64. Windows 10 build 19041 (version 2004) or later is required for OCR features.
 - **Runtime:** None. Released binaries are self-contained, single-file executables.
 - **Session:** An interactive desktop session. The agent cannot drive headless or locked sessions.
+- **Optional — `jq`:** only the autotrain nudge hook needs it. Without `jq` that hook silently never fires; everything else works. Install with `winget install jqlang.jq`.
 
 ## Install
 
@@ -35,7 +36,7 @@ flaui-mcp install --agent all
 
 ## Register with Claude Code
 
-The installer generates a unified plugin — server config + `driving-flaui-mcp` skill — into `{app}\plugin`, then registers it with Claude Code:
+The installer generates a unified plugin — server config, skills, hooks and scripts — into `{app}\plugin`, then registers it with Claude Code:
 ```powershell
 claude plugin marketplace add "{app}\plugin" --scope user
 claude plugin install flaui-mcp@flaui-mcp-marketplace --scope user
@@ -47,6 +48,29 @@ If you installed Claude Code *after* `flaui-mcp`, run:
 flaui-mcp install --agent claude
 ```
 Restart Claude Code to load the plugin. Check registration status with `flaui-mcp status`.
+
+## Activation hook
+
+A `SessionStart` hook injects a short reminder that the desktop tools exist, plus the one `ToolSearch`
+call that loads them. It fires on `startup`, `clear` and `compact` — the moments an agent has just lost
+its context. The hook only prints text; it touches nothing.
+
+`status` reports its health:
+
+```
+Activation hook: wired (SessionStart -> flaui-mcp activation-payload)
+```
+
+| Reported | Meaning |
+|---|---|
+| `wired` | A SessionStart entry invokes the verb. Working. |
+| `not staged` | No plugin generated yet. Run `flaui-mcp install --agent claude`. |
+| `staged but NOT wired` | Plugin exists, no SessionStart entry names the verb. Reinstall. |
+| `staged but MALFORMED` | `hooks.json` has no top-level `hooks` object. Reinstall. |
+| `staged but UNREADABLE` | File is locked or not valid JSON. |
+
+The hook costs ~0.5 s and blocks the first turn — under 2% of a typical session start, and measured to
+be below the noise floor end-to-end. If it ever fails to run, the session starts normally without it.
 
 ## agy (Antigravity) parity
 
@@ -79,6 +103,7 @@ Same plugin, registered with agy via `agy plugin install "{app}\plugin"` — agy
 | `presence on\|off` | Toggle human presence sensing. |
 | `print-config` | Print the JSON configuration snippet to stdout. |
 | `status` | Print installation and registration status. |
+| `activation-payload` | Print the SessionStart hook payload as JSON. Invoked by the hook, not by hand. |
 | `--version`, `-v` | Print the server version. |
 | `--config <path>` | Override the target config file during install verbs. |
 
@@ -161,6 +186,20 @@ Mutative actions leave an audit log entry. If a selector resolves an element, th
 ## What the installer changes
 
 The installer hand-writes NO agent config. It generates the plugin; each agent's own CLI registers it and owns its config.
+
+The generated plugin contains:
+
+```
+.mcp.json  plugin.json  .claude-plugin/marketplace.json
+hooks/hooks.json                     SessionStart + Stop hooks
+scripts/flaui-curate-nudge.sh        invoked by the Stop hook
+skills/driving-flaui-mcp/SKILL.md    the driving manual
+skills/flaui-learn/SKILL.md          capture a driving observation
+skills/flaui-curate/SKILL.md         fold observations into the skill
+```
+
+`hooks.json` is **generated** at install time — its SessionStart command needs the installed exe's
+absolute path. Everything else is extracted byte-for-byte from resources embedded in the binary.
 
 | Target | Change |
 |---|---|

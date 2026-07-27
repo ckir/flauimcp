@@ -6,6 +6,23 @@ This document defines the guarantees and rationale behind FlaUI.Mcp — how it w
 
 FlaUI.Mcp gives an AI agent eyes and hands on the Windows desktop. It translates Model Context Protocol (MCP) commands into native UI Automation reads, pattern-based interactions, and synthetic OS-level input. It exposes Windows desktop control to non-deterministic agents while wrapping that access in a safety foundation that deterministic test-automation tools lack.
 
+## What the plugin runs on your machine
+
+Registering the plugin installs two hooks. Both are text-only — neither touches the desktop, the
+filesystem, or the lease.
+
+| Hook | Fires on | Does |
+|---|---|---|
+| `SessionStart` | `startup`, `clear`, `compact` | Runs `flaui-mcp activation-payload`, which prints a fixed reminder that the desktop tools exist plus the `ToolSearch` line that loads them. No arguments, no stdin, no network. |
+| `Stop` | End of an agent turn | Runs `flaui-curate-nudge.sh`, which suggests recording a driving observation. Needs `jq`; silently does nothing without it. |
+
+The activation payload is a **compiled-in constant**, not a script or a downloaded file. If a hook
+cannot run, the session starts normally — measured, not assumed.
+
+Why it exists: the tools are *deferred*, so an agent must `ToolSearch` for them before it can see they
+exist. Without a nudge at the moment of need, a capable agent will ask a human to look at the screen
+instead — the live failure that motivated this. See `ROADMAP.md` → *Agent-adoption reliability*.
+
 ## The dual-axis safety model
 
 The server enforces safety across two independent axes: the input lease and the destructive flag.
