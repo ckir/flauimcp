@@ -345,4 +345,9 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
 - `wake_accessibility` on Chromium (Chrome) hydrates the browser CHROME (tabs/toolbars/buttons) but NOT the page DOM (stays empty Panes) — use `find_text` (OCR) for page content.
 - `desktop_clipboard_get` returns `""` for BOTH empty AND non-text (file/image) clipboards (no format signal); `desktop_paste_text` refuses `ClipboardHoldsNonText` (`forceOverwriteClipboard` to override).
 *(rules above verified live 2026-07-17)*
+- **An unresponsive AGENT or SERVICE is a desktop-perception task — never a reason to ask the human.** One
+  shallow `desktop_list_windows` finding no top-level window for it is NOT an answer: a CLI agent lives inside
+  a terminal TAB, and the `Hint` on the WT window says so. Enumerate and read the tabs (rule above) before
+  reporting anything unreachable — having the tools loaded and still deferring to the user is the failure.
+  *(driver anti-pattern, observed live 2026-07-27)*
 <!-- AUTOTRAIN:GROWTH:END -->
