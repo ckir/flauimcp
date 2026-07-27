@@ -893,6 +893,32 @@ rounds 2–5, and every rejection premise still holds: the `Stop`-hook interlock
 commitment, AA2's gate is still circular under G2, and tool-surface shrinking is still unactionable under
 G1. No reversal warranted. §6 is the only section to come through a dedicated adversarial seat unchanged.
 
+### Round 8 — bespoke seat: Fold Integrity Auditor → **GREEN**
+
+Seated to test the review's own recurring failure: **every prior round created new debt in the act of
+folding the previous round's findings.** Round 8 asked whether round 7 did it again.
+
+The driver's solo pass found four — all of them round-7 fold debt, all in the plan:
+
+| # | Finding | Fold |
+| --- | --- | --- |
+| 48 | The Task 1 identity-test comment still said `plugins/.../scripts/` "is the copy that gets EMBEDDED and shipped" — the exact claim round 7 reversed | Rewritten: `.claude/hooks/` is the embedded build input; the twin is what the test guards |
+| 49 | Task 1's file list and Steps 2–3 checked and normalized only the `plugins/` twin — leaving the *shipped* bytes unnormalized | Both copies now listed, checked and renormalized, live copy first |
+| 50 | The `.gitattributes` comment asserted `CRLF breaks them (exit 0\r → numeric argument required)` — the retracted claim, restated as fact in code | Rewritten to interpreter-specific portability risk |
+| 51 | Task 1's commit message and file list omitted the live copy | Corrected |
+
+Those four were folded **before** the agy escalation, which then reviewed the corrected documents.
+
+**agy's independent pass: `no new findings` from all three seats**, Q5 `none`, verdict GREEN. Its Q1, Q2
+and Q4 answers directly confirm the four fixes above landed consistently across both documents.
+
+**Round 8 verdict: GREEN.** Stated precisely rather than flattered: the *escalation* was clean across
+three seats; the driver's solo seat found four items first, and they were documentation-consistency
+defects — comments, file lists and a commit command — with no design or contract impact. The seat seated
+specifically to catch fold debt found only fold debt, and the independent model found none after it.
+
+**Review closed at 51 findings across 8 rounds.**
+
 ### Round 7 (re-green) — bespoke seats: Retraction Auditor, Measurement Skeptic
 
 Required by the operator after G8 and the latency measurement changed the artifact. Scope was bound to

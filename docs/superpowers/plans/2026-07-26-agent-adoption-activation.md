@@ -54,7 +54,8 @@ The repo has no `.gitattributes`, and both copies of `flaui-curate-nudge.sh` are
 
 **Files:**
 - Create: `.gitattributes`
-- Modify: `plugins/flaui-mcp/scripts/flaui-curate-nudge.sh` (normalize to LF)
+- Modify: `.claude/hooks/flaui-curate-nudge.sh` (normalize to LF — **the live copy, and Task 3's build input**)
+- Modify: `plugins/flaui-mcp/scripts/flaui-curate-nudge.sh` (normalize to LF — the twin)
 
 > **Third copy alert.** There are **two** tracked copies of this script — `.claude/hooks/` (live,
 > registered by `.claude/settings.json`, proven to fire) and `plugins/flaui-mcp/scripts/` (registered
@@ -66,25 +67,29 @@ The repo has no `.gitattributes`, and both copies of `flaui-curate-nudge.sh` are
 ```gitattributes
 * text=auto
 
-# Shell scripts ship inside the plugin and are executed by bash.
-# CRLF breaks them (`exit 0\r` -> "numeric argument required"), so pin LF
-# regardless of core.autocrlf on the checkout machine.
+# Shell scripts ship inside the plugin and are executed by whatever `bash` the
+# host resolves. Git Bash tolerates CRLF; other interpreters do not, and on
+# Windows a bare `bash` resolves to the WSL launcher before Git Bash. Pin LF so
+# the shipped bytes do not depend on the checkout machine's core.autocrlf.
 *.sh text eol=lf
 ```
 
-- [ ] **Step 2: Verify the script is currently CRLF**
+- [ ] **Step 2: Verify BOTH copies are currently CRLF**
 
-Run: `file plugins/flaui-mcp/scripts/flaui-curate-nudge.sh`
-Expected: output contains `with CRLF line terminators`
+```bash
+file .claude/hooks/flaui-curate-nudge.sh plugins/flaui-mcp/scripts/flaui-curate-nudge.sh
+```
+
+Expected: both lines contain `with CRLF line terminators`. The live copy is checked first because it is Task 3's build input — normalizing only the twin would leave the shipped bytes unchanged.
 
 - [ ] **Step 3: Renormalize the working tree**
 
 ```bash
 git add --renormalize .
-file plugins/flaui-mcp/scripts/flaui-curate-nudge.sh
+file .claude/hooks/flaui-curate-nudge.sh plugins/flaui-mcp/scripts/flaui-curate-nudge.sh
 ```
 
-Expected: output no longer contains `CRLF`.
+Expected: neither line contains `CRLF`.
 
 - [ ] **Step 4: Guard the two script copies against drift**
 
@@ -94,9 +99,10 @@ Append to `test/FlaUI.Mcp.Tests/Install/PluginDistributionTests.cs` (inside the 
     [Fact]
     public void The_two_tracked_copies_of_the_nudge_script_are_byte_identical()
     {
-        // .claude/hooks/ is the LIVE copy (registered by .claude/settings.json and proven to fire);
-        // plugins/flaui-mcp/scripts/ is the copy that gets EMBEDDED and shipped. Identical today,
-        // and nothing enforced it — a future edit to the live copy would silently ship the stale one.
+        // .claude/hooks/ is the LIVE copy: registered by .claude/settings.json, proven to fire, and
+        // the one csproj EMBEDS (Task 3). plugins/flaui-mcp/scripts/ is a twin that nothing consumes.
+        // Identical today with nothing enforcing it — this test stops the twin rotting unnoticed, and
+        // is the one signal that would catch someone "fixing" the twin and wondering why it never ships.
         Assert.Equal(
             File.ReadAllBytes(RepoPaths.At(".claude", "hooks", "flaui-curate-nudge.sh")),
             File.ReadAllBytes(RepoPaths.At("plugins", "flaui-mcp", "scripts", "flaui-curate-nudge.sh")));
