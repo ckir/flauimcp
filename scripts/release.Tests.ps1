@@ -459,6 +459,20 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
             Should -Be "### Added`n- A thing."
     }
 
+    It 'refuses to guess when the body itself holds a line-anchored closing tag' {
+        # The residual of the residual: no delimiter scheme survives self-reference. Guessing would truncate
+        # silently and the fragment keeps its '### ' heading, so nothing downstream would catch it. Failing
+        # sends the caller to $EDITOR with the raw output in the Reason -- loud, and recoverable.
+        $raw = "<changelog>`n### Changed`n- The closing tag is now:`n</changelog>`n- and that is all.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'skips an unclosed opening tag in trailing chatter' {
+        # Binding to the orphan would drop a perfectly good body. Walk back to the tag that actually closes.
+        $raw = "<changelog>`n### Added`n- A thing.</changelog>`nNote: the <changelog> wrapper is required."
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
     It 'takes the last complete pair when the model self-corrects' {
         $raw = "<changelog>`n### Added`n- Draft one.`n</changelog>`nOn reflection:`n<changelog>`n### Added`n- Draft two.`n</changelog>"
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- Draft two."
@@ -487,9 +501,11 @@ Describe 'Headless isolation contract' {
     It 'invokes claude with --safe-mode, and never with --bare' {
         # Scope to the invocation lines: the surrounding comment names --bare precisely to warn it off, so a
         # whole-file 'Should -Not -Match' would fail on the warning rather than on a real invocation.
-        # Skip comment lines, else commenting the invocation out leaves the test green (measured).
+        # Strip each line at its first '#', else the invocation survives as a trailing comment and this stays
+        # green with safe-mode disabled -- both the whole-line and inline forms of that trap were measured.
         $invocations = @(Get-Content (Join-Path $Repo 'scripts/release.ps1') |
-            Where-Object { $_ -notmatch '^\s*#' -and $_ -match '&\s+claude\s+-p' })
+            ForEach-Object { ($_ -split '#', 2)[0] } |
+            Where-Object { $_ -match '&\s+claude\s+-p' })
         $invocations.Count | Should -Be 1
         $invocations[0] | Should -Match '&\s+claude\s+-p\s+--safe-mode'
         # --bare would skip keychain reads and demand ANTHROPIC_API_KEY, breaking the operator's OAuth.
@@ -526,5 +542,24 @@ Describe 'Unattended draft-resume contract' {
         $src = Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw
         $src | Should -Not -Match '(?m)^\s*\$resume\s*=\s*\[bool\]\$Yes'
         $src | Should -Match '(?m)^\s*\$resume\s*=\s*\$false'
+    }
+}
+
+Describe 'Unattended pre-staged draft' {
+    It 'gates the -Yes resume on the draft looking like a changelog body' {
+        # Discarding unconditionally broke a real workflow (pre-stage interactively, finish from CI with -Yes)
+        # and on the zero-commit path walked into a hard throw, since -Yes forbids the $EDITOR fallback.
+        # Resuming unconditionally let a stale chatter draft ship unreviewed. The heading gate keeps both.
+        $src = (Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw)
+        $src | Should -Match '(?m)^\s*\$resume\s*=\s*\$staged\s+-match\s+''\^###'
+        $src | Should -Not -Match '(?m)^\s*\$resume\s*=\s*\[bool\]\$Yes'
+    }
+
+    It 'documents that gate in both the help block and the usage text' {
+        # Docs that contradict behaviour are a real defect here: they tell an operator their pre-staged draft
+        # will be used when it may be discarded.
+        $src = (Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw)
+        ([regex]::Matches($src, "starts with '### '|still starts with a '### ' heading")).Count |
+            Should -BeGreaterOrEqual 2
     }
 }

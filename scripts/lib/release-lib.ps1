@@ -312,24 +312,41 @@ function Get-ChangelogBodyFromLlmOutput {
     Closing at the FIRST tag truncates the first case; closing at the LAST tag swallows the real close plus the
     chatter in the second. Both failures keep a '### ' heading, so neither is caught downstream -- they ship.
 
-    So close at the first tag that is ALONE ON ITS LINE, which is how the tag is actually emitted (the prompt's
+    So close at the tag that is ALONE ON ITS LINE, which is how the tag is actually emitted (the prompt's
     example puts it on its own line, and the live model follows it). A tag mentioned in prose sits mid-line and
     is skipped, whichever side of the close it falls on. Only if no line-anchored tag exists at all do we fall
     back to the last inline one -- that covers a model closing on the same line as its final bullet, and in
     that input there is no competing prose tag to be confused by.
+
+    That still leaves one genuinely ambiguous input: a body containing a line that is ONLY the closing tag.
+    No delimiter scheme escapes self-reference, so rather than guess we FAIL there (see below) -- a wrong guess
+    truncates silently and the fragment keeps its '### ' heading, which is precisely the class of failure this
+    whole function exists to stop.
     #>
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyString()][string]$RawOutput)
 
     if ([string]::IsNullOrWhiteSpace($RawOutput)) { return $null }
 
-    if ($RawOutput -match '(?sm).*<changelog>(.*?)^[ \t]*</changelog>[ \t\r]*$') {
-        $body = $Matches[1].Trim()
-    } elseif ($RawOutput -match '(?s).*<changelog>(.*)</changelog>') {
-        $body = $Matches[1].Trim()
-    } else {
-        return $null
+    # Walk opening tags newest-first and take the first that actually closes. Skipping unclosed ones matters:
+    # chatter after a well-formed block can mention <changelog>, and binding to that orphan would drop a
+    # perfectly good body.
+    $body = $null
+    $opens = [regex]::Matches($RawOutput, '<changelog>')
+    for ($k = $opens.Count - 1; $k -ge 0; $k--) {
+        $tail = $RawOutput.Substring($opens[$k].Index + $opens[$k].Length)
+        $anchored = [regex]::Matches($tail, '(?m)^[ \t]*</changelog>[ \t\r]*$')
+        # More than one line-anchored close after the same opening tag means the body itself contains one, and
+        # there is no way to tell which is the real end. Refuse rather than guess: a wrong guess truncates
+        # silently and still leaves a '### ' heading, so nothing downstream catches it. $null sends the caller
+        # to the editor with the raw output in hand.
+        if ($anchored.Count -gt 1) { return $null }
+        if ($anchored.Count -eq 1) { $body = $tail.Substring(0, $anchored[0].Index).Trim(); break }
+        # No line-anchored close: accept an inline one (a model closing on the same line as its last bullet).
+        $inline = $tail.LastIndexOf('</changelog>')
+        if ($inline -ge 0) { $body = $tail.Substring(0, $inline).Trim(); break }
     }
+    if ($null -eq $body) { return $null }
 
     # Tolerate a fenced block inside the tags: the prompt forbids fences, but wrapping output in ``` is a
     # strong model habit and stripping it is cheaper than failing an otherwise-good body.

@@ -13,7 +13,9 @@ Makes no writes (no commit/tag/push) and never calls the LLM.
 
 .PARAMETER Yes
 Unattended: never blocks on stdin. Auto-accepts the changelog draft and the final cut confirmation; every
-other interactive gate hard-fails (exit 1) rather than opening an interactive fallback. See the plan's
+other interactive gate hard-fails (exit 1) rather than opening an interactive fallback. An existing draft
+from a previous run is resumed only if it still starts with a '### ' heading -- otherwise it is discarded
+and regenerated, so a stale non-changelog draft cannot be accepted unreviewed. See the plan's
 "Unattended (-Yes) contract" table.
 
 .PARAMETER Version
@@ -83,6 +85,7 @@ FLAGS
   -WhatIf           Preview version + gate + LLM prompt. No writes, no LLM call.
   -Yes, -y          Unattended: auto-accept the draft and the final confirmation;
                     every other interactive gate hard-fails instead of blocking.
+                    Resumes a previous run's draft only if it starts with '### '.
   -Version X.Y.Z    Pin the release version (skips commit-driven computation).
   -Bump <level>     Force major/minor/patch from the last tag.
   -Model <name>     claude -p model for the changelog draft (default: haiku).
@@ -227,14 +230,23 @@ function Get-OrCreateDraft {
     $draftPath = Join-Path ([IO.Path]::GetTempPath()) "flaui-mcp-release-draft-$Version.md"
 
     if (Test-Path $draftPath) {
-        # Never auto-resume unattended. A draft on disk can predate this script -- including one written before
-        # the <changelog> extraction existed, by the very defect that motivated it -- and resuming bypasses
-        # extraction entirely. Under -Yes nothing then inspects it: Invoke-DraftReview auto-accepts, and its
-        # guard is a PARTIAL '### ' match, so a stale body with a chatty trailer would ship. Interactive runs
-        # still get the offer, and there the operator reads the body in the review loop before accepting.
+        # Unattended, resume only a draft that still LOOKS like a changelog body. A draft on disk can predate
+        # this script -- including one written before the <changelog> extraction existed, by the very defect
+        # that motivated it -- and resuming bypasses extraction entirely, with nothing downstream to catch it
+        # (Invoke-DraftReview auto-accepts under -Yes). But discarding unconditionally would break a real
+        # workflow: pre-stage a draft interactively, then finish the release from CI with -Yes. Worse, on the
+        # zero-commit path that discard walks straight into a hard throw, because -Yes forbids the $EDITOR
+        # fallback -- turning a previously-working run into a fatal one. Gating on the heading keeps both:
+        # a hand-staged body resumes, a chatter draft is thrown away.
         $resume = $false
         if ($Yes) {
-            Write-Warning "Discarding the existing draft for v$Version — unattended runs always regenerate."
+            $staged = (Get-Content $draftPath -Raw).Trim()
+            $resume = $staged -match '^###\s'
+            if ($resume) {
+                Write-Host "Resuming the pre-staged draft for v$Version (unattended)."
+            } else {
+                Write-Warning "Discarding the existing draft for v$Version — it does not start with a '### ' heading, so it is not a changelog body."
+            }
         } else {
             $ans = Read-Host "Found an existing draft for v$Version from a previous run. Resume it? [Y/n]"
             $resume = ($ans -eq '' -or $ans -match '^[Yy]')
