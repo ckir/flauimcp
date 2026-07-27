@@ -631,3 +631,46 @@ Describe 'Draft file edge cases' {
         } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe 'Add-ChangelogSection edge cases' {
+    BeforeEach {
+        $script:Cl = Join-Path ([IO.Path]::GetTempPath()) ("cl_" + [guid]::NewGuid() + ".md")
+    }
+    AfterEach { Remove-Item $script:Cl -Force -ErrorAction SilentlyContinue }
+
+    It 'preserves a one-line CHANGELOG instead of destroying it' {
+        # Get-Content returns a SCALAR for a one-line file, so the range index sliced CHARACTERS: the existing
+        # release section was overwritten by a single '#'. Measured before the @() fix.
+        Set-Content -Path $Cl -Value '## [0.1.0] - 2026-01-01' -NoNewline
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')
+        $after = Get-Content $Cl -Raw
+        $after | Should -Match '(?m)^## \[0\.1\.0\] - 2026-01-01$'
+        $after | Should -Match '(?m)^## \[0\.2\.0\] - 2026-07-27$'
+        # New section on top, old one intact below it.
+        $after.IndexOf('## [0.2.0]') | Should -BeLessThan $after.IndexOf('## [0.1.0]')
+    }
+
+    It 'refuses a duplicate version even on a different date' {
+        # The guard used to match the whole heading, which carries the date, so a re-cut the next day appended
+        # a second '## [X.Y.Z]' section instead of throwing. Measured: two sections, no error.
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.2.0] - 2026-07-26`n### Added`n- First cut.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- Second." -Date ([datetime]'2026-07-27') } |
+            Should -Throw -ExpectedMessage '*already exists*'
+        ([regex]::Matches((Get-Content $Cl -Raw), '(?m)^## \[0\.2\.0\]')).Count | Should -Be 1
+    }
+
+    It 'still inserts normally into a multi-section changelog' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')
+        $after = Get-Content $Cl -Raw
+        $after | Should -Match '(?m)^# Changelog$'
+        $after.IndexOf('## [0.2.0]') | Should -BeLessThan $after.IndexOf('## [0.1.0]')
+        $after | Should -Match '- Old\.'
+    }
+
+    It 'does not trip the guard on a version merely mentioned in a body' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Fixed`n- Regression from ## [0.2.0] discussion.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27') } |
+            Should -Not -Throw
+    }
+}

@@ -216,11 +216,17 @@ function Add-ChangelogSection {
     $heading = "## [$Version] - $($Date.ToString('yyyy-MM-dd', [cultureinfo]::InvariantCulture))"
     $content = Get-Content $ChangelogPath -Raw
 
-    if ($content -match [regex]::Escape($heading)) {
-        throw "Add-ChangelogSection: heading '$heading' already exists in $ChangelogPath — refusing to add a duplicate."
+    # Match the VERSION, not the whole heading. The heading carries today's date, so re-cutting a version on a
+    # later day produced no match and the guard silently appended a second '## [X.Y.Z]' section instead of
+    # refusing. Anchored, so a version merely mentioned inside a body never trips it.
+    if ($content -match ('(?m)^## \[' + [regex]::Escape($Version) + '\]')) {
+        throw "Add-ChangelogSection: a '## [$Version]' section already exists in $ChangelogPath — refusing to add a duplicate."
     }
 
-    $lines = Get-Content $ChangelogPath
+    # @() forces an array. A one-line CHANGELOG.md makes Get-Content return a scalar STRING, and the range
+    # index below then slices CHARACTERS: $lines[0..0] yielded '#', so the file's only release section was
+    # overwritten by a single character. Same unwrap footgun as $distinct in Get-VersionsInSync.
+    $lines = @(Get-Content $ChangelogPath)
     $firstSectionLine = ($lines | Select-String -Pattern '^## \[' | Select-Object -First 1).LineNumber
     $section = "$heading`n`n$($Body.Trim())`n"
 
