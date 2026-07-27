@@ -409,6 +409,22 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
     }
 
+    It 'returns null for an untagged body that WOULD pass the "### " guard' {
+        # The case above is rejected by the '### ' guard alone, so on its own it does not prove the TAGS are
+        # doing any work -- deleting the extraction keeps it green. This one cannot pass without them.
+        Get-ChangelogBodyFromLlmOutput -RawOutput "### Added`n- A perfectly good body the model forgot to tag." |
+            Should -BeNullOrEmpty
+    }
+
+    It 'keeps a body that contains the literal closing tag' {
+        # A release that changes the tag contract describes the tags in its own changelog. A non-greedy close
+        # truncated the body at the inner tag, and the fragment still held a '### ' heading -- so it passed
+        # every downstream check and would have shipped silently truncated.
+        $raw = "<changelog>`n### Changed`n- The body is now wrapped in </changelog> tags.`n- A second bullet.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw |
+            Should -Be "### Changed`n- The body is now wrapped in </changelog> tags.`n- A second bullet."
+    }
+
     It 'returns null when the tags are present but hold no "### " section' {
         $raw = "<changelog>`nNothing much changed this release.`n</changelog>"
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
@@ -446,5 +462,40 @@ Describe 'Get-ChangelogPrompt delimiter contract' {
         $p | Should -BeLike '*</changelog>*'
         # The extractor drops everything outside the tags, so the prompt must say the tags are mandatory.
         $p | Should -BeLike '*discarded*'
+    }
+}
+
+Describe 'Headless isolation contract' {
+    # The primary fix (running the draft with hooks disabled) lives in release.ps1 and the nudge hook, neither
+    # of which this suite can dot-source -- release.ps1 executes on load. These pin the contract at the source
+    # level so it cannot be dropped silently; the behavioural proof is the live run recorded in the commit.
+    It 'invokes claude with --safe-mode, and never with --bare' {
+        # Scope to the invocation lines: the surrounding comment names --bare precisely to warn it off, so a
+        # whole-file 'Should -Not -Match' would fail on the warning rather than on a real invocation.
+        $invocations = @(Get-Content (Join-Path $Repo 'scripts/release.ps1') | Where-Object { $_ -match '&\s+claude\s+-p' })
+        $invocations.Count | Should -Be 1
+        $invocations[0] | Should -Match '&\s+claude\s+-p\s+--safe-mode'
+        # --bare would skip keychain reads and demand ANTHROPIC_API_KEY, breaking the operator's OAuth.
+        $invocations[0] | Should -Not -Match '--bare'
+    }
+
+    It 'sets the nudge opt-out for the child process' {
+        # Must pin the ASSIGNMENT, not a mention: the comment above it names the variable, so a bare
+        # 'Should -Match FLAUI_MCP_NO_NUDGE' stays green after the assignment is deleted (measured).
+        $src = Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw
+        $src | Should -Match '\$env:FLAUI_MCP_NO_NUDGE\s*=\s*''1'''
+    }
+
+    It 'has a curate-nudge hook that honours the opt-out and CI' {
+        # Same trap: pin the guards that EXIT, not the words. Both must short-circuit before the inbox read.
+        $hook = Get-Content (Join-Path $Repo '.claude/hooks/flaui-curate-nudge.sh') -Raw
+        $hook | Should -Match '(?m)^case\s+"\$\{FLAUI_MCP_NO_NUDGE:-\}".*exit 0.*esac$'
+        $hook | Should -Match '(?m)^\[ -n "\$\{CI:-\}" \] && exit 0$'
+    }
+
+    It 'ships the hook to the plugin byte-identically' {
+        $a = Get-Content (Join-Path $Repo '.claude/hooks/flaui-curate-nudge.sh') -Raw
+        $b = Get-Content (Join-Path $Repo 'plugins/flaui-mcp/scripts/flaui-curate-nudge.sh') -Raw
+        $b | Should -Be $a
     }
 }

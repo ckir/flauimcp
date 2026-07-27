@@ -302,14 +302,18 @@ function Get-ChangelogBodyFromLlmOutput {
     Missing or empty delimiters are a CAPTURE FAILURE ($null), never a body — the caller falls back to the
     editor rather than persisting garbage to the resumable draft file.
 
-    Matches the LAST complete tag pair: a model that shows a draft and then corrects itself should be taken
-    at its final word. With one block (the normal case) first and last are the same.
+    Spans the LAST opening tag to the LAST closing tag -- both quantifiers greedy. A model that shows a draft
+    and then corrects itself should be taken at its final word (last opening tag), and the body must survive
+    containing the literal string "</changelog>" (last closing tag). That second case is not hypothetical: the
+    prompt hands the model the tag contract, so a release that CHANGES that contract will describe the tags in
+    its own changelog. A non-greedy close truncated such a body at the inner tag, and because the surviving
+    fragment still held a '### ' heading it passed every downstream check and would have shipped.
     #>
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyString()][string]$RawOutput)
 
     if ([string]::IsNullOrWhiteSpace($RawOutput)) { return $null }
-    if ($RawOutput -notmatch '(?s).*<changelog>(.*?)</changelog>') { return $null }
+    if ($RawOutput -notmatch '(?s).*<changelog>(.*)</changelog>') { return $null }
 
     $body = $Matches[1].Trim()
 
