@@ -1,0 +1,8 @@
+[
+  {
+    "name": "jq",
+    "why": "The plugin's Stop hook (flaui-curate-nudge.sh) parses its stdin JSON with jq; without it the autotrain nudge silently never fires. The SessionStart activation hook does NOT need jq",
+    "install": "winget install jqlang.jq",
+    "in_path": "jq"
+  }
+]
