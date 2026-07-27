@@ -532,6 +532,44 @@ FIRST because it is the genuinely novel instruction:
   ▶ **Still owed, opportunistic:** a cold-start reading after the next reboot. The only cold figure is
   ~3.9 s at 100% CPU and remains a heavily pessimistic outlier.
 
+  ### END-TO-END: the hook cost is BELOW THE NOISE FLOOR. Do not optimise it.
+
+  Every figure above measures the hook COMMAND in isolation. What a user actually waits is the whole
+  session start, and `SessionStart` blocks the first turn — which always includes a model round-trip.
+  Measured in an isolated project, three configs interleaved, 5 samples each (so client overhead and
+  network latency appear in all three and cancel in the deltas):
+
+  | SessionStart hook | median session start |
+  | --- | --- |
+  | none | **35 496 ms** |
+  | the 485 ms verb (today) | 34 612 ms |
+  | a 62 ms `cmd /c type` | 35 149 ms |
+
+  **The deltas are NEGATIVE** — the hooked configs measured *faster* than no hook, which is impossible
+  for an added cost. The hook is ~1.4% of session start, and the sample spread (33.1–51.9 s, ±9 s) is
+  roughly **20× the entire saving on offer**. The 420 ms difference between the slowest and fastest hook
+  option is not detectable end-to-end, let alone perceptible.
+
+  **Conclusion: the activation hook is NOT worth optimising, in any language.** Three levels of
+  measurement all point the same way:
+  1. A light Rust binary and `cmd /c type` are identical (62 ms both) — the floor is Windows process
+     creation, not the runtime. No language beats it.
+  2. That floor would save ~420 ms per session start in isolation.
+  3. End-to-end, ~420 ms disappears under a model round-trip ~70× larger.
+
+  This retroactively vindicates §5.2's original "acceptable, no design escalation" judgement, and
+  supersedes the concern raised when the real verb measured 425 ms instead of 313 ms — that gap was real
+  but is immaterial at the only scale that matters to a user.
+
+  **Generating `activation.json` and pointing the hook at `cmd /c type` remains a valid, costed option
+  (~62 ms) — deliberately NOT taken.** It would add a second copy of the payload beside the compiled
+  constant, i.e. the G3 drift class this project exists to close, in exchange for a saving that cannot
+  be measured. Revisit only if the hook's cost ever becomes observable.
+
+  *Caveats, stated not buried:* n=5 with large variance; the negative deltas prove noise, not that hooks
+  are free. Measured via headless `claude -p`, which may not match an interactive start or `/compact`
+  exactly. The order-of-magnitude conclusion (0.5 s against ~35 s) is robust to all of that.
+
 - **Load-independent finding that strengthens Option B.** A hook command of the form `bash "…"` does not
   have a determinate interpreter on Windows. Measured on this machine, bare `bash` resolves **first** to
   `C:\WINDOWS\system32\bash.exe` — the **WSL** launcher — with `C:\Program Files\Git\bin\bash.exe` only
