@@ -11,6 +11,10 @@ internal static class PluginIds
     public const string MarketplaceName = "flaui-mcp-marketplace";
     public const string InstallTarget   = "flaui-mcp@flaui-mcp-marketplace";
     public const string SkillResource   = "FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md";
+    public const string LearnSkill      = "FlaUI.Mcp.Server.seed.flaui-learn.SKILL.md";
+    public const string CurateSkill     = "FlaUI.Mcp.Server.seed.flaui-curate.SKILL.md";
+    public const string HooksJson       = "FlaUI.Mcp.Server.seed.hooks.hooks.json";
+    public const string CurateNudgeSh   = "FlaUI.Mcp.Server.seed.scripts.flaui-curate-nudge.sh";
 }
 
 /// Generates the unified plugin directory in the isolated staging dir at install time.
@@ -83,7 +87,8 @@ public sealed class PluginArtifactWriter
         WriteMcpJson(exePath);
         WritePluginJson(version);
         WriteMarketplaceJson();
-        WriteSkill();
+        WriteSkills();
+        WriteHooksAndScripts();
     }
 
     private void WritePluginJson(string version)
@@ -108,14 +113,29 @@ public sealed class PluginArtifactWriter
         File.WriteAllText(Path.Combine(dir, "marketplace.json"), json);
     }
 
-    private void WriteSkill()
+    private void WriteSkills()
     {
-        var target = Path.Combine(_stagingDir, "skills", "driving-flaui-mcp");
-        Directory.CreateDirectory(target);
-        // Read the embedded skill exactly as AgyConfigWriter.DeploySkill (AgyConfigWriter.cs:36) does.
-        using var stream = typeof(PluginArtifactWriter).Assembly.GetManifestResourceStream(PluginIds.SkillResource)
-            ?? throw new FileNotFoundException($"embedded skill resource missing: {PluginIds.SkillResource}");
-        using var reader = new StreamReader(stream);
-        File.WriteAllText(Path.Combine(target, "SKILL.md"), reader.ReadToEnd());
+        Extract(PluginIds.SkillResource, Path.Combine("skills", "driving-flaui-mcp", "SKILL.md"));
+        Extract(PluginIds.LearnSkill,    Path.Combine("skills", "flaui-learn", "SKILL.md"));
+        Extract(PluginIds.CurateSkill,   Path.Combine("skills", "flaui-curate", "SKILL.md"));
+    }
+
+    private void WriteHooksAndScripts()
+    {
+        Extract(PluginIds.HooksJson,     Path.Combine("hooks", "hooks.json"));
+        Extract(PluginIds.CurateNudgeSh, Path.Combine("scripts", "flaui-curate-nudge.sh"));
+    }
+
+    /// Copy an embedded resource to a staging-relative path BYTE FOR BYTE. Deliberately a raw stream
+    /// copy, not ReadToEnd/WriteAllText: text round-tripping would re-encode newlines and turn a
+    /// shipped .sh into CRLF, which bash rejects at the first `\r`.
+    private void Extract(string resource, string relativePath)
+    {
+        var target = Path.Combine(_stagingDir, relativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        using var stream = typeof(PluginArtifactWriter).Assembly.GetManifestResourceStream(resource)
+            ?? throw new FileNotFoundException($"embedded plugin resource missing: {resource}");
+        using var outFile = File.Create(target);
+        stream.CopyTo(outFile);
     }
 }
