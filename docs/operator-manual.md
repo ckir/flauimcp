@@ -41,13 +41,18 @@ The installer generates a unified plugin — server config, skills, hooks and sc
 claude plugin marketplace add "{app}\plugin" --scope user
 claude plugin install flaui-mcp@flaui-mcp-marketplace --scope user
 ```
-Claude references the staging dir in place; it does not copy it.
+Claude **copies** the staging dir into a versioned cache and loads from there:
+`~/.claude/plugins/cache/flaui-mcp-marketplace/flaui-mcp/<version>`.
+Editing the staging dir by hand does nothing until you reinstall.
 
 If you installed Claude Code *after* `flaui-mcp`, run:
 ```powershell
 flaui-mcp install --agent claude
 ```
-Restart Claude Code to load the plugin. Check registration status with `flaui-mcp status`.
+
+**Then quit Claude Code completely and relaunch it.** Not a new session — the client process itself.
+Plugin hooks register only at client startup, so until you do, the activation hook is inert and the
+desktop tools stay unannounced. Check registration with `flaui-mcp status`.
 
 ## Activation hook
 
@@ -58,12 +63,16 @@ its context. The hook only prints text; it touches nothing.
 `status` reports its health:
 
 ```
-Activation hook: wired (SessionStart -> flaui-mcp activation-payload)
+Activation hook: wired (SessionStart -> flaui-mcp activation-payload) — loads at the next full Claude Code restart
 ```
+
+`status` reads the staged file. It cannot see what the running client loaded, so `wired` means *we
+wrote it correctly*, never *it is live in your session*. A hook installed during a client's lifetime
+does not fire until that client is quit and relaunched.
 
 | Reported | Meaning |
 |---|---|
-| `wired` | A SessionStart entry invokes the verb. Working. |
+| `wired` | A SessionStart entry invokes the verb. Live after the next full client restart. |
 | `not staged` | No plugin generated yet. Run `flaui-mcp install --agent claude`. |
 | `staged but NOT wired` | Plugin exists, no SessionStart entry names the verb. Reinstall. |
 | `staged but MALFORMED` | `hooks.json` has no top-level `hooks` object. Reinstall. |
@@ -203,7 +212,7 @@ absolute path. Everything else is extracted byte-for-byte from resources embedde
 
 | Target | Change |
 |---|---|
-| **Claude Code** | Registers via `claude plugin marketplace add`/`plugin install`, referencing the staging dir in place. Sweeps the retired `claude mcp` server + legacy `~/.claude/skills/flaui-mcp/` dir. Disables conflicting old marketplace plugins. |
+| **Claude Code** | Registers via `claude plugin marketplace add`/`plugin install`; Claude copies the staging dir into its own versioned plugin cache. Sweeps the retired `claude mcp` server + legacy `~/.claude/skills/flaui-mcp/` dir. Disables conflicting old marketplace plugins. |
 | **Antigravity (agy)** | Registers via `agy plugin install "<staging-dir>"`, which agy copies into its own managed plugins dir. Sweeps the retired hand-written agy config. |
 | **Generic MCP** | Writes the command snippet to `~/.flaui-mcp/generic-mcp.json`. |
 

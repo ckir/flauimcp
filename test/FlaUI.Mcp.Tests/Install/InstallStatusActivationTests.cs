@@ -52,6 +52,26 @@ public class InstallStatusActivationTests : IDisposable
         Assert.StartsWith("wired", text, StringComparison.Ordinal);
     }
 
+    /// The success string must keep saying that "wired" is a claim about the STAGED FILE, not about the
+    /// running client. Measured 2026-07-27: Claude Code registers plugin hooks only at client startup,
+    /// so this method reports "wired" for a hook that is inert in every already-running session — and
+    /// the bare wording sent the maintainer hunting a product defect that did not exist.
+    ///
+    /// Asserted separately from the StartsWith check above BECAUSE that check cannot see the clause:
+    /// delete the caveat and every other test in this file stays green. Two vacuous assertions have
+    /// already shipped in this feature; this is the third place the same hole would have opened.
+    [Fact]
+    public void The_wired_message_states_that_the_hook_loads_only_after_a_full_client_restart()
+    {
+        var staging = Temp();
+        new PluginArtifactWriter(staging).Generate(@"C:\fake\flaui-mcp.exe", "9.9.9");
+
+        var text = InstallStatus.DescribeActivationHook(staging);
+
+        Assert.Contains("restart", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("full Claude Code restart", text, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Reports_not_wired_when_hooks_json_has_no_SessionStart_entry()
     {

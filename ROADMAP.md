@@ -195,84 +195,67 @@ generic launcher title (`cmd.exe`/`PowerShell`) is never proof of a bare shell.
 
 ---
 
-## 🔴 DEFECT (v0.18.0) — the activation hook does not fire. M1 is inert as shipped.
+## ✅ CLOSED (v0.18.0) — the activation hook was never broken. Claude Code loads plugin hooks only at client startup.
 
-*Found 2026-07-27 by the observational check, immediately after releasing 0.18.0 and restarting.
-**M0, M2 and M3 are unaffected and working** — only the SessionStart hook (M1) is dead.*
+*Opened 2026-07-27 as a 🔴 shipped defect; **closed the same day by the predicted experiment**.
+M1 works. M0, M2 and M3 were never in doubt.*
 
-**Reproduce:** in a directory with no `.claude/settings.json` (so the plugin hook is the only possible
-source), start a session and ask whether the context contains text beginning *"flaui-mcp is installed"*.
-Answer: **no**. Confirmed twice.
+**What looked like a defect:** immediately after releasing 0.18.0, the `SessionStart` activation hook did
+not fire — across several new sessions, in a directory with no `.claude/settings.json`. Every gate we own
+said green: `status` reported `wired`, `claude plugin list` showed v0.18.0 **enabled**, the cached
+`hooks/hooks.json` carried the right entry and matcher, and the command ran standalone to valid JSON.
 
-**Everything we control is correct, which is why every gate passed:**
+**What it actually was.** A throwaway control plugin (`hooktest`), built to mirror a known-working
+plugin's layout exactly, **also failed to fire**. That killed every structural hypothesis at once and
+exposed the real pattern:
 
-| Check | Result |
-|---|---|
-| `flaui-mcp status` | `Activation hook: wired (SessionStart -> flaui-mcp activation-payload)` |
-| `claude plugin list` | `flaui-mcp@flaui-mcp-marketplace` v0.18.0, **enabled** |
-| cached `hooks/hooks.json` | correct SessionStart entry, matcher `startup\|clear\|compact`, installed exe path |
-| the command, run standalone | `bash -c '<exact string>'` → valid JSON, exit 0 |
-| the plugin's skills | load correctly (M0/M2/M3 all live) |
-
-**Root cause: LIKELY NOT OURS — plugin hooks appear to require a full Claude Code restart.**
-
-A throwaway diagnostic plugin (`hooktest`) was built mirroring `agy-autotrain`'s exact layout —
-marketplace root with `source: "./plugins/hooktest"`, plugin root with `.claude-plugin/plugin.json`,
-and a `bash "${CLAUDE_PLUGIN_ROOT}/hooks/marker.sh"` SessionStart command. It registered cleanly,
-shows **enabled**, and its cache copy contains both `hooks/hooks.json` and the script.
-**Its hook does not fire either.**
-
-The pattern across the whole plugin cache:
-
-| plugin | cached | hook fires |
+| plugin | registered | fired |
 |---|---|---|
-| `clavity-agy-autotrain` | 2026-07-13 | yes |
-| `clavity-dotnet` | 2026-07-24 | yes |
-| `flaui-mcp-marketplace` | 2026-07-19 (upgraded to 0.18.0 today) | **no** |
-| `hooktest-mp` | today, minutes before the test | **no** |
+| `clavity-agy-autotrain` | earlier client lifetime | yes |
+| `clavity-dotnet` | earlier client lifetime | yes |
+| `flaui-mcp-marketplace` | upgraded during the current lifetime | **no** |
+| `hooktest-mp` | minutes earlier, same lifetime | **no** |
 
-Plugins registered in earlier client lifetimes fire; plugins installed or upgraded during the current
-one do not — regardless of layout, command form, or manifest placement. So the structural differences
-listed above are almost certainly red herrings, and the shipped artifact may be correct.
+**Confirmed by experiment.** After a full client quit-and-relaunch, **both** the `hooktest` control marker
+and flaui-mcp's activation payload were present in the model's context — the payload matching
+`ActivationPayload.cs` byte-for-byte, delivered by the hook whose command names the installed exe. So:
 
-**Plugin hooks ARE supported — the design is sound.** `agy-curate-nudge.sh` is declared *only* in
-agy-autotrain's plugin `hooks.json`; it is **not** in `~/.claude/settings.json`, and its output reaches
-the model. So a plugin-supplied SessionStart hook does work, and M1's premise is not a misread
-precedent. (Ruled out by inspecting the user-level hook registrations directly.)
+> **Claude Code registers plugin hooks only at client startup. A hook installed or upgraded during a
+> client's lifetime stays inert until that client is quit and relaunched. A new session is not enough.**
 
-Corroborating: Claude reports hook *failures* loudly — a malformed hook shows as
-`PreCompact [...] failed: Hook JSON output validation failed`. For flaui-mcp there is **no output and no
-error**, which fits "never invoked" rather than "invoked and failed".
+Not a product defect. The shipped artifact was correct the whole time.
 
-Worth noting the two working plugins differ in how they deliver hooks: `agy-autotrain` ships them inside
-the plugin (its cache copy contains `hooks/hooks.json`), while `clavity-dotnet` — which also ships an MCP
-server, the closest analogue to flaui-mcp — has **no `hooks/` in its cache at all** and installs its
-hooks to `~/.claude/hooks/` registered via user settings. If the restart test fails, that user-level
-route is the proven fallback for shipping a hook alongside an MCP server.
+**The residual defect was ours, and it was false assurance.** Two surfaces told the operator the hook was
+live when it was not:
 
-**Prediction to confirm:** after a FULL Claude Code restart (quit the client, not just a new session),
-both `flaui-mcp`'s activation hook and the `hooktest` marker should fire. If both do, this is a client
-registration-timing behaviour, not a product defect, and the only real bug here is that our docs and
-`status` imply a freshly-installed hook is immediately live.
+- `flaui-mcp status` printed a bare `wired`. It can only ever inspect a file we just wrote — it has no
+  way to ask the running client what it loaded. agy named this precisely: *epistemic overreach*, the
+  vocabulary of a live connection describing our own bookkeeping.
+- `docs/operator-manual.md` mentioned restarting only inside a conditional branch, and "restart" did not
+  distinguish a new session from quitting the client.
+
+**Fixed** — the wording now names the boundary everywhere the claim is made: the `status` success string,
+the `install` output, and the operator manual. Retaining `wired` was deliberate: four of the five states
+already begin with `staged`, so collapsing the success case into `staged` would have blurred it into the
+failure family and dropped the signal that a SessionStart entry actually names our verb.
 
 **Refuted along the way — do not retry:** a missing `.claude-plugin/plugin.json` (added to both the
 staging dir and the cache; no change); a malformed command string (runs correctly under `bash` and
 `sh`, exit 0); a `hooks` declaration in the manifest (agy-autotrain has none either); marketplace/plugin
-root separation (the test plugin replicates it and still does not fire).
+root separation (the control replicates it and still did not fire). The `hooktest` control has been
+uninstalled and its marketplace removed.
 
-> **Cleanup owed:** the `hooktest` diagnostic plugin is still registered as a control for the restart
-> test. Remove with
-> `claude plugin uninstall hooktest@hooktest-mp` and `claude plugin marketplace remove hooktest-mp`.
-
-**Also wrong, and shipped:** `docs/operator-manual.md` states *"Claude references the staging dir in
-place; it does not copy it."* It does copy it —
+**Also wrong, and shipped — now corrected:** `docs/operator-manual.md` stated *"Claude references the
+staging dir in place; it does not copy it."* It copies it —
 `~/.claude/plugins/installed_plugins.json` records
 `installPath: ~/.claude/plugins/cache/flaui-mcp-marketplace/flaui-mcp/<version>`. Editing the staging dir
-has no effect until reinstall. Pre-existing claim from the installer rework; repeated here unverified.
+has no effect until reinstall. A pre-existing claim from the installer rework, repeated unverified.
 
-**Lesson for the gate, not just the bug:** every test we wrote asserts what the installer *stages*.
-None asserts what the client *executes*. `status` reporting "wired" is our own bookkeeping. Only a real
-session can close that gap, and that is the one check that could not run until after release.
+**Lesson for the gate, not just the bug.** Every test we wrote asserts what the installer *stages*. None
+asserts what the client *executes*, and no test can — the boundary is outside our process. That gap is
+now handled by **honest wording** rather than a false green: `status` states what it measured and names
+what it cannot see. The one check that would have caught this is a real session, and it could not run
+until after release.
 
 ---
 
