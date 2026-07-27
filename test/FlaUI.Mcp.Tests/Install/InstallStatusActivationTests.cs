@@ -80,8 +80,6 @@ public class InstallStatusActivationTests : IDisposable
     /// that throws. Each of these is valid JSON of the wrong SHAPE — the cases where JsonNode's string
     /// indexer and GetValue<string>() raise InvalidOperationException rather than returning null.
     [Theory]
-    [InlineData("""{"hooks":42}""")]                                                    // hooks not an object
-    [InlineData("""[]""")]                                                              // root not an object
     [InlineData("""{"hooks":{"SessionStart":42}}""")]                                   // SessionStart a scalar
     [InlineData("""{"hooks":{"SessionStart":[{"hooks":42}]}}""")]                       // inner hooks not an array
     [InlineData("""{"hooks":{"SessionStart":[{"hooks":[{"command":42}]}]}}""")]         // command not a string
@@ -93,6 +91,39 @@ public class InstallStatusActivationTests : IDisposable
         File.WriteAllText(Path.Combine(staging, "hooks", "hooks.json"), json);
 
         Assert.Contains("NOT wired", InstallStatus.DescribeActivationHook(staging));
+    }
+
+    /// A structurally broken file and a sound one that merely lacks the hook need DIFFERENT actions
+    /// from the operator. Reporting "NOT wired" for both would hide the corruption behind a
+    /// routine-looking message, at the exact moment the operator is trying to find it.
+    [Theory]
+    [InlineData("""{"hooks":42}""")]   // hooks present but not an object
+    [InlineData("""[]""")]             // root is an array, not an object
+    [InlineData("""{}""")]             // no hooks key at all
+    public void Distinguishes_a_structurally_malformed_file_from_a_merely_unwired_one(string json)
+    {
+        var staging = Temp();
+        Directory.CreateDirectory(Path.Combine(staging, "hooks"));
+        File.WriteAllText(Path.Combine(staging, "hooks", "hooks.json"), json);
+
+        var text = InstallStatus.DescribeActivationHook(staging);
+        Assert.Contains("MALFORMED", text);
+        Assert.DoesNotContain("NOT wired", text);
+    }
+
+    /// `status` runs when something is already wrong, so an OS-level read failure — an antivirus lock,
+    /// a permission problem — must degrade to a message. Only JsonException was caught before, so an
+    /// IOException propagated and took the whole command down.
+    [Fact]
+    public void Degrades_to_a_message_instead_of_throwing_when_the_file_cannot_be_read()
+    {
+        var staging = Temp();
+        Directory.CreateDirectory(Path.Combine(staging, "hooks"));
+        var path = Path.Combine(staging, "hooks", "hooks.json");
+        File.WriteAllText(path, "{}");
+
+        using var exclusive = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        Assert.Contains("UNREADABLE", InstallStatus.DescribeActivationHook(staging));
     }
 
     [Fact]

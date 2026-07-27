@@ -59,18 +59,28 @@ public static class InstallStatus
         if (!File.Exists(hooks))
             return "not staged — run `flaui-mcp install --agent claude` to (re)generate the plugin";
 
+        // Broad catch, matching this file's own convention (DescribeLog, DescribeVersion): a locked or
+        // permission-denied file must not crash the command a user runs BECAUSE something is wrong.
+        string raw;
+        try { raw = File.ReadAllText(hooks); }
+        catch (Exception e) { return $"staged but UNREADABLE — {e.Message}"; }
+
         JsonNode? root;
-        try { root = JsonNode.Parse(File.ReadAllText(hooks)); }
+        try { root = JsonNode.Parse(raw); }
         catch (JsonException) { return "staged but UNREADABLE — hooks.json is not valid JSON; reinstall to regenerate"; }
+
+        // Distinguished from "NOT wired" on purpose: a structurally broken file and a structurally
+        // sound one that simply lacks the hook need different actions from the operator, and reporting
+        // the same sentence for both hides the corruption behind a routine-looking message.
+        if (root is not JsonObject rootObj || rootObj["hooks"] is not JsonObject hookMap)
+            return "staged but MALFORMED — hooks.json has no top-level \"hooks\" object; reinstall to regenerate";
 
         // Every step is a TYPE TEST, never a cast or a string indexer on an unknown node.
         // JsonNode's string indexer throws InvalidOperationException when the node is not a JsonObject,
         // and GetValue<string>() throws when the value is not a string — so `{"hooks":42}` or
         // `{"command":42}` would crash the one command a user runs to diagnose a broken install.
         // Valid-JSON-but-wrong-shape must degrade to "NOT wired", not to a stack trace.
-        var wired = root is JsonObject rootObj
-                    && rootObj["hooks"] is JsonObject hookMap
-                    && SessionStartEntries(hookMap["SessionStart"]).Any(entry =>
+        var wired = SessionStartEntries(hookMap["SessionStart"]).Any(entry =>
                         entry is JsonObject entryObj
                         && entryObj["hooks"] is JsonArray commands
                         && commands.Any(c => c is JsonObject cmd
