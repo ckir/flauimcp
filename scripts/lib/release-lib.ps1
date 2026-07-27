@@ -184,6 +184,49 @@ function Set-ProjectVersion {
     Get-VersionsInSync -RepoRoot $RepoRoot
 }
 
+function Get-ChangelogVersionHeadingIndex {
+    <#
+    .SYNOPSIS
+    0-based indices of the lines that are real version headings: '## [X.Y.Z]', outside any fenced block.
+
+    .DESCRIPTION
+    Both the reader and the writer need this same answer, and when they disagreed the writer inserted a new
+    release INTO a fenced code block (measured). One function, one answer.
+
+    Fences follow CommonMark rather than a naive toggle on any run of three: a fence closes only with the SAME
+    character and at least as many of them, and a backtick fence's info string may not contain a backtick.
+    A plain toggle mis-read ```code``` on one line (closing nothing, so the rest of the file looked fenced),
+    a ``` line inside a ```` block (closing it early), and ~~~ closing a backtick fence.
+
+    Only VERSION headings count. '## [Unreleased]' is the Keep a Changelog standard and is not a release:
+    treating it as one made the writer insert above it and the reader publish it as the release body.
+    #>
+    [CmdletBinding()]
+    # AllowEmptyString is required as well as AllowEmptyCollection: a Mandatory [string[]] rejects a collection
+    # containing '' , and every blank line in a changelog is exactly that.
+    param([Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Lines)
+
+    $result = @()
+    $open = $false; $fenceChar = $null; $fenceLen = 0
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if (-not $open) {
+            # Up to three spaces of indent; four would make it an indented code block, not a fence.
+            if ($Lines[$i] -match '^\s{0,3}(?<d>`{3,}|~{3,})(?<info>.*)$' -and
+                -not ($Matches.d[0] -eq '`' -and $Matches.info.Contains('`'))) {
+                $open = $true; $fenceChar = $Matches.d[0]; $fenceLen = $Matches.d.Length
+                continue
+            }
+            if ($Lines[$i] -match '^## \[\d+\.\d+\.\d+\]') { $result += $i }
+            continue
+        }
+        if ($Lines[$i] -match '^\s{0,3}(?<d>`{3,}|~{3,})\s*$' -and
+            $Matches.d[0] -eq $fenceChar -and $Matches.d.Length -ge $fenceLen) { $open = $false }
+    }
+    # Emit plainly, not comma-wrapped: both callers already wrap in @(), and the extra wrapper nested the
+    # array inside itself, so the arithmetic downstream hit [Object[]] instead of an int.
+    $result
+}
+
 function Get-TopChangelogSection {
     [CmdletBinding()]
     param(
@@ -191,12 +234,11 @@ function Get-TopChangelogSection {
         [int]$Count = 1
     )
 
-    $lines = Get-Content $ChangelogPath
-    $headingIdx = @()
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match '^## \[') { $headingIdx += $i }
-    }
-    if ($headingIdx.Count -eq 0) { throw "Get-TopChangelogSection: no '## [' section found in $ChangelogPath" }
+    # @() forces an array: a one-line file makes Get-Content return a scalar STRING, and the range index below
+    # would then slice CHARACTERS.
+    $lines = @(Get-Content $ChangelogPath)
+    $headingIdx = @(Get-ChangelogVersionHeadingIndex -Lines $lines)
+    if ($headingIdx.Count -eq 0) { throw "Get-TopChangelogSection: no '## [X.Y.Z]' section found in $ChangelogPath" }
 
     $take = [Math]::Min($Count, $headingIdx.Count)
     $start = $headingIdx[0]
@@ -232,14 +274,9 @@ function Add-ChangelogSection {
     # ```...``` across the file reads two inline code spans in separate entries as one long fence and swallows
     # every real heading between them, blinding the guard and letting a genuine duplicate through (measured).
     # Scanning also picks up ~~~ fences for free.
-    $inFence = New-Object bool[] $lines.Count
-    $open = $false
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        # A fence delimiter is the first thing on its line (up to three spaces of indent, per CommonMark).
-        if ($lines[$i] -match '^\s{0,3}(```|~~~)') { $inFence[$i] = $true; $open = -not $open; continue }
-        $inFence[$i] = $open
-    }
-    $sectionLines = @(0..($lines.Count - 1) | Where-Object { $lines.Count -gt 0 -and -not $inFence[$_] -and $lines[$_] -match '^## \[' })
+    # Same answer the reader uses -- see Get-ChangelogVersionHeadingIndex for why fences and '## [Unreleased]'
+    # both have to be excluded, and why this must not be duplicated here.
+    $sectionLines = @(Get-ChangelogVersionHeadingIndex -Lines $lines)
 
     # Match the VERSION, not the whole heading. The heading carries today's date, so re-cutting a version on a
     # later day produced no match and the guard silently appended a second '## [X.Y.Z]' section.

@@ -733,3 +733,61 @@ Describe 'Add-ChangelogSection edge cases' {
             Should -Not -Throw
     }
 }
+
+Describe 'Changelog fence and Unreleased handling' {
+    BeforeEach {
+        $script:Cl = Join-Path ([IO.Path]::GetTempPath()) ("cl2_" + [guid]::NewGuid() + ".md")
+        $script:B3 = [string][char]0x60 * 3
+        $script:B4 = [string][char]0x60 * 4
+    }
+    AfterEach { Remove-Item $script:Cl -Force -ErrorAction SilentlyContinue }
+
+    It 'does not treat an inline triple-backtick span as an open fence' {
+        # A naive toggle closed nothing here, so every line after it looked fenced -- the guard went blind and
+        # a real duplicate would have been admitted. CommonMark: a backtick info string bars the fence.
+        Set-Content -Path $Cl -Value "# Changelog`n`n${B3}code${B3}`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.1.0' -Body "### Added`n- Dup." -Date ([datetime]'2026-07-28') } |
+            Should -Throw -ExpectedMessage '*already exists*'
+    }
+
+    It 'does not let a three-backtick line close a four-backtick fence' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n${B4}`n${B3}`n## [9.9.9] - 2026-01-01`n${B3}`n${B4}`n`n## [0.1.0] - 2026-01-01`n- Old.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '9.9.9' -Body "### Added`n- Real." -Date ([datetime]'2026-07-28') } |
+            Should -Not -Throw
+        # The example heading stayed inside the fence, so the new section went after it, not into it.
+        $after = (Get-Content $Cl -Raw).Replace("`r`n", "`n")
+        $after.Contains("${B4}`n${B3}`n## [9.9.9] - 2026-01-01") | Should -BeTrue
+    }
+
+    It 'does not let a tilde line close a backtick fence' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n${B3}md`n~~~`n## [9.9.9] - 2026-01-01`n${B3}`n`n## [0.1.0] - 2026-01-01`n- Old.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '9.9.9' -Body "### Added`n- Real." -Date ([datetime]'2026-07-28') } |
+            Should -Not -Throw
+    }
+
+    It 'keeps an Unreleased section on top when inserting' {
+        # Keep a Changelog puts '## [Unreleased]' first. Treating it as a release inserted the new section
+        # ABOVE it, breaking the standard structure.
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [Unreleased]`n### Added`n- WIP.`n`n## [0.1.0] - 2026-01-01`n- Old.`n"
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.3.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-28')
+        $after = Get-Content $Cl -Raw
+        $after.IndexOf('## [Unreleased]') | Should -BeLessThan $after.IndexOf('## [0.3.0]')
+        $after.IndexOf('## [0.3.0]')      | Should -BeLessThan $after.IndexOf('## [0.1.0]')
+    }
+
+    It 'does not publish Unreleased as the top release section' {
+        # The reader and the writer must agree; when only the writer knew about Unreleased, the reader still
+        # handed it to `gh release` as the release body.
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [Unreleased]`n### Added`n- WIP.`n`n## [0.2.0] - 2026-02-01`n### Added`n- Shipped.`n"
+        $top = Get-TopChangelogSection -ChangelogPath $Cl
+        $top | Should -Match '^## \[0\.2\.0\]'
+        $top | Should -Not -Match 'WIP'
+    }
+
+    It 'does not publish a fenced example heading as the top section' {
+        Set-Content -Path $Cl -Value "# Changelog`n`nFormat:`n${B3}markdown`n## [9.9.9] - 2026-01-01`n${B3}`n`n## [0.2.0] - 2026-02-01`n### Added`n- Shipped.`n"
+        $top = Get-TopChangelogSection -ChangelogPath $Cl
+        $top | Should -Match '^## \[0\.2\.0\]'
+        $top | Should -Not -Match '9\.9\.9'
+    }
+}
