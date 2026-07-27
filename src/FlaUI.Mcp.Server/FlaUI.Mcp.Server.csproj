@@ -5,8 +5,29 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The plugin payload is EMBEDDED and extracted byte for byte at install time by
+         PluginArtifactWriter. The repo tree is the strict build input: never re-author these
+         as C# string literals, or the tested copy and the shipped copy drift apart.
+         The driving skill's input is .claude/skills/... (NOT plugins/...) that path is the
+         historical build input and is what ships; the plugins/ copy is its repo checkout twin. -->
     <EmbeddedResource Include="..\..\.claude\skills\driving-flaui-mcp\SKILL.md">
       <LogicalName>FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\plugins\flaui-mcp\skills\flaui-learn\SKILL.md">
+      <LogicalName>FlaUI.Mcp.Server.seed.flaui-learn.SKILL.md</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\plugins\flaui-mcp\skills\flaui-curate\SKILL.md">
+      <LogicalName>FlaUI.Mcp.Server.seed.flaui-curate.SKILL.md</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\plugins\flaui-mcp\hooks\hooks.json">
+      <LogicalName>FlaUI.Mcp.Server.seed.hooks.hooks.json</LogicalName>
+    </EmbeddedResource>
+    <!-- The LIVE copy is the build input, not plugins/flaui-mcp/scripts/. .claude/settings.json
+         registers this path, so it is the copy the maintainer actually executes and tests; embedding
+         it makes the shipped artifact strictly derived from proven working code. Same principle as
+         the driving skill above. The identity test keeps the plugins/ twin from drifting. -->
+    <EmbeddedResource Include="..\..\.claude\hooks\flaui-curate-nudge.sh">
+      <LogicalName>FlaUI.Mcp.Server.seed.scripts.flaui-curate-nudge.sh</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 
