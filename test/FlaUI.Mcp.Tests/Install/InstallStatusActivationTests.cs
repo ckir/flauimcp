@@ -50,13 +50,19 @@ public class InstallStatusActivationTests : IDisposable
         // CONTAINS "wired". A Contains assertion here is satisfied by the failure string, so it cannot
         // tell wired from not-wired: it would stay green if this method never reported success again.
         //
-        // Pins the WHOLE success prefix, not just the first word. Measured: with only StartsWith("wired")
-        // the entire "(SessionStart -> flaui-mcp <verb>)" mapping could be deleted from the message and
-        // the full 751-test suite stayed green — no other test asserts the verb appears in the STATUS
-        // string (the other `activation-payload` assertions all target the generated hooks.json).
+        // Pins the message WHOLE, deliberately. Two rounds of partial assertions each left a hole that
+        // was then MEASURED to be exploitable while the suite stayed green:
+        //   StartsWith("wired")          → the entire "(SessionStart -> flaui-mcp <verb>)" mapping could
+        //                                  be deleted; 751/0 green. No other test asserts the verb
+        //                                  reaches the STATUS string (the other `activation-payload`
+        //                                  assertions all target the generated hooks.json).
+        //   prefix + suffix assertions   → the bridge between them was unpinned, so
+        //                                  "wired (...) GARBAGE only at client startup" passed all 14.
+        // Every partial pin invites the next gap. This string is a contract the operator manual mirrors
+        // verbatim, so equality is the honest assertion and its brittleness is the intended alarm.
         // Built from ActivationPayload.Verb so renaming the verb cannot silently desync the two.
-        Assert.StartsWith("wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ")", text,
-                          StringComparison.Ordinal);
+        Assert.Equal("wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ") — "
+                     + "Claude Code loads hooks only at client startup", text);
     }
 
     /// The success string must keep saying that "wired" is a claim about the STAGED FILE, not about the

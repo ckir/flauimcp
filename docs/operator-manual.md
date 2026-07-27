@@ -18,7 +18,8 @@ The installer places `flaui-mcp.exe` into `%LOCALAPPDATA%\Programs\FlaUI.Mcp\` a
 1. Download `flaui-mcp-setup.exe` from the latest release.
 2. (Optional but recommended) Verify its SHA-256 against `SHA256SUMS.txt` from the same release.
 3. Run it. Choose **More info → Run anyway** if SmartScreen warns (binaries are unsigned).
-4. Restart your agent to load the new skill.
+4. Restart your agent to load the new skill — for Claude Code, quit the client completely and relaunch
+   it, not just a new session.
 
 ### Silent one-liner (PowerShell)
 
@@ -125,7 +126,7 @@ Use `--config <path>` with any command to override the target config file. Use `
 | `FLAUI_MCP_DATA_DIR` | Overrides the root directory for generic configs and presence states. | `%USERPROFILE%\.flaui-mcp` |
 | `FLAUI_MCP_STATE_DIR` | Overrides the location for state files (e.g. uninstall warnings). | `%LOCALAPPDATA%\FlaUI.Mcp\state` |
 | `FLAUI_MCP_STAGING_DIR` | Overrides the staging dir the installer generates the unified plugin into (server config + skill), which is then registered with both agents. | `{app}\plugin` |
-| `FLAUI_MCP_AGY_PLUGINS_DIR` | Used only to locate and sweep the retired hand-written agy config on install/uninstall (legacy migration). Not the install target anymore. | `%USERPROFILE%\.gemini\config\plugins` |
+| `FLAUI_MCP_AGY_PLUGINS_DIR` | agy's managed plugins dir. `status` reads it to report the deployed seed skill, and install/uninstall use it to sweep the retired hand-written agy config. Not the install *target* — `agy plugin install` chooses that itself. | `%USERPROFILE%\.gemini\config\plugins` |
 | `FLAUI_MCP_CLAUDE_CONFIG_DIR` | Overrides the path for Claude Code's config/skills directory. | `%USERPROFILE%\.claude` |
 | `CLAUDE_CONFIG_DIR` | Upstream Claude Code env var, honored as a fallback if `FLAUI_MCP_CLAUDE_CONFIG_DIR` is unset. | `%USERPROFILE%\.claude` |
 | `FLAUI_MCP_REF_STRICT` | Ref-resolution mode for state-changing paths. Set `off` as a break-glass switch to force lenient resolution (disables the INV-8 identity guard) on apps whose UIA identity is too volatile for strict. | `strict` (unset = strict) |
