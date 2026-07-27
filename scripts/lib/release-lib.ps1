@@ -331,7 +331,7 @@ function Get-ChangelogBodyFromLlmOutput {
     # Walk opening tags newest-first and take the first that actually closes. Skipping unclosed ones matters:
     # chatter after a well-formed block can mention <changelog>, and binding to that orphan would drop a
     # perfectly good body.
-    $body = $null
+    $skipped = $false
     $opens = [regex]::Matches($RawOutput, '<changelog>')
     for ($k = $opens.Count - 1; $k -ge 0; $k--) {
         $tail = $RawOutput.Substring($opens[$k].Index + $opens[$k].Length)
@@ -359,7 +359,15 @@ function Get-ChangelogBodyFromLlmOutput {
         # in prose ("- Use <changelog> to wrap.") makes the innermost tag a false start: its tail yields a
         # heading-less fragment. Giving up there would reject a perfectly good body; stepping out to the real
         # opening tag recovers it.
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -match '(?m)^###\s') { return $candidate }
+        #
+        # But only a NESTED tag is a false start. An older SIBLING block is a stale draft the model has since
+        # replaced, and silently promoting it would discard the model's final intent -- so an outer candidate
+        # counts only if it actually contains the tag we skipped. In the prose case it does (the mention is
+        # inside the body); for a sibling it does not, and we correctly end at $null.
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -match '(?m)^###\s') {
+            if (-not $skipped -or $candidate.Contains('<changelog>')) { return $candidate }
+        }
+        $skipped = $true
     }
 
     $null

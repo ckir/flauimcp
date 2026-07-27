@@ -535,7 +535,7 @@ try {
     $prompt = Get-ChangelogPrompt -Version $next.Version -CommitMessages $commitMessages -DiffText $diffText -DiffStatText $diffStatText -StyleExemplar $exemplar
 
     if ($WhatIf) {
-        Write-Host "`n[-WhatIf] Prompt that WOULD be sent to 'claude -p --model $Model':`n"
+        Write-Host "`n[-WhatIf] Prompt that WOULD be sent to 'claude -p --safe-mode --model $Model':`n"
         Write-Host $prompt
         Write-Host "`n[-WhatIf] plugin-drift check was skipped in preview (no writes); the real run verifies it."
         Write-Host "`n[-WhatIf] No commit, tag, or push will happen. Exiting without side effects."

@@ -15,7 +15,13 @@ BeforeAll {
         param([Parameter(Mandatory)][string]$Path)
         $tokens = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$null)
-        ($tokens | Where-Object { $_.Kind -ne 'Comment' } | ForEach-Object { $_.Text }) -join ' '
+        # Here-strings go too: wrapping code in @'...'@ is the same "disable it but leave the text visible"
+        # move as a block comment. Ordinary string tokens must stay -- pinned values like '1' and '^###' ARE
+        # strings. That leaves one acknowledged limit: text deliberately parked in a dead single-line string
+        # would still match. These guard against regression and casual removal, not determined sabotage.
+        ($tokens |
+            Where-Object { $_.Kind -ne 'Comment' -and $_.Kind -notlike 'HereString*' } |
+            ForEach-Object { $_.Text }) -join ' '
     }
 }
 
@@ -485,6 +491,13 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         # Binding to the orphan would drop a perfectly good body. Walk back to the tag that actually closes.
         $raw = "<changelog>`n### Added`n- A thing.</changelog>`nNote: the <changelog> wrapper is required."
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
+    It 'does not promote a stale sibling block when the newest one is heading-less' {
+        # Stepping outward is only right for a NESTED false start. An older sibling is a draft the model has
+        # since replaced; silently promoting it discards the model's final intent and ships a stale changelog.
+        $raw = "<changelog>`n### Stale`n- old.`n</changelog>`n<changelog>forgot heading</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
     }
 
     It 'recovers a body that mentions the OPENING tag in prose' {
