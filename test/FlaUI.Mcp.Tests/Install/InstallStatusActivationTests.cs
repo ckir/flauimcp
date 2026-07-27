@@ -49,7 +49,14 @@ public class InstallStatusActivationTests : IDisposable
         // StartsWith, NOT Contains("wired") — the negative message is "staged but NOT wired", which
         // CONTAINS "wired". A Contains assertion here is satisfied by the failure string, so it cannot
         // tell wired from not-wired: it would stay green if this method never reported success again.
-        Assert.StartsWith("wired", text, StringComparison.Ordinal);
+        //
+        // Pins the WHOLE success prefix, not just the first word. Measured: with only StartsWith("wired")
+        // the entire "(SessionStart -> flaui-mcp <verb>)" mapping could be deleted from the message and
+        // the full 751-test suite stayed green — no other test asserts the verb appears in the STATUS
+        // string (the other `activation-payload` assertions all target the generated hooks.json).
+        // Built from ActivationPayload.Verb so renaming the verb cannot silently desync the two.
+        Assert.StartsWith("wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ")", text,
+                          StringComparison.Ordinal);
     }
 
     /// The success string must keep saying that "wired" is a claim about the STAGED FILE, not about the
@@ -60,16 +67,20 @@ public class InstallStatusActivationTests : IDisposable
     /// Asserted separately from the StartsWith check above BECAUSE that check cannot see the clause:
     /// delete the caveat and every other test in this file stays green. Two vacuous assertions have
     /// already shipped in this feature; this is the third place the same hole would have opened.
+    ///
+    /// The negative assertion is load-bearing. The clause must state the client's STANDING RULE, never
+    /// predict a pending restart: `status` cannot tell whether the user has already restarted, so
+    /// "restart to activate" wording keeps printing afterwards and reads as "your restart did not take".
     [Fact]
-    public void The_wired_message_states_that_the_hook_loads_only_after_a_full_client_restart()
+    public void The_wired_message_states_the_client_loads_hooks_only_at_startup()
     {
         var staging = Temp();
         new PluginArtifactWriter(staging).Generate(@"C:\fake\flaui-mcp.exe", "9.9.9");
 
         var text = InstallStatus.DescribeActivationHook(staging);
 
-        Assert.Contains("restart", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("full Claude Code restart", text, StringComparison.Ordinal);
+        Assert.Contains("only at client startup", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("next full", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

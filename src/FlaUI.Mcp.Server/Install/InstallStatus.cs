@@ -88,13 +88,18 @@ public static class InstallStatus
                             && v.TryGetValue<string>(out var s)
                             && s.Contains(ActivationPayload.Verb, StringComparison.Ordinal)));
 
-        // The restart clause is not decoration. This method can only ever inspect a file WE wrote;
+        // The trailing clause is not decoration. This method can only ever inspect a file WE wrote;
         // it has no way to ask the running client what it loaded. Measured 2026-07-27: Claude Code
         // registers plugin hooks only at client startup, so a freshly installed hook reads "wired"
         // here while being completely inert in every session of the client that is already running.
         // Reporting bare "wired" made this command the source of the false assurance that cost a day.
+        //
+        // Phrased as a STANDING FACT about the client, never as "restart to activate". A prediction
+        // ("loads at the next restart") is unfalsifiable from here: it still prints after the user HAS
+        // restarted, so it reads as "your restart did not take" and replaces false assurance with a
+        // permanent false negative. Stating the client's rule instead is true in every state.
         return wired
-            ? "wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ") — loads at the next full Claude Code restart"
+            ? "wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ") — Claude Code loads hooks only at client startup"
             : "staged but NOT wired — no SessionStart entry invokes the verb; reinstall to regenerate";
     }
 

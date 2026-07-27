@@ -63,16 +63,16 @@ its context. The hook only prints text; it touches nothing.
 `status` reports its health:
 
 ```
-Activation hook: wired (SessionStart -> flaui-mcp activation-payload) — loads at the next full Claude Code restart
+Activation hook: wired (SessionStart -> flaui-mcp activation-payload) — Claude Code loads hooks only at client startup
 ```
 
 `status` reads the staged file. It cannot see what the running client loaded, so `wired` means *we
-wrote it correctly*, never *it is live in your session*. A hook installed during a client's lifetime
-does not fire until that client is quit and relaunched.
+wrote it correctly*, never *it is live in your session*. The trailing clause states the client's rule,
+not a pending action — it keeps printing after you have restarted, because `status` has no way to tell.
 
 | Reported | Meaning |
 |---|---|
-| `wired` | A SessionStart entry invokes the verb. Live after the next full client restart. |
+| `wired` | A SessionStart entry invokes the verb. Live in any client started since. |
 | `not staged` | No plugin generated yet. Run `flaui-mcp install --agent claude`. |
 | `staged but NOT wired` | Plugin exists, no SessionStart entry names the verb. Reinstall. |
 | `staged but MALFORMED` | `hooks.json` has no top-level `hooks` object. Reinstall. |
