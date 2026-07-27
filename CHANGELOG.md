@@ -11,7 +11,7 @@ All notable changes to this project are documented here. This project adheres to
   directory to check whether the driving skill was deployed. A correctly plugin-installed machine would
   report "NOT deployed" (because the old skill dir no longer existed), and suggest a re-install that would
   recreate the now-unused directory as a duplicate. Status now uses the same plugin registration oracle
-  that `install` does ΓÇö checking `claude plugin list` for active registration ΓÇö and reports the legacy
+  that `install` does — checking `claude plugin list` for active registration — and reports the legacy
   directory only as a retired aside if it happens to still exist.
 
 ## [0.17.0] - 2026-07-18
