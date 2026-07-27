@@ -91,33 +91,15 @@ file .claude/hooks/flaui-curate-nudge.sh plugins/flaui-mcp/scripts/flaui-curate-
 
 Expected: neither line contains `CRLF`.
 
-- [ ] **Step 4: Guard the two script copies against drift**
-
-Append to `test/FlaUI.Mcp.Tests/Install/PluginDistributionTests.cs` (inside the class). This needs `RepoPaths` from Task 2, so run Task 2 first if executing out of order:
-
-```csharp
-    [Fact]
-    public void The_two_tracked_copies_of_the_nudge_script_are_byte_identical()
-    {
-        // .claude/hooks/ is the LIVE copy: registered by .claude/settings.json, proven to fire, and
-        // the one csproj EMBEDS (Task 3). plugins/flaui-mcp/scripts/ is a twin that nothing consumes.
-        // Identical today with nothing enforcing it — this test stops the twin rotting unnoticed, and
-        // is the one signal that would catch someone "fixing" the twin and wondering why it never ships.
-        Assert.Equal(
-            File.ReadAllBytes(RepoPaths.At(".claude", "hooks", "flaui-curate-nudge.sh")),
-            File.ReadAllBytes(RepoPaths.At("plugins", "flaui-mcp", "scripts", "flaui-curate-nudge.sh")));
-    }
-```
-
-Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~The_two_tracked_copies_of_the_nudge_script"`
-Expected: PASS (they are identical today — this test exists to keep them that way).
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add .gitattributes .claude/hooks/flaui-curate-nudge.sh plugins/flaui-mcp/scripts/flaui-curate-nudge.sh test/FlaUI.Mcp.Tests/Install/PluginDistributionTests.cs
-git commit -m "build: pin *.sh to LF and guard the two nudge-script copies against drift"
+git add .gitattributes .claude/hooks/flaui-curate-nudge.sh plugins/flaui-mcp/scripts/flaui-curate-nudge.sh
+git commit -m "build: pin *.sh to LF so shipped hook scripts stay portable"
 ```
+
+> The drift guard for the two script copies lands in **Task 2 Step 3**, not here — it needs the
+> `RepoPaths` helper that Task 2 creates. Keeping it here would make Task 1 uncompilable in isolation.
 
 ---
 
@@ -179,16 +161,34 @@ public class RepoPathsTests
 }
 ```
 
-- [ ] **Step 3: Run the tests**
+- [ ] **Step 3: Guard the two script copies against drift**
+
+This is the drift guard deferred from Task 1 — it lives here because it needs `RepoPaths`. Append to `test/FlaUI.Mcp.Tests/Install/RepoPathsTests.cs` (inside the class):
+
+```csharp
+    [Fact]
+    public void The_two_tracked_copies_of_the_nudge_script_are_byte_identical()
+    {
+        // .claude/hooks/ is the LIVE copy: registered by .claude/settings.json, proven to fire, and
+        // the one csproj EMBEDS (Task 3). plugins/flaui-mcp/scripts/ is a twin that nothing consumes.
+        // Identical today with nothing enforcing it — this test stops the twin rotting unnoticed, and
+        // is the one signal that would catch someone "fixing" the twin and wondering why it never ships.
+        Assert.Equal(
+            File.ReadAllBytes(RepoPaths.At(".claude", "hooks", "flaui-curate-nudge.sh")),
+            File.ReadAllBytes(RepoPaths.At("plugins", "flaui-mcp", "scripts", "flaui-curate-nudge.sh")));
+    }
+```
+
+- [ ] **Step 4: Run the tests**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~RepoPathsTests"`
-Expected: PASS, 2 tests.
+Expected: PASS, 3 tests. (The identity test passes today — it exists to keep the twin from rotting.)
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add test/FlaUI.Mcp.Tests/Install/RepoPaths.cs test/FlaUI.Mcp.Tests/Install/RepoPathsTests.cs
-git commit -m "test: add RepoPaths helper for asserting on tracked repo files"
+git commit -m "test: add RepoPaths helper and guard the two nudge-script copies against drift"
 ```
 
 ---
