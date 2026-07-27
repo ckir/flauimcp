@@ -5,9 +5,20 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [0.19.0] - 2026-07-28
 
-` is correctly accepted. Trailing chatter containing a closing tag is still refused ΓÇö the tag legitimately appears on both sides of the real body, and closing at the first line-anchored tag (not a mid-line prose mention) disambiguates them.
+### Fixed
+- **The changelog draft captured model chatter instead of the changelog.** `--output-format text` returns
+  the model's LAST assistant message, and this repo's autotrain `Stop` hook fired inside the headless draft
+  run — so the model answered the nudge and that conversational reply became the release body. The body is
+  now read from `<changelog>` delimiters and everything outside them is dropped; a body that cannot be
+  extracted is a failure, so nothing unvalidated is ever persisted as a resumable draft.
+- **`Add-ChangelogSection` could destroy the file it was editing.** A one-line `CHANGELOG.md` was overwritten
+  rather than appended to, and a zero-byte one threw mid-release. Both are covered by the suite now.
+- **Delimiter extraction guessed when the body mentioned the delimiter itself.** A body that mentions
+  `<changelog>` is correctly accepted. Trailing chatter containing a closing tag is still refused — the tag
+  legitimately appears on both sides of the real body, and closing at the first line-anchored tag (not a
+  mid-line prose mention) disambiguates them.
 - **The nudge hook fired unattended and broke release runs.** The `flaui-autotrain curate-nudge` hook stays silent under `FLAUI_MCP_NO_NUDGE` or in CI, so that `--safe-mode` isolation is the only safeguard callers outside this repo depend on.
-- **The activation-hook status and documentation claimed effects the plugin cannot guarantee.** `status wired` reported that the hook was loaded into the running client, but `status` observes only files it wrote itself. Claude Code registers plugin hooks only at CLIENT STARTUP; a hook installed or upgraded during the current session stays inert until the client is quit and restarted. The wired message, install output, and operator manual now state this standing rule rather than predicting a future action ΓÇö the distinction lets `status` stay accurate before and after a restart, and operators can verify the hook works without guessing whether they restarted correctly.
+- **The activation-hook status and documentation claimed effects the plugin cannot guarantee.** `status wired` reported that the hook was loaded into the running client, but `status` observes only files it wrote itself. Claude Code registers plugin hooks only at CLIENT STARTUP; a hook installed or upgraded during the current session stays inert until the client is quit and restarted. The wired message, install output, and operator manual now state this standing rule rather than predicting a future action — the distinction lets `status` stay accurate before and after a restart, and operators can verify the hook works without guessing whether they restarted correctly.
 
 ### Changed
 - The release pipeline runs with `--safe-mode` to isolate the draft from all modifiers (hooks, plugins, skills, MCP servers) so neither inline chatter nor hook responses are captured.
