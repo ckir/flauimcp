@@ -47,4 +47,28 @@ public class InstallStatusActivationTests : IDisposable
         var text = InstallStatus.DescribeActivationHook(staging);
         Assert.Contains("wired", text);
     }
+
+    [Fact]
+    public void Reports_not_wired_when_hooks_json_has_no_SessionStart_entry()
+    {
+        var staging = Temp();
+        Directory.CreateDirectory(Path.Combine(staging, "hooks"));
+        File.WriteAllText(Path.Combine(staging, "hooks", "hooks.json"),
+            """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash nudge.sh"}]}]}}""");
+
+        Assert.Contains("NOT wired", InstallStatus.DescribeActivationHook(staging));
+    }
+
+    /// The false green the parsing fix exists to prevent: the verb string present in the file, but in
+    /// an unrelated hook rather than a SessionStart entry. A substring check reports this as "wired".
+    [Fact]
+    public void Does_not_report_wired_when_the_verb_appears_only_in_an_unrelated_hook()
+    {
+        var staging = Temp();
+        Directory.CreateDirectory(Path.Combine(staging, "hooks"));
+        File.WriteAllText(Path.Combine(staging, "hooks", "hooks.json"),
+            """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo activation-payload"}]}]}}""");
+
+        Assert.Contains("NOT wired", InstallStatus.DescribeActivationHook(staging));
+    }
 }

@@ -141,30 +141,40 @@ public sealed class PluginArtifactWriter
         using var reader = new StreamReader(stream);
         var root = JsonNode.Parse(reader.ReadToEnd())!;
 
-        var hooks = root["hooks"]!.AsObject();
-        hooks["SessionStart"] = new JsonArray
-        {
-            new JsonObject
-            {
-                // matcher copied from the WORKING SessionStart hook already in this repo
-                // (.claude/settings.json) — a proven shape, not an invented one. All three sources
-                // matter: compact and clear are exactly when the agent has just lost its context.
-                ["matcher"] = "startup|clear|compact",
-                ["hooks"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["type"]    = "command",
-                        // Serialized via JsonNode, so the Windows backslashes are escaped correctly.
-                        ["command"] = $"\"{exePath}\" {ActivationPayload.Verb}",
-                    }
-                }
-            }
-        };
+        MergeActivationHook(root, exePath);
 
         var target = Path.Combine(_stagingDir, "hooks", "hooks.json");
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         File.WriteAllText(target, root.ToJsonString(Pretty));
+    }
+
+    /// Merge the activation hook into a parsed hooks.json root, PRESERVING any SessionStart entries the
+    /// embedded copy already defines. Separated from resource loading purely so it can be tested against
+    /// an input the embedded copy does not currently contain — a base file that ALREADY has SessionStart.
+    /// An earlier version assigned over the key, which would have silently amputated such a hook while
+    /// the surrounding comment promised the opposite.
+    internal static void MergeActivationHook(JsonNode root, string exePath)
+    {
+        var entry = new JsonObject
+        {
+            // matcher copied from the WORKING SessionStart hook already in this repo
+            // (.claude/settings.json) — a proven shape, not an invented one. All three sources
+            // matter: compact and clear are exactly when the agent has just lost its context.
+            ["matcher"] = "startup|clear|compact",
+            ["hooks"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["type"]    = "command",
+                    // Serialized via JsonNode, so the Windows backslashes are escaped correctly.
+                    ["command"] = $"\"{exePath}\" {ActivationPayload.Verb}",
+                }
+            }
+        };
+
+        var hooks = root["hooks"]!.AsObject();
+        if (hooks["SessionStart"] is JsonArray existing) existing.Add(entry);
+        else hooks["SessionStart"] = new JsonArray { entry };
     }
 
     /// Copy an embedded resource to a staging-relative path BYTE FOR BYTE. Deliberately a raw stream

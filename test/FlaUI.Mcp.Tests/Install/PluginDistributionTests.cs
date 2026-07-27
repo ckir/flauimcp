@@ -86,4 +86,21 @@ public class PluginDistributionTests
         Assert.True(doc.RootElement.GetProperty("hooks").TryGetProperty("Stop", out _),
             "generation dropped the curate-nudge Stop hook");
     }
+
+    /// Guards the promise in WriteHooksAndScripts' comment — that hooks added to the repo tree ship
+    /// without touching that method. Exercised directly because the embedded hooks.json has no
+    /// SessionStart today, so no end-to-end path can reach this case yet.
+    [Fact]
+    public void Merging_the_activation_hook_preserves_a_SessionStart_the_base_file_already_defines()
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(
+            """{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"pre-existing"}]}]}}""")!;
+
+        PluginArtifactWriter.MergeActivationHook(root, @"C:\fake\flaui-mcp.exe");
+
+        var entries = root["hooks"]!["SessionStart"]!.AsArray();
+        Assert.Equal(2, entries.Count);
+        Assert.Contains("pre-existing", entries[0]!["hooks"]![0]!["command"]!.GetValue<string>());
+        Assert.Contains("activation-payload", entries[1]!["hooks"]![0]!["command"]!.GetValue<string>());
+    }
 }

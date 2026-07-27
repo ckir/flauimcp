@@ -1,4 +1,6 @@
+using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace FlaUI.Mcp.Server.Install;
@@ -46,18 +48,29 @@ public static class InstallStatus
 
     /// <summary>Answers "why is the activation hint not appearing?" without reading hook source.
     /// Reads the STAGED hooks.json — the artifact the client actually loads — not the repo tree,
-    /// which is registered nowhere.</summary>
+    /// which is registered nowhere.
+    ///
+    /// Parses rather than substring-matching: a bare Contains() over the file text reports "wired"
+    /// when the verb appears inside some UNRELATED hook, which is a false green on the one signal a
+    /// user consults when the activation hint fails to show up.</summary>
     public static string DescribeActivationHook(string pluginStagingDir)
     {
         var hooks = Path.Combine(pluginStagingDir, "hooks", "hooks.json");
         if (!File.Exists(hooks))
             return "not staged — run `flaui-mcp install --agent claude` to (re)generate the plugin";
 
-        var text = File.ReadAllText(hooks);
-        if (!text.Contains(ActivationPayload.Verb, StringComparison.Ordinal))
-            return "staged but NOT wired — hooks.json has no SessionStart entry; reinstall to regenerate";
+        JsonNode? root;
+        try { root = JsonNode.Parse(File.ReadAllText(hooks)); }
+        catch (JsonException) { return "staged but UNREADABLE — hooks.json is not valid JSON; reinstall to regenerate"; }
 
-        return "wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ")";
+        var wired = root?["hooks"]?["SessionStart"] is JsonArray entries
+                    && entries.Any(e => e?["hooks"] is JsonArray commands
+                        && commands.Any(c => c?["command"]?.GetValue<string>()
+                                              ?.Contains(ActivationPayload.Verb, StringComparison.Ordinal) == true));
+
+        return wired
+            ? "wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ")"
+            : "staged but NOT wired — no SessionStart entry invokes the verb; reinstall to regenerate";
     }
 
     /// <summary>

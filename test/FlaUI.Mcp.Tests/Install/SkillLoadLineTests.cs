@@ -85,6 +85,27 @@ public class SkillLoadLineTests
             $"{rel}: plugin-prefixed twin missing for:\n" + string.Join("\n", missing));
     }
 
+    /// Positive EXISTENCE check, deliberately alongside the implication test above.
+    /// `Both_prefix_forms_are_present_for_every_named_tool` asks "does every bare name have a plugin
+    /// twin?" — vacuously TRUE if every bare name is deleted, which would break DIRECT (non-plugin)
+    /// registration while all three load-line tests stayed green. This pins both families explicitly.
+    [Theory]
+    [MemberData(nameof(BothCopies))]
+    public void Both_prefix_families_are_present_for_all_five_tools(string rel)
+    {
+        var names = SelectNames(Read(rel)).ToHashSet(StringComparer.Ordinal);
+        var absent = new[] { "list_windows", "open_window", "snapshot", "get_text", "input_status" }
+            .SelectMany(t => new[]
+            {
+                "mcp__flaui-mcp__desktop_" + t,
+                "mcp__plugin_flaui-mcp_flaui-mcp__desktop_" + t,
+            })
+            .Where(n => !names.Contains(n))
+            .ToList();
+
+        Assert.True(absent.Count == 0, $"{rel}: load line is missing:\n" + string.Join("\n", absent));
+    }
+
     [Fact]
     public void The_two_tracked_copies_are_byte_identical()
         => Assert.Equal(
