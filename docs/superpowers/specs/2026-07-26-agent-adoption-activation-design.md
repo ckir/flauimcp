@@ -445,14 +445,33 @@ FIRST because it is the genuinely novel instruction:
     latency the user waits through at every session start and every compaction**, which is precisely why
     the early-return requirement above is load-bearing rather than tidiness.
 
-  **Measurements — a LOWER BOUND, not a figure to design against.** Two runs were taken; a repeat attempt
-  recorded **100% CPU** on both samples, so the machine could not be quiesced. Best observed warm sample
-  for the installed exe: **383 ms**; median under full load: **~1.5 s**; worst sample **3.3 s**; cold
-  start **~3.9 s**. For comparison under the same conditions, Git Bash ~1.4 s and Windows PowerShell 5.1
-  ~1.4–3.1 s — the ordering favoured the exe throughout, which is the load-independent part of the result.
+  **Measured 2026-07-27 under low load — 10 samples, CPU 45% → 65%:**
 
-  Treat **~380 ms warm / ~3.9 s cold** as the optimistic floor. A true idle measurement is still owed and
-  remains a plan task; it is recorded here as unmeasured rather than quietly rounded down.
+  | | ms |
+  | --- | --- |
+  | min | **227** |
+  | **median** | **313** |
+  | max | 401 |
+
+  This supersedes the earlier run, which recorded **100% CPU** throughout (median ~1.5 s, worst 3.3 s) and
+  was recorded as a lower bound rather than a design figure. For comparison under the heavy-load
+  conditions, Git Bash ~1.4 s and Windows PowerShell 5.1 ~1.4–3.1 s — the exe led throughout, which is the
+  load-independent part of that result.
+
+  **Design conclusion: a warm activation hook costs roughly a third of a second**, and `SessionStart`
+  blocks the first turn, so the user waits it out at every session start, resume, clear and compaction.
+  That is acceptable and needs no design escalation, but it is not free — it is the reason the
+  early-return requirement above is mandatory rather than tidiness.
+
+  **Two caveats, stated rather than rounded away.** (1) 45–65% CPU is *low load*, not idle; a pristine
+  measurement would likely come in under the 227 ms floor, so these figures remain conservative.
+  (2) **Cold start is still unmeasured at low load** — the binary was warm in the file cache throughout,
+  and re-creating a genuine cold start needs a reboot. The only cold figure available is ~3.9 s, taken at
+  100% CPU, and it should be treated as a heavily pessimistic outlier rather than the expected first-run
+  cost. Measure it opportunistically after the next reboot.
+
+  *Measured against the `--version` verb, which shares the `activation-payload` verb's code path exactly:
+  both are early-return cases in the same switch that print one line before any MCP/DI initialisation.*
 
 - **Load-independent finding that strengthens Option B.** A hook command of the form `bash "…"` does not
   have a determinate interpreter on Windows. Measured on this machine, bare `bash` resolves **first** to

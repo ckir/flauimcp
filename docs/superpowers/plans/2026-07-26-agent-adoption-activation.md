@@ -1263,11 +1263,13 @@ dotnet run --project src/FlaUI.Mcp.Server -c Release -- activation-payload
 
 Expected: one line of JSON with `"hookEventName":"SessionStart"`.
 
-- [ ] **Step 2b: Measure hook latency on an IDLE machine — the spec owes this number**
+- [ ] **Step 2b: Confirm the verb's latency matches the measured baseline**
 
-§5.2 records ~380 ms warm / ~3.9 s cold as an explicitly **unverified lower bound**: every prior attempt was taken at 100% CPU. `SessionStart` hooks block the first turn (measured), so this is latency the user waits through at every session start *and every compaction*. Take the real number.
+**Already measured, 2026-07-27 at 45–65% CPU** (spec §5.2): the shared early-return code path runs in **min 227 / median 313 / max 401 ms** warm. That was taken against `--version`; this step confirms the real verb lands in the same band and does not drag in initialisation work.
 
-Close other workloads, confirm the machine is idle, then run:
+**Cold start remains unmeasured at low load** — take an opportunistic reading after the next reboot and record it in §5.2.
+
+Run:
 
 ```powershell
 $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
