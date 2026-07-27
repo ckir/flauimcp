@@ -214,15 +214,40 @@ Answer: **no**. Confirmed twice.
 | the command, run standalone | `bash -c '<exact string>'` → valid JSON, exit 0 |
 | the plugin's skills | load correctly (M0/M2/M3 all live) |
 
-**Root cause: not yet identified.** Refuted so far — a missing `.claude-plugin/plugin.json` (added to
-both the staging dir and the cache; no change), a malformed command string (runs fine under `bash` and
-`sh`), and a `hooks` declaration in the manifest (agy-autotrain has none either).
+**Root cause: LIKELY NOT OURS — plugin hooks appear to require a full Claude Code restart.**
 
-**Working control:** `agy-autotrain` is also a plugin, also loaded from its cache, and **its**
-SessionStart hook does reach the model. Its commands take the form
-`bash "${CLAUDE_PLUGIN_ROOT}/hooks/x.sh"` with the scripts beside `hooks.json`; ours invokes an absolute
-`.exe` path **outside** the plugin tree. That is the largest remaining difference and the next thing to
-test.
+A throwaway diagnostic plugin (`hooktest`) was built mirroring `agy-autotrain`'s exact layout —
+marketplace root with `source: "./plugins/hooktest"`, plugin root with `.claude-plugin/plugin.json`,
+and a `bash "${CLAUDE_PLUGIN_ROOT}/hooks/marker.sh"` SessionStart command. It registered cleanly,
+shows **enabled**, and its cache copy contains both `hooks/hooks.json` and the script.
+**Its hook does not fire either.**
+
+The pattern across the whole plugin cache:
+
+| plugin | cached | hook fires |
+|---|---|---|
+| `clavity-agy-autotrain` | 2026-07-13 | yes |
+| `clavity-dotnet` | 2026-07-24 | yes |
+| `flaui-mcp-marketplace` | 2026-07-19 (upgraded to 0.18.0 today) | **no** |
+| `hooktest-mp` | today, minutes before the test | **no** |
+
+Plugins registered in earlier client lifetimes fire; plugins installed or upgraded during the current
+one do not — regardless of layout, command form, or manifest placement. So the structural differences
+listed above are almost certainly red herrings, and the shipped artifact may be correct.
+
+**Prediction to confirm:** after a FULL Claude Code restart (quit the client, not just a new session),
+both `flaui-mcp`'s activation hook and the `hooktest` marker should fire. If both do, this is a client
+registration-timing behaviour, not a product defect, and the only real bug here is that our docs and
+`status` imply a freshly-installed hook is immediately live.
+
+**Refuted along the way — do not retry:** a missing `.claude-plugin/plugin.json` (added to both the
+staging dir and the cache; no change); a malformed command string (runs correctly under `bash` and
+`sh`, exit 0); a `hooks` declaration in the manifest (agy-autotrain has none either); marketplace/plugin
+root separation (the test plugin replicates it and still does not fire).
+
+> **Cleanup owed:** the `hooktest` diagnostic plugin is still registered as a control for the restart
+> test. Remove with
+> `claude plugin uninstall hooktest@hooktest-mp` and `claude plugin marketplace remove hooktest-mp`.
 
 **Also wrong, and shipped:** `docs/operator-manual.md` states *"Claude references the staging dir in
 place; it does not copy it."* It does copy it —
