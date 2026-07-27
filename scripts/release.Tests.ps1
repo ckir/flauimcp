@@ -659,6 +659,23 @@ Describe 'Add-ChangelogSection edge cases' {
         ([regex]::Matches((Get-Content $Cl -Raw), '(?m)^## \[0\.2\.0\]')).Count | Should -Be 1
     }
 
+    It 'does not throw on a zero-byte CHANGELOG' {
+        # Get-Content -Raw emits the no-output sentinel for an empty file and the later .TrimEnd() throws --
+        # the same class as the zero-byte draft, and a [string] cast does not fix it either.
+        New-Item -ItemType File -Path $Cl | Out-Null
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27') } |
+            Should -Not -Throw
+        (Get-Content $Cl -Raw) | Should -Match '(?m)^## \[0\.2\.0\] - 2026-07-27$'
+    }
+
+    It 'keeps a one-line file that is not a section heading' {
+        Set-Content -Path $Cl -Value '# Changelog' -NoNewline
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')
+        $after = Get-Content $Cl -Raw
+        $after | Should -Match '(?m)^# Changelog$'
+        $after | Should -Match '(?m)^## \[0\.2\.0\]'
+    }
+
     It 'still inserts normally into a multi-section changelog' {
         Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
         Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')

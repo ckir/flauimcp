@@ -214,7 +214,9 @@ function Add-ChangelogSection {
     )
 
     $heading = "## [$Version] - $($Date.ToString('yyyy-MM-dd', [cultureinfo]::InvariantCulture))"
-    $content = Get-Content $ChangelogPath -Raw
+    # Interpolate: on a 0-byte CHANGELOG.md, Get-Content -Raw emits the no-output sentinel and the .TrimEnd()
+    # below throws. Same class as the zero-byte draft in release.ps1, and a [string] cast does NOT fix it.
+    $content = "$(Get-Content $ChangelogPath -Raw)"
 
     # Match the VERSION, not the whole heading. The heading carries today's date, so re-cutting a version on a
     # later day produced no match and the guard silently appended a second '## [X.Y.Z]' section instead of
