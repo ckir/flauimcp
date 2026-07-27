@@ -195,7 +195,32 @@ generic launcher title (`cmd.exe`/`PowerShell`) is never proof of a bare shell.
 
 ---
 
-## Agent-adoption reliability — make correct usage the STRUCTURAL default
+## Agent-adoption reliability — make correct usage the STRUCTURAL default ✅ DELIVERED (2026-07-27)
+
+> **Shipped on `feat/agent-adoption-activation`.** Both AAs are implemented as four mechanisms, plus a
+> packaging precondition that turned out to block the whole thing: `PluginArtifactWriter` staged only
+> four files, so **the plugin shipped no hooks at all** — every hook mechanism reached 0% of installed
+> users. Fixing distribution came first.
+>
+> | | Mechanism | Result |
+> |---|---|---|
+> | **M0** | Fix the broken tool-load line | The documented `ToolSearch` line named `mcp__flaui-mcp__*`, but under plugin registration the tools are `mcp__plugin_flaui-mcp_flaui-mcp__*` — it **matched nothing**. Now lists both prefixes; `select:` ignores names it cannot match. |
+> | **M1** | `SessionStart` activation hook | Compiled-in payload + `activation-payload` verb + generated `hooks.json`. Fires on `startup\|clear\|compact`. |
+> | **M2** | Decision-point frontmatter | Rewritten question-shaped: *what is on screen, is an app responding, what a background terminal shows*. |
+> | **M3** | Traps in tool descriptions | The launcher-not-the-program trap stated as an **imperative** in `desktop_list_windows` + `desktop_read_terminal_tab`. |
+>
+> **The AA2 hypothesis above was half right.** M3 is indeed the cheapest, highest-coverage lever. But
+> AA2's other half — the *"read me fresh before driving"* gate — was **rejected as circular**: an agent
+> that doesn't read the skill won't read a notice telling it to. M0 also had to come first: without it,
+> every other mechanism pointed at a load line that returned nothing.
+>
+> **Measured, so it stays settled:** the activation hook costs ~0.5 s and blocks the first turn, but that
+> is **below the noise floor** of a ~35 s session start. A `cmd /c type` variant (62 ms) and a light Rust
+> binary (62 ms) measure identically — the floor is Windows process creation, not the runtime — so the
+> hook is **not worth optimising in any language**. See spec §5.2.
+>
+> ▶ Still open: the observational check (does an agent reach for the tools unprompted?) is a dogfooding
+> gate, not a test, and can only be judged in live use.
 
 *Motivated by a live dogfooding failure, 2026-07-26: a capable consuming agent (Claude) had flaui-mcp
 available and the recipe documented, yet (a) did NOT reach for the tool — it asked the human to eyeball
