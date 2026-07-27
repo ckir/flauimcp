@@ -88,7 +88,7 @@ public sealed class PluginArtifactWriter
         WritePluginJson(version);
         WriteMarketplaceJson();
         WriteSkills();
-        WriteHooksAndScripts();
+        WriteHooksAndScripts(exePath);
     }
 
     private void WritePluginJson(string version)
@@ -120,10 +120,43 @@ public sealed class PluginArtifactWriter
         Extract(PluginIds.CurateSkill,   Path.Combine("skills", "flaui-curate", "SKILL.md"));
     }
 
-    private void WriteHooksAndScripts()
+    private void WriteHooksAndScripts(string exePath)
     {
-        Extract(PluginIds.HooksJson,     Path.Combine("hooks", "hooks.json"));
         Extract(PluginIds.CurateNudgeSh, Path.Combine("scripts", "flaui-curate-nudge.sh"));
+
+        // hooks.json is GENERATED, not extracted: the SessionStart command needs the installed exe's
+        // ABSOLUTE path, which only exists at install time — the same value .mcp.json already gets.
+        // The embedded copy supplies every other hook (currently the curate-nudge Stop hook), so a
+        // hook added to the repo tree ships without touching this method.
+        using var stream = typeof(PluginArtifactWriter).Assembly.GetManifestResourceStream(PluginIds.HooksJson)
+            ?? throw new FileNotFoundException($"embedded plugin resource missing: {PluginIds.HooksJson}");
+        using var reader = new StreamReader(stream);
+        var root = JsonNode.Parse(reader.ReadToEnd())!;
+
+        var hooks = root["hooks"]!.AsObject();
+        hooks["SessionStart"] = new JsonArray
+        {
+            new JsonObject
+            {
+                // matcher copied from the WORKING SessionStart hook already in this repo
+                // (.claude/settings.json) — a proven shape, not an invented one. All three sources
+                // matter: compact and clear are exactly when the agent has just lost its context.
+                ["matcher"] = "startup|clear|compact",
+                ["hooks"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["type"]    = "command",
+                        // Serialized via JsonNode, so the Windows backslashes are escaped correctly.
+                        ["command"] = $"\"{exePath}\" {ActivationPayload.Verb}",
+                    }
+                }
+            }
+        };
+
+        var target = Path.Combine(_stagingDir, "hooks", "hooks.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.WriteAllText(target, root.ToJsonString(Pretty));
     }
 
     /// Copy an embedded resource to a staging-relative path BYTE FOR BYTE. Deliberately a raw stream

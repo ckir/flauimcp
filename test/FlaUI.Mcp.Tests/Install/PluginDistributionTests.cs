@@ -64,4 +64,26 @@ public class PluginDistributionTests
         s.CopyTo(ms);
         Assert.Equal(ms.ToArray(), File.ReadAllBytes(staged));
     }
+
+    [Fact]
+    public void Staged_hooks_json_wires_SessionStart_to_the_installed_exe()
+    {
+        var json = File.ReadAllText(Path.Combine(Stage(), "hooks", "hooks.json"));
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+        var sessionStart = doc.RootElement.GetProperty("hooks").GetProperty("SessionStart");
+        var command = sessionStart[0].GetProperty("hooks")[0].GetProperty("command").GetString();
+
+        Assert.Contains(@"C:\fake\flaui-mcp.exe", command);
+        Assert.Contains("activation-payload", command);
+    }
+
+    [Fact]
+    public void Staged_hooks_json_preserves_the_existing_Stop_hook()
+    {
+        var json = File.ReadAllText(Path.Combine(Stage(), "hooks", "hooks.json"));
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        Assert.True(doc.RootElement.GetProperty("hooks").TryGetProperty("Stop", out _),
+            "generation dropped the curate-nudge Stop hook");
+    }
 }
