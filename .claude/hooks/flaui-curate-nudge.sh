@@ -4,6 +4,14 @@
 # (plain stdout on Stop is transcript-only). Dumb: reads only session_id from stdin JSON (no date math).
 # Non-hijacking (advisory additionalContext, no decision:block), never auto-runs curate.
 set -euo pipefail
+# Stay silent in automation. A nudge is advice for a human at a prompt; in a headless run there is nobody to
+# act on it and the injected text lands in whatever is scraping the model's output — that is exactly how a
+# release changelog got replaced by a reply to this hook (see scripts/release.ps1's Invoke-ChangelogLlm).
+# Claude Code exposes no flag that says "this session is non-interactive", so do NOT guess one: honour an
+# explicit opt-out that callers we control can set, plus the CI convention. Callers we do not control are
+# covered from the other side, by running `claude -p --safe-mode` (which disables hooks outright).
+case "${FLAUI_MCP_NO_NUDGE:-}" in ''|0|false|FALSE) ;; *) exit 0 ;; esac
+[ -n "${CI:-}" ] && exit 0
 # Read hook JSON from stdin, but NEVER block: if stdin is a terminal (no pipe attached, e.g. a manual
 # run), skip the read entirely instead of hanging on cat.
 if [ -t 0 ]; then input="{}"; else input="$(cat)"; fi

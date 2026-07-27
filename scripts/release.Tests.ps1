@@ -3,6 +3,26 @@ BeforeAll {
     $script:Repo = Split-Path -Parent $PSScriptRoot
     $script:Lib  = Join-Path $PSScriptRoot 'lib/release-lib.ps1'
     . $script:Lib
+
+    # Source with every comment removed, via the PowerShell tokenizer.
+    #
+    # The source-level contract tests below pin behaviour that lives in files this suite cannot dot-source
+    # (release.ps1 executes on load). Matching raw text for them is a trap that has now bitten five times on
+    # this branch: a line-comment, then an inline comment, then a block comment each left the pinned string
+    # present while the code it named was dead. Stripping comment tokens kills all three forms at once --
+    # a match against this text is necessarily a match against executable code.
+    function script:Get-CodeWithoutComments {
+        param([Parameter(Mandatory)][string]$Path)
+        $tokens = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$null)
+        # Here-strings go too: wrapping code in @'...'@ is the same "disable it but leave the text visible"
+        # move as a block comment. Ordinary string tokens must stay -- pinned values like '1' and '^###' ARE
+        # strings. That leaves one acknowledged limit: text deliberately parked in a dead single-line string
+        # would still match. These guard against regression and casual removal, not determined sabotage.
+        ($tokens |
+            Where-Object { $_.Kind -ne 'Comment' -and $_.Kind -notlike 'HereString*' } |
+            ForEach-Object { $_.Text }) -join ' '
+    }
 }
 
 Describe 'release-lib.ps1 harness' {
@@ -308,7 +328,8 @@ Describe 'Get-ChangelogPrompt' {
 
     It 'instructs body-only output and includes the style exemplar and commit list' {
         $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $Commits -DiffText 'd' -DiffStatText 's' -StyleExemplar $Exemplar
-        $p | Should -Match 'Output ONLY'
+        # Wording changed when the body moved inside <changelog> tags; the contract it pins did not.
+        $p | Should -Match 'ONLY the body sections'
         $p | Should -Match '(?s)no.*heading'
         $p | Should -Match ([regex]::Escape($Exemplar))
         $p | Should -Match '- feat\(release\): add release script'
@@ -375,5 +396,398 @@ Describe 'Invoke-Gate' {
         $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $Pass -TestCheck $Pass -SkipPluginDrift
         ($result.Checks | Where-Object Name -eq 'PluginDrift') | Should -BeNullOrEmpty
         $result.Passed | Should -BeTrue
+    }
+}
+
+Describe 'Get-ChangelogBodyFromLlmOutput' {
+    It 'extracts a clean delimited body' {
+        $raw = "<changelog>`n### Added`n- A thing.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
+    It 'discards conversational chatter that follows the body' {
+        # Regression: Invoke-DraftReview's '^###\s' guard is a PARTIAL match, so a valid body with a chatty
+        # trailer passed validation and the trailer was committed verbatim into CHANGELOG.md.
+        $raw = "<changelog>`n### Fixed`n- A bug.`n</changelog>`n`nLet me know if you'd like me to adjust the wording!"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Fixed`n- A bug."
+    }
+
+    It 'discards preamble that precedes the body' {
+        $raw = "Sure — here is the changelog you asked for:`n`n<changelog>`n### Changed`n- A change.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Changed`n- A change."
+    }
+
+    It 'discards stderr folded in by 2>&1' {
+        $raw = "Warning: an update to claude is available`n<changelog>`n### Added`n- A thing.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
+    It 'returns null for the live v0.19.0 contamination (a hook reply, no tags at all)' {
+        # Verbatim from the run that blocked v0.19.0: a Stop hook fired inside `claude -p`, the model answered
+        # the hook instead of stopping, and that reply became the last message -- i.e. the "changelog".
+        $raw = "The CHANGELOG.md body for v0.19.0 is ready above. I see the flaui-autotrain inbox has pending observations - I can run flaui-curate when you'd like, or proceed with whatever's next for the release."
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'returns null for an untagged body that WOULD pass the "### " guard' {
+        # The case above is rejected by the '### ' guard alone, so on its own it does not prove the TAGS are
+        # doing any work -- deleting the extraction keeps it green. This one cannot pass without them.
+        Get-ChangelogBodyFromLlmOutput -RawOutput "### Added`n- A perfectly good body the model forgot to tag." |
+            Should -BeNullOrEmpty
+    }
+
+    It 'keeps a body that contains the literal closing tag' {
+        # A release that changes the tag contract describes the tags in its own changelog. A non-greedy close
+        # truncated the body at the inner tag, and the fragment still held a '### ' heading -- so it passed
+        # every downstream check and would have shipped silently truncated.
+        $raw = "<changelog>`n### Changed`n- The body is now wrapped in </changelog> tags.`n- A second bullet.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw |
+            Should -Be "### Changed`n- The body is now wrapped in </changelog> tags.`n- A second bullet."
+    }
+
+    It 'returns null when the tags are present but hold no "### " section' {
+        $raw = "<changelog>`nNothing much changed this release.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'returns null when the tags are empty' {
+        Get-ChangelogBodyFromLlmOutput -RawOutput "<changelog></changelog>" | Should -BeNullOrEmpty
+    }
+
+    It 'returns null when the closing tag is missing' {
+        Get-ChangelogBodyFromLlmOutput -RawOutput "<changelog>`n### Added`n- A thing." | Should -BeNullOrEmpty
+    }
+
+    It 'returns null on empty, whitespace and null input' {
+        Get-ChangelogBodyFromLlmOutput -RawOutput ''      | Should -BeNullOrEmpty
+        Get-ChangelogBodyFromLlmOutput -RawOutput "  `n " | Should -BeNullOrEmpty
+        Get-ChangelogBodyFromLlmOutput -RawOutput $null   | Should -BeNullOrEmpty
+    }
+
+    It 'ignores a bare closing tag that appears in trailing chatter' {
+        # The mirror of the truncation case, and the edge the truncation fix itself spawned: closing at the
+        # LAST tag swallowed the real close plus the chatter, and the result still held a '### ' heading, so
+        # nothing downstream caught it. Closing at the first LINE-ANCHORED tag settles both.
+        $raw = "<changelog>`n### Added`n- A thing.`n</changelog>`n`nHope that helps! I used the </changelog> tag as requested."
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
+    It 'falls back to an inline closing tag when none is line-anchored' {
+        # A model closing on the same line as its final bullet. No competing prose tag exists in this input,
+        # so the inline fallback is unambiguous.
+        Get-ChangelogBodyFromLlmOutput -RawOutput "<changelog>`n### Added`n- A thing.</changelog>" |
+            Should -Be "### Added`n- A thing."
+    }
+
+    It 'refuses to guess when the body itself holds a line-anchored closing tag' {
+        # The residual of the residual: no delimiter scheme survives self-reference. Guessing would truncate
+        # silently and the fragment keeps its '### ' heading, so nothing downstream would catch it. Failing
+        # sends the caller to $EDITOR with the raw output in the Reason -- loud, and recoverable.
+        $raw = "<changelog>`n### Changed`n- The closing tag is now:`n</changelog>`n- and that is all.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'refuses when a second opening tag sits outside the body' {
+        # Superseded a round-3 behaviour, deliberately. This input was recovered then, on the reading that the
+        # second tag is only chatter. But a cut-off second draft looks exactly the same, and recovering there
+        # ships a body the model had already replaced -- silently. Nothing in the text separates the two, so
+        # both now fail loudly into $EDITOR with the raw output in hand.
+        $raw = "<changelog>`n### Added`n- A thing.</changelog>`nNote: the <changelog> wrapper is required."
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'refuses a stale older block when a later draft was cut off unclosed' {
+        $raw = "<changelog>`n### Stale`n- old.`n</changelog>`n<changelog>`n### Cut off mid"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'refuses when trailing chatter names both tags' {
+        $raw = "<changelog>`n### Added`n- A.`n</changelog>`nI wrapped it in <changelog>...</changelog> tags!"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'does not promote a stale sibling block when the newest one is heading-less' {
+        # Stepping outward is only right for a NESTED false start. An older sibling is a draft the model has
+        # since replaced; silently promoting it discards the model's final intent and ships a stale changelog.
+        $raw = "<changelog>`n### Stale`n- old.`n</changelog>`n<changelog>forgot heading</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+        # ...and not even when the stale block happens to name the tag in its own prose, which an earlier
+        # string-containment version of this rule was fooled by. Position decides, not content.
+        $withTag = "<changelog>`n### Stale`n- We now use <changelog>.`n</changelog>`n<changelog>forgot heading</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $withTag | Should -BeNullOrEmpty
+    }
+
+    It 'recovers a body that mentions the OPENING tag in prose' {
+        # The innermost tag is a false start: its tail yields a heading-less fragment. Giving up there would
+        # reject a good body, so the walk validates each candidate and steps outward on failure.
+        $raw = "<changelog>`n### Added`n- Use <changelog> to wrap the body.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- Use <changelog> to wrap the body."
+    }
+
+    It 'takes the last complete pair when the model self-corrects' {
+        $raw = "<changelog>`n### Added`n- Draft one.`n</changelog>`nOn reflection:`n<changelog>`n### Added`n- Draft two.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- Draft two."
+    }
+
+    It 'strips a code fence the model wrapped inside the tags' {
+        $raw = "<changelog>`n``````markdown`n### Added`n- A thing.`n```````n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+}
+
+Describe 'Get-ChangelogPrompt delimiter contract' {
+    It 'instructs the model to wrap the body in <changelog> tags' {
+        $p = Get-ChangelogPrompt -Version '9.9.9' -CommitMessages @('feat: a thing') -StyleExemplar 'exemplar'
+        $p | Should -BeLike '*<changelog>*'
+        $p | Should -BeLike '*</changelog>*'
+        # The extractor drops everything outside the tags, so the prompt must say the tags are mandatory.
+        $p | Should -BeLike '*discarded*'
+    }
+}
+
+Describe 'Headless isolation contract' {
+    # The primary fix (running the draft with hooks disabled) lives in release.ps1 and the nudge hook, neither
+    # of which this suite can dot-source -- release.ps1 executes on load. These pin the contract at the source
+    # level so it cannot be dropped silently; the behavioural proof is the live run recorded in the commit.
+    It 'invokes claude with --safe-mode, and never with --bare' {
+        # Scope to the invocation lines: the surrounding comment names --bare precisely to warn it off, so a
+        # whole-file 'Should -Not -Match' would fail on the warning rather than on a real invocation.
+        # Strip each line at its first '#', else the invocation survives as a trailing comment and this stays
+        # green with safe-mode disabled -- both the whole-line and inline forms of that trap were measured.
+        # Token text is joined with single spaces, so match the flattened invocation rather than a line.
+        $code = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        ([regex]::Matches($code, '&\s+claude\s+-p')).Count | Should -Be 1
+        $code | Should -Match '&\s+claude\s+-p\s+--safe-mode'
+        # --bare would skip keychain reads and demand ANTHROPIC_API_KEY, breaking the operator's OAuth.
+        $code | Should -Not -Match '--bare'
+    }
+
+    It 'sets the nudge opt-out for the child process' {
+        # Must pin the ASSIGNMENT, not a mention: the comment above it names the variable, so a bare
+        # 'Should -Match FLAUI_MCP_NO_NUDGE' stays green after the assignment is deleted (measured).
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $src | Should -Match '\$env:FLAUI_MCP_NO_NUDGE\s*=\s*''1'''
+    }
+
+    It 'has a curate-nudge hook that honours the opt-out and CI' {
+        # Same trap: pin the guards that EXIT, not the words. Both must short-circuit before the inbox read.
+        $hook = Get-Content (Join-Path $Repo '.claude/hooks/flaui-curate-nudge.sh') -Raw
+        $hook | Should -Match '(?m)^case\s+"\$\{FLAUI_MCP_NO_NUDGE:-\}".*exit 0.*esac$'
+        $hook | Should -Match '(?m)^\[ -n "\$\{CI:-\}" \] && exit 0$'
+    }
+
+    It 'ships the hook to the plugin byte-identically' {
+        $a = Get-Content (Join-Path $Repo '.claude/hooks/flaui-curate-nudge.sh') -Raw
+        $b = Get-Content (Join-Path $Repo 'plugins/flaui-mcp/scripts/flaui-curate-nudge.sh') -Raw
+        $b | Should -Be $a
+    }
+}
+
+Describe 'Unattended draft-resume contract' {
+    It 'never auto-resumes a stale draft under -Yes' {
+        # A draft on disk can predate the <changelog> extraction, and resuming bypasses it. Under -Yes nothing
+        # downstream inspects the body (Invoke-DraftReview auto-accepts on a PARTIAL '### ' match), so the
+        # unattended path must regenerate rather than resume.
+        $src = Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw
+        $src | Should -Not -Match '(?m)^\s*\$resume\s*=\s*\[bool\]\$Yes'
+        $src | Should -Match '(?m)^\s*\$resume\s*=\s*\$false'
+    }
+}
+
+Describe 'Unattended pre-staged draft' {
+    It 'gates the -Yes resume on the draft looking like a changelog body' {
+        # Discarding unconditionally broke a real workflow (pre-stage interactively, finish from CI with -Yes)
+        # and on the zero-commit path walked into a hard throw, since -Yes forbids the $EDITOR fallback.
+        # Resuming unconditionally let a stale chatter draft ship unreviewed. The heading gate keeps both.
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $src | Should -Match '\$resume\s*=\s*\$staged\s+-match\s+''\^###'
+        $src | Should -Not -Match '\$resume\s*=\s*\[bool\]\$Yes'
+    }
+
+    It 'documents that gate in both the help block and the usage text' {
+        # Docs that contradict behaviour are a real defect here: they tell an operator their pre-staged draft
+        # will be used when it may be discarded.
+        $src = (Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw)
+        ([regex]::Matches($src, "starts with '### '|still starts with a '### ' heading")).Count |
+            Should -BeGreaterOrEqual 2
+    }
+}
+
+Describe 'Draft file edge cases' {
+    It 'does not throw on a zero-byte draft under -Yes' {
+        # Get-Content -Raw yields $null for an empty file (a run that died between creating and writing the
+        # draft); $null.Trim() throws under ErrorActionPreference=Stop, killing the release.
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $src | Should -Match '"\$\(Get-Content \$draftPath -Raw\)"'
+        # Pin the semantics the guard depends on. A [string] CAST looks like the obvious fix and does NOT
+        # work: casting PowerShell's no-output sentinel yields $null, not ''. Only interpolation does.
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ("draftbox_" + [guid]::NewGuid() + ".md")
+        New-Item -ItemType File -Path $tmp | Out-Null
+        try {
+            { (Get-Content $tmp -Raw).Trim() }             | Should -Throw
+            { ([string](Get-Content $tmp -Raw)).Trim() }   | Should -Throw
+            { "$(Get-Content $tmp -Raw)".Trim() }          | Should -Not -Throw
+            "$(Get-Content $tmp -Raw)".Trim()              | Should -BeNullOrEmpty
+        } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Add-ChangelogSection edge cases' {
+    BeforeEach {
+        $script:Cl = Join-Path ([IO.Path]::GetTempPath()) ("cl_" + [guid]::NewGuid() + ".md")
+    }
+    AfterEach { Remove-Item $script:Cl -Force -ErrorAction SilentlyContinue }
+
+    It 'preserves a one-line CHANGELOG instead of destroying it' {
+        # Get-Content returns a SCALAR for a one-line file, so the range index sliced CHARACTERS: the existing
+        # release section was overwritten by a single '#'. Measured before the @() fix.
+        Set-Content -Path $Cl -Value '## [0.1.0] - 2026-01-01' -NoNewline
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')
+        $after = Get-Content $Cl -Raw
+        $after | Should -Match '(?m)^## \[0\.1\.0\] - 2026-01-01$'
+        $after | Should -Match '(?m)^## \[0\.2\.0\] - 2026-07-27$'
+        # New section on top, old one intact below it.
+        $after.IndexOf('## [0.2.0]') | Should -BeLessThan $after.IndexOf('## [0.1.0]')
+    }
+
+    It 'refuses a duplicate version even on a different date' {
+        # The guard used to match the whole heading, which carries the date, so a re-cut the next day appended
+        # a second '## [X.Y.Z]' section instead of throwing. Measured: two sections, no error.
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.2.0] - 2026-07-26`n### Added`n- First cut.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- Second." -Date ([datetime]'2026-07-27') } |
+            Should -Throw -ExpectedMessage '*already exists*'
+        ([regex]::Matches((Get-Content $Cl -Raw), '(?m)^## \[0\.2\.0\]')).Count | Should -Be 1
+    }
+
+    It 'does not throw on a zero-byte CHANGELOG' {
+        # Get-Content -Raw emits the no-output sentinel for an empty file and the later .TrimEnd() throws --
+        # the same class as the zero-byte draft, and a [string] cast does not fix it either.
+        New-Item -ItemType File -Path $Cl | Out-Null
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27') } |
+            Should -Not -Throw
+        (Get-Content $Cl -Raw) | Should -Match '(?m)^## \[0\.2\.0\] - 2026-07-27$'
+    }
+
+    It 'keeps a one-line file that is not a section heading' {
+        Set-Content -Path $Cl -Value '# Changelog' -NoNewline
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')
+        $after = Get-Content $Cl -Raw
+        $after | Should -Match '(?m)^# Changelog$'
+        $after | Should -Match '(?m)^## \[0\.2\.0\]'
+    }
+
+    It 'ignores a heading inside a fenced block' {
+        # A fenced example documenting the changelog format shows a real '## [X.Y.Z]' at line start. It is
+        # illustration, not structure -- treating it as a section blocked that version's release outright.
+        $f = [string][char]0x60 * 3
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- The format is:`n${f}markdown`n## [1.0.0] - 2026-01-01`n${f}`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '1.0.0' -Body "### Added`n- Real." -Date ([datetime]'2026-07-28') } |
+            Should -Not -Throw
+        # ...but a REAL section outside a fence is still refused.
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.1.0' -Body "### Added`n- Dup." -Date ([datetime]'2026-07-28') } |
+            Should -Throw -ExpectedMessage '*already exists*'
+    }
+
+    It 'never inserts INTO a fenced block in the preamble' {
+        # The guard and the insert point must agree. When only the guard ignored fences, the insert point still
+        # landed on the fenced heading and the new entry was written inside the code block, splitting it.
+        $f = [string][char]0x60 * 3
+        Set-Content -Path $Cl -Value "# Changelog`n`nFormat:`n${f}markdown`n## [2.0.0] - 2026-01-01`n${f}`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.3.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-28')
+        $after = Get-Content $Cl -Raw
+        # The fence stays intact: its opening line is still immediately followed by the example heading.
+        $normalised = $after.Replace("`r`n", "`n")
+        $normalised.Contains("${f}markdown`n## [2.0.0]") | Should -BeTrue
+        # And the new section lands after the fence but before the real first section.
+        $after.IndexOf('## [0.3.0]') | Should -BeGreaterThan $after.IndexOf('## [2.0.0]')
+        $after.IndexOf('## [0.3.0]') | Should -BeLessThan $after.IndexOf('## [0.1.0]')
+    }
+
+    It 'is not blinded by two inline triple-backtick spans in separate entries' {
+        # A regex pairing fences across the whole file read these as one long fence and swallowed the real
+        # headings between them, so a genuine duplicate sailed through. Measured: two '## [0.5.0]' sections.
+        $f = [string][char]0x60 * 3
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.9.0] - 2026-05-01`n### Added`n- Use ${f} for fences.`n`n## [0.5.0] - 2026-02-01`n### Added`n- Also ${f} here.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.5.0' -Body "### Added`n- Dup." -Date ([datetime]'2026-07-28') } |
+            Should -Throw -ExpectedMessage '*already exists*'
+    }
+
+    It 'treats a tilde fence the same as a backtick fence' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- Fmt:`n~~~markdown`n## [1.0.0] - 2026-01-01`n~~~`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '1.0.0' -Body "### Added`n- Real." -Date ([datetime]'2026-07-28') } |
+            Should -Not -Throw
+    }
+
+    It 'still inserts normally into a multi-section changelog' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27')
+        $after = Get-Content $Cl -Raw
+        $after | Should -Match '(?m)^# Changelog$'
+        $after.IndexOf('## [0.2.0]') | Should -BeLessThan $after.IndexOf('## [0.1.0]')
+        $after | Should -Match '- Old\.'
+    }
+
+    It 'does not trip the guard on a version merely mentioned in a body' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [0.1.0] - 2026-01-01`n### Fixed`n- Regression from ## [0.2.0] discussion.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.2.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-27') } |
+            Should -Not -Throw
+    }
+}
+
+Describe 'Changelog fence and Unreleased handling' {
+    BeforeEach {
+        $script:Cl = Join-Path ([IO.Path]::GetTempPath()) ("cl2_" + [guid]::NewGuid() + ".md")
+        $script:B3 = [string][char]0x60 * 3
+        $script:B4 = [string][char]0x60 * 4
+    }
+    AfterEach { Remove-Item $script:Cl -Force -ErrorAction SilentlyContinue }
+
+    It 'does not treat an inline triple-backtick span as an open fence' {
+        # A naive toggle closed nothing here, so every line after it looked fenced -- the guard went blind and
+        # a real duplicate would have been admitted. CommonMark: a backtick info string bars the fence.
+        Set-Content -Path $Cl -Value "# Changelog`n`n${B3}code${B3}`n`n## [0.1.0] - 2026-01-01`n### Added`n- Old.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '0.1.0' -Body "### Added`n- Dup." -Date ([datetime]'2026-07-28') } |
+            Should -Throw -ExpectedMessage '*already exists*'
+    }
+
+    It 'does not let a three-backtick line close a four-backtick fence' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n${B4}`n${B3}`n## [9.9.9] - 2026-01-01`n${B3}`n${B4}`n`n## [0.1.0] - 2026-01-01`n- Old.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '9.9.9' -Body "### Added`n- Real." -Date ([datetime]'2026-07-28') } |
+            Should -Not -Throw
+        # The example heading stayed inside the fence, so the new section went after it, not into it.
+        $after = (Get-Content $Cl -Raw).Replace("`r`n", "`n")
+        $after.Contains("${B4}`n${B3}`n## [9.9.9] - 2026-01-01") | Should -BeTrue
+    }
+
+    It 'does not let a tilde line close a backtick fence' {
+        Set-Content -Path $Cl -Value "# Changelog`n`n${B3}md`n~~~`n## [9.9.9] - 2026-01-01`n${B3}`n`n## [0.1.0] - 2026-01-01`n- Old.`n"
+        { Add-ChangelogSection -ChangelogPath $Cl -Version '9.9.9' -Body "### Added`n- Real." -Date ([datetime]'2026-07-28') } |
+            Should -Not -Throw
+    }
+
+    It 'keeps an Unreleased section on top when inserting' {
+        # Keep a Changelog puts '## [Unreleased]' first. Treating it as a release inserted the new section
+        # ABOVE it, breaking the standard structure.
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [Unreleased]`n### Added`n- WIP.`n`n## [0.1.0] - 2026-01-01`n- Old.`n"
+        Add-ChangelogSection -ChangelogPath $Cl -Version '0.3.0' -Body "### Added`n- New." -Date ([datetime]'2026-07-28')
+        $after = Get-Content $Cl -Raw
+        $after.IndexOf('## [Unreleased]') | Should -BeLessThan $after.IndexOf('## [0.3.0]')
+        $after.IndexOf('## [0.3.0]')      | Should -BeLessThan $after.IndexOf('## [0.1.0]')
+    }
+
+    It 'does not publish Unreleased as the top release section' {
+        # The reader and the writer must agree; when only the writer knew about Unreleased, the reader still
+        # handed it to `gh release` as the release body.
+        Set-Content -Path $Cl -Value "# Changelog`n`n## [Unreleased]`n### Added`n- WIP.`n`n## [0.2.0] - 2026-02-01`n### Added`n- Shipped.`n"
+        $top = Get-TopChangelogSection -ChangelogPath $Cl
+        $top | Should -Match '^## \[0\.2\.0\]'
+        $top | Should -Not -Match 'WIP'
+    }
+
+    It 'does not publish a fenced example heading as the top section' {
+        Set-Content -Path $Cl -Value "# Changelog`n`nFormat:`n${B3}markdown`n## [9.9.9] - 2026-01-01`n${B3}`n`n## [0.2.0] - 2026-02-01`n### Added`n- Shipped.`n"
+        $top = Get-TopChangelogSection -ChangelogPath $Cl
+        $top | Should -Match '^## \[0\.2\.0\]'
+        $top | Should -Not -Match '9\.9\.9'
     }
 }

@@ -13,7 +13,9 @@ Makes no writes (no commit/tag/push) and never calls the LLM.
 
 .PARAMETER Yes
 Unattended: never blocks on stdin. Auto-accepts the changelog draft and the final cut confirmation; every
-other interactive gate hard-fails (exit 1) rather than opening an interactive fallback. See the plan's
+other interactive gate hard-fails (exit 1) rather than opening an interactive fallback. An existing draft
+from a previous run is resumed only if it still starts with a '### ' heading -- otherwise it is discarded
+and regenerated, so a stale non-changelog draft cannot be accepted unreviewed. See the plan's
 "Unattended (-Yes) contract" table.
 
 .PARAMETER Version
@@ -71,7 +73,9 @@ FLOW
   1. Preconditions: on master, tracked tree clean, tags fetched.
   2. Compute the next version from conventional commits since the last v* tag.
   3. Gate: dotnet build/test, 3-file version sync, plugin-snapshot drift.
-  4. Draft the CHANGELOG body with 'claude -p' (heading is script-owned).
+  4. Draft the CHANGELOG body with 'claude -p --safe-mode' (heading is script-owned). Safe-mode keeps
+     the draft run free of hooks/plugins/CLAUDE.md; the body is read from <changelog> tags, so any
+     chatter or stderr around it is discarded rather than becoming the changelog.
   5. You review: Accept / Regenerate / Edit / Abort.
   6. Confirm: "Cut release vX.Y.Z?" (skipped under -Yes).
   7. Commit chore(release), tag vX.Y.Z, 'git push --atomic origin master vX.Y.Z'.
@@ -81,6 +85,7 @@ FLAGS
   -WhatIf           Preview version + gate + LLM prompt. No writes, no LLM call.
   -Yes, -y          Unattended: auto-accept the draft and the final confirmation;
                     every other interactive gate hard-fails instead of blocking.
+                    Resumes a previous run's draft only if it starts with '### '.
   -Version X.Y.Z    Pin the release version (skips commit-driven computation).
   -Bump <level>     Force major/minor/patch from the last tag.
   -Model <name>     claude -p model for the changelog draft (default: haiku).
@@ -166,9 +171,16 @@ function Invoke-ChangelogLlm {
         [int]$TimeoutSeconds = 120
     )
 
+    # --safe-mode runs the draft with every customization off (CLAUDE.md, skills, plugins, HOOKS, MCP servers,
+    # custom commands/agents) while auth, model selection and built-in tools keep working. Without it the
+    # headless run inherits this repo's hooks: the flaui-autotrain Stop hook fires, the model answers the nudge
+    # instead of stopping, and that conversational reply becomes the last message — i.e. the "changelog".
+    # NOT --bare: it skips keychain reads and demands ANTHROPIC_API_KEY, which breaks the operator's OAuth.
+    # FLAUI_MCP_NO_NUDGE is belt-and-braces for the same class (see .claude/hooks/flaui-curate-nudge.sh).
     $job = Start-Job -ScriptBlock {
         param($PromptText, $ModelName)
-        $out = $PromptText | & claude -p --model $ModelName --output-format text 2>&1 | Out-String
+        $env:FLAUI_MCP_NO_NUDGE = '1'
+        $out = $PromptText | & claude -p --safe-mode --model $ModelName --output-format text 2>&1 | Out-String
         [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
     } -ArgumentList $Prompt, $Model
 
@@ -186,7 +198,19 @@ function Invoke-ChangelogLlm {
             return [pscustomobject]@{ Success = $false; Body = $null; Reason = $reason }
         }
 
-        [pscustomobject]@{ Success = $true; Body = $result.Output.Trim(); Reason = $null }
+        # The raw capture is not the body — extract the delimited payload and drop chatter and any stderr that
+        # `2>&1` folded in (keep the redirect: the failure Reason above is built from that same stream). A body
+        # that cannot be extracted is a FAILURE, so nothing unvalidated is ever persisted as a draft.
+        $body = Get-ChangelogBodyFromLlmOutput -RawOutput $result.Output
+        if ($null -eq $body) {
+            return [pscustomobject]@{
+                Success = $false
+                Body    = $null
+                Reason  = "claude -p returned no usable <changelog> body (chatter, or missing '### ' section). Raw output:`n$($result.Output.Trim())"
+            }
+        }
+
+        [pscustomobject]@{ Success = $true; Body = $body; Reason = $null }
     }
     finally {
         if ($job) { Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue }
@@ -206,8 +230,28 @@ function Get-OrCreateDraft {
     $draftPath = Join-Path ([IO.Path]::GetTempPath()) "flaui-mcp-release-draft-$Version.md"
 
     if (Test-Path $draftPath) {
-        $resume = [bool]$Yes
-        if (-not $Yes) {
+        # Unattended, resume only a draft that still LOOKS like a changelog body. A draft on disk can predate
+        # this script -- including one written before the <changelog> extraction existed, by the very defect
+        # that motivated it -- and resuming bypasses extraction entirely, with nothing downstream to catch it
+        # (Invoke-DraftReview auto-accepts under -Yes). But discarding unconditionally would break a real
+        # workflow: pre-stage a draft interactively, then finish the release from CI with -Yes. Worse, on the
+        # zero-commit path that discard walks straight into a hard throw, because -Yes forbids the $EDITOR
+        # fallback -- turning a previously-working run into a fatal one. Gating on the heading keeps both:
+        # a hand-staged body resumes, a chatter draft is thrown away.
+        $resume = $false
+        if ($Yes) {
+            # Interpolate before Trim. Get-Content -Raw on a 0-byte file (a run that died between creating the
+            # draft and writing it) emits PowerShell's no-output sentinel, and calling .Trim() on that throws
+            # under ErrorActionPreference=Stop, killing the release. A [string] CAST does not help -- casting
+            # the sentinel yields $null, not '' -- but interpolation does. Both were measured.
+            $staged = "$(Get-Content $draftPath -Raw)".Trim()
+            $resume = $staged -match '^###\s'
+            if ($resume) {
+                Write-Host "Resuming the pre-staged draft for v$Version (unattended)."
+            } else {
+                Write-Warning "Discarding the existing draft for v$Version — it does not start with a '### ' heading, so it is not a changelog body."
+            }
+        } else {
             $ans = Read-Host "Found an existing draft for v$Version from a previous run. Resume it? [Y/n]"
             $resume = ($ans -eq '' -or $ans -match '^[Yy]')
         }
@@ -491,7 +535,7 @@ try {
     $prompt = Get-ChangelogPrompt -Version $next.Version -CommitMessages $commitMessages -DiffText $diffText -DiffStatText $diffStatText -StyleExemplar $exemplar
 
     if ($WhatIf) {
-        Write-Host "`n[-WhatIf] Prompt that WOULD be sent to 'claude -p --model $Model':`n"
+        Write-Host "`n[-WhatIf] Prompt that WOULD be sent to 'claude -p --safe-mode --model $Model':`n"
         Write-Host $prompt
         Write-Host "`n[-WhatIf] plugin-drift check was skipped in preview (no writes); the real run verifies it."
         Write-Host "`n[-WhatIf] No commit, tag, or push will happen. Exiting without side effects."
