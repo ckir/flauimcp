@@ -495,6 +495,18 @@ FIRST because it is the genuinely novel instruction:
   *Measured against the `--version` verb, which shares the `activation-payload` verb's code path exactly:
   both are early-return cases in the same switch that print one line before any MCP/DI initialisation.*
 
+  **Post-implementation confirmation run — ATTEMPTED AND CORRECTLY ABORTED (2026-07-27).** The real
+  `activation-payload` verb now exists, so the proxy is no longer needed. The Release build was produced
+  and the verb verified functionally: it emits valid JSON with `hookEventName == "SessionStart"` and
+  exits 0. **The timing half was not taken** — CPU sampled at 100% across six consecutive readings, and
+  the plan's Step 2b aborts unless load is in single digits. Recording a figure under those conditions is
+  the precise error that produced the superseded ~1.5 s median above, so it was not repeated.
+
+  ▶ **STILL OWED, both opportunistic:** (a) a warm confirmation run against the real verb at genuinely
+  low load, expected to land in the same band as the 313 ms proxy; (b) a cold-start reading after the
+  next reboot. Neither blocks the design — the proxy measurement stands and the code path is shared by
+  construction — but neither should be quietly marked done.
+
 - **Load-independent finding that strengthens Option B.** A hook command of the form `bash "…"` does not
   have a determinate interpreter on Windows. Measured on this machine, bare `bash` resolves **first** to
   `C:\WINDOWS\system32\bash.exe` — the **WSL** launcher — with `C:\Program Files\Git\bin\bash.exe` only
@@ -718,9 +730,18 @@ capability to game a client-side UX heuristic.
    and ≤ 1100 characters of **prose excluding the load line** (revised from a 1200-character total during
    execution — see §5.2 "Bounded length"), and every tool name in it is allow-listed per §5.2 item 6.
 5. The M3 invariant test passes: every required trap fact is present in its named tool's `[Description]`,
-   and **no description exceeds 1200 characters** (the current longest, `desktop_read_terminal_tab`, is
-   the practical ceiling — the plan must measure it and set the budget at or just above it, so hoisting
-   cannot silently metastasize).
+   and **no description exceeds 1500 characters**, so hoisting cannot silently metastasize.
+
+   **Measurement performed during execution (2026-07-27); this criterion's earlier guess was wrong
+   twice.** The spec originally named `desktop_read_terminal_tab` "the current longest" and set 1200. It
+   is not the longest — it is 754. The driver then re-guessed via a source scan and claimed
+   `desktop_type` (1229); that was also wrong, because a text scan of `[McpServerTool…Description("…")]`
+   matched only **38 of the 49** tools, silently missing every multi-line attribute form.
+
+   **Measure by reflection over `[McpServerTool]`, never by scanning source.** Ground truth across all
+   49 tools: the ceiling is **`desktop_watch` at 1403 characters**, then `desktop_type` 1229,
+   `desktop_paste_text` 983, `desktop_find_text` 930. Budget set to **1500**, just above the measured
+   ceiling, per this criterion's own rule. The two descriptions M3 amends land at 812 and 888.
 6. `jq` is declared in the installer prerequisite check and `.claude/recommended-tools.json`. **Both are
    net-new construction, not edits** — measured in round 2: `.claude/recommended-tools.json` does not
    exist, and `installer/flaui-mcp.iss` has no prerequisite-check mechanism at all (its only `Check:` is
