@@ -22,8 +22,16 @@ shipped seed only.
 ## Step 0 — load tools (one ToolSearch call)
 
 ```
-ToolSearch "select:mcp__flaui-mcp__desktop_list_windows,mcp__flaui-mcp__desktop_open_window,mcp__flaui-mcp__desktop_snapshot,mcp__flaui-mcp__desktop_get_text,mcp__flaui-mcp__desktop_input_status"
+ToolSearch "select:mcp__flaui-mcp__desktop_list_windows,mcp__plugin_flaui-mcp_flaui-mcp__desktop_list_windows,mcp__flaui-mcp__desktop_open_window,mcp__plugin_flaui-mcp_flaui-mcp__desktop_open_window,mcp__flaui-mcp__desktop_snapshot,mcp__plugin_flaui-mcp_flaui-mcp__desktop_snapshot,mcp__flaui-mcp__desktop_get_text,mcp__plugin_flaui-mcp_flaui-mcp__desktop_get_text,mcp__flaui-mcp__desktop_input_status,mcp__plugin_flaui-mcp_flaui-mcp__desktop_input_status"
 ```
+
+Both prefixes are listed on purpose: the tools are named `mcp__plugin_flaui-mcp_flaui-mcp__*` when the
+plugin is registered and `mcp__flaui-mcp__*` when the server is registered directly. `select:` ignores
+names it cannot match, so listing both resolves under either without noise. If it returns **no matches**,
+retry `ToolSearch "desktop window snapshot"` and use ONLY these five names — `desktop_list_windows`,
+`desktop_open_window`, `desktop_snapshot`, `desktop_get_text`, `desktop_input_status`. That keyword search
+also returns window-mutating tools; do not substitute a similar-looking name for one that is missing.
+
 Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste_text` (synthetic input);
 `desktop_set_caret,desktop_select_text_range` (lease-exempt text); `desktop_focus_window,desktop_wait_for_foreground,desktop_window_transform` (foreground/recovery);
 `desktop_find` (cheap targeting), `desktop_snapshot_diff` (change detection);
