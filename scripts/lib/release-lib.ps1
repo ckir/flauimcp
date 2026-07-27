@@ -302,20 +302,34 @@ function Get-ChangelogBodyFromLlmOutput {
     Missing or empty delimiters are a CAPTURE FAILURE ($null), never a body — the caller falls back to the
     editor rather than persisting garbage to the resumable draft file.
 
-    Spans the LAST opening tag to the LAST closing tag -- both quantifiers greedy. A model that shows a draft
-    and then corrects itself should be taken at its final word (last opening tag), and the body must survive
-    containing the literal string "</changelog>" (last closing tag). That second case is not hypothetical: the
-    prompt hands the model the tag contract, so a release that CHANGES that contract will describe the tags in
-    its own changelog. A non-greedy close truncated such a body at the inner tag, and because the surviving
-    fragment still held a '### ' heading it passed every downstream check and would have shipped.
+    Always starts at the LAST opening tag: a model that shows a draft and then corrects itself should be taken
+    at its final word.
+
+    Choosing the CLOSING tag is the subtle part, because the tag string can legitimately appear in two places
+    that pull in opposite directions -- and the prompt hands the model that string, so both are realistic:
+      * inside the body, when a release documents the tag contract itself ("wrapped in </changelog> tags");
+      * inside trailing chatter, when the model narrates the formatting it just followed.
+    Closing at the FIRST tag truncates the first case; closing at the LAST tag swallows the real close plus the
+    chatter in the second. Both failures keep a '### ' heading, so neither is caught downstream -- they ship.
+
+    So close at the first tag that is ALONE ON ITS LINE, which is how the tag is actually emitted (the prompt's
+    example puts it on its own line, and the live model follows it). A tag mentioned in prose sits mid-line and
+    is skipped, whichever side of the close it falls on. Only if no line-anchored tag exists at all do we fall
+    back to the last inline one -- that covers a model closing on the same line as its final bullet, and in
+    that input there is no competing prose tag to be confused by.
     #>
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyString()][string]$RawOutput)
 
     if ([string]::IsNullOrWhiteSpace($RawOutput)) { return $null }
-    if ($RawOutput -notmatch '(?s).*<changelog>(.*)</changelog>') { return $null }
 
-    $body = $Matches[1].Trim()
+    if ($RawOutput -match '(?sm).*<changelog>(.*?)^[ \t]*</changelog>[ \t\r]*$') {
+        $body = $Matches[1].Trim()
+    } elseif ($RawOutput -match '(?s).*<changelog>(.*)</changelog>') {
+        $body = $Matches[1].Trim()
+    } else {
+        return $null
+    }
 
     # Tolerate a fenced block inside the tags: the prompt forbids fences, but wrapping output in ``` is a
     # strong model habit and stripping it is cheaper than failing an otherwise-good body.

@@ -444,6 +444,21 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         Get-ChangelogBodyFromLlmOutput -RawOutput $null   | Should -BeNullOrEmpty
     }
 
+    It 'ignores a bare closing tag that appears in trailing chatter' {
+        # The mirror of the truncation case, and the edge the truncation fix itself spawned: closing at the
+        # LAST tag swallowed the real close plus the chatter, and the result still held a '### ' heading, so
+        # nothing downstream caught it. Closing at the first LINE-ANCHORED tag settles both.
+        $raw = "<changelog>`n### Added`n- A thing.`n</changelog>`n`nHope that helps! I used the </changelog> tag as requested."
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
+    It 'falls back to an inline closing tag when none is line-anchored' {
+        # A model closing on the same line as its final bullet. No competing prose tag exists in this input,
+        # so the inline fallback is unambiguous.
+        Get-ChangelogBodyFromLlmOutput -RawOutput "<changelog>`n### Added`n- A thing.</changelog>" |
+            Should -Be "### Added`n- A thing."
+    }
+
     It 'takes the last complete pair when the model self-corrects' {
         $raw = "<changelog>`n### Added`n- Draft one.`n</changelog>`nOn reflection:`n<changelog>`n### Added`n- Draft two.`n</changelog>"
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- Draft two."
@@ -472,7 +487,9 @@ Describe 'Headless isolation contract' {
     It 'invokes claude with --safe-mode, and never with --bare' {
         # Scope to the invocation lines: the surrounding comment names --bare precisely to warn it off, so a
         # whole-file 'Should -Not -Match' would fail on the warning rather than on a real invocation.
-        $invocations = @(Get-Content (Join-Path $Repo 'scripts/release.ps1') | Where-Object { $_ -match '&\s+claude\s+-p' })
+        # Skip comment lines, else commenting the invocation out leaves the test green (measured).
+        $invocations = @(Get-Content (Join-Path $Repo 'scripts/release.ps1') |
+            Where-Object { $_ -notmatch '^\s*#' -and $_ -match '&\s+claude\s+-p' })
         $invocations.Count | Should -Be 1
         $invocations[0] | Should -Match '&\s+claude\s+-p\s+--safe-mode'
         # --bare would skip keychain reads and demand ANTHROPIC_API_KEY, breaking the operator's OAuth.
@@ -482,8 +499,9 @@ Describe 'Headless isolation contract' {
     It 'sets the nudge opt-out for the child process' {
         # Must pin the ASSIGNMENT, not a mention: the comment above it names the variable, so a bare
         # 'Should -Match FLAUI_MCP_NO_NUDGE' stays green after the assignment is deleted (measured).
+        # Anchor to start-of-line: without it the assignment can be commented out and this stays green.
         $src = Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw
-        $src | Should -Match '\$env:FLAUI_MCP_NO_NUDGE\s*=\s*''1'''
+        $src | Should -Match '(?m)^\s*\$env:FLAUI_MCP_NO_NUDGE\s*=\s*''1'''
     }
 
     It 'has a curate-nudge hook that honours the opt-out and CI' {
@@ -497,5 +515,16 @@ Describe 'Headless isolation contract' {
         $a = Get-Content (Join-Path $Repo '.claude/hooks/flaui-curate-nudge.sh') -Raw
         $b = Get-Content (Join-Path $Repo 'plugins/flaui-mcp/scripts/flaui-curate-nudge.sh') -Raw
         $b | Should -Be $a
+    }
+}
+
+Describe 'Unattended draft-resume contract' {
+    It 'never auto-resumes a stale draft under -Yes' {
+        # A draft on disk can predate the <changelog> extraction, and resuming bypasses it. Under -Yes nothing
+        # downstream inspects the body (Invoke-DraftReview auto-accepts on a PARTIAL '### ' match), so the
+        # unattended path must regenerate rather than resume.
+        $src = Get-Content (Join-Path $Repo 'scripts/release.ps1') -Raw
+        $src | Should -Not -Match '(?m)^\s*\$resume\s*=\s*\[bool\]\$Yes'
+        $src | Should -Match '(?m)^\s*\$resume\s*=\s*\$false'
     }
 }

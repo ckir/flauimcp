@@ -227,8 +227,15 @@ function Get-OrCreateDraft {
     $draftPath = Join-Path ([IO.Path]::GetTempPath()) "flaui-mcp-release-draft-$Version.md"
 
     if (Test-Path $draftPath) {
-        $resume = [bool]$Yes
-        if (-not $Yes) {
+        # Never auto-resume unattended. A draft on disk can predate this script -- including one written before
+        # the <changelog> extraction existed, by the very defect that motivated it -- and resuming bypasses
+        # extraction entirely. Under -Yes nothing then inspects it: Invoke-DraftReview auto-accepts, and its
+        # guard is a PARTIAL '### ' match, so a stale body with a chatty trailer would ship. Interactive runs
+        # still get the offer, and there the operator reads the body in the review loop before accepting.
+        $resume = $false
+        if ($Yes) {
+            Write-Warning "Discarding the existing draft for v$Version — unattended runs always regenerate."
+        } else {
             $ans = Read-Host "Found an existing draft for v$Version from a previous run. Resume it? [Y/n]"
             $resume = ($ans -eq '' -or $ans -match '^[Yy]')
         }
