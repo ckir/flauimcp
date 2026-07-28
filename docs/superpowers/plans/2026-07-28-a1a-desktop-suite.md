@@ -154,7 +154,7 @@ Two things are load-bearing and neither is free choice:
 **Files:**
 - Modify: `test/FlaUI.Mcp.Tests/Presence/PresenceDesktopTests.cs` (whole file)
 
-Verified references this task depends on: `Win32Interop.SendInput(uint, INPUT[], int)`, `Win32Interop.MOUSEEVENTF_MOVE = 0x0001`, and the `INPUT` / `InputUnion` / `MOUSEINPUT` structs all live in `src/FlaUI.Mcp.Core/Interaction/Win32Interop.cs` (lines 18, 34, 51, 56, 65) and are `public`. `FileLeaseProvider` is in the same `FlaUI.Mcp.Core.Interaction` namespace.
+Verified references this task depends on, all `public` in `src/FlaUI.Mcp.Core/Interaction/Win32Interop.cs`: `MOUSEEVENTF_MOVE = 0x0001` (line 18), `SendInput(uint, INPUT[], int)` (line 34), `INPUT` (line 51), `InputUnion` (line **54**), `MOUSEINPUT` (line 65). `FileLeaseProvider` is in the same `FlaUI.Mcp.Core.Interaction` namespace.
 
 - [ ] **Step 1: Replace the file**
 
@@ -922,15 +922,17 @@ the handler stays consistent with the declared contents."
 **Files:**
 - Create: `test/FlaUI.Mcp.Tests/Perception/FixtureIntegrityTests.cs`
 
-**What it must assert:** for **every descendant** of every column `StackPanel`, excluding the exempt subtree named below, the element's bottom and right edges lie inside the window's UIA `BoundingRectangle`.
+**What it must assert:** walk **every descendant of the window root** in the UIA tree; for each one except the exemption named below, its bottom and right edges lie inside the window's own UIA `BoundingRectangle`.
+
+**Do not try to scope the walk "per column".** WPF layout panels — `Grid`, `StackPanel`, `Canvas`, `Border` — never override `OnCreateAutomationPeer`, so **none of them appears in the UIA tree at all**; the fixture's own XAML says so at `MainWindow.xaml:79-83`, which is why `DupHost`/`DupRow` had to be `GroupBox`es to be resolvable as ancestor scopes. The three column `StackPanel`s are therefore invisible to UIA and the tree under the window is effectively flattened. "Every descendant of every column `StackPanel`" and "every descendant of the window" denote the **same set of elements**; only the second is expressible.
 
 **Three properties are load-bearing, and each one is a weaker version that failed review:**
 
 1. **Compare against the window's UIA `BoundingRectangle`, not a computed "client" rect.** That rect includes the non-client frame and the drop-shadow aura, and it is exactly what `SnapshotEngine.cs:65-70` binds `cullBounds` to. A tighter client box built from `SystemParameters.WindowNonClientFrameThickness` yields **false RED** — the guard failing on content that overflows into the border while the cull's own `IntersectsWith` still includes it. Use the cull's own rectangle so the guard and the mechanism it protects cannot disagree.
 
-2. **Descendants — not the container, and not direct children.** A `Grid` hosted in a clamped window is arranged to the client area regardless of content, so "the Grid is inside the window" is true even while fifty children overflow: an assertion that can never fail. Direct children have the same problem one level down — `DupHost` and `DupRow` are `GroupBox`es arranged to the column width whatever their content does, so widened inner buttons overflow and cull while the `GroupBox` rect stays neatly inside.
+2. **Every descendant — not a container, and not direct children.** Asserting on a container is an assertion that can never fail: a `Grid` in a clamped window is arranged to the client area regardless of content, so "the Grid is inside the window" holds while fifty children overflow. Direct children have the same problem one level down — `DupHost` and `DupRow` are `GroupBox`es arranged to their available width whatever their content does, so widened inner buttons overflow and cull while the `GroupBox` rect stays neatly inside. Only a full descendant walk closes both.
 
-3. **Exempt the sentinel subtree.** `SpatialOffscreenButton` sits at `Canvas.Left="5000"` *by design*, and `OffscreenCullTests.cs:45` depends on it being outside the window. A naive descendant walk finds it at x≈5080, compares it against a ~894 DIP client width, and fails **permanently** — forbidding the exact overflow column 2 exists to create. Exempt the clipped `Canvas` and everything beneath it by name.
+3. **Exempt `SpatialOffscreenButton` by its `AutomationId` — not "the Canvas by name".** It sits at `Canvas.Left="5000"` *by design*, and `OffscreenCullTests.cs:45` depends on it being outside the window; an unexempted walk finds it at x≈5080, compares it against a ~894 DIP width, and fails **permanently**, forbidding the exact overflow it exists to create. The exemption must key on the button's own `AutomationId`, because the clipped `Canvas` that "contains" it has no UIA peer and cannot be located or skipped as a subtree — in the UIA tree the button is simply another descendant of the window.
 
 **Why this is safe under constraint 4:** it asserts a property of the fixture's *layout*, not of the cull, so it stays valid whichever way the deferred `wait_for`/`find` decision goes. Nothing here asserts about culling in either direction.
 

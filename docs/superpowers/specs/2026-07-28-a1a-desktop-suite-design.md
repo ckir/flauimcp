@@ -401,9 +401,17 @@ permits it.
 
 ### D7 — Fixture-integrity regression guard (new test)
 
-Assert containment geometrically: **for every descendant of every column `StackPanel`, excluding the
-exempt subtree below, the bottom and right edges lie inside the window's UIA `BoundingRectangle`** —
-the same rectangle `SnapshotEngine.cs:65-70` binds `cullBounds` to.
+Assert containment geometrically: **walk every descendant of the window root, and for each one
+except the exemption below, its bottom and right edges lie inside the window's UIA
+`BoundingRectangle`** — the same rectangle `SnapshotEngine.cs:65-70` binds `cullBounds` to.
+
+**Not scoped "per column" — that is not expressible (plan-review round 1).** WPF layout panels never
+override `OnCreateAutomationPeer`, so `Grid`, `StackPanel`, `Canvas` and `Border` **do not appear in
+the UIA tree at all**; the fixture's own XAML records this at `MainWindow.xaml:79-83`, and it is why
+`DupHost`/`DupRow` had to be `GroupBox`es to be resolvable as ancestor scopes. The column
+`StackPanel`s are invisible to UIA and the tree under the window is flattened, so "descendants of
+every column" and "descendants of the window" denote the **same set** — only the latter can be
+written.
 
 Three properties make this the right form, each of which a weaker version failed:
 
@@ -418,11 +426,13 @@ Three properties make this the right form, each of which a weaker version failed
   problem one level down: `DupHost` and `DupRow` are `GroupBox`es arranged to the column width
   whatever their content does, so widened inner buttons overflow and cull while the `GroupBox` rect
   stays neatly inside. Only a full descendant walk closes both.
-- **The sentinel subtree is exempt.** `SpatialOffscreenButton` sits at `Canvas.Left="5000"` *by
-  design* — it is the fixture proving the spatial cull works, and `OffscreenCullTests.cs:45` depends
-  on it being outside. A naive descendant walk would find it at x≈5080, compare it against a ~894
-  DIP client width, and fail **permanently**. The clipped sentinel `Canvas` and everything beneath
-  it is named as exempt.
+- **The sentinel is exempt, keyed on its own `AutomationId`.** `SpatialOffscreenButton` sits at
+  `Canvas.Left="5000"` *by design* — it is the fixture proving the spatial cull works, and
+  `OffscreenCullTests.cs:45` depends on it being outside. A naive descendant walk would find it at
+  x≈5080, compare it against a ~894 DIP client width, and fail **permanently**. Exempt it by
+  `AutomationId`, **not** as "the clipped `Canvas` and everything beneath it": that `Canvas` has no
+  UIA peer, so it can be neither located nor skipped as a subtree — in the UIA tree the button is
+  simply another descendant of the window. (Plan-review round 1.)
 
 A `StackPanel` arranges children at their desired size and lets them overflow the clip, and UIA
 reports those overflowing rects faithfully — proven by the original `DelayedLabel` measurement at
