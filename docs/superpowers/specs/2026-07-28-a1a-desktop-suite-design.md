@@ -280,10 +280,13 @@ review, and the reason this list is worth more than a prescribed algorithm:
      such case it is provably **not ours** (our own process is inspectable by us), so the directory
      is **dead-owner and sweepable**. Treating these as "unknown" would permanently shield exactly
      the garbage requirement 2 exists to reap.
-   - **No record exists yet** — a concurrent run in the window between creating its profile and
-     recording who owns it. This is genuinely **unknown**, must **not** be swept on sight, and is
-     resolved by age (requirement 5): a record-less directory that is minutes old is a booting run,
-     one that is hours old is debris.
+   - **No record exists yet.** Shrink this case to nothing rather than arbitrating it: **write the
+     ownership record when the directory is created, before launching**, carrying the launch intent,
+     and update it with the owner's identity once the process exists. Then every directory has a
+     record from the moment it exists, "record-less" narrows to a crash between `mkdir` and the first
+     write, and age is only ever a tiebreaker on records that *do* exist — which is what keeps this
+     requirement from colliding with requirement 5's "age may never override liveness". A directory
+     that is still record-less is treated as unknown and left alone until it ages out.
 5. **A live owner is never swept, however old.** A developer paused on a breakpoint keeps a genuinely
    live VS Code for hours; age may decide how aggressively *dead* profiles are reaped, but it may
    never override liveness. Equally, assembly-level parallelization is disabled while *process*-level
@@ -769,9 +772,26 @@ lifted those to the plan deliberately.
 Round 12 verdict: **REJECT**. The End-to-End seat, clean in round 10, found a real outcome defect
 once it re-examined the layout budget — vindicating the decision to re-seat it after D2 churned.
 
+## Panel review — round 13 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with bespoke **Fold-Regression Auditor** (round-12
+additions) and returning **End-to-End Outcome Auditor**.
+
+**Three of four seats returned "no new findings"** — Axiom Breaker, Cascade Analyst, and the
+End-to-End Outcome Auditor, the last of which walked all six original failures against the current
+prescriptions and found none that would fail to go green or fail to stay green.
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| Requirement 4's "resolved by age" for record-less directories sits awkwardly against requirement 5's "age may never override liveness": a developer pausing on a breakpoint between launching and writing the record leaves a genuinely live profile record-less for hours, which age would classify as debris | agy | **Below the stated severity floor** — it needs a breakpoint inside a window that is microseconds of straight-line code, *and* a second concurrent test run starting during that pause. **Folded anyway, because the fix is free and removes the class:** the ownership record is now written **when the directory is created, before launching**, and updated with the owner's identity afterwards. Every directory then has a record from the moment it exists, so age only ever tiebreaks records that *do* exist and the two requirements no longer overlap. Dissolved by construction rather than arbitrated. |
+
+Round 13 verdict: **effectively converged.** The two core seats and the outcome seat are clean, and
+the only finding is a contrived-case wrinkle dissolved by a structural tweak rather than a design
+change. One confirmation round follows.
+
 ## Handoff — review state
 
-Rounds 1 through 12 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 13 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
