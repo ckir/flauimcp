@@ -98,7 +98,7 @@ Round 2 corrections to that fold:
   declared.** "No literal pixel constant is load-bearing" was wrong: the content's own height is
   that constant, merely implicit. The clamp only stops the OS from silently shrinking the window;
   if the content is taller than the clamped client area it still overflows and still gets culled.
-  The two-column split is **marginal, not comfortable**, on realistic hardware:
+  The originally proposed two-column split is **insufficient** on realistic hardware:
 
   The Windows taskbar is 48 physical px at 100% and **scales with DPI, so it is 48 DIP at every
   scale** — an earlier draft of this table divided it by the scale factor on one row only, which
@@ -119,6 +119,22 @@ Round 2 corrections to that fold:
   separation `OffscreenCullTests.cs:12-50` pins between the `IsOffscreenBehavior` branch and the
   spatial-bounds branch.
 
+**Default column assignment (round 4 — decided here, verified in the plan).** Deferring this was a
+fake measurement: the controls' heights do not change when they move columns, and the total is
+already known. Heights below are **estimates read off the XAML plus default WPF metrics**, not live
+measurements — the plan confirms them and rebalances only if a column exceeds the 432 DIP budget.
+
+| Column | Controls | Est. DIP |
+|---|---|---|
+| 1 — **`RootPanel`** (the append target) | `Input`, `Secret`, `TextDoc` (60), `Grid` (100), `OkButton`, `Status`, `RebuildItemsButton`, `ClearItemsButton` | ~340 |
+| 2 | `ItemList` (~180 after D5), `OffscreenButton`, the clipped `Canvas` + `SpatialOffscreenButton`, `Check`, `Exp`, `FocusReveal`, `RevealedLabel` | ~315 |
+| 3 | `ModalButton`, `FreezeButton`, `DelayRevealButton`, `Ticker`, the `Border`/`MenuTarget` (36), `DupHost`, both `DupRow` GroupBoxes | ~320 |
+
+Column 1 is `RootPanel` deliberately: it is the shallowest column, leaving ~90 DIP of slack below its
+last child for `DelayRevealButton_Click`'s runtime append to land inside the window. Three columns at
+~300 DIP each puts the window near ~950 DIP wide — two orders below the `Canvas.Left="5000"` sentinel,
+satisfying the width invariant below.
+
 Invariants that must survive the move, each already load-bearing for a passing test:
 - `OffscreenButton` keeps `AutomationProperties.IsOffscreenBehavior="Offscreen"`.
 - `SpatialOffscreenButton` stays inside the clipped `Canvas Height="1"` at `Canvas.Left="5000"`, so
@@ -126,7 +142,7 @@ Invariants that must survive the move, each already load-bearing for a passing t
   **Derived invariant (round 2): the window's width must stay far below 5000 DIP.** The sentinel
   offset and the window width are coupled; `OffscreenCullTests.cs:45` breaks if the window ever
   grows wide enough to contain the sentinel.
-- **`RootPanel` remains a vertical `StackPanel`.** The two-column `Grid` *contains* the columns; it
+- **`RootPanel` remains a vertical `StackPanel`.** The multi-column `Grid` *contains* the columns; it
   is not itself `RootPanel`. `MainWindow.xaml.cs:81` calls `RootPanel.Children.Add(tb)` to append
   `DelayedLabel`. If `RootPanel` became the `Grid`, that call would silently place the label in cell
   (0,0) on top of `Input` — it compiles, it runs, and it quietly changes the layout contract the
@@ -161,6 +177,14 @@ Invariants that must survive the move, each already load-bearing for a passing t
   `UnauthorizedAccessException` silently leaks hundreds of MB per failed run. Place all profiles
   under one parent directory that the suite sweeps on start, so a leak is self-healing rather than
   cumulative. (Panel round 1.)
+- **`Kill()` does not wait — `WaitForExit` before touching the disk (round 4).**
+  `Process.Kill(entireProcessTree: true)` signals termination and returns immediately while the OS
+  unwinds handles asynchronously, so deleting the profile straight afterwards races the very
+  file-lock release it is waiting on, and a single immediate retry loses the same race. The repo
+  already knows this: `TestAppFixture.cs:40-41` follows its `Kill` with `WaitForExit(3000)` and
+  documents why. `DesktopWakeTests.cs:46` — the code D2 modifies — does **not**. Add a bounded
+  `WaitForExit` on the tree before the first delete attempt, and back the retry off rather than
+  repeating it instantly.
 - **The sweep must not delete a live profile (round 2, both panels).** A blind sweep-on-start races
   a concurrent or hung run: assembly-level parallelization is disabled, but *process*-level
   concurrency is not, and yanking the SQLite DBs out from under a running VS Code crashes its
@@ -171,7 +195,9 @@ Invariants that must survive the move, each already load-bearing for a passing t
   `Process.GetProcessById(pid)` will succeed — the sweep would then skip the garbage profile
   forever, reinstating the leak it exists to prevent. Record the owner's `Process.StartTime`
   alongside the PID and require **both** to match before treating a profile as live; anything else
-  is sweepable.
+  is sweepable. **Add an age backstop (round 4):** a profile older than a few hours is swept
+  regardless of owner liveness, so no single mechanism — a recycled PID, or an orphaned `Code.exe`
+  that is genuinely still running — can shield garbage on disk indefinitely.
 - **Three tests share `LaunchAsync`.** `Waking_hydrates_the_tree_while_held`,
   `Closing_the_window_auto_releases_its_wake`, and `Release_removes_the_wake_from_the_registry` all
   call it, so every D2 change applies three times per run and six times across the two consecutive
@@ -283,9 +309,9 @@ number.
 ### D7 — Fixture-integrity regression guard (new test)
 
 **Revised after panel round 1 — the single-control probe was compliance theatre.** Asserting that
-`Row2Btn` appears in a default snapshot fails in two ways: after D1 moves the layout to two columns
-`Row2Btn` is no longer the bottom-most control, and a developer could overflow the *other* column
-while the guard stayed green. It also asserted *about culling*, in tension with constraint 4.
+`Row2Btn` appears in a default snapshot fails in two ways: after D1 moves the layout to multiple
+columns `Row2Btn` is no longer the bottom-most control, and a developer could overflow any column
+the guard does not name while it stayed green. It also asserted *about culling*, in tension with constraint 4.
 
 Instead, assert containment geometrically: the root `Grid`'s `BoundingRectangle` is fully inside
 **the window's UIA `BoundingRectangle`** — the same rectangle `SnapshotEngine.cs:65-70` binds
@@ -305,7 +331,11 @@ and the mechanism it protects can never disagree.
 
 The gate is the **full 108-test suite**, not the 6 — D1 touches the fixture every Desktop test shares.
 
-1. Kill orphaned `testhost.exe` / `FlaUI.Mcp.TestApp.exe` before and after every pass.
+1. Kill orphaned `testhost.exe` / `FlaUI.Mcp.TestApp.exe` **and `Code.exe`** before and after every
+   pass. (Round 4: omitting `Code.exe` created a permanent cascade — an aborted run orphans the
+   isolated VS Code instance, and because that process is genuinely alive the PID+`StartTime` sweep
+   in D2 correctly judges its profile "live" and skips it **forever**. The leaked process shields
+   the leaked profile. Killing `Code.exe` breaks the cycle; D2's age backstop is the second line.)
 2. `dotnet test -c Release --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"` green
    **twice consecutively, with VS Code deliberately open** — this is the hermeticity proof for #1.
 3. Post-D5 measurement: `find(controlType=ListItem)` returns **6** matches, all `isOffscreen:false`
@@ -334,7 +364,7 @@ The gate is the **full 108-test suite**, not the 6 — D1 touches the fixture ev
 | WPF virtualizes the two added ListItems out of the UIA tree (raised by agy) | Verification step 3 measures it directly. If virtualized, fall back to retargeting the query at `contains "Items"` + `Button`, accepting the loss of ListItem name coverage. |
 | `RebuildItemsButton_Click` recreates only 3 items (`ItemA/B/C`), so after a rebuild the `contains "Item"` query would find 0 | **Justification corrected in round 2.** The safe reason is fixture *lifetime*, not query targets: every `FindTests` `[Fact]` builds its own `TestAppFixture`, so no rebuild can contaminate another test's app. D5 additionally updates the handler to recreate all six. |
 | **D1 changes the window's geometry, and several passing Desktop tests are geometry-sensitive** (round 2) | `OffscreenCullTests.cs:45` is coupled to the `Canvas.Left="5000"` sentinel (addressed by the width invariant in D1); `InputToolsTests.cs:76` clicks the window at (0.5,0.5); `DesktopFindTextTests` OCRs the whole window and takes the *top* match for "Rebuild Items", so enlarging the window changes the OCR input set. All three read live rects rather than hard-coded coordinates, so none is expected to break — but the round-1 risk table considered only traversal order and ref numbers, never geometry. The full 108-test re-run is the gate. |
-| D1 and D5 inflate the node count, raising the per-walk cost P for **every** wait in the suite (round 2) | D4's and D6's budgets must be derived from a **post-D1** measurement of P, not the pre-D1 3.0 s. Any other Desktop test with a tight wait budget is caught by the full re-run. |
+| D1 and D5 inflate the node count, raising the per-walk cost P for **every** wait in the suite (round 2) | **Reworded in round 4 — this contradicted D4.** The budgets ARE decided: 25000 ms in D4, the same class in D6. Post-D1 the plan **re-measures P and confirms 25000 still clears ~4P**, raising it only if it does not. That is a verification of a decided number, not a deferred derivation. Any other Desktop test with a tight wait budget is caught by the full re-run. |
 | Input synthesis in D3 is unreliable or lease-dependent in a way that breaks hermeticity | Documented fallback in D3; the choice is made by measurement during implementation. |
 | Raised budgets push suite runtime well past ~8 min | Accepted by constraint 3. |
 
@@ -371,7 +401,7 @@ Activation Auditor (no auto-discovered or auto-routed component in scope).
 
 | Finding | Raised by | Disposition |
 |---|---|---|
-| The `WorkArea` clamp does not make the content *fit*; the content's own height is still a load-bearing constant, and two columns is marginal (+10 DIP at 1080p@200%, **−2 DIP at 1366×768@150%**) | both | folded into D1: declare a **448 DIP minimum client height** budget, size content to clear it, split further if needed |
+| The `WorkArea` clamp does not make the content *fit*; the content's own height is still a load-bearing constant, and two columns is marginal | both | folded into D1 — but the budget number folded here (448 DIP) was **superseded in round 3**: the correct floor is **432 DIP** and two columns does not fit at all. See the round-3 ledger. |
 | Binding the window **width** to the work area can grow the window past the `Canvas.Left="5000"` sentinel and turn `OffscreenCullTests.cs:45` red | solo panel only | folded into D1: clamp **height only**, width stays a bounded constant + explicit derived invariant |
 | `RootPanel.Children.Add` (`MainWindow.xaml.cs:81`) silently changes meaning if `RootPanel` becomes the `Grid` — the label would land in cell (0,0) over `Input` | solo panel only | folded into D1 invariants: `RootPanel` stays a vertical `StackPanel` inside a column, with reserved slack |
 | D6's "no test change" leaves #6 on a one-walk margin (5000 ms budget vs P ≈ 3.0 s, and D1/D5 raise P) | solo panel only | folded into D6: raise the budget with the same justification as D4 |
@@ -402,10 +432,14 @@ laptop) sustains the layout-floor finding it dropped. Withdrawals get the same s
 
 ## Exhaustiveness self-audit
 
-- **Under-specified "what":** the exact two-column split (which controls land in which column) and
-  the exact reduced window `Height` are **deliberately left to the plan** — they depend on measured
-  per-control heights after the move. Every behavioural contract that must survive the move is
-  enumerated in D1.
+- **Under-specified "what" (tightened, round 4):** the earlier draft deferred "the exact two-column
+  split (which controls land in which column)" to the plan on the grounds that it depended on
+  measured per-control heights. That was **an unmade decision wearing a measurement's clothes**:
+  moving existing controls between columns does not change their desired heights, and the total is
+  already measured at ~890 DIP, so the plan's author would face the same bin-packing problem with no
+  more information than this document's author has. D1 now carries a **default column assignment**
+  that the plan verifies rather than invents. What genuinely remains a measurement is only the final
+  per-column DIP total, which depends on theme/font metrics that cannot be read off the XAML.
 - **Placeholders / TBD:** none. D3's fallback and D5's fallback are decision *branches* with a named
   deciding measurement and owner (implementation), not open TBDs.
 - **Missing cases:** the `PopupGrafting` half (verification step 5) has never been run; it may
@@ -441,9 +475,27 @@ Round 3 verdict: **REJECT**, all findings above folded. Round 3 was the first ro
 defect in this spec's *own* arithmetic rather than in the design it describes — the Measurement
 Auditor seat earned its place.
 
+## Panel review — round 4 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with two bespoke whole-document lenses no earlier round
+applied — **Internal Consistency Auditor** (a document that has absorbed three large folds is a prime
+site for self-contradiction) and **Deferral Auditor** (what does this spec decide, versus what does it
+push to "measured in the plan" that is really an unmade decision?).
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| Round 3's "at least three columns" was propagated to the Approach and D1 headline but **not** to the `RootPanel` invariant, D7's rationale, or the self-audit — all still said "two columns" | agy | **CONFIRMED by grep and folded.** All live prescriptions now say multi-column; the round-2 ledger row that quoted the superseded 448 DIP figure is annotated as superseded rather than silently edited. |
+| Deferring the column split was an unmade decision, not a measurement — moving controls between columns does not change their heights and the ~890 DIP total is already known | agy | **CONFIRMED and folded.** D1 now carries a concrete default column assignment with per-column estimates; only the final per-column DIP totals (theme/font dependent) remain a genuine measurement. |
+| D4 fixes 25000 ms while the risk table says the budgets "must be derived from a post-D1 measurement of P" — both cannot be true | agy | **CONFIRMED and folded.** 25000 is decided; the plan *confirms it still clears ~4P* after D1/D5 and raises it only if not. A verification, not a derivation. |
+| Verification step 1's orphan kill list omits `Code.exe`, and a leaked live `Code.exe` makes the PID+`StartTime` sweep judge its profile "live" and skip it **forever** — the leaked process shields the leaked profile | agy | **CONFIRMED and folded.** `Code.exe` added to the kill list; D2 gains an age backstop so no single mechanism can shield garbage indefinitely. |
+| `Process.Kill()` is non-blocking, so deleting the profile immediately afterwards races the OS handle unwind and an instant retry loses the same race | agy | **CONFIRMED and folded.** The repo already carries the precedent — `TestAppFixture.cs:40-41` follows `Kill` with `WaitForExit(3000)` and documents why, while `DesktopWakeTests.cs:46` (the code D2 modifies) does not. D2 now requires a bounded `WaitForExit` before the first delete and a backed-off retry. |
+
+Round 4 verdict: **REJECT**, all five findings confirmed and folded — the first round in which every
+finding survived verification and none had to be refuted.
+
 ## Handoff — review state
 
-Rounds 1, 2 and 3 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1, 2, 3 and 4 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
