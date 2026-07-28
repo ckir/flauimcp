@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.19.1] - 2026-07-28
+
+### Fixed
+- **The release pipeline now detects and refuses truncated changelog bodies.** v0.19.0 shipped with a damaged entry — head-truncated mid-sentence and mojibake'd — because every safety gate silently passed it through. All three gates (delimiter extraction, unattended `-Yes` resume, and interactive accept) are now start-anchored and consistent, asserting that a changelog body's FIRST content must be a section heading. Both delimiters are now line-anchored too, so a prose mention of `<changelog>` inside the body itself cannot become the opening marker.
+
+- **Line endings in the changelog file are now preserved.** The draft job returned CRLF while the release script joined with LF, leaving mixed line endings inside new entries. A subsequent release would have rewritten the entire file when that mixed-ending entry was updated, creating a spurious diff — especially on machines with `core.autocrlf = true`. The body's newlines are now normalized once at capture time, and the file's own dominant line ending is restored on write.
+
+- **Body-gate mutations are now caught by EXECUTION, not source-level text.** v0.19.0 kept text-based regex pins while the actual code was silently broken. Mutations like `$validBody = $true -or (...)` and `if ($false) { [Console]::OutputEncoding = ... }` both slipped past every regex. The encoding assignment is now pinned by AST, verifying it is unconditional — no If, Loop, Try, or Switch anywhere in its ancestry. `Invoke-DraftReview` is now called at runtime rather than pattern-matched, so the unattended `-Yes` path is verified to work without hanging.
+
+- **The v0.19.0 changelog entry was manually repaired.** The damaged section was reconstructed from commits in the v0.18.0..v0.19.0 range — the original model output is unrecoverable — and mojibake was replaced with proper em dashes throughout. The published GitHub release notes still carry the original damage and need `gh release edit v0.19.0`.
+
+### Changed
+- Delimiter extraction is now symmetrical: only a line-anchored tag (nothing else on its line) opens or closes a body. The old asymmetry — inline-matched open, line-anchored close — was the exact mechanism that shipped v0.19.0 damaged: the body's prose mention of `<changelog>` became the opening marker, slicing the head off mid-sentence. Inline-open and inline-close fallbacks are both removed. There is no backstop for a tail-truncated body (it still passes the start-anchored gate), so both fallbacks cost more than they rescue.
+
 ## [0.19.0] - 2026-07-28
 
 ### Fixed
