@@ -89,11 +89,15 @@ rather than declaring one.
 
 Round 2 corrections to that fold:
 
-- **Height only; the width stays a bounded design constant.** Binding *width* to the work area is
-  unsafe: `SpatialOffscreenButton` sits at `Canvas.Left="5000"` and `OffscreenCullTests.cs:45`
-  asserts it is spatially culled. That assertion holds only while the window rect is narrower than
-  the sentinel. A work-area-bound width on a wide primary monitor shrinks that margin, and above
-  ~5080 DIP it inverts and turns a passing test red. See the added invariant below.
+- **Clamp both dimensions with `Min`, never *bind* either (revised round 5).** *Binding* width to the
+  work area is unsafe: `SpatialOffscreenButton` sits at `Canvas.Left="5000"` and
+  `OffscreenCullTests.cs:45` asserts it is spatially culled — an assertion that holds only while the
+  window is narrower than the sentinel, and that inverts above ~5080 DIP on a very wide primary
+  monitor. But leaving width a pure constant is equally unsafe: round 5 showed a ~950 DIP constant
+  overflows the declared floor machine horizontally. The correct form is
+  `Min(designConstant, WorkArea.<dimension>)` in **both** axes — it can only ever shrink the window,
+  so it never approaches the sentinel, and it never exceeds the screen. The design constants stay
+  far below 5000 DIP.
 - **Clamping does not by itself make the content fit — a minimum supported client height must be
   declared.** "No literal pixel constant is load-bearing" was wrong: the content's own height is
   that constant, merely implicit. The clamp only stops the OS from silently shrinking the window;
@@ -131,9 +135,20 @@ measurements — the plan confirms them and rebalances only if a column exceeds 
 | 3 | `ModalButton`, `FreezeButton`, `DelayRevealButton`, `Ticker`, the `Border`/`MenuTarget` (36), `DupHost`, both `DupRow` GroupBoxes | ~320 |
 
 Column 1 is `RootPanel` deliberately: it is the shallowest column, leaving ~90 DIP of slack below its
-last child for `DelayRevealButton_Click`'s runtime append to land inside the window. Three columns at
-~300 DIP each puts the window near ~950 DIP wide — two orders below the `Canvas.Left="5000"` sentinel,
-satisfying the width invariant below.
+last child for `DelayRevealButton_Click`'s runtime append to land inside the window.
+
+**The budget is two-dimensional (round 5).** Fixing the vertical overflow at ~300 DIP per column
+implied a window near ~950 DIP wide — which **overflows the declared floor machine horizontally**:
+1366 physical px at 150% is only **910 DIP** of screen, ~894 DIP of client. That would push the
+rightmost column off-screen and cull it, re-creating the exact defect this section exists to remove,
+on the exact hardware the budget names. The full floor-machine budget is therefore:
+
+> **~894 DIP wide × 432 DIP high of client area** (1366×768 @150%).
+
+Three columns must total ≤ ~890 DIP including margins — roughly **290 DIP per column**, against the
+~576 DIP the single-column layout had. Two consequences the plan must respect: no control may
+require more than ~290 DIP of width, and **narrowing a column can make it taller** (wrapping
+content), so the split is verified in *both* dimensions, never height alone.
 
 Invariants that must survive the move, each already load-bearing for a passing test:
 - `OffscreenButton` keeps `AutomationProperties.IsOffscreenBehavior="Offscreen"`.
@@ -172,6 +187,13 @@ Invariants that must survive the move, each already load-bearing for a passing t
   `Total > WokenNodeFloor` or a ~20 s deadline elapses; assert after the loop so a real failure still
   reports the measured node count. The deadline must accommodate a first-run launch, which is slower
   than the 8–15 s measured on a warm profile.
+  **Why a bespoke loop rather than `WaitCoordinator` (round 5, acknowledging the divergence).** The
+  repo centralises UIA waits in `WaitCoordinator.cs`, and diverging from that silently would be a
+  defect. The divergence is deliberate: `WaitCoordinator` expresses `exists`/`gone`/`enabled` on a
+  selector and tree-stability, and has **no node-count predicate**; adding one is a `src/` change,
+  which constraint 1 forbids. It also polls through its own culled `PollOptions` walk, whereas the
+  assertion under repair is stated in terms of `StatsByWindowAsync` — polling on a different call
+  than the one asserted would measure a different thing. Bespoke loop, stated reason.
 - **Teardown ordering.** Kill the VS Code PID tree *first*, then delete the temp profile, then retry
   deletion once — Electron GPU/renderer processes hold file locks, and a swallowed
   `UnauthorizedAccessException` silently leaks hundreds of MB per failed run. Place all profiles
@@ -319,6 +341,21 @@ Instead, assert containment geometrically: the root `Grid`'s `BoundingRectangle`
 whichever way the deferred `wait_for`/`find` decision goes, and it cannot be gamed by adding
 controls to whichever column the guard does not happen to name.
 
+**Round 5 — assert on the column *children*, not the root `Grid`; the container form is a WPF
+tautology.** A `Grid` hosted as a clamped `Window`'s content is arranged to the client area whatever
+its content does: its `ActualHeight`/`ActualWidth` — and therefore its UIA `BoundingRectangle` — equal
+the client area by construction, so "the Grid is inside the window" is true even when fifty children
+are overflowing and being culled. As written, the guard could never fail, which would have made the
+entire 894 × 432 DIP budget unenforced at runtime.
+
+The guard must therefore assert containment on the elements that actually overflow: **for each
+column `StackPanel`, its last (lowest) child's bottom edge and its widest child's right edge must lie
+inside the window's UIA `BoundingRectangle`.** A `StackPanel` arranges children at their desired size
+and lets them overflow the clip, and UIA reports those overflowing rects faithfully — proven by the
+original `DelayedLabel` measurement at `bounds [176,1000,…]` against a window ending at y=944. So
+per-child edges are meaningful where the container's are not. Covering every column closes the
+"overflow the column the guard does not name" gap that killed the round-1 version.
+
 **Round 2 — say "UIA `BoundingRectangle`", never "client bounds".** The earlier wording invited
 subtracting `SystemParameters.WindowNonClientFrameThickness` to build a true client box. That is the
 wrong oracle in both directions: the window's UIA rect includes the non-client frame and the Win11
@@ -331,11 +368,16 @@ and the mechanism it protects can never disagree.
 
 The gate is the **full 108-test suite**, not the 6 — D1 touches the fixture every Desktop test shares.
 
-1. Kill orphaned `testhost.exe` / `FlaUI.Mcp.TestApp.exe` **and `Code.exe`** before and after every
-   pass. (Round 4: omitting `Code.exe` created a permanent cascade — an aborted run orphans the
-   isolated VS Code instance, and because that process is genuinely alive the PID+`StartTime` sweep
-   in D2 correctly judges its profile "live" and skips it **forever**. The leaked process shields
-   the leaked profile. Killing `Code.exe` breaks the cycle; D2's age backstop is the second line.)
+1. Kill orphaned `testhost.exe` / `FlaUI.Mcp.TestApp.exe` before and after every pass, plus **any
+   `Code.exe` whose command line points at the suite's own profile parent directory**. (Round 4:
+   omitting VS Code entirely created a permanent cascade — an aborted run orphans the isolated
+   instance, and because that process is genuinely alive the PID+`StartTime` sweep in D2 correctly
+   judges its profile "live" and skips it **forever**; the leaked process shields the leaked
+   profile. Round 5: but killing `Code.exe` *by bare process name* is mutually destructive with step
+   2, which requires an ambient VS Code deliberately left open — step 1 would assassinate the very
+   precondition step 2 exists to test, and the suite would then "prove" hermeticity in a pristine
+   environment it had silently created for itself. Scope the kill by `--user-data-dir`, never by
+   name.)
 2. `dotnet test -c Release --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"` green
    **twice consecutively, with VS Code deliberately open** — this is the hermeticity proof for #1.
 3. Post-D5 measurement: `find(controlType=ListItem)` returns **6** matches, all `isOffscreen:false`
@@ -493,9 +535,27 @@ push to "measured in the plan" that is really an unmade decision?).
 Round 4 verdict: **REJECT**, all five findings confirmed and folded — the first round in which every
 finding survived verification and none had to be refuted.
 
+## Panel review — round 5 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with bespoke **Coverage Preservation Auditor** (does
+the repaired suite still test what the broken one tested, or do these repairs silently delete
+coverage?) and **Precedent Auditor** (does each prescribed mechanism match how this repo already
+solves the same problem, and is any divergence acknowledged?).
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| The budget was **vertical only**. Three columns at ~300 DIP implied a ~950 DIP window, but the declared floor machine is 1366 px @150% = **910 DIP of screen** — the rightmost column falls off-screen and is culled, on the exact hardware the budget names | agy | **CONFIRMED and folded.** Budget is now two-dimensional (**~894 × 432 DIP**), ~290 DIP per column, with the coupling stated: narrowing a column can make it taller. Width is `Min(constant, WorkArea.Width)` — a clamp that only shrinks, so it never nears the 5000 sentinel and never exceeds the screen. |
+| **D7 was a WPF tautology.** A `Grid` hosted in a clamped window is arranged to the client area regardless of content, so its `BoundingRectangle` is inside the window even while its children overflow and are culled — the guard could never fail, leaving the whole budget unenforced | agy | **CONFIRMED and folded.** D7 now asserts on each column `StackPanel`'s **last (lowest) and widest children's** edges, which UIA reports faithfully beyond the clip (proven by the original `DelayedLabel` measurement at y=1000 against a window ending at y=944). |
+| Verification step 1 (kill `Code.exe`) and step 2 (run with VS Code deliberately open) are mutually destructive — step 1 assassinates step 2's precondition, and the suite "proves" hermeticity in a pristine environment it silently created for itself | agy | **CONFIRMED and folded.** The kill is scoped by `--user-data-dir` to the suite's own profile parent, never by bare process name. |
+| D2's bespoke poll loop diverges from the repo's `WaitCoordinator` wait primitive | agy | **REFUTED as a prescription, folded as an acknowledgement.** `WaitCoordinator` has no node-count predicate; adding one is a `src/` change barred by constraint 1, and it polls a different (culled) walk than the `StatsByWindowAsync` the assertion is stated in. The lens was right that an *unacknowledged* divergence is a defect, so D2 now states the reason. |
+
+Round 5 verdict: **REJECT**. Two of the three confirmed findings were defects introduced by earlier
+folds — the vertical-only budget by round 3/4, and D7's container form by round 1 — which is the
+argument for continuing rounds after a large fold rather than declaring victory on the fold itself.
+
 ## Handoff — review state
 
-Rounds 1, 2, 3 and 4 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 5 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
