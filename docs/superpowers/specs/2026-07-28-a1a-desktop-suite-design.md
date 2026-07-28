@@ -245,38 +245,36 @@ So the first task is instrumentation, not a fix: log the launched PID, the resol
 4. **Delete the profile in a bounded retry loop with backoff** — the observable to poll is "the
    directory is gone", not "a handle set we believe we enumerated correctly".
 
-**Profile naming and sweeping.** Place profiles under one parent directory.
+**Profile lifecycle — stated as requirements, not as an algorithm.** Each launch gets its own
+profile directory under one parent; a directory is retained only while its owning process is
+verifiably alive; nothing may leak indefinitely and nothing live may be deleted. **How** to identify
+and check owners is the implementation plan's to choose — this spec deliberately stops short of
+prescribing file formats, exception types, or call sequences, because doing so is writing C# in
+Markdown and it is what turned this section into a source of churn.
 
-**Name the directory by a GUID, not by the PID — the PID is not available in time.** The
-`--user-data-dir` argument string must be built *before* `Process.Start()`, but the OS assigns the
-owning PID only *after* the process exists, so a PID-named profile directory is circular and
-unimplementable. Instead: create `<parent>/<guid>/`, launch into it, then immediately write a small
-**sidecar file inside that directory recording the owner's PID and `Process.StartTime`**. The sweep
-reads the sidecar. A directory with no sidecar — the process died between launch and write — counts
-as dead-owner and is swept.
+What the implementation must demonstrably satisfy — each one a hazard established by measurement or
+review, and the reason this list is worth more than a prescribed algorithm:
 
-Then three rules:
-
-- Sweep only entries whose owner is genuinely gone. A blind sweep races a concurrent or hung run:
-  assembly-level parallelization is disabled but *process*-level concurrency is not, and yanking the
-  SQLite DBs from under a running VS Code crashes its renderer, fails that run, and leaks the PID
-  tree its failed teardown never reaped.
-- A naked PID is **not** a liveness test — Windows recycles PIDs, so `GetProcessById` can succeed on
-  an unrelated process and the sweep would skip the garbage profile forever. Both PID and
-  `StartTime` must match for a profile to count as live. **Every failure mode of that check means
-  "not ours", i.e. sweepable, and none may escape the sweep loop:** `GetProcessById` throws
-  `ArgumentException` when the process is not running, and reading `StartTime` throws
-  `Win32Exception` (access denied) when the PID has been recycled onto an elevated or SYSTEM process
-  that a non-elevated test runner cannot inspect. Unhandled, that second case crashes the sweep,
-  aborts the run, and leaks the directory permanently. Catch both and treat them as dead-owner.
-- **Age backstop, as a retention policy on *dead-owner* profiles — never an override of liveness.**
-  Sweep dead-owner profiles regardless of how recently they died, so a recycled PID cannot shield
-  garbage. Do **not** delete a profile whose owner is live merely because it is old: a developer
-  paused on a breakpoint keeps a genuinely live VS Code for hours, and a second run that swept it by
-  age would yank the SQLite DBs out from under the paused session. The remaining hole — an orphaned
-  but genuinely running `Code.exe` shielding its own profile — is closed by verification step 1's
-  scoped kill, which makes the owner dead so the ordinary sweep collects it. Liveness stays the sole
-  retention criterion; age only decides how aggressively dead profiles are reaped.
+1. **The directory's identity must be derivable before launch.** `--user-data-dir` is built before
+   `Process.Start()`, so anything the OS only assigns afterwards — the PID above all — cannot name
+   the directory.
+2. **Ownership must survive PID recycling.** Windows reuses PIDs aggressively, so a bare PID match
+   can bind a stale directory to an unrelated live process and shield it from sweeping forever.
+3. **The liveness check must never throw out of the sweep.** It runs against processes that may have
+   exited, may be mid-exit, or may be elevated and un-inspectable by a non-elevated test runner. Any
+   failure to establish ownership means "not verifiably ours" — never an abort. An exception escaping
+   the sweep loop aborts the run and leaks every remaining directory.
+4. **Unknown is not dead.** A directory whose ownership cannot *yet* be established — a concurrent
+   run in the window between creating its profile and recording who owns it — must not be swept.
+   Treating unknown as dead deletes a booting run's profile from under it.
+5. **A live owner is never swept, however old.** A developer paused on a breakpoint keeps a genuinely
+   live VS Code for hours; age may decide how aggressively *dead* profiles are reaped, but it may
+   never override liveness. Equally, assembly-level parallelization is disabled while *process*-level
+   concurrency is not, so a second `dotnet test` must not be able to delete the first's live profile.
+6. **A live orphan must not shield its directory forever.** The one case rules 4 and 5 cannot reach
+   is an abandoned but genuinely running `Code.exe`. That is closed from the other side — verification
+   step 1's `--user-data-dir`-scoped kill makes the owner dead, after which the ordinary sweep
+   collects it.
 
 **Three tests share `LaunchAsync`** (`Waking_hydrates_the_tree_while_held`,
 `Closing_the_window_auto_releases_its_wake`, `Release_removes_the_wake_from_the_registry`), so every
@@ -713,9 +711,29 @@ Round 10 verdict: **REJECT**, but every finding sits inside D2's teardown and th
 the outcome seat is clean, and the design-level seats produced an implementation impossibility rather
 than a design flaw.
 
+## Panel review — round 11 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with bespoke **Fold-Regression Auditor** (round-10 D2
+additions only) and **Abstraction-Level Auditor**, seated on an observed pattern: every round-10
+finding was inside D2, and each fix spawned another D2 finding one level lower — threshold, then
+naming, then exception handling.
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| **D2's sweep had descended from design into implementation** — a spec that dictates file formats and enumerates C# exception types is debugging execution semantics in Markdown, and that is the structural cause of the round-over-round churn | agy | **CONFIRMED and folded — this is the finding that ends the descent.** The profile-lifecycle block is rewritten as **six numbered requirements** the implementation must satisfy, each naming a hazard established by measurement, with the mechanics (identifier scheme, sidecar format, exception types, call order) explicitly left to the plan. |
+| TOCTOU: a process alive at `GetProcessById` but exited before `StartTime` is read throws `InvalidOperationException`, which the enumerated catch list misses — crashing the sweep | agy | **CONFIRMED as a real hazard; folded as requirement 3** ("the liveness check must never throw out of the sweep", covering exited, mid-exit and un-inspectable processes) rather than by extending an exception list. Adding a third type would have been one more step down the same staircase. |
+| Missing-sidecar race: a concurrent run in the window between creating its profile and writing the sidecar would be classified dead and deleted mid-boot | agy | **CONFIRMED; folded as requirement 4** — "unknown is not dead". |
+| Axiom Breaker | agy | **no new findings** |
+
+Round 11 verdict: **REJECT**, but with a qualitative change: one core seat returned clean, and the
+two live findings were **evidence for** the abstraction-level diagnosis rather than independent
+defects. Both dissolve once the section states requirements instead of an algorithm — which is also
+what the repo's spec-vs-plan discipline requires, since a line-level plan may only be authored
+against code that already exists, and none of this code does yet.
+
 ## Handoff — review state
 
-Rounds 1 through 10 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 11 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
