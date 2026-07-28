@@ -143,7 +143,7 @@ if a column exceeds budget.
 | Column | Controls | Est. DIP |
 |---|---|---|
 | 1 — **`RootPanel`** (the append target) | `Input`, `Secret`, `TextDoc` (60), `Grid` (100), `OkButton`, `Status`, `RebuildItemsButton`, `ClearItemsButton` | ~340 |
-| 2 | `ItemList` (~180 after D5), `OffscreenButton`, the clipped `Canvas` + `SpatialOffscreenButton`, `Check`, `Exp`, `FocusReveal`, `RevealedLabel` | ~315 |
+| 2 | `ItemList` (~180: six items at natural height after D5), `OffscreenButton`, the clipped `Canvas` + `SpatialOffscreenButton`, `Check`, `Exp`, `FocusReveal`, `RevealedLabel` | ~315 |
 | 3 | `ModalButton`, `FreezeButton`, `DelayRevealButton`, `Ticker`, the `Border`/`MenuTarget` (36), `DupHost`, both `DupRow` GroupBoxes | ~320 |
 
 Column 1 is `RootPanel` deliberately: it is the shallowest, leaving ~90 DIP of slack below its last
@@ -200,16 +200,17 @@ So the first task is instrumentation, not a fix: log the launched PID, the resol
   focus and change the node count, which is exactly what the `> 100` assertion measures. Pass flags
   disabling workspace trust, welcome/release notes, telemetry and extensions. Without this, the
   single-instance race is merely traded for a first-run race.
-- **Poll until hydrated** instead of `await Task.Delay(1500)`: poll `StatsByWindowAsync` until the
-  hydration threshold is met or a ~20 s deadline elapses; assert after the loop so a real failure
-  still reports the measured node count. The deadline must accommodate a first-run launch, slower
-  than the 8–15 s measured on a warm profile.
-- **Make the threshold robust to VS Code drift.** `WokenNodeFloor = 100` is an absolute constant
-  measured against one version of a third-party UI. If a future VS Code hydrates to 95, the poll
-  burns the full 20 s on *every* run and then fails — a large timeout penalty coupled to a volatile
-  external integer. Characterise hydration relatively instead: assert the woken count is a large
-  multiple of the *same run's* measured opaque baseline, and on timeout report both numbers so the
-  diagnostic distinguishes "never hydrated" from "hydrated below an absolute floor".
+- **Poll until hydrated** instead of `await Task.Delay(1500)`, against a **relative** threshold:
+  poll `StatsByWindowAsync` until `after.Total >= 5 × before.Total` — five times the *same run's*
+  measured opaque baseline — or a **20 s** deadline elapses. Assert after the loop, reporting both
+  numbers, so a real failure distinguishes "never hydrated" from "hydrated but below threshold". The
+  deadline must accommodate a first-run launch, slower than the 8–15 s measured on a warm profile.
+  *Why relative, and why 5×:* `WokenNodeFloor = 100` is an absolute constant measured against one
+  version of a third-party UI, so if a future VS Code hydrates to 95 the poll burns the full 20 s on
+  *every* run and then fails — a large timeout penalty coupled to a volatile external integer. The
+  spike this test was built from measured **14 nodes opaque / 231 woken** (`DesktopWakeTests.cs:17`),
+  a ratio of ~15×. A 5× threshold sits far below that and far above any plausible non-hydrated
+  reading, and it moves with the baseline instead of against it.
 - **Promote the PID guard only after measuring.** The guard is *expected* to hold: the test launches
   `Code.exe` — the Electron main binary, not the `bin\code.cmd` CLI shim — and a fresh
   `--user-data-dir` scopes single-instance detection to a profile nothing else owns, so the launched
@@ -245,9 +246,14 @@ So the first task is instrumentation, not a fix: log the launched PID, the resol
 - A naked PID is **not** a liveness test — Windows recycles PIDs, so `GetProcessById` can succeed on
   an unrelated process and the sweep would skip the garbage profile forever. Both PID and
   `StartTime` must match for a profile to count as live.
-- **Age backstop:** sweep any profile older than a few hours regardless of owner liveness, so no
-  single mechanism — a recycled PID, or an orphaned `Code.exe` that is genuinely still running — can
-  shield garbage on disk indefinitely.
+- **Age backstop, as a retention policy on *dead-owner* profiles — never an override of liveness.**
+  Sweep dead-owner profiles regardless of how recently they died, so a recycled PID cannot shield
+  garbage. Do **not** delete a profile whose owner is live merely because it is old: a developer
+  paused on a breakpoint keeps a genuinely live VS Code for hours, and a second run that swept it by
+  age would yank the SQLite DBs out from under the paused session. The remaining hole — an orphaned
+  but genuinely running `Code.exe` shielding its own profile — is closed by verification step 1's
+  scoped kill, which makes the owner dead so the ordinary sweep collects it. Liveness stays the sole
+  retention criterion; age only decides how aggressively dead profiles are reaped.
 
 **Three tests share `LaunchAsync`** (`Waking_hydrates_the_tree_while_held`,
 `Closing_the_window_auto_releases_its_wake`, `Release_removes_the_wake_from_the_registry`), so every
@@ -302,9 +308,13 @@ The ListBoxItems' UIA **Name is their Content** — `"A" "B" "C" "NamedOnly"` �
 `name contains "Item"` + controlType `ListItem` matches nothing. The tests confuse `AutomationId`
 with `Name` and have been wrong since authored.
 
-- Add two `ListBoxItem`s with Content `ItemOne` / `ItemTwo` (AutomationIds `ItemD` / `ItemE`) and
-  raise the `ListBox` `Height` so all six items lay out. The height is derived by measurement
-  against the post-D1 layout.
+- Add two `ListBoxItem`s with Content `ItemOne` / `ItemTwo` (AutomationIds `ItemD` / `ItemE`), and
+  **remove the `ListBox`'s fixed `Height="120"` entirely** so it flows to its natural desired size.
+  A raised-but-still-fixed height would reintroduce exactly the fragility D1 removes: under a custom
+  theme or larger system text the items grow while the box stays pinned, the last ones scroll out of
+  the UIA tree, and verification step 3 fails. Letting it flow means an unexpectedly tall list makes
+  its *column* taller, which D7 catches loudly, instead of silently dropping items. The plan
+  confirms no test depends on `ItemList` being scrollable.
 - Both tests keep their original `FindQuery(null, "Item", "contains", "ListItem", false)` and their
   ListItem coverage; only the fixture gains matching elements.
 - **Update `RebuildItemsButton_Click` to recreate all six items.** `MainWindow.xaml.cs:36` hard-codes
@@ -441,6 +451,7 @@ The gate is the **full 108-test suite**, not the 6 — D1 touches the fixture ev
 | D1 and D5 inflate the node count, raising the per-walk cost P for **every** wait in the suite (round 2) | **Reworded in round 4 — this contradicted D4.** The budgets ARE decided: 25000 ms in D4, the same class in D6. Post-D1 the plan **re-measures P and confirms 25000 still clears ~4P**, raising it only if it does not. That is a verification of a decided number, not a deferred derivation. Any other Desktop test with a tight wait budget is caught by the full re-run. |
 | Input synthesis in D3 is unreliable or lease-dependent in a way that breaks hermeticity | Documented fallback in D3; the choice is made by measurement during implementation. |
 | Raised budgets push suite runtime well past ~8 min | Accepted by constraint 3. |
+| **Machine font/theme metrics, and OS accessibility text scaling, can inflate a column past the 432 DIP budget** — the per-column estimates are arithmetic over default metrics and no table can guarantee them | Stated in D1 alongside the estimates; **D7 is the mitigation** — it asserts containment at runtime, so a machine whose metrics break the budget fails loudly there instead of silently culling. Listed here as well because a risk stated only next to the thing it threatens is easy to miss. |
 
 ## Deferred and filed (explicitly NOT in scope)
 
@@ -638,9 +649,32 @@ Round 8 verdict: **REJECT**, but the character of the findings changed: three we
 document *communicates* rather than in what it prescribes, which is the signal that the design itself
 has converged.
 
+## Panel review — round 9 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with bespoke **Flattening-Loss Auditor** (did the
+round-8 hand rewrite of ~330 lines silently drop a prescription the eight ledgers claim was folded?)
+and returning **Cold-Reader Executability Auditor** (did the restructure actually work?).
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| D2's rewrite **over-corrected into un-sized placeholders** — "the hydration threshold" and "a large multiple" are not numbers, so a cold implementer cannot write the loop without inventing constants | agy | **CONFIRMED and folded.** The threshold is now `after.Total >= 5 × before.Total`, justified from the spike this test was built on (14 opaque / 231 woken ≈ 15×, `DesktopWakeTests.cs:17`), so 5× sits far below the real ratio and far above any non-hydrated reading. |
+| D5's "raise the `ListBox` `Height`" reintroduces the fragility D1 removes — under a custom theme or larger text the items grow while the box stays pinned and the last ones scroll out of the UIA tree | agy | **CONFIRMED and folded.** The fixed `Height="120"` is **removed entirely**; the list flows to its natural size, so an unexpectedly tall list makes its column taller and D7 catches it loudly instead of silently dropping items. |
+| The age backstop deletes a **paused debugger's** live profile — a developer on a breakpoint keeps VS Code alive for hours, and a second run would yank its SQLite DBs | agy | **CONFIRMED; folded with a different fix than proposed.** agy wanted liveness as the sole criterion, which reinstates the round-4 orphan-shield hole. Instead the age backstop is demoted to a retention policy on **dead-owner** profiles only — never an override of liveness — and the orphan-shield hole is closed by verification step 1's scoped kill, which makes the owner dead so the ordinary sweep collects it. |
+| The accessibility/font-metrics exposure folded in round 7 was **lost** in the rewrite | agy | **REFUTED — it survives**, stated in D1 immediately beside the estimates table it qualifies. But the lens was fair: it is easy to miss where it sits, so a Risks row now cross-references it. |
+
+**Flattening verified independently.** Rather than accept a single spot-check, every distinctive
+token from the pre-flatten design (`4312385`) was diffed against the current text: of ~50 load-bearing
+markers — from `IsOffscreenBehavior`, `Canvas.Left` and `SPI_GETWORKAREA` through `MOUSEEVENTF_MOVE`,
+`entireProcessTree` and `SnapshotEngine.cs:65-70` — the only one absent is the word *"tautology"*,
+which labelled a rejected form that D7 now explains without needing the term. 329 → 288 lines with no
+substantive loss.
+
+Round 9 verdict: **REJECT**, but every finding was an implementability detail — a missing constant, a
+fixed height, a sweep predicate — with none touching the design's soundness.
+
 ## Handoff — review state
 
-Rounds 1 through 8 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 9 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
