@@ -135,6 +135,11 @@ fake measurement: the controls' heights do not change when they move columns, an
 already known. Heights below are **estimates read off the XAML plus default WPF metrics**, not live
 measurements — the plan confirms them and rebalances only if a column exceeds the 432 DIP budget.
 
+These estimates depend on the machine's default font and theme metrics, which vary; that exposure is
+not eliminated by arithmetic, which is precisely why D7 asserts containment **at runtime** rather
+than trusting the table. A column that overflows on some machine fails loudly there instead of
+silently culling.
+
 | Column | Controls | Est. DIP |
 |---|---|---|
 | 1 — **`RootPanel`** (the append target) | `Input`, `Secret`, `TextDoc` (60), `Grid` (100), `OkButton`, `Status`, `RebuildItemsButton`, `ClearItemsButton` | ~340 |
@@ -219,6 +224,12 @@ Invariants that must survive the move, each already load-bearing for a passing t
   single-process WPF app and insufficient here. Wait on the enumerated child PIDs as well, **and**
   make the deletion itself a bounded retry loop with backoff rather than one immediate retry: the
   observable to poll is "the directory deleted", not "a handle we believe we enumerated correctly".
+  **Enumerate the children BEFORE killing (round 7).** Querying the process tree *after*
+  `Kill(entireProcessTree: true)` returns nothing useful — the parent is already gone and the
+  children are terminating or reparented, so the teardown would wait on an empty set, delete
+  immediately, hit the dying children's locks and leak anyway. Snapshot the child PIDs first, then
+  kill, then wait on the recorded set. The backoff-delete loop is the backstop for whatever the
+  enumeration still misses.
 - **The sweep must not delete a live profile (round 2, both panels).** A blind sweep-on-start races
   a concurrent or hung run: assembly-level parallelization is disabled, but *process*-level
   concurrency is not, and yanking the SQLite DBs out from under a running VS Code crashes its
@@ -360,18 +371,25 @@ the client area by construction, so "the Grid is inside the window" is true even
 are overflowing and being culled. As written, the guard could never fail, which would have made the
 entire 894 × 432 DIP budget unenforced at runtime.
 
-The guard must therefore assert containment on the elements that actually overflow: **for each
-column `StackPanel`, over its DIRECT children only, the lowest child's bottom edge and the widest
-child's right edge must lie inside the window's UIA `BoundingRectangle`.**
+The guard must therefore assert containment on the elements that actually overflow: **for every
+descendant of every column `StackPanel` — excluding the exempt subtree below — the bottom and right
+edges must lie inside the window's UIA `BoundingRectangle`.**
 
 **The sentinel is explicitly exempt (round 6).** `SpatialOffscreenButton` sits at
 `Canvas.Left="5000"` *by design* — it is the fixture that proves the spatial cull works, and
 `OffscreenCullTests.cs:45` depends on it being outside the window. A containment guard that walked
-descendants would find it at x≈5080, compare it against a ~894 DIP client width, and fail
-**permanently** — the guard would forbid the exact overflow column 2 exists to contain. Restricting
-the guard to *direct* children already excludes it (the button is a grandchild inside the clipped
-`Canvas`, whose own rect is 1 DIP tall and inside), but that is too fragile a reason to leave
-implicit: the clipped sentinel `Canvas` and everything beneath it is **named as exempt**. A `StackPanel` arranges children at their desired size
+descendants naively would find it at x≈5080, compare it against a ~894 DIP client width, and fail
+**permanently**, forbidding the exact overflow column 2 exists to contain. The clipped sentinel
+`Canvas` and everything beneath it is therefore **named as exempt**.
+
+**Descendants, not direct children (round 7 — correcting round 6).** Round 6 also restricted the
+guard to *direct* children, on the grounds that this incidentally excluded the sentinel. That was a
+second, unnecessary belt and it **reinstated the tautology one level down**: `DupHost` and the two
+`DupRow` `GroupBox`es are direct children of column 3, and a `GroupBox` in a stretching vertical
+`StackPanel` is arranged to the column's width whatever its content does. Widen the buttons inside
+its horizontal `StackPanel` and they overflow and get culled while the `GroupBox`'s own rect stays
+neatly inside — green guard, hemorrhaging fixture. The sentinel exemption was the real fix all
+along; the direct-children restriction only broke the guard, so it is reverted. A `StackPanel` arranges children at their desired size
 and lets them overflow the clip, and UIA reports those overflowing rects faithfully — proven by the
 original `DelayedLabel` measurement at `bounds [176,1000,…]` against a window ending at y=944. So
 per-child edges are meaningful where the container's are not. Covering every column closes the
@@ -384,6 +402,33 @@ drop-shadow aura, so a tighter client box yields **false RED** — D7 failing on
 into the border while the cull's own `IntersectsWith` still includes it — and it would reimport the
 DIP→physical conversion round 1 removed. The guard must use the cull's own rectangle so the guard
 and the mechanism it protects can never disagree.
+
+## Implementation order (round 7)
+
+The sections are not independent, and the wrong order produces a window in which the suite is
+permanently red and therefore un-bisectable. Land them in this order:
+
+1. **D4 and D6 — the budget raises, first.** Pure widening: they cannot break a passing test, and
+   they immunise the suite against the walk-cost inflation D1 and D5 are about to cause. Landing
+   D1/D5 first would push `P` up while D6 still carries its one-walk 5000 ms margin, turning #6 red
+   for a reason unrelated to the change under test.
+2. **D3 — `PresenceDesktopTests`.** Independent of the fixture; land it while the fixture is stable.
+3. **D2 — `DesktopWakeTests`,** instrumentation before repair: log the launched PID, the resolved
+   window's owning PID and the per-poll node count, run it, *then* apply the repair and promote the
+   PID guard to an assert. Independent of the fixture.
+4. **D1 — the fixture restructure.** The disruptive step, landed alone so the full-suite re-run
+   attributes any fallout to it and nothing else.
+5. **D5 — the added `ListItem`s.** Its ListBox height is derived from the post-D1 layout, so it
+   cannot be sized before D1 exists.
+6. **D7 — the containment guard.** Cannot be written until D1's columns exist; landing it last means
+   it locks in a layout already proven green rather than blocking the work that creates it.
+7. **Full verification**, including the `PopupGrafting` half.
+
+**Verification step 1 is not fully executable until D2 lands.** Its `Code.exe` kill is scoped by
+`--user-data-dir`, and that flag is only injected by D2 — pre-D2 orphans carry no such marker and
+would survive a scoped sweep. Until step 3 completes, sweep VS Code orphans manually; the scoped
+form becomes the standing rule from D2 onward, when there is finally an ambient instance worth
+protecting.
 
 ## Verification
 
@@ -591,9 +636,28 @@ hold?).
 Round 6 verdict: **REJECT**. Again the newest text was the most defective: D7's fatal clause and the
 insufficient `WaitForExit` were both introduced by the round-5 and round-4 folds respectively.
 
+## Panel review — round 7 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with bespoke **Implementation Sequencer** (in what
+order must these land, and where is the suite un-bisectable?) and **Fold-Regression Auditor**
+(attack only the round-6 additions — for three rounds the newest text had been the most defective).
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| **Round 6's "direct children only" reinstated the tautology one level down.** `DupHost`/`DupRow` are `GroupBox`es arranged to the column width whatever their content does; widen their inner buttons and they overflow and cull while the `GroupBox` rect stays inside — green guard, hemorrhaging fixture | agy | **CONFIRMED and folded.** Reverted to **all descendants**, minus the named sentinel exemption. The exemption was the real fix in round 6; the direct-children restriction was an unnecessary second belt that broke the guard. |
+| Child PIDs must be enumerated **before** `Kill(entireProcessTree: true)` — querying afterwards returns nothing, so the teardown waits on an empty set and leaks anyway | agy | **CONFIRMED and folded** into D2's teardown ordering. |
+| Ordering hazard: D1/D5 inflate `P` while D6 still carries its one-walk margin, so landing them first turns #6 red for an unrelated reason and the suite cannot be bisected | agy | **CONFIRMED and folded** as a new **Implementation order** section: budget raises first, then D3, D2, D1, D5, D7, full verification. |
+| Verification step 1's `--user-data-dir`-scoped kill is not executable before D2 injects that flag; pre-D2 orphans carry no marker and survive | agy | **CONFIRMED and folded** into the same section. |
+| An unstated invariant that OS accessibility text scaling is off could balloon a column past its budget | agy | **Folded as an exposure, not a mechanism.** The estimates depend on machine font/theme metrics generally; the spec now says so and points at D7 as the runtime guard, rather than claiming an arithmetic that no table can guarantee. |
+| The primary-monitor `WorkArea` assumption is intolerable — a `Height="880"` window would overflow a 720 DIP secondary | agy | **REFUTED.** The argument uses the superseded 880 constant. The design constant is now ~460 DIP, which fits any display down to well below the declared floor, and `Min` only shrinks. |
+
+Round 7 verdict: **REJECT**. The dominant defect source is now the folds themselves rather than the
+original design — round 7's headline finding was a regression introduced by round 6's fold of a
+round-5 finding.
+
 ## Handoff — review state
 
-Rounds 1 through 6 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 7 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
