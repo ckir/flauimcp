@@ -357,9 +357,38 @@ Four independent changes; each has a stated reason and none is optional.
 
 **(b) Isolate the instance.** Pass `--user-data-dir <fresh dir> --new-window`.
 
+> **Revised after Task 3's measurement.** The original justification for (b) — that
+> `LaunchAppAsync` can return a transient launcher pid while the window belongs elsewhere, so
+> `WakeAsync` wakes a process that does not own the measured window — is **refuted**. Task 3
+> logged `match=True` on both a cold and a second consecutive run, and tracing
+> `WindowManager.cs:396-439` shows why it can never happen: line 400 snapshots pre-existing
+> pids, and the loop at 422-435 accepts a window only from the launched pid (425) or from a
+> **new** pid of the same name (431). An ambient instance's pids are all pre-existing and a
+> transient launcher owns no titled window, so neither branch can match — the call falls
+> through to the `LaunchTimeout` throw at line 436.
+>
+> (b) is therefore still required, but for a **different reason**: with a developer's VS Code
+> already open, an un-isolated launch does not mis-measure, it **hard-fails with LaunchTimeout**.
+> That is the "green on any dev machine" requirement. Write that reason in the code — the
+> refuted one must not survive as a comment.
+
 **(c) Suppress the first-run experience.** A pristine `--user-data-dir` is not a clean tree, it is the *first-run* tree — trust prompts, welcome tabs and extension toasts steal focus and change the node count, which is exactly what the assertion measures. Without this, the single-instance race is merely traded for a first-run race.
 
-**(d) Poll against an ADDITIVE threshold.** `after.Total >= before.Total + 100`. **Never multiplicative.** Hydration adds a roughly fixed population — the Chromium document's accessibility tree — it does not scale the shell's node count. A `5 ×` threshold inverts into a false green on exactly this defect: with a 3-node baseline it demands only 15, and the measured failure state was `got 16`, so the poll would satisfy on the broken tree and pass. The spike this test was built on measured 14 opaque / 231 woken, i.e. ~217 added.
+**(d) Poll against an ADDITIVE threshold.** `after.Total >= before.Total + 50`. **Never multiplicative.** Hydration adds a roughly fixed population — the Chromium document's accessibility tree — it does not scale the shell's node count. A `5 ×` threshold inverts into a false green on exactly this defect: with a 3-node baseline it demands only 15, and the measured failure state was `got 16`, so the poll would satisfy on the broken tree and pass.
+
+> **This is the change Task 3 confirmed was needed, and it is the ONLY one of the four that
+> addresses the observed defect.** Task 3 measured hydration as a *ramp*, not a step:
+> baseline 14, then `t=2s: 97` on one run — already **below** the old `WokenNodeFloor = 100`.
+> The original test asserts at a fixed `Delay(1500)`, i.e. earlier than any sample taken, so
+> the recorded `got 16` is simply the bottom of that ramp.
+>
+> **Threshold lowered from 100 to 50.** The spike this test was built on measured 14 opaque /
+> 231 woken (~217 added). Task 3 measured 14 / 142 (**~128 added**) — the tree has already
+> drifted −41% over this project's life. A threshold of 100 leaves only 22% slack against a
+> dependency we do not control; one more comparable drift turns the test spuriously red. 50
+> keeps 61% slack while remaining **25× the broken-state delta of 2**, so it still cleanly
+> separates hydrated from not-hydrated. Proving hydration *happened* is the claim; reaching an
+> arbitrary three-digit milestone is not.
 
 - [ ] **Step 1: Replace the path constant and `LaunchAsync`**
 
@@ -546,9 +575,15 @@ Replace `Waking_hydrates_the_tree_while_held` (the instrumented version from Tas
 
         var owningPid = await rig.Windows.RunWithWindowAndDesktopAsync(rig.Handle,
             (win, _) => win.Properties.ProcessId.ValueOrDefault);
+        // Task 3 measured match=True on both a cold and a consecutive run, and LaunchAppAsync
+        // (WindowManager.cs:396-439) cannot return a foreign window anyway: it accepts only the
+        // launched pid or a NEW same-named pid, so an ambient instance's pre-existing pids are
+        // filtered out and the call throws LaunchTimeout instead. This assert is therefore a cheap
+        // standing invariant guard, NOT the isolation check the earlier draft claimed it was.
         Assert.True(rig.Pid == owningPid,
             $"the launched process must own the measured window; launched={rig.Pid} owning={owningPid}. " +
-            "A mismatch means --user-data-dir isolation failed and the wake targets the wrong process.");
+            "This invariant has held on every measured run; a mismatch means LaunchAppAsync's pid " +
+            "filtering changed and the wake may target a process that does not own this window.");
 
         var before = await rig.Perception.StatsByWindowAsync(rig.Handle);
         Assert.True(before.Total < OpaqueNodeCeiling,
@@ -581,9 +616,12 @@ Replace `Waking_hydrates_the_tree_while_held` (the instrumented version from Tas
 Replace the `WokenNodeFloor` constant (line 29) with:
 
 ```csharp
-    // The spike this test was built from measured 14 nodes opaque / 231 woken -- ~217 added.
-    // 100 sits far below that and far above any non-hydrated reading.
-    private const int HydrationDelta = 100;
+    // Measured, not guessed. The original spike saw 14 opaque / 231 woken (~217 added); Task 3
+    // measured 14 / 142 (~128 added) on this machine -- the tree has drifted -41% already. 50
+    // keeps 61% slack against further drift while staying 25x the broken-state delta of 2
+    // (baseline 14 -> the failing 16), so it still separates hydrated from not-hydrated cleanly.
+    // The claim is that hydration HAPPENED, not that it reached a particular milestone.
+    private const int HydrationDelta = 50;
 ```
 
 Leave `OpaqueNodeCeiling = 30` unchanged; instance isolation is what makes it sound.
