@@ -87,10 +87,14 @@ is therefore scoped: it means **no *additional* machine-specific preconditions**
 above, which predate this work. D3 extends the lease dependency to one more test
 (`PresenceDesktopTests`), which is the only place this spec touches that boundary at all.
 
-> **Open item for the user.** If constraint 2 was meant to include removing the lease requirement
-> itself, D3's primary path cannot satisfy it and its documented fallback (pure-logic test of
-> `IdleActivity.Bucket` plus a real-source sanity assert) is the option that can — at the cost of no
-> longer testing the integration. This is a user decision, not one to settle here.
+**Settled by the user (2026-07-28).** Constraint 2 does **not** extend to removing the lease
+requirement: the user grants a physical-console session and an input lease on request when a run is
+ready. So the two preconditions above stand as accepted, **D3's primary path (`SendInput` under the
+lease) is the design**, and its weaker fallback — the pure-logic test of `IdleActivity.Bucket` plus a
+real-source sanity assert — is retired rather than held in reserve.
+
+The console must be **physical, not RDP**: `SendInput` delivery does not land over an RDP session,
+which is also why the `PopupGrafting` half of verification step 5 has never been run.
 
 ## Design
 
@@ -329,9 +333,12 @@ clock and asserts a **human** typed < 60 s ago. Make the test generate its own i
   `InputToolsTests.cs:64-67` does. See *Standing preconditions* above for the constraint-2 scope
   this touches.
 
-*Fallback if synthesis proves unreliable:* split into a lease-free pure-logic test of
-`IdleActivity.Bucket` over injected values plus a real-source sanity assert (`idle >= 0`). This is
-**strictly weaker** — it stops testing the integration — so it is a fallback, not a preference.
+*Fallback:* **retired.** The lease-free split (a pure-logic test of `IdleActivity.Bucket` over
+injected values plus a real-source sanity assert) existed only in case constraint 2 was meant to
+forbid a lease dependency. The user has settled that it is not (see *Standing preconditions*), and
+the fallback stops testing the integration, so it is not held in reserve. If `SendInput` synthesis
+turns out not to move the idle clock, that is a measurement worth surfacing rather than routing
+around.
 
 ### D4 — #3 `WaitForStableTests`
 
