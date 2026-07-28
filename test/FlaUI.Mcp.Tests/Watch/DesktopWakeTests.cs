@@ -73,20 +73,52 @@ public class DesktopWakeTests
     {
         using var rig = await LaunchAsync();
 
-        // Opaque baseline: VS Code's un-woken shell exposes only a handful of UIA nodes.
+        // DIAGNOSTIC (temporary, removed in the follow-up task): the recorded root cause for this
+        // failure is not supported by the measurement -- the opaque-baseline assert below PASSED
+        // before the hydration assert reported 16 nodes, so a window was resolved and hydration,
+        // not resolution, is what failed. Establish whether the pid we wake actually owns the
+        // window we measure.
+        var owningPid = await rig.Windows.RunWithWindowAndDesktopAsync(rig.Handle,
+            (win, _) => win.Properties.ProcessId.ValueOrDefault);
+        Diag($"launchedPid={rig.Pid} owningPid={owningPid} match={rig.Pid == owningPid}");
+
         var before = await rig.Perception.StatsByWindowAsync(rig.Handle);
+        Diag($"opaque baseline={before.Total}");
         Assert.True(before.Total < OpaqueNodeCeiling,
             $"expected an opaque baseline (<{OpaqueNodeCeiling} nodes), got {before.Total}");
 
         var wakeId = await rig.Wake.WakeAsync(rig.Handle.Id, rig.Pid);
-        // Let AXMode actually activate and the tree realize (spike observed this settles within ~1-2s).
-        await Task.Delay(1500);
+
+        for (var i = 1; i <= 10; i++)
+        {
+            await Task.Delay(2000);
+            var poll = await rig.Perception.StatsByWindowAsync(rig.Handle);
+            Diag($"t={i * 2}s nodes={poll.Total}");
+        }
 
         var after = await rig.Perception.StatsByWindowAsync(rig.Handle);
         Assert.True(after.Total > WokenNodeFloor,
             $"expected the tree to hydrate while held (>{WokenNodeFloor} nodes), got {after.Total}");
 
         await rig.Wake.ReleaseAsync(wakeId);
+    }
+
+    /// <summary>
+    /// Diagnostic sink. This repo is on xunit 2.9.3 -- xUnit v2 does NOT capture Console.WriteLine
+    /// from tests, and no test here injects ITestOutputHelper, so a console-only diagnostic can
+    /// vanish entirely. The file is the reliable channel; the console line is a convenience mirror.
+    /// </summary>
+    private static void Diag(string line)
+    {
+        var msg = $"[wake-diag] {line}";
+        System.Console.WriteLine(msg);
+        try
+        {
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "wake-diag.log"),
+                $"{System.DateTime.Now:HH:mm:ss.fff} {msg}{System.Environment.NewLine}");
+        }
+        catch { }
     }
 
     [Fact]
