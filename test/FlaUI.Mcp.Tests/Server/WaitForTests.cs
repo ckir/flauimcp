@@ -35,7 +35,12 @@ public class WaitForTests : IClassFixture<TestAppFixture>
         var line = tree.Split('\n').First(l => l.Contains("aid=DelayRevealButton"));
         var btn = line[(line.IndexOf('[') + 1)..line.IndexOf(']')];
         await inter.DesktopInvoke(handle, btn);
-        var json = await snap.DesktopWaitFor(handle, "automationId", "DelayedLabel", "exists", null, 5000, 500);
+        // The label appears 600ms after the invoke -- after poll #1 has already enumerated
+        // RootPanel's children -- so satisfaction lands on poll #2 at ~6.5s against P ~ 3.0s.
+        // The old 5000ms budget survived only because WaitForAsync checks its deadline AFTER an
+        // unsatisfied poll, so it cannot return false before one full walk completes. That is a
+        // machine-speed assumption, and the fixture changes raise P. 25000ms removes it.
+        var json = await snap.DesktopWaitFor(handle, "automationId", "DelayedLabel", "exists", null, 25000, 500);
         using var doc = JsonDocument.Parse(json);
         Assert.True(doc.RootElement.GetProperty("satisfied").GetBoolean());
         Assert.StartsWith("e", doc.RootElement.GetProperty("ref").GetString());
