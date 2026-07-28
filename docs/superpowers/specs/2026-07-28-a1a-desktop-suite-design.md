@@ -51,10 +51,14 @@ this work has to remove.
 
 ## Approach: A2 — fix the fixture's root defect once, then repair each test
 
-Restructure `MainWindow.xaml` from one ~890 px column into a **two-column `Grid`** (~450 px per
-column) and drop the declared window `Height` below any plausible work area, so clamping cannot
-occur. This removes #6, restores the hidden `DupRow` coverage, and makes every Desktop test
-screen-size independent. Then repair #1–#5 individually.
+Restructure `MainWindow.xaml` from one ~890 DIP column into a **multi-column `Grid`** whose tallest
+column fits inside the minimum supported client height, and clamp the window's height to the work
+area so OS clamping cannot silently shrink it. This removes #6, restores the hidden `DupRow`
+coverage, and makes every Desktop test screen-size independent. Then repair #1–#5 individually.
+
+(Round 3: this was written as a *two*-column split at ~450 DIP per column. Corrected arithmetic in
+D1 puts the minimum supported client height at **432 DIP**, so two columns does not fit and the
+column count is a measured outcome — at least three — not a fixed part of the approach.)
 
 ### Alternatives considered and rejected
 
@@ -74,8 +78,9 @@ screen-size independent. Then repair #1–#5 individually.
 
 ### D1 — Fixture restructure (`test/FlaUI.Mcp.TestApp/MainWindow.xaml`)
 
-Two-column `Grid`; every existing control keeps its `x:Name`, `AutomationId`, `Content`, and its
-containing `GroupBox`/`Canvas`/`Border` parent. Only column placement changes.
+Multi-column `Grid` (at least three — see the budget below); every existing control keeps its
+`x:Name`, `AutomationId`, `Content`, and its containing `GroupBox`/`Canvas`/`Border` parent. Only
+column placement changes.
 
 **Window sizing (revised — panel rounds 1 and 2).** A reduced *literal* `Height` is not hermetic: a
 work area's size **in DIPs shrinks as display scaling rises**, so any fixed DIP height eventually
@@ -95,16 +100,20 @@ Round 2 corrections to that fold:
   if the content is taller than the clamped client area it still overflows and still gets culled.
   The two-column split is **marginal, not comfortable**, on realistic hardware:
 
-  | Machine | Screen DIP height | − taskbar | − title/border | Client DIP | vs ~450 DIP of content |
+  The Windows taskbar is 48 physical px at 100% and **scales with DPI, so it is 48 DIP at every
+  scale** — an earlier draft of this table divided it by the scale factor on one row only, which
+  understated the 150% case by 16 DIP and produced the wrong conclusion. Corrected (round 3):
+
+  | Machine | Screen DIP height | − 48 taskbar ⇒ WorkArea | − ~32 title/border | Client DIP | vs ~450 DIP of content |
   |---|---|---|---|---|---|
   | 1920×1080 @200% | 540 | 492 | ~460 | **460** | +10 DIP — a 2% margin |
-  | 1366×768 @150% | 512 | 480 | ~448 | **448** | **−2 DIP — does not fit** |
+  | 1366×768 @150% | 512 | 464 | ~432 | **432** | **−18 DIP — does not fit** |
 
-  So the plan must (a) declare the **minimum supported client height** the fixture is designed
-  against — 448 DIP, the 1366×768 @150% budget — and (b) size the content to clear it with real
-  margin, splitting into three columns or otherwise compressing if two do not. D7 makes a violation
-  fail loudly at runtime instead of silently culling. The exact split is measured in the plan; the
-  *budget* is fixed here.
+  So the plan must (a) design against a **minimum supported client height of 432 DIP** — the
+  1366×768 @150% budget — and (b) size the content to clear it with real margin. At that floor **two
+  columns is not sufficient**: three columns, or genuine content compression, is required rather
+  than optional. D7 makes a violation fail loudly at runtime instead of silently culling. The exact
+  split is measured in the plan; the *budget* is fixed here.
 - **A `ScrollViewer` is not an option.** It would leave scrolled-out controls reporting
   `IsOffscreen=false` with collapsed or clipped bounding rects — destroying the deterministic
   separation `OffscreenCullTests.cs:12-50` pins between the `IsOffscreenBehavior` branch and the
@@ -157,7 +166,12 @@ Invariants that must survive the move, each already load-bearing for a passing t
   concurrency is not, and yanking the SQLite DBs out from under a running VS Code crashes its
   renderer, fails the other run, and leaks the PID tree the failed teardown never reaped. Name each
   profile directory after its owning PID and sweep only entries whose owner process no longer
-  exists.
+  exists. **A naked PID is not a liveness test (round 3):** Windows recycles PIDs aggressively, so
+  once VS Code exits, an unrelated process can inherit that number and
+  `Process.GetProcessById(pid)` will succeed — the sweep would then skip the garbage profile
+  forever, reinstating the leak it exists to prevent. Record the owner's `Process.StartTime`
+  alongside the PID and require **both** to match before treating a profile as live; anything else
+  is sweepable.
 - **Three tests share `LaunchAsync`.** `Waking_hydrates_the_tree_while_held`,
   `Closing_the_window_auto_releases_its_wake`, and `Release_removes_the_wake_from_the_registry` all
   call it, so every D2 change applies three times per run and six times across the two consecutive
@@ -178,9 +192,17 @@ Invariants that must survive the move, each already load-bearing for a passing t
   Consequence: replacing `Delay(1500)` with a 20 s poll would turn a fast red into a slow red
   without fixing anything; the `--user-data-dir --new-window` isolation is the part that actually
   matters. The plan must therefore log the launched PID, the resolved window's **owning** PID, and
-  the node count at each poll, and assert the two PIDs match — so a regression here surfaces as
-  "wrong process" rather than a misleading node count. Treat #1's root cause as reopened until that
-  instrumentation runs.
+  the node count at each poll. Treat #1's root cause as reopened until that instrumentation runs.
+
+  **Stage the PID assert behind the measurement (round 3).** The guard is *expected* to hold under
+  D2's own design: the test launches `C:\...\Microsoft VS Code\Code.exe` directly — the Electron
+  main binary, not the `bin\code.cmd` CLI shim — and a fresh `--user-data-dir` scopes single-instance
+  detection to a profile no other process owns, so the launched process becomes the main process and
+  owns the window. It would *not* hold if that isolation ever failed (flag typo, profile collision,
+  a `--user-data-dir` the build rejects), which is exactly the silent failure the guard exists to
+  expose. Sequence it accordingly: log both PIDs first, confirm they match on a real run, and only
+  then promote it to a hard assert. Adding the assert before measuring would risk codifying a
+  permanent red.
 
 ### D3 — #2 `PresenceDesktopTests`
 
@@ -296,6 +318,13 @@ The gate is the **full 108-test suite**, not the 6 — D1 touches the fixture ev
    the user as a scope decision — not silently excluded from the gate.
 6. **Capture full failure output**, not grep-filtered output. The previous session lost failure #1's
    assert message to a narrow grep filter and had to re-run the whole suite to recover it.
+7. **A skip is not a pass (round 3).** Several Desktop tests are `[SkippableFact]` guarded by
+   `Skip.If(InputLocked())`, and D3 adds another. xUnit exits 0 on a skipped test, so a lease-less
+   run would report a clean exit while silently bypassing every assertion that matters — a green
+   gate achieved by redefining a hostile environment as an excused absence. The gate therefore
+   requires the run to be made **under an active lease** and to report **0 skipped** among
+   `Category=Desktop`. If any test legitimately cannot run, it is enumerated and reported to the
+   user as an exception, never absorbed into "green".
 
 ## Risks
 
@@ -392,10 +421,30 @@ laptop) sustains the layout-floor finding it dropped. Withdrawals get the same s
   is instrumentation, not a fix; if the pid/window-owner assert shows a mismatch, D2's remedy is
   correct but its stated *reason* is not, and the poll deadline may need re-deriving.
 
+## Panel review — round 3 ledger (already folded; do NOT re-raise)
+
+The palette was exhausted by rounds 1–2 apart from Activation Auditor (no auto-discovered or
+auto-routed component in scope), so round 3 used the palette's escape hatch: Axiom Breaker + Cascade
+Analyst (core), a bespoke **Measurement Auditor** (provenance of every load-bearing number: measured,
+derived, or asserted; stale against a deleted configuration; unit-space errors), and **Mechanism
+Gamer** re-pointed at the skip/lease surface D3 introduced, which did not exist in round 1.
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| **The 448 DIP budget was wrong.** The Windows taskbar is 48 physical px at 100% and scales with DPI, so it is 48 DIP at *every* scale; the 150% row divided it by the scale factor while the 200% row did not. Correct client height is **432 DIP**, and ~450 DIP of content **overflows by 18** | agy | **CONFIRMED and folded.** Budget corrected to 432 DIP; the approach and D1 now say **at least three columns** — two provably does not fit. The arithmetic no longer supports the conclusion it was written to support. |
+| A naked PID is not a liveness test — Windows recycles PIDs, so `GetProcessById` can succeed on an unrelated process and the sweep skips the garbage profile forever | agy | folded into D2: match **PID + `Process.StartTime`**; anything else is sweepable |
+| `[SkippableFact]` makes the gate green by skipping — a lease-less run exits 0 having bypassed every assertion | agy | folded as **Verification step 7**: the run must be under an active lease and report **0 skipped**; legitimate skips are enumerated to the user, never absorbed into "green" |
+| The pid-match assert is structurally guaranteed to fail because the launched CLI exits and never owns the window | agy | **REFUTED, with the caution folded.** The test launches `Code.exe` — the Electron main binary, not the `bin\code.cmd` shim — and a fresh `--user-data-dir` scopes single-instance detection to a profile nothing else owns, so the launched process *does* own the window. But the risk of codifying a permanent red is real, so D2 now **stages** the guard: log both PIDs, confirm on a real run, promote to a hard assert only then. |
+| "Reopening #1's root cause drops coverage of the failing mechanics" | agy | **REJECTED.** Reopening a root cause in a spec requires the plan to instrument before fixing; it removes no test and weakens no assertion. The gate still requires #1 to pass. |
+
+Round 3 verdict: **REJECT**, all findings above folded. Round 3 was the first round to catch a
+defect in this spec's *own* arithmetic rather than in the design it describes — the Measurement
+Auditor seat earned its place.
+
 ## Handoff — review state
 
-Rounds 1 and 2 are folded (ledgers above). Round 2 seated Protocol Pedant and Boundary Smuggler for
-the first time and produced substantive findings in every seat, so the panel is **not dry** — under
-the skill's hard cap, round 3 is an operator decision. The user's standing instruction for this
-review is "continue panels until green", which is that decision: round 3 proceeds, rotating in seats
-still unused across both rounds.
+Rounds 1, 2 and 3 are folded (ledgers above). Every round so far has ended REJECT with substantive
+findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
+decision; the user's standing instruction for this review — "continue panels until green" — is that
+decision. Rounds continue until a full round lands with no live challenge above the severity floor,
+and only then does `writing-plans` begin.
