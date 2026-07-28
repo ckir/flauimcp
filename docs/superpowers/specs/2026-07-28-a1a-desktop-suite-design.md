@@ -1,8 +1,14 @@
 # A1a — make the Category=Desktop suite hermetically green
 
 **Date:** 2026-07-28
-**Status:** approved (design) · adversarial panel **GREEN at round 14** after 13 REJECT rounds ·
-implementation plan not yet written
+**Status:** **APPROVED — all gates closed** · adversarial panel **GREEN at round 14** after 13 REJECT
+rounds · released for implementation planning
+
+Both open user gates are settled (2026-07-28): the lease/constraint-2 question by the user directly,
+and D4's scope by delegation to the implementing agent — **D4's repair of the passing
+`IncludeText_...` sibling is KEPT**, on the grounds that a test asserting only a timeout cannot fail
+and therefore reads as coverage it does not provide, inside the very subsystem this work repairs.
+Neither decision altered the design, so the round-14 GREEN stands unqualified.
 **Gates:** ROADMAP A1a, which after the deletion of A1b and A2 is the whole v1.0 gate.
 
 ## Problem
