@@ -11,6 +11,17 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Min(), never bind, and never a bare literal. An unclamped literal is not hermetic
+        // because a work area's size IN DIPS shrinks as display scaling rises. Binding the width to
+        // the work area is worse: on a very wide primary monitor it could grow the window past the
+        // Canvas.Left="5000" sentinel and invert OffscreenCullTests. Min can only ever shrink.
+        //
+        // NOTE: SystemParameters.WorkArea wraps SPI_GETWORKAREA and reports the PRIMARY monitor,
+        // which on a multi-monitor setup may not be the display hosting this window. That is
+        // tolerable only because the design constants below already fit the declared floor machine
+        // unaided -- the clamp is belt-and-braces, not the mechanism this depends on.
+        Width = System.Math.Min(880, SystemParameters.WorkArea.Width);
+        Height = System.Math.Min(420, SystemParameters.WorkArea.Height);
         Secret.Password = SecretValue;
         Grid.ItemsSource = new[]
         {

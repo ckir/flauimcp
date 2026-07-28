@@ -1,104 +1,129 @@
-﻿<Window x:Class="FlaUI.Mcp.TestApp.MainWindow"
+<Window x:Class="FlaUI.Mcp.TestApp.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="FlaUI.Mcp TestApp" Height="880" Width="600"
+        Title="FlaUI.Mcp TestApp"
+        TextElement.FontFamily="Segoe UI" TextElement.FontSize="12"
         AutomationProperties.AutomationId="MainWindow">
-    <StackPanel x:Name="RootPanel" Margin="12">
-        <TextBox x:Name="Input" AutomationProperties.AutomationId="Input" Margin="0,0,0,8"/>
-        <PasswordBox x:Name="Secret" AutomationProperties.AutomationId="Secret" Margin="0,0,0,8"/>
-        <TextBox x:Name="TextDoc" AutomationProperties.AutomationId="TextDoc"
-                 AcceptsReturn="True" Height="60" Margin="0,0,0,8"
-                 Text="line one&#10;line two&#10;line three"/>
-        <DataGrid x:Name="Grid" AutomationProperties.AutomationId="Grid"
-                  AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False"
-                  SelectionUnit="Cell"
-                  Height="100" Margin="0,0,0,8"/>
-        <Button x:Name="OkButton" Content="OK"
-                AutomationProperties.AutomationId="OkButton" Click="OkButton_Click"/>
-        <TextBlock x:Name="Status" AutomationProperties.AutomationId="Status" Text="ready"/>
-        <ListBox x:Name="ItemList" AutomationProperties.AutomationId="ItemList" Height="120" Margin="0,8,0,0">
-            <ListBoxItem AutomationProperties.AutomationId="ItemA" Content="A"/>
-            <ListBoxItem AutomationProperties.AutomationId="ItemB" Content="B"/>
-            <ListBoxItem AutomationProperties.AutomationId="ItemC" Content="C"/>
-            <ListBoxItem Content="NamedOnly"/>
-        </ListBox>
-        <Button x:Name="RebuildItemsButton" Content="Rebuild Items"
-                AutomationProperties.AutomationId="RebuildItemsButton" Click="RebuildItemsButton_Click" Margin="0,8,0,0"/>
-        <Button x:Name="ClearItemsButton" Content="Clear Items"
-                AutomationProperties.AutomationId="ClearItemsButton" Click="ClearItemsButton_Click" Margin="0,4,0,0"/>
-        <!-- Stays Visible (so it keeps a UIA peer) but the explicit IsOffscreenBehavior=Offscreen hint
-             makes the peer report IsOffscreen=true — the deterministic way to get "in tree but
-             off-screen" in WPF (plain visibility/scroll/clip do not flip IsOffscreen here). The
-             off-screen-cull test asserts it is absent by default and present with includeOffscreen. -->
-        <Button x:Name="OffscreenButton" Content="Offscreen"
-                AutomationProperties.AutomationId="OffscreenButton"
-                AutomationProperties.IsOffscreenBehavior="Offscreen"
-                Width="80" Height="24"/>
-        <!-- Laid out far outside a clipped 1px Canvas: it keeps a UIA peer and (on WPF/.NET10)
-             reports IsOffscreen=FALSE, but its bounding rect falls outside the window — so only the
-             SPATIAL cull catches it. Exercises the bounding-box backstop. -->
-        <Canvas Height="1" ClipToBounds="True">
-            <Button x:Name="SpatialOffscreenButton" Content="Spatial"
-                    AutomationProperties.AutomationId="SpatialOffscreenButton"
-                    Canvas.Left="5000" Canvas.Top="0" Width="80" Height="24"/>
-        </Canvas>
-        <CheckBox x:Name="Check" AutomationProperties.AutomationId="Check" Content="toggle me" Margin="0,8,0,0"/>
-        <Expander x:Name="Exp" AutomationProperties.AutomationId="Exp" Header="expander" Margin="0,4,0,0">
-            <TextBlock Text="inner"/>
-        </Expander>
-        <Button x:Name="FocusReveal" AutomationProperties.AutomationId="FocusReveal"
-                Content="focus reveals label" GotFocus="FocusReveal_GotFocus" Margin="0,4,0,0"/>
-        <TextBlock x:Name="RevealedLabel" AutomationProperties.AutomationId="RevealedLabel"
-                   Text="" Margin="0,2,0,0"/>
-        <Button x:Name="ModalButton" AutomationProperties.AutomationId="ModalButton"
-                Content="open modal" Click="ModalButton_Click" Margin="0,4,0,0"/>
-        <!-- Freezes the UI thread with a real Thread.Sleep — a genuine, COM-pumping-stops freeze
-             (unlike WPF ShowDialog, which keeps the UIA pipeline responsive). A UIA action that
-             arrives WHILE this is frozen physically blocks the caller's STA on cross-apartment RPC,
-             which is the only faithful repro of the deadlock the Task-C dispatcher defends against. -->
-        <Button x:Name="FreezeButton" AutomationProperties.AutomationId="FreezeButton"
-                Content="freeze UI" Click="FreezeButton_Click" Margin="0,4,0,0"/>
-        <Button x:Name="DelayRevealButton" AutomationProperties.AutomationId="DelayRevealButton"
-                Content="reveal after delay" Click="DelayRevealButton_Click" Margin="0,4,0,0"/>
-        <TextBlock x:Name="Ticker" AutomationProperties.AutomationId="Ticker" Text="0" Margin="0,4,0,0"/>
-        <Border Background="#FFE0E0E0" Height="36" Margin="0,8,0,0">
-            <TextBlock x:Name="MenuTarget"
-                       AutomationProperties.AutomationId="MenuTarget"
-                       Text="right-click me"
-                       HorizontalAlignment="Center" VerticalAlignment="Center">
-                <TextBlock.ContextMenu>
-                    <ContextMenu>
-                        <MenuItem Header="Alpha" AutomationProperties.AutomationId="MenuAlpha"/>
-                        <MenuItem Header="Beta" AutomationProperties.AutomationId="MenuBeta"/>
-                    </ContextMenu>
-                </TextBlock.ContextMenu>
-            </TextBlock>
-        </Border>
-        <!-- Ambiguity fixtures (v0.7.3a C2). Lenient re-resolution matching >1 element must throw
-             AMBIGUOUS_MATCH instead of silently picking the first.
-             NOTE: the ancestor containers are GroupBox, NOT a bare StackPanel. WPF layout panels
-             (StackPanel/Grid/Canvas/Border) never override OnCreateAutomationPeer, so an
-             AutomationProperties.AutomationId set on one is invisible to UIA and can never be resolved
-             as an AncestorAutomationId scope. GroupBox (a HeaderedContentControl) has a real peer, so
-             DupHost/DupRow are genuine, resolvable UIA nodes. -->
-        <GroupBox AutomationProperties.AutomationId="DupHost" Margin="0,8,0,0">
-            <StackPanel Orientation="Horizontal">
-                <Button Content="DupA" AutomationProperties.AutomationId="DupAid"/>
-                <Button Content="DupB" AutomationProperties.AutomationId="DupAid"/>
-                <Button Content="DupName"/>
-                <Button Content="DupName"/>
-            </StackPanel>
-        </GroupBox>
-        <!-- TWO ancestors sharing one AutomationId, each holding ONE same-aid target (MAJOR-2). -->
-        <GroupBox AutomationProperties.AutomationId="DupRow" Margin="0,8,0,0">
-            <StackPanel Orientation="Horizontal">
-                <Button Content="Row1Btn" AutomationProperties.AutomationId="RowBtn"/>
-            </StackPanel>
-        </GroupBox>
-        <GroupBox AutomationProperties.AutomationId="DupRow" Margin="0,8,0,0">
-            <StackPanel Orientation="Horizontal">
-                <Button Content="Row2Btn" AutomationProperties.AutomationId="RowBtn"/>
-            </StackPanel>
-        </GroupBox>
-    </StackPanel>
+    <!-- Font metrics are PINNED at the root so the column budget is host-independent. Without
+         this a different default font, a custom theme or larger system text inflates every column,
+         and column 1's ~90 DIP of slack is exactly what DelayRevealButton_Click's runtime append
+         needs. Losing it reproduces the DelayedLabel cull this restructure exists to fix.
+         Window Width/Height are clamped in code-behind, not declared here. -->
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="280"/>
+            <ColumnDefinition Width="280"/>
+            <ColumnDefinition Width="280"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- COLUMN 1 is RootPanel, and it stays a vertical StackPanel: MainWindow.xaml.cs calls
+             RootPanel.Children.Add(tb) to append DelayedLabel. If RootPanel were the Grid, that
+             call would silently place the label in cell (0,0) on top of Input — it compiles, it
+             runs, and it quietly changes the layout contract the code-behind depends on.
+             This is deliberately the SHALLOWEST column so that append lands inside the window. -->
+        <StackPanel x:Name="RootPanel" Grid.Column="0" Margin="0,0,8,0">
+            <TextBox x:Name="Input" AutomationProperties.AutomationId="Input" Margin="0,0,0,8"/>
+            <PasswordBox x:Name="Secret" AutomationProperties.AutomationId="Secret" Margin="0,0,0,8"/>
+            <TextBox x:Name="TextDoc" AutomationProperties.AutomationId="TextDoc"
+                     AcceptsReturn="True" Height="60" Margin="0,0,0,8"
+                     Text="line one&#10;line two&#10;line three"/>
+            <DataGrid x:Name="Grid" AutomationProperties.AutomationId="Grid"
+                      AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False"
+                      SelectionUnit="Cell"
+                      Height="100" Margin="0,0,0,8"/>
+            <Button x:Name="OkButton" Content="OK"
+                    AutomationProperties.AutomationId="OkButton" Click="OkButton_Click"/>
+            <TextBlock x:Name="Status" AutomationProperties.AutomationId="Status" Text="ready"/>
+            <Button x:Name="RebuildItemsButton" Content="Rebuild Items"
+                    AutomationProperties.AutomationId="RebuildItemsButton" Click="RebuildItemsButton_Click" Margin="0,8,0,0"/>
+            <Button x:Name="ClearItemsButton" Content="Clear Items"
+                    AutomationProperties.AutomationId="ClearItemsButton" Click="ClearItemsButton_Click" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <StackPanel Grid.Column="1" Margin="0,0,8,0">
+            <!-- No fixed Height: it flows to its natural size. A pinned height would let the items
+                 grow under a different theme while the box stayed put, scrolling the last ones out
+                 of the UIA tree. Flowing means an unexpectedly tall list makes this COLUMN taller,
+                 which the D7 guard catches loudly instead of silently dropping items. -->
+            <ListBox x:Name="ItemList" AutomationProperties.AutomationId="ItemList" Margin="0,0,0,8">
+                <ListBoxItem AutomationProperties.AutomationId="ItemA" Content="A"/>
+                <ListBoxItem AutomationProperties.AutomationId="ItemB" Content="B"/>
+                <ListBoxItem AutomationProperties.AutomationId="ItemC" Content="C"/>
+                <ListBoxItem Content="NamedOnly"/>
+            </ListBox>
+            <!-- Stays Visible (so it keeps a UIA peer) but the explicit IsOffscreenBehavior=Offscreen
+                 hint makes the peer report IsOffscreen=true — the deterministic way to get "in tree
+                 but off-screen" in WPF (plain visibility/scroll/clip do not flip IsOffscreen here). -->
+            <Button x:Name="OffscreenButton" Content="Offscreen"
+                    AutomationProperties.AutomationId="OffscreenButton"
+                    AutomationProperties.IsOffscreenBehavior="Offscreen"
+                    Width="80" Height="24"/>
+            <!-- SENTINEL. Laid out far outside a clipped 1px Canvas: it keeps a UIA peer and reports
+                 IsOffscreen=FALSE, but its bounding rect falls outside the window, so only the
+                 SPATIAL cull catches it. DERIVED INVARIANT: the window's width must stay far below
+                 5000 DIP or OffscreenCullTests breaks — the sentinel offset and the window width
+                 are coupled. The D7 guard EXEMPTS this subtree for the same reason. -->
+            <Canvas Height="1" ClipToBounds="True">
+                <Button x:Name="SpatialOffscreenButton" Content="Spatial"
+                        AutomationProperties.AutomationId="SpatialOffscreenButton"
+                        Canvas.Left="5000" Canvas.Top="0" Width="80" Height="24"/>
+            </Canvas>
+            <CheckBox x:Name="Check" AutomationProperties.AutomationId="Check" Content="toggle me" Margin="0,8,0,0"/>
+            <Expander x:Name="Exp" AutomationProperties.AutomationId="Exp" Header="expander" Margin="0,4,0,0">
+                <TextBlock Text="inner"/>
+            </Expander>
+            <Button x:Name="FocusReveal" AutomationProperties.AutomationId="FocusReveal"
+                    Content="focus reveals label" GotFocus="FocusReveal_GotFocus" Margin="0,4,0,0"/>
+            <TextBlock x:Name="RevealedLabel" AutomationProperties.AutomationId="RevealedLabel"
+                       Text="" Margin="0,2,0,0"/>
+        </StackPanel>
+
+        <StackPanel Grid.Column="2">
+            <Button x:Name="ModalButton" AutomationProperties.AutomationId="ModalButton"
+                    Content="open modal" Click="ModalButton_Click" Margin="0,0,0,4"/>
+            <!-- Freezes the UI thread with a real Thread.Sleep — a genuine, COM-pumping-stops freeze
+                 (unlike WPF ShowDialog, which keeps the UIA pipeline responsive). -->
+            <Button x:Name="FreezeButton" AutomationProperties.AutomationId="FreezeButton"
+                    Content="freeze UI" Click="FreezeButton_Click" Margin="0,4,0,0"/>
+            <Button x:Name="DelayRevealButton" AutomationProperties.AutomationId="DelayRevealButton"
+                    Content="reveal after delay" Click="DelayRevealButton_Click" Margin="0,4,0,0"/>
+            <TextBlock x:Name="Ticker" AutomationProperties.AutomationId="Ticker" Text="0" Margin="0,4,0,0"/>
+            <Border Background="#FFE0E0E0" Height="36" Margin="0,8,0,0">
+                <TextBlock x:Name="MenuTarget"
+                           AutomationProperties.AutomationId="MenuTarget"
+                           Text="right-click me"
+                           HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Alpha" AutomationProperties.AutomationId="MenuAlpha"/>
+                            <MenuItem Header="Beta" AutomationProperties.AutomationId="MenuBeta"/>
+                        </ContextMenu>
+                    </TextBlock.ContextMenu>
+                </TextBlock>
+            </Border>
+            <!-- Ambiguity fixtures. The ancestor containers are GroupBox, NOT a bare StackPanel:
+                 WPF layout panels never override OnCreateAutomationPeer, so an AutomationId set on
+                 one is invisible to UIA and can never be resolved as an AncestorAutomationId scope.
+                 GroupBox (a HeaderedContentControl) has a real peer. -->
+            <GroupBox AutomationProperties.AutomationId="DupHost" Margin="0,8,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="DupA" AutomationProperties.AutomationId="DupAid"/>
+                    <Button Content="DupB" AutomationProperties.AutomationId="DupAid"/>
+                    <Button Content="DupName"/>
+                    <Button Content="DupName"/>
+                </StackPanel>
+            </GroupBox>
+            <!-- TWO ancestors sharing one AutomationId, each holding ONE same-aid target. -->
+            <GroupBox AutomationProperties.AutomationId="DupRow" Margin="0,8,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Row1Btn" AutomationProperties.AutomationId="RowBtn"/>
+                </StackPanel>
+            </GroupBox>
+            <GroupBox AutomationProperties.AutomationId="DupRow" Margin="0,8,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Row2Btn" AutomationProperties.AutomationId="RowBtn"/>
+                </StackPanel>
+            </GroupBox>
+        </StackPanel>
+    </Grid>
 </Window>
