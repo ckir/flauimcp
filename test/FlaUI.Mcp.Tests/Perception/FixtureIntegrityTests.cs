@@ -28,7 +28,12 @@ public class FixtureIntegrityTests
     {
         using var app = new TestAppFixture();
         using var dispatcher = new AutomationDispatcher();
-        var mgr = new WindowManager(dispatcher);
+        // `using`, matching FindTests.cs: WindowManager.Dispose() disposes the UIA3Automation COM
+        // object on the automation thread (WindowManager.cs:654-658). Leaving it undisposed leaks
+        // one per run, in a suite where 100+ other Desktop tests share this desktop. Declaration
+        // order matters -- `using var` disposes in reverse, so mgr tears down while its dispatcher
+        // is still alive, which is the order Dispose() requires.
+        using var mgr = new WindowManager(dispatcher);
         var handle = await mgr.OpenByPidAsync(app.Process.Id);
 
         var violations = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
