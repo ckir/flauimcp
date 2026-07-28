@@ -472,11 +472,51 @@ Describe 'Get-ChangelogBodyFromLlmOutput' {
         Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
     }
 
-    It 'falls back to an inline closing tag when none is line-anchored' {
-        # A model closing on the same line as its final bullet. No competing prose tag exists in this input,
-        # so the inline fallback is unambiguous.
+    It 'refuses an inline closing tag when none is line-anchored' {
+        # SUPERSEDES a round-8 behaviour, deliberately. The inline-close fallback was accepted then, on the
+        # reading that a model closing on the same line as its final bullet is unambiguous. It is not: with the
+        # open anchored and the anchored close simply forgotten, a PROSE mention of the closing tag is the last
+        # inline candidate, so the body is truncated at the TAIL -- and unlike a head-truncation, the fragment
+        # still STARTS with a valid '### ' heading, so the start-anchored gate below cannot see it. There is no
+        # backstop on that side, so the fallback goes. Costs a recoverable run; costs it LOUDLY.
         Get-ChangelogBodyFromLlmOutput -RawOutput "<changelog>`n### Added`n- A thing.</changelog>" |
-            Should -Be "### Added`n- A thing."
+            Should -BeNullOrEmpty
+    }
+
+    It 'keeps a body whose prose mentions the OPENING tag before a later section' {
+        # THE LIVE v0.19.0 DEFECT, verbatim in shape. The opening scan matched ANY occurrence and walked
+        # newest-first, so this body's own prose mention of the tag -- present because the release documented
+        # the tag contract -- became the start. The head was sliced mid-sentence, but the tail still held the
+        # LATER '### Changed' heading, so the multiline gate passed it and it shipped: committed, tagged, and
+        # published to the GitHub release notes. Anchoring the opening scan is what makes the mention inert.
+        $raw = "<changelog>`n### Fixed`n- A body that mentions <changelog> is correctly accepted.`n`n### Changed`n- A change.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw |
+            Should -Be "### Fixed`n- A body that mentions <changelog> is correctly accepted.`n`n### Changed`n- A change."
+    }
+
+    It 'refuses an inline opening tag that is only a prose example' {
+        # The mirror hazard, and why the opening scan gets NO inline fallback. The model forgets the real
+        # opening tag but shows one inside a prose example; the example's tail begins with a real heading, so
+        # a fallback start would pass the gate and ship the example's INVENTED content as the changelog.
+        $raw = "Avoid formatting like this:`n``<changelog>### Added`n- Some fake feature```n`nHere is the real one (I forgot the opening tag):`n`n### Fixed`n- The actual bug.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
+    }
+
+    It 'extracts a body whose opening tag is preceded by a UTF-8 BOM' {
+        # Regression introduced BY the anchoring fix and caught in capstone round 1: '(?m)^' matches index 0,
+        # but a BOM sits between that anchor and the tag, so the only opening tag becomes invisible and a
+        # perfectly good body is refused into $EDITOR. The old unanchored scan was immune (measured), so this
+        # is a cost the fix must not carry. Only the OPEN needs it: a BOM can only appear at offset 0.
+        $raw = "$([char]0xFEFF)<changelog>`n### Added`n- A thing.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -Be "### Added`n- A thing."
+    }
+
+    It 'refuses a head-truncated fragment even when a later heading survives' {
+        # The gate itself, independent of which tag scan produced the fragment. '(?m)^###\s' asserts only that
+        # a heading exists SOMEWHERE, which is what let the v0.19.0 fragment through; a changelog body's very
+        # first content must BE a heading.
+        $raw = "<changelog>`n is correctly accepted. Trailing chatter is refused.`n`n### Changed`n- A change.`n</changelog>"
+        Get-ChangelogBodyFromLlmOutput -RawOutput $raw | Should -BeNullOrEmpty
     }
 
     It 'refuses to guess when the body itself holds a line-anchored closing tag' {
@@ -576,10 +616,163 @@ Describe 'Headless isolation contract' {
         $hook | Should -Match '(?m)^\[ -n "\$\{CI:-\}" \] && exit 0$'
     }
 
+    It 'decodes the child process stdout as UTF-8' {
+        # Live defect: the v0.19.0 entry shipped with 'ΓÇö' where em dashes belonged. The parent host runs
+        # UTF-8, but a Start-Job runspace does NOT inherit that -- it came up on cp437, so claude's UTF-8
+        # stdout was decoded with the OEM code page. Pin the ASSIGNMENT, and pin it INSIDE the job: setting it
+        # in the parent is what already looked correct while the corruption shipped.
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        # Token text is joined with single spaces by the helper, so the operators are spaced out here.
+        $assign = '\[\s*Console\s*\]\s*::\s*OutputEncoding\s*=\s*\[\s*(System\s*\.\s*)?Text\s*\.\s*Encoding\s*\]\s*::\s*UTF8'
+        $src | Should -Match $assign
+        $job = ([regex]::Match($src, 'Start-Job\s+-ScriptBlock\s*\{(?<body>.*?)\}\s*-ArgumentList', 'Singleline')).Groups['body'].Value
+        $job | Should -Not -BeNullOrEmpty
+        $job | Should -Match $assign
+        # Presence is not state: a policy lock that only proves the line EXISTS stays green when a later
+        # assignment overrides it. Exactly one assignment, so there is nothing to override it with.
+        ([regex]::Matches($src, '\[\s*Console\s*\]\s*::\s*OutputEncoding\s*=')).Count | Should -Be 1
+
+        # ...and text presence still is not EXECUTION. Measured: 'if ($false) { [Console]::OutputEncoding = ...}'
+        # kept every regex above green while the job decoded as cp437 again. So assert against the AST that the
+        # assignment is an UNCONDITIONAL statement of the job scriptblock, not buried in a branch or a loop.
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $Repo 'scripts/release.ps1'), [ref]$null, [ref]$null)
+        $assign = $ast.Find({
+            param($a) $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                      $a.Left.Extent.Text -replace '\s', '' -eq '[Console]::OutputEncoding'
+        }, $true)
+        $assign | Should -Not -BeNullOrEmpty
+        $conditional = @()
+        for ($p = $assign.Parent; $null -ne $p; $p = $p.Parent) {
+            if ($p -is [System.Management.Automation.Language.IfStatementAst] -or
+                $p -is [System.Management.Automation.Language.LoopStatementAst] -or
+                $p -is [System.Management.Automation.Language.TryStatementAst] -or
+                $p -is [System.Management.Automation.Language.SwitchStatementAst]) { $conditional += $p.GetType().Name }
+        }
+        $conditional -join ',' | Should -BeNullOrEmpty
+    }
+
+    It 'pins the decode semantics the fix depends on' {
+        # Why that one line is the whole fix, and why the shipped mojibake identifies the culprit code page.
+        $emDash = [byte[]](0xE2, 0x80, 0x94)
+        [Text.Encoding]::GetEncoding(437).GetString($emDash)   | Should -Be 'ΓÇö'   # what shipped => cp437
+        # Ruled out by that signature: cp1252 (0x94 -> U+201D) and cp850 both decode these bytes differently.
+        [Text.Encoding]::GetEncoding(1252).GetString($emDash)  |
+            Should -Be ([string][char]0x00E2 + [char]0x20AC + [char]0x201D)
+        [Text.Encoding]::GetEncoding(850).GetString($emDash)   | Should -Be 'ÔÇö'
+        [Text.Encoding]::UTF8.GetString($emDash)               | Should -Be '—'
+        # And the mechanism: the assignment inside the runspace is what makes the decode correct.
+        $j = Start-Job -ScriptBlock { [Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::OutputEncoding.CodePage }
+        try { (Wait-Job $j | Receive-Job) | Should -Be 65001 }
+        finally { Remove-Job $j -Force -ErrorAction SilentlyContinue }
+    }
+
     It 'ships the hook to the plugin byte-identically' {
         $a = Get-Content (Join-Path $Repo '.claude/hooks/flaui-curate-nudge.sh') -Raw
         $b = Get-Content (Join-Path $Repo 'plugins/flaui-mcp/scripts/flaui-curate-nudge.sh') -Raw
         $b | Should -Be $a
+    }
+}
+
+Describe 'Draft review gate' {
+    # Found by a mutation sweep and independently by capstone round 1: EVERY body test targets the extractor,
+    # so reverting Invoke-DraftReview's gate to '(?m)' kept all tests green while the last line of defence
+    # before CHANGELOG.md silently accepted head-truncated fragments again. Pinned at the source level rather
+    # than by mocking $EDITOR/Read-Host, which would hang the runner on a leaked mock.
+    It 'anchors the accept gate to the START of the body' {
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $src | Should -Match '\$validBody\s*=.*\$body\s+-match\s+''\^\\s\*###'
+        # The mutation itself: a multiline gate anywhere in the accept path is the defect, by construction.
+        $src | Should -Not -Match '\$body\s+-match\s+''\(\?m\)'
+    }
+
+    It 'keeps all three body gates consistent' {
+        # Extractor, unattended resume, and interactive accept must agree; a body that one accepts and another
+        # rejects is how a fragment reached CHANGELOG.md while every individual gate "looked right".
+        $lib = Get-CodeWithoutComments (Join-Path $Repo 'scripts/lib/release-lib.ps1')
+        $src = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $lib | Should -Not -Match "'\(\?m\)\^###"
+        ([regex]::Matches($src, "-match\s+'\^(\\s\*)?###")).Count | Should -BeGreaterOrEqual 2
+    }
+}
+
+Describe 'Invoke-DraftReview at runtime' {
+    # Capstone round 2, finding D: every gate pin above is a SOURCE-level regex, and agy named two mutations
+    # that keep them green while breaking the gate ('$validBody = $true -or (...)', and burying the assignment
+    # in 'if ($false) { }'). A source pin proves the text is present, never that it EXECUTES. release.ps1
+    # cannot be dot-sourced (it runs on load), so lift the function out of its AST and call it for real.
+    # -Yes is the key: it takes the branch that never touches Read-Host or $EDITOR, so nothing can hang.
+    BeforeAll {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $Repo 'scripts/release.ps1'), [ref]$null, [ref]$null)
+        $fn = $ast.Find({
+            param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Invoke-DraftReview'
+        }, $true)
+        if (-not $fn) { throw "Invoke-DraftReview not found in release.ps1" }
+        $script:DraftReviewText = $fn.Extent.Text
+    }
+
+    It 'accepts a well-formed body unattended' {
+        . ([scriptblock]::Create($script:DraftReviewText))
+        $d = Join-Path ([IO.Path]::GetTempPath()) ("dr-ok-" + [guid]::NewGuid().ToString('N') + ".md")
+        Set-Content -Path $d -Value "### Fixed`n- A bug." -NoNewline -Encoding UTF8
+        try {
+            $r = Invoke-DraftReview -Version '9.9.9' -DraftPath $d -Prompt 'x' -Yes
+            $r.Action | Should -Be 'Accept'
+        } finally { Remove-Item $d -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'throws on a head-truncated body unattended' {
+        # THE v0.19.0 SHAPE, at runtime: begins mid-sentence, carries a later '### Changed'. Under the old
+        # '(?m)' gate this returned Accept and went straight into CHANGELOG.md.
+        . ([scriptblock]::Create($script:DraftReviewText))
+        $d = Join-Path ([IO.Path]::GetTempPath()) ("dr-bad-" + [guid]::NewGuid().ToString('N') + ".md")
+        Set-Content -Path $d -Value "` is correctly accepted. Trailing chatter.`n`n### Changed`n- A change." -NoNewline -Encoding UTF8
+        try {
+            { Invoke-DraftReview -Version '9.9.9' -DraftPath $d -Prompt 'x' -Yes } | Should -Throw
+        } finally { Remove-Item $d -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'accepts a hand-staged draft saved with a UTF-8 BOM' {
+        # I suspected a defect here and MEASURED IT AWAY: .Trim() does not strip U+FEFF (Char.IsWhiteSpace is
+        # false for it), so a BOM'd draft would fail the '^\s*###\s' gate -- but Get-Content -Raw strips the
+        # BOM while decoding, so it never reaches the gate. This test exists to keep that true: switching the
+        # read to [IO.File]::ReadAllText, which does NOT strip it, would silently discard an operator's
+        # pre-staged draft and regenerate it. A characterisation pin, not a bug fix.
+        . ([scriptblock]::Create($script:DraftReviewText))
+        $d = Join-Path ([IO.Path]::GetTempPath()) ("dr-bom-" + [guid]::NewGuid().ToString('N') + ".md")
+        [IO.File]::WriteAllText($d, "### Fixed`n- A bug.", [Text.UTF8Encoding]::new($true))
+        try {
+            $r = Invoke-DraftReview -Version '9.9.9' -DraftPath $d -Prompt 'x' -Yes
+            $r.Action | Should -Be 'Accept'
+        } finally { Remove-Item $d -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Changelog line endings' {
+    # Capstone round 2, finding C, confirmed by measurement: Out-String in the job returns the body with CRLF,
+    # while Add-ChangelogSection joins with LF -- so the new entry carried a stray CRLF, and the ENTIRE existing
+    # file was rewritten LF. This repo's core.autocrlf hands the next checkout a CRLF working tree, so the next
+    # release would produce a whole-file diff on top of the real change.
+    It 'normalises a CRLF body into an LF file' {
+        $clog = Join-Path ([IO.Path]::GetTempPath()) ("eol-lf-" + [guid]::NewGuid().ToString('N') + ".md")
+        [IO.File]::WriteAllText($clog, "# Changelog`n`n## [0.1.0] - 2026-01-01`n`n### Added`n- old`n", [Text.UTF8Encoding]::new($false))
+        try {
+            Add-ChangelogSection -ChangelogPath $clog -Version '0.2.0' -Date '2026-07-28' -Body "### Fixed`r`n- A bullet."
+            $t = [IO.File]::ReadAllText($clog)
+            ([regex]::Matches($t, "`r`n")).Count | Should -Be 0
+        } finally { Remove-Item $clog -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'leaves a CRLF file entirely CRLF' {
+        $clog = Join-Path ([IO.Path]::GetTempPath()) ("eol-crlf-" + [guid]::NewGuid().ToString('N') + ".md")
+        [IO.File]::WriteAllText($clog, "# Changelog`r`n`r`n## [0.1.0] - 2026-01-01`r`n`r`n### Added`r`n- old`r`n", [Text.UTF8Encoding]::new($false))
+        try {
+            Add-ChangelogSection -ChangelogPath $clog -Version '0.2.0' -Date '2026-07-28' -Body "### Fixed`r`n- A bullet."
+            $t = [IO.File]::ReadAllText($clog)
+            ([regex]::Matches($t, "(?<!`r)`n")).Count | Should -Be 0
+            ([regex]::Matches($t, "`r`n")).Count | Should -BeGreaterThan 0
+        } finally { Remove-Item $clog -Force -ErrorAction SilentlyContinue }
     }
 }
 

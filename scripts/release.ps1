@@ -179,6 +179,12 @@ function Invoke-ChangelogLlm {
     # FLAUI_MCP_NO_NUDGE is belt-and-braces for the same class (see .claude/hooks/flaui-curate-nudge.sh).
     $job = Start-Job -ScriptBlock {
         param($PromptText, $ModelName)
+        # A Start-Job runspace does NOT inherit the parent's console encoding: measured coming up on cp437
+        # while the host ran UTF-8. [Console]::OutputEncoding is what PowerShell decodes a NATIVE process's
+        # stdout with, so claude's UTF-8 output was being read as OEM -- em dashes reached CHANGELOG.md as
+        # 'ΓÇö' and shipped to the GitHub release notes. Must be set HERE, inside the job; the parent's value
+        # is irrelevant, which is why this looked correct while the corruption shipped.
+        [Console]::OutputEncoding = [Text.Encoding]::UTF8
         $env:FLAUI_MCP_NO_NUDGE = '1'
         $out = $PromptText | & claude -p --safe-mode --model $ModelName --output-format text 2>&1 | Out-String
         [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
@@ -308,7 +314,10 @@ function Invoke-DraftReview {
         }
 
         if ($key -eq 'A') {
-            $validBody = (-not [string]::IsNullOrWhiteSpace($body)) -and ($body -match '(?m)^###\s')
+            # Start-anchored, matching the extractor's gate and the -Yes resume gate above. '(?m)' accepted a
+            # body whose FIRST content was not a heading -- the v0.19.0 fragment began mid-sentence and carried
+            # a later '### Changed', so this gate waved it through on the way to CHANGELOG.md.
+            $validBody = (-not [string]::IsNullOrWhiteSpace($body)) -and ($body -match '^\s*###\s')
             if ($validBody) { return [pscustomobject]@{ Action = 'Accept'; Body = $body } }
 
             if ($Yes) {

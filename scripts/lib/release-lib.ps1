@@ -285,7 +285,10 @@ function Add-ChangelogSection {
         throw "Add-ChangelogSection: a '## [$Version]' section already exists in $ChangelogPath — refusing to add a duplicate."
     }
 
-    $section = "$heading`n`n$($Body.Trim())`n"
+    # Normalise the body's newlines. Out-String in the draft job returns CRLF (measured), while everything
+    # below joins with LF -- so the model's bullets carried CRLF into a file assembled with LF, leaving mixed
+    # endings INSIDE the new entry. Normalise here, once, rather than at the seam that happens to notice.
+    $section = "$heading`n`n$(($Body -replace "`r`n", "`n").Trim())`n"
 
     if ($sectionLines.Count -eq 0) {
         # Guard the empty-file case separately, else the join leaves the section behind two blank lines.
@@ -299,7 +302,15 @@ function Add-ChangelogSection {
         $newContent = if ($before) { "$before`n`n$section`n$after" } else { "$section`n$after" }
     }
 
-    Set-FilePreservingBom -Path $ChangelogPath -Content ($newContent.TrimEnd() + "`n")
+    # Restore the file's OWN line endings. Get-Content discards them and every join above is LF, so writing
+    # $newContent straight out rewrites a CRLF file wholesale -- and this repo's core.autocrlf hands the next
+    # checkout exactly that, so a release would land a whole-file diff on top of the real change. Decide by
+    # what the file already used; a file with no newline at all keeps LF.
+    $out = $newContent.TrimEnd() + "`n"
+    if (([regex]::Matches($content, "`r`n")).Count -gt ([regex]::Matches($content, "(?<!`r)`n")).Count) {
+        $out = $out -replace "(?<!`r)`n", "`r`n"
+    }
+    Set-FilePreservingBom -Path $ChangelogPath -Content $out
 }
 
 function Get-ChangelogPrompt {
@@ -366,8 +377,21 @@ function Get-ChangelogBodyFromLlmOutput {
     Missing or empty delimiters are a CAPTURE FAILURE ($null), never a body — the caller falls back to the
     editor rather than persisting garbage to the resumable draft file.
 
-    Always starts at the LAST opening tag: a model that shows a draft and then corrects itself should be taken
-    at its final word.
+    Both delimiters are located the SAME way: only a tag ALONE ON ITS LINE opens or closes a body. That symmetry
+    is the fix for a live v0.19.0 defect. The opening scan used to match ANY occurrence, so when a release
+    documented the tag contract in its own prose ("a body that mentions `<changelog>`"), that mid-line mention
+    was the LAST opening tag and became the start -- slicing the head off the body mid-sentence. The fragment
+    still contained a LATER '### ' heading, so the multiline gate below passed it, and it shipped: committed,
+    tagged, and published to the GitHub release notes.
+
+    Among line-anchored tags, still starts at the LAST one: a model that shows a draft and then corrects itself
+    should be taken at its final word.
+
+    An inline opening tag is NOT a fallback start. Measured: with no anchored open, falling back to an inline one
+    latches onto a prose EXAMPLE ("avoid formatting like this: `<changelog>### Added ...`") whose tail begins with
+    a real heading -- so it passes every gate and ships a body containing the example's invented content. Failing
+    to $EDITOR is the correct outcome there. (Nor does the fallback pay for itself: a body wrapped in a one-line
+    code span, the case it would nominally rescue, has no anchored CLOSE either, so it fails regardless.)
 
     Choosing the CLOSING tag is the subtle part, because the tag string can legitimately appear in two places
     that pull in opposite directions -- and the prompt hands the model that string, so both are realistic:
@@ -392,10 +416,24 @@ function Get-ChangelogBodyFromLlmOutput {
 
     if ([string]::IsNullOrWhiteSpace($RawOutput)) { return $null }
 
-    # Walk opening tags newest-first and take the first that actually closes. Skipping unclosed ones matters:
-    # chatter after a well-formed block can mention <changelog>, and binding to that orphan would drop a
-    # perfectly good body.
-    $opens = [regex]::Matches($RawOutput, '<changelog>')
+    # Two DIFFERENT scans, because the tag occurrences answer two different questions.
+    #
+    # $opens -- which occurrences may START a body: line-anchored only (see the header). Walk them newest-first
+    # and take the first that actually closes. Skipping unclosed ones matters: chatter after a well-formed block
+    # can mention <changelog>, and binding to that orphan would drop a perfectly good body.
+    #
+    # $allTags -- which occurrences count as a RIVAL block for the position check below: EVERY occurrence,
+    # anchored or not. Collapsing these two into one anchored scan is wrong, and was measured: an inline
+    # "<changelog>forgot heading</changelog>" sitting after a complete block is a second draft the model has
+    # since written, and if it stops counting as a rival, the older block is silently promoted and a stale
+    # changelog ships. Narrowing the START scan must not narrow the RIVAL scan with it.
+    # The \uFEFF? is not cosmetic: '(?m)^' matches offset 0, so a BOM on the capture sits BETWEEN the anchor
+    # and the tag and hides the only opening tag -- refusing a perfectly good body into $EDITOR. The unanchored
+    # scan this replaced was immune, so anchoring must not import the cost. Written as an ESCAPE, never as a
+    # literal BOM: an invisible character in a regex is unreviewable and a stray edit deletes it silently.
+    # Only the OPEN needs it; a BOM can only occur at offset 0, which no closing tag can occupy.
+    $opens   = @([regex]::Matches($RawOutput, '(?m)^\uFEFF?[ \t]*<changelog>[ \t\r]*$'))
+    $allTags = @([regex]::Matches($RawOutput, '<changelog>'))
     for ($k = $opens.Count - 1; $k -ge 0; $k--) {
         $tail = $RawOutput.Substring($opens[$k].Index + $opens[$k].Length)
         $anchored = [regex]::Matches($tail, '(?m)^[ \t]*</changelog>[ \t\r]*$')
@@ -404,15 +442,14 @@ function Get-ChangelogBodyFromLlmOutput {
         # silently and still leaves a '### ' heading, so nothing downstream catches it. $null sends the caller
         # to the editor with the raw output in hand.
         if ($anchored.Count -gt 1) { return $null }
-        if ($anchored.Count -eq 1) {
-            $closeOffset = $anchored[0].Index
-        } else {
-            # No line-anchored close: accept an inline one (a model closing on the same line as its last bullet).
-            $closeOffset = $tail.LastIndexOf('</changelog>')
-            # An opening tag with no close at all is not a competing block -- just a tag named in passing.
-            # Skip it WITHOUT recording a competitor, so it cannot poison an older tag that does close.
-            if ($closeOffset -lt 0) { continue }
-        }
+        # No line-anchored close is a CAPTURE FAILURE for this tag, not an invitation to find one inline. The
+        # inline fallback used to run here and had no backstop: with the anchored close merely forgotten, the
+        # last inline candidate can be a PROSE mention, which truncates the body at the TAIL -- and a
+        # tail-truncated body still STARTS with a valid heading, so the gate below cannot catch it. An opening
+        # tag with no close is also not a competing block, so skip it WITHOUT recording a competitor, or it
+        # would poison an older tag that does close.
+        if ($anchored.Count -eq 0) { continue }
+        $closeOffset = $anchored[0].Index
         $closeIndex = $opens[$k].Index + $opens[$k].Length + $closeOffset
         $candidate = $tail.Substring(0, $closeOffset).Trim()
 
@@ -431,8 +468,11 @@ function Get-ChangelogBodyFromLlmOutput {
         # would silently ship a draft the model had already replaced, so refuse: the operator gets the editor
         # and the raw output instead. That costs a recoverable body when the later tag really was just chatter;
         # it costs it LOUDLY, which is the trade this whole function exists to make.
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -match '(?m)^###\s') {
-            if ($opens[$opens.Count - 1].Index -lt $closeIndex) { return $candidate }
+        # Anchor the gate to the START of the body. '(?m)^###\s' only asserts that a heading exists SOMEWHERE,
+        # which is exactly how the head-truncated v0.19.0 fragment passed: it began mid-sentence but still
+        # carried a later '### Changed'. A changelog body's first content must BE a heading.
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -match '^\s*###\s') {
+            if ($allTags[$allTags.Count - 1].Index -lt $closeIndex) { return $candidate }
             return $null
         }
     }
