@@ -8,6 +8,8 @@
 
 **Tech Stack:** .NET 10, xUnit + Xunit.SkippableFact, WPF (the TestApp fixture), FlaUI/UIA3, Win32 `SendInput`.
 
+**Review status:** adversarial panel **GREEN at round 2** (seats: Citation Verifier, Compile Breaker, Literal Implementer, Fold-Regression Auditor). Round 1 found two real defects — D7's exemption was unexecutable, because WPF layout panels have no UIA peer so neither the `Canvas` nor the column `StackPanel`s exist in the tree to be skipped or scoped by; and one wrong line-number citation. One claim was refuted by measurement.
+
 **Source spec:** `docs/superpowers/specs/2026-07-28-a1a-desktop-suite-design.md` — approved, adversarial-panel GREEN at round 14. Read its **Design** section (D1–D7) before starting; the ledgers after it are review history and can be skipped.
 
 **Binding constraint:** tests and test-fixture only. **No `src/` changes.** If a task appears to require one, stop and report it rather than making it.
