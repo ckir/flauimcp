@@ -200,17 +200,26 @@ So the first task is instrumentation, not a fix: log the launched PID, the resol
   focus and change the node count, which is exactly what the `> 100` assertion measures. Pass flags
   disabling workspace trust, welcome/release notes, telemetry and extensions. Without this, the
   single-instance race is merely traded for a first-run race.
-- **Poll until hydrated** instead of `await Task.Delay(1500)`, against a **relative** threshold:
-  poll `StatsByWindowAsync` until `after.Total >= 5 × before.Total` — five times the *same run's*
-  measured opaque baseline — or a **20 s** deadline elapses. Assert after the loop, reporting both
-  numbers, so a real failure distinguishes "never hydrated" from "hydrated but below threshold". The
-  deadline must accommodate a first-run launch, slower than the 8–15 s measured on a warm profile.
-  *Why relative, and why 5×:* `WokenNodeFloor = 100` is an absolute constant measured against one
-  version of a third-party UI, so if a future VS Code hydrates to 95 the poll burns the full 20 s on
-  *every* run and then fails — a large timeout penalty coupled to a volatile external integer. The
-  spike this test was built from measured **14 nodes opaque / 231 woken** (`DesktopWakeTests.cs:17`),
-  a ratio of ~15×. A 5× threshold sits far below that and far above any plausible non-hydrated
-  reading, and it moves with the baseline instead of against it.
+- **Poll until hydrated** instead of `await Task.Delay(1500)`, against an **additive** threshold:
+  poll `StatsByWindowAsync` until `after.Total >= before.Total + 100` — the same run's measured
+  opaque baseline **plus** the node count hydration is expected to add — or a **20 s** deadline
+  elapses. Assert after the loop, reporting *both* numbers, so a real failure distinguishes "never
+  hydrated" from "hydrated but short". The deadline must accommodate a first-run launch, slower than
+  the 8–15 s measured on a warm profile.
+
+  *Additive, never multiplicative.* Hydration adds a roughly fixed population — the Chromium
+  document's accessibility tree — it does not scale the shell's node count. A **relative** threshold
+  (`>= 5 × before.Total`) inverts into a false green on exactly the defect this test exists to
+  catch: with a small baseline of 3 nodes it demands only 15, and the measured failure state was
+  **`got 16`** — so the poll would satisfy on the broken tree, exit, and pass while the app was never
+  woken. Anchoring to `before.Total + 100` keeps the original constant's intent (the spike measured
+  **14 opaque / 231 woken**, `DesktopWakeTests.cs:17`, i.e. ~217 added) while moving with the
+  baseline instead of against it.
+
+  *On VS Code drift:* if a future version hydrates far less, this fails rather than silently
+  passing — which is the correct direction. The both-numbers diagnostic is what makes such a drift
+  legible on the first failure, and loosening the threshold until a broken tree passes is not an
+  acceptable alternative.
 - **Promote the PID guard only after measuring.** The guard is *expected* to hold: the test launches
   `Code.exe` — the Electron main binary, not the `bin\code.cmd` CLI shim — and a fresh
   `--user-data-dir` scopes single-instance detection to a profile nothing else owns, so the launched
@@ -236,8 +245,17 @@ So the first task is instrumentation, not a fix: log the launched PID, the resol
 4. **Delete the profile in a bounded retry loop with backoff** — the observable to poll is "the
    directory is gone", not "a handle set we believe we enumerated correctly".
 
-**Profile naming and sweeping.** Place profiles under one parent directory, named by owning PID
-**plus that process's `Process.StartTime`**, and sweep on start. Three rules:
+**Profile naming and sweeping.** Place profiles under one parent directory.
+
+**Name the directory by a GUID, not by the PID — the PID is not available in time.** The
+`--user-data-dir` argument string must be built *before* `Process.Start()`, but the OS assigns the
+owning PID only *after* the process exists, so a PID-named profile directory is circular and
+unimplementable. Instead: create `<parent>/<guid>/`, launch into it, then immediately write a small
+**sidecar file inside that directory recording the owner's PID and `Process.StartTime`**. The sweep
+reads the sidecar. A directory with no sidecar — the process died between launch and write — counts
+as dead-owner and is swept.
+
+Then three rules:
 
 - Sweep only entries whose owner is genuinely gone. A blind sweep races a concurrent or hung run:
   assembly-level parallelization is disabled but *process*-level concurrency is not, and yanking the
@@ -245,7 +263,12 @@ So the first task is instrumentation, not a fix: log the launched PID, the resol
   tree its failed teardown never reaped.
 - A naked PID is **not** a liveness test — Windows recycles PIDs, so `GetProcessById` can succeed on
   an unrelated process and the sweep would skip the garbage profile forever. Both PID and
-  `StartTime` must match for a profile to count as live.
+  `StartTime` must match for a profile to count as live. **Every failure mode of that check means
+  "not ours", i.e. sweepable, and none may escape the sweep loop:** `GetProcessById` throws
+  `ArgumentException` when the process is not running, and reading `StartTime` throws
+  `Win32Exception` (access denied) when the PID has been recycled onto an elevated or SYSTEM process
+  that a non-elevated test runner cannot inspect. Unhandled, that second case crashes the sweep,
+  aborts the run, and leaks the directory permanently. Catch both and treat them as dead-owner.
 - **Age backstop, as a retention policy on *dead-owner* profiles — never an override of liveness.**
   Sweep dead-owner profiles regardless of how recently they died, so a recycled PID cannot shield
   garbage. Do **not** delete a profile whose owner is live merely because it is old: a developer
@@ -672,9 +695,27 @@ substantive loss.
 Round 9 verdict: **REJECT**, but every finding was an implementability detail — a missing constant, a
 fixed height, a sweep predicate — with none touching the design's soundness.
 
+## Panel review — round 10 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with bespoke **End-to-End Outcome Auditor** (the
+terminal question: executed exactly as written, does each of the six failures actually go green and
+*stay* green?) and **Fold-Regression Auditor** on the round-9 additions. The payload stated the
+severity floor strictly and told the peer that a GREEN verdict was a legitimate outcome.
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| **The round-9 `5 × baseline` threshold is a false green on the exact defect #1 exists to catch.** Hydration *adds* a roughly fixed population (the Chromium document tree); it does not scale the shell's count. With a 3-node baseline the threshold demands only 15, and the measured failure state was **`got 16`** — the poll would satisfy on the broken tree and pass | agy | **CONFIRMED and folded — this corrects an error introduced by the round-9 fold.** The threshold is now **additive**: `after.Total >= before.Total + 100`, preserving the original constant's intent (spike: 14 opaque / 231 woken ≈ 217 added) while still moving with the baseline. Drift now fails rather than silently passing, which is the correct direction; the both-numbers diagnostic makes it legible. |
+| **Naming the profile directory by PID is circular and unimplementable** — `--user-data-dir` must be built before `Process.Start()`, but the PID exists only after | agy | **CONFIRMED and folded.** The directory is named by **GUID**; a **sidecar file** written immediately after launch records the owner's PID and `StartTime`. A directory with no sidecar counts as dead-owner and is swept. |
+| Reading `Process.StartTime` on a PID Windows has recycled onto an elevated or SYSTEM process throws `Win32Exception` (access denied), crashing the sweep loop, aborting the run and leaking the directory | agy | **CONFIRMED and folded.** Both failure modes of the liveness check — `ArgumentException` (not running) and `Win32Exception` (access denied) — are caught and treated as dead-owner. |
+| Whether the six failures actually go green and stay green | agy | **no new findings** — the seat that asks the terminal outcome question found nothing. |
+
+Round 10 verdict: **REJECT**, but every finding sits inside D2's teardown and threshold mechanics;
+the outcome seat is clean, and the design-level seats produced an implementation impossibility rather
+than a design flaw.
+
 ## Handoff — review state
 
-Rounds 1 through 9 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 10 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
