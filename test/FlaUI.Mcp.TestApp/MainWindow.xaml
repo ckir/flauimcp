@@ -50,6 +50,8 @@
                 <ListBoxItem AutomationProperties.AutomationId="ItemB" Content="B"/>
                 <ListBoxItem AutomationProperties.AutomationId="ItemC" Content="C"/>
                 <ListBoxItem Content="NamedOnly"/>
+                <ListBoxItem AutomationProperties.AutomationId="ItemD" Content="ItemOne"/>
+                <ListBoxItem AutomationProperties.AutomationId="ItemE" Content="ItemTwo"/>
             </ListBox>
             <!-- Stays Visible (so it keeps a UIA peer) but the explicit IsOffscreenBehavior=Offscreen
                  hint makes the peer report IsOffscreen=true — the deterministic way to get "in tree

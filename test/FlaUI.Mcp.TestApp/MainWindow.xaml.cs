@@ -41,13 +41,25 @@ public partial class MainWindow : Window
     // Clear and re-create the items as NEW ListBoxItem objects (same AutomationIds). This destroys
     // the old elements, so a held ref's cached UIA element goes invalid and its RuntimeId no longer
     // matches — forcing the option-C descriptor RE-WALK (the cache fast-path can't short-circuit).
+    //
+    // All SIX, matching the XAML. Recreating only ItemA/B/C would permanently drop ItemOne/ItemTwo
+    // and make any later `contains "Item"` query in the same app instance return 0. That cannot
+    // bite today — every FindTests [Fact] builds its own TestAppFixture, so the rebuilding test
+    // cannot contaminate the querying ones — but that is a fixture-LIFETIME argument, and the
+    // classes that share one app (WaitForTests, AmbiguousResolutionTests, both
+    // IClassFixture<TestAppFixture>) would not be protected by it.
     private void RebuildItemsButton_Click(object sender, RoutedEventArgs e)
     {
         ItemList.Items.Clear();
-        foreach (var (aid, content) in new[] { ("ItemA", "A"), ("ItemB", "B"), ("ItemC", "C") })
+        foreach (var (aid, content) in new[]
+                 {
+                     ("ItemA", "A"), ("ItemB", "B"), ("ItemC", "C"),
+                     ("", "NamedOnly"), ("ItemD", "ItemOne"), ("ItemE", "ItemTwo")
+                 })
         {
             var item = new System.Windows.Controls.ListBoxItem { Content = content };
-            System.Windows.Automation.AutomationProperties.SetAutomationId(item, aid);
+            if (!string.IsNullOrEmpty(aid))
+                System.Windows.Automation.AutomationProperties.SetAutomationId(item, aid);
             ItemList.Items.Add(item);
         }
     }
