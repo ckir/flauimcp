@@ -98,6 +98,13 @@ Round 2 corrections to that fold:
   `Min(designConstant, WorkArea.<dimension>)` in **both** axes — it can only ever shrink the window,
   so it never approaches the sentinel, and it never exceeds the screen. The design constants stay
   far below 5000 DIP.
+  **Stated assumption (round 6): `SystemParameters.WorkArea` reports the *primary* monitor only**
+  (it wraps `SPI_GETWORKAREA`), so on a multi-monitor setup it can describe a different display from
+  the one hosting the window. This is tolerable **only because the design constants (~894 × ~460
+  DIP) already fit the declared floor machine unaided** — the clamp is a belt-and-braces guard, not
+  the mechanism the design depends on, and `Min` can only shrink. If the constants ever grow to
+  where the clamp becomes load-bearing, this must switch to querying the hosting monitor
+  (`Screen.FromHandle`-equivalent) instead.
 - **Clamping does not by itself make the content fit — a minimum supported client height must be
   declared.** "No literal pixel constant is load-bearing" was wrong: the content's own height is
   that constant, merely implicit. The clamp only stops the OS from silently shrinking the window;
@@ -204,9 +211,14 @@ Invariants that must survive the move, each already load-bearing for a passing t
   unwinds handles asynchronously, so deleting the profile straight afterwards races the very
   file-lock release it is waiting on, and a single immediate retry loses the same race. The repo
   already knows this: `TestAppFixture.cs:40-41` follows its `Kill` with `WaitForExit(3000)` and
-  documents why. `DesktopWakeTests.cs:46` — the code D2 modifies — does **not**. Add a bounded
-  `WaitForExit` on the tree before the first delete attempt, and back the retry off rather than
-  repeating it instantly.
+  documents why. `DesktopWakeTests.cs:46` — the code D2 modifies — does **not**.
+  **But `WaitForExit` on the root is not enough for Electron (round 6).** `Process.WaitForExit()`
+  blocks on the single handle it is called on, so it returns as soon as the root `Code.exe` dies
+  while the GPU/network/renderer children — the processes actually holding the SQLite locks inside
+  `--user-data-dir` — are still unwinding. The `TestAppFixture` precedent is sound for a
+  single-process WPF app and insufficient here. Wait on the enumerated child PIDs as well, **and**
+  make the deletion itself a bounded retry loop with backoff rather than one immediate retry: the
+  observable to poll is "the directory deleted", not "a handle we believe we enumerated correctly".
 - **The sweep must not delete a live profile (round 2, both panels).** A blind sweep-on-start races
   a concurrent or hung run: assembly-level parallelization is disabled, but *process*-level
   concurrency is not, and yanking the SQLite DBs out from under a running VS Code crashes its
@@ -349,8 +361,17 @@ are overflowing and being culled. As written, the guard could never fail, which 
 entire 894 × 432 DIP budget unenforced at runtime.
 
 The guard must therefore assert containment on the elements that actually overflow: **for each
-column `StackPanel`, its last (lowest) child's bottom edge and its widest child's right edge must lie
-inside the window's UIA `BoundingRectangle`.** A `StackPanel` arranges children at their desired size
+column `StackPanel`, over its DIRECT children only, the lowest child's bottom edge and the widest
+child's right edge must lie inside the window's UIA `BoundingRectangle`.**
+
+**The sentinel is explicitly exempt (round 6).** `SpatialOffscreenButton` sits at
+`Canvas.Left="5000"` *by design* — it is the fixture that proves the spatial cull works, and
+`OffscreenCullTests.cs:45` depends on it being outside the window. A containment guard that walked
+descendants would find it at x≈5080, compare it against a ~894 DIP client width, and fail
+**permanently** — the guard would forbid the exact overflow column 2 exists to contain. Restricting
+the guard to *direct* children already excludes it (the button is a grandchild inside the clipped
+`Canvas`, whose own rect is 1 DIP tall and inside), but that is too fragile a reason to leave
+implicit: the clipped sentinel `Canvas` and everything beneath it is **named as exempt**. A `StackPanel` arranges children at their desired size
 and lets them overflow the clip, and UIA reports those overflowing rects faithfully — proven by the
 original `DelayedLabel` measurement at `bounds [176,1000,…]` against a window ending at y=944. So
 per-child edges are meaningful where the container's are not. Covering every column closes the
@@ -553,9 +574,26 @@ Round 5 verdict: **REJECT**. Two of the three confirmed findings were defects in
 folds — the vertical-only budget by round 3/4, and D7's container form by round 1 — which is the
 argument for continuing rounds after a large fold rather than declaring victory on the fold itself.
 
+## Panel review — round 6 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with bespoke **Feasibility Auditor** (is the
+prescribed layout physically achievable with these controls at these sizes?) and **Constraint
+Compliance Auditor** (after six rounds of additions, do all four binding user constraints still
+hold?).
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| **D7 would fail permanently.** Its "widest child's right edge" clause, read as walking descendants, hits `SpatialOffscreenButton` at x≈5080 in column 2 and compares it against a ~894 DIP client — forbidding the exact overflow that fixture exists to create | agy | **CONFIRMED and folded.** D7 is restricted to **direct** children (which already excludes the grandchild sentinel) *and* the clipped sentinel `Canvas` subtree is now **named as exempt**, because "it happens to be a grandchild" is too fragile a reason to leave implicit. |
+| `SystemParameters.WorkArea` wraps `SPI_GETWORKAREA` and reports the **primary** monitor, which on a multi-monitor setup may not be the display hosting the window | agy | **CONFIRMED as an API fact, impact neutralised, stated as an assumption.** The round-5 design constants (~894 × ~460 DIP) already fit the declared floor machine unaided, and `Min` can only shrink — so the clamp is belt-and-braces, not load-bearing. Recorded with the trigger that would force a switch to `Screen.FromHandle`. |
+| `Process.WaitForExit()` blocks on the **root handle only**, so it returns while Electron's GPU/network/renderer children still hold the profile's SQLite locks — the round-4 fix is insufficient for this app | agy | **CONFIRMED and folded.** The `TestAppFixture.cs:40-41` precedent is sound for a single-process WPF app and not for Electron. D2 now waits on enumerated child PIDs *and* makes the deletion a bounded backoff loop — polling the real observable ("the directory is gone") rather than a handle set we believe we enumerated correctly. |
+| Constraint compliance | agy | **no new findings** — all four binding constraints still hold across every prescription added in rounds 1–5. |
+
+Round 6 verdict: **REJECT**. Again the newest text was the most defective: D7's fatal clause and the
+insufficient `WaitForExit` were both introduced by the round-5 and round-4 folds respectively.
+
 ## Handoff — review state
 
-Rounds 1 through 5 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 6 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
