@@ -1,7 +1,8 @@
 # A1a — make the Category=Desktop suite hermetically green
 
 **Date:** 2026-07-28
-**Status:** approved (design); implementation plan not yet written
+**Status:** approved (design) · adversarial panel **GREEN at round 14** after 13 REJECT rounds ·
+implementation plan not yet written
 **Gates:** ROADMAP A1a, which after the deletion of A1b and A2 is the whole v1.0 gate.
 
 ## Problem
@@ -789,9 +790,43 @@ Round 13 verdict: **effectively converged.** The two core seats and the outcome 
 the only finding is a contrived-case wrinkle dissolved by a structural tweak rather than a design
 change. One confirmation round follows.
 
+## Panel review — round 14: **GREEN**
+
+Confirmation round, same four seats as round 13 (Axiom Breaker, Cascade Analyst, Fold-Regression
+Auditor on round 13's record-before-launch change, End-to-End Outcome Auditor). The payload stated
+the severity floor strictly and named clean as the expected outcome, explicitly warning that
+inventing a marginal objection to avoid returning clean would be the worst result.
+
+**All four seats: "no new findings". PANEL VERDICT: GREEN.**
+
+That satisfies the stop condition — a full panel round landing with no live challenge. The design is
+released for implementation planning.
+
+### What fourteen rounds actually bought
+
+Worth recording, because the shape of it is not obvious:
+
+- **Rounds 1–5 attacked the original design.** They found the defects that mattered most — the
+  window-sizing hermeticity hole, the reopened root cause for failure #1, the one-walk wait margins,
+  and the two budget arithmetic errors (448 vs 432 DIP, then vertical-only vs two-dimensional).
+- **Rounds 6–13 mostly attacked the folds themselves.** Round 7's headline was a regression from
+  round 6; round 10's was a false green introduced by round 9; round 12's was a re-shielding
+  introduced by round 11. Each fold created new surface, and the review's value shifted from
+  auditing the design to auditing the repairs.
+- **Round 11 found the structural cause** of that churn: D2 had descended into prescribing C# in
+  Markdown, where every fix spawns a lower-level fix. Replacing the algorithm with six requirements
+  ended the descent, and the rounds converged immediately afterwards.
+- **Round 8 found the second structural defect** — the document had become a journal of its own
+  corrections in which superseded prescriptions read as live instructions. Flattening it was the
+  single most valuable change for whoever implements this.
+- **Roughly a third of the peer's findings were refuted by measurement**, including several stated
+  with complete confidence: the ambient-VS-Code latch, the D7 non-client-rect objection, the
+  `WaitCoordinator` prescription, and one withdrawal that was **not accepted** because the peer's own
+  arithmetic sustained the finding it had dropped.
+
 ## Handoff — review state
 
-Rounds 1 through 13 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 13 are folded (ledgers above); round 14 is GREEN. Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
