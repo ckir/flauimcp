@@ -135,10 +135,19 @@ the single column had — each ≤ 432 DIP tall. Two consequences: no control ma
 ~290 DIP of width, and **narrowing a column can make it taller** (wrapping content), so the split is
 verified in *both* dimensions, never height alone.
 
-**Default column assignment.** Heights are estimates from the XAML plus default WPF metrics, not
-live measurements; they also depend on the machine's font and theme, which is exactly why D7 asserts
-containment at runtime rather than trusting this table. The plan confirms these and rebalances only
-if a column exceeds budget.
+**Pin the fixture's font metrics at the root.** Set `TextElement.FontFamily` and
+`TextElement.FontSize` on the `Window` so every control inherits a fixed metric instead of the host's
+theme defaults. Without this the budget is only *probably* satisfied: a different default font, a
+custom theme or larger system text inflates every column, and column 1's ~90 DIP of slack is exactly
+what `DelayRevealButton_Click`'s runtime append needs — losing it reproduces the `DelayedLabel` cull
+that failure #6 exists to fix. Constraint 2 asks for **green** on any dev machine, and a runtime
+guard that fails loudly is better than a silent cull but is still not green. Pinning the metrics
+makes the geometry deterministic by construction; D7 then guards future *content* growth rather than
+host variance.
+
+**Default column assignment.** Heights are estimates from the XAML plus the pinned metrics, not live
+measurements. The plan confirms them and rebalances only if a column exceeds budget; D7 is the
+runtime backstop either way.
 
 | Column | Controls | Est. DIP |
 |---|---|---|
@@ -261,12 +270,20 @@ review, and the reason this list is worth more than a prescribed algorithm:
 2. **Ownership must survive PID recycling.** Windows reuses PIDs aggressively, so a bare PID match
    can bind a stale directory to an unrelated live process and shield it from sweeping forever.
 3. **The liveness check must never throw out of the sweep.** It runs against processes that may have
-   exited, may be mid-exit, or may be elevated and un-inspectable by a non-elevated test runner. Any
-   failure to establish ownership means "not verifiably ours" — never an abort. An exception escaping
-   the sweep loop aborts the run and leaks every remaining directory.
-4. **Unknown is not dead.** A directory whose ownership cannot *yet* be established — a concurrent
-   run in the window between creating its profile and recording who owns it — must not be swept.
-   Treating unknown as dead deletes a booting run's profile from under it.
+   exited, may be mid-exit, or may be elevated and un-inspectable by a non-elevated test runner. No
+   such failure may abort the sweep — an exception escaping the loop aborts the run and leaks every
+   remaining directory.
+4. **"Unknown" and "unverifiable" are different, and only one of them is protected.** The
+   discriminator is whether an ownership record exists yet:
+   - **A record exists but cannot be verified** — the recorded process is gone, is mid-exit, or the
+     PID has been recycled onto an elevated process a non-elevated runner cannot inspect. In every
+     such case it is provably **not ours** (our own process is inspectable by us), so the directory
+     is **dead-owner and sweepable**. Treating these as "unknown" would permanently shield exactly
+     the garbage requirement 2 exists to reap.
+   - **No record exists yet** — a concurrent run in the window between creating its profile and
+     recording who owns it. This is genuinely **unknown**, must **not** be swept on sight, and is
+     resolved by age (requirement 5): a record-less directory that is minutes old is a booting run,
+     one that is hours old is debris.
 5. **A live owner is never swept, however old.** A developer paused on a breakpoint keeps a genuinely
    live VS Code for hours; age may decide how aggressively *dead* profiles are reaped, but it may
    never override liveness. Equally, assembly-level parallelization is disabled while *process*-level
@@ -432,7 +449,11 @@ protecting.
 The gate is the **full 108-test suite**, not the 6 — D1 touches the fixture every Desktop test shares.
 
 1. Kill orphaned `testhost.exe` / `FlaUI.Mcp.TestApp.exe` before and after every pass, plus **any
-   `Code.exe` whose command line points at the suite's own profile parent directory**. (Round 4:
+   `Code.exe` whose command line points at the suite's own profile parent directory — as a
+   process-*tree* kill.** Killing the matching main process alone reparents its Electron GPU,
+   renderer and extension-host children to the OS, where they stay alive holding exclusive locks on
+   the profile's SQLite databases; the next sweep's delete then fails and both the processes and the
+   directory leak permanently. (Round 4:
    omitting VS Code entirely created a permanent cascade — an aborted run orphans the isolated
    instance, and because that process is genuinely alive the PID+`StartTime` sweep in D2 correctly
    judges its profile "live" and skips it **forever**; the leaked process shields the leaked
@@ -472,7 +493,7 @@ The gate is the **full 108-test suite**, not the 6 — D1 touches the fixture ev
 | D1 and D5 inflate the node count, raising the per-walk cost P for **every** wait in the suite (round 2) | **Reworded in round 4 — this contradicted D4.** The budgets ARE decided: 25000 ms in D4, the same class in D6. Post-D1 the plan **re-measures P and confirms 25000 still clears ~4P**, raising it only if it does not. That is a verification of a decided number, not a deferred derivation. Any other Desktop test with a tight wait budget is caught by the full re-run. |
 | Input synthesis in D3 is unreliable or lease-dependent in a way that breaks hermeticity | Documented fallback in D3; the choice is made by measurement during implementation. |
 | Raised budgets push suite runtime well past ~8 min | Accepted by constraint 3. |
-| **Machine font/theme metrics, and OS accessibility text scaling, can inflate a column past the 432 DIP budget** — the per-column estimates are arithmetic over default metrics and no table can guarantee them | Stated in D1 alongside the estimates; **D7 is the mitigation** — it asserts containment at runtime, so a machine whose metrics break the budget fails loudly there instead of silently culling. Listed here as well because a risk stated only next to the thing it threatens is easy to miss. |
+| **Machine font/theme metrics can inflate a column past the 432 DIP budget** — the per-column estimates are arithmetic, and no table can guarantee host defaults | **Primary mitigation: D1 pins `TextElement.FontFamily`/`FontSize` at the fixture root**, removing host font variance from the geometry entirely. D7 is the backstop, catching future *content* growth rather than host variance — a loud failure is better than a silent cull, but pinning is what actually delivers constraint 2's "green on any dev machine". |
 
 ## Deferred and filed (explicitly NOT in scope)
 
@@ -731,9 +752,26 @@ defects. Both dissolve once the section states requirements instead of an algori
 what the repo's spec-vs-plan discipline requires, since a line-level plan may only be authored
 against code that already exists, and none of this code does yet.
 
+## Panel review — round 12 ledger (already folded; do NOT re-raise)
+
+Seats: Axiom Breaker + Cascade Analyst (core) with bespoke **Fold-Regression Auditor** (round 11's
+six requirements) and returning **End-to-End Outcome Auditor**. The payload additionally ruled
+"you did not specify the file format / exception type / call order" out of scope, since round 11
+lifted those to the plan deliberately.
+
+| Finding | Raised by | Disposition |
+|---|---|---|
+| **Round 11's requirements 3 + 4 accidentally re-shielded the garbage requirement 2 exists to reap.** "Any failure to establish ownership means not verifiably ours" plus "unknown is not dead, do not sweep" makes an access-denied check on a PID recycled onto an elevated process *unknown* — hence permanently protected | agy | **CONFIRMED and folded — a regression in my own round-11 rewrite.** Requirement 4 now turns on **whether an ownership record exists**: a record that exists but cannot be verified is provably *not ours* (our own process is inspectable by us) and is sweepable; only a directory with **no record yet** is genuinely unknown, protected on sight, and resolved by age. |
+| Verification step 1's `Code.exe` kill must be a process-**tree** kill — killing the main process alone reparents the Electron GPU/renderer/extension-host children, which stay alive holding the profile's SQLite locks, so the next sweep's delete fails and both leak | agy | **CONFIRMED and folded** into verification step 1. |
+| **Failure #6 does not go green on a host whose text metrics differ** — column 1's ~90 DIP of slack is precisely what the runtime `DelayedLabel` append needs, and D7 failing loudly is not the same as the test passing, which is what constraint 2 asks for | agy | **CONFIRMED and folded — the fix is better than the guard.** D1 now **pins `TextElement.FontFamily`/`FontSize` at the fixture root**, making the geometry deterministic by construction and removing host font variance from the budget. D7 is demoted to guarding future *content* growth. The Risks row is rewritten accordingly. |
+| Axiom Breaker | agy | **no new findings** |
+
+Round 12 verdict: **REJECT**. The End-to-End seat, clean in round 10, found a real outcome defect
+once it re-examined the layout budget — vindicating the decision to re-seat it after D2 churned.
+
 ## Handoff — review state
 
-Rounds 1 through 11 are folded (ledgers above). Every round so far has ended REJECT with substantive
+Rounds 1 through 12 are folded (ledgers above). Every round so far has ended REJECT with substantive
 findings, so the panel is **not dry**. The skill's hard cap makes continuing past round 3 an operator
 decision; the user's standing instruction for this review — "continue panels until green" — is that
 decision. Rounds continue until a full round lands with no live challenge above the severity floor,
