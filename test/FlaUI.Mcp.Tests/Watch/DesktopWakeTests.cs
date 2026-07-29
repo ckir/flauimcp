@@ -113,14 +113,15 @@ public class DesktopWakeTests
 
     private static async Task<Rig> LaunchAsync()
     {
-        SweepStaleProfiles();
+        // Never let housekeeping fail the launch it precedes. The sweep inspects directories other
+        // runs may own, so it is exposed to races it cannot control; a crash here would fail a test
+        // for reasons entirely unrelated to what that test asserts.
+        try { SweepStaleProfiles(); } catch { }
 
         // GUID, not pid: --user-data-dir must be built BEFORE Process.Start(), but the OS assigns
         // the pid only AFTER the process exists, so a pid-named directory is circular. The owner
         // record is written into the directory at creation and updated once the pid is known.
         var profile = System.IO.Path.Combine(ProfileParent, System.Guid.NewGuid().ToString("N"));
-        System.IO.Directory.CreateDirectory(profile);
-        System.IO.File.WriteAllText(System.IO.Path.Combine(profile, "owner.txt"), "launching");
 
         // EVERYTHING from here to the successful return is inside one try. The profile directory has
         // already been created above -- it must be, because its path is passed as a launch argument --
@@ -135,6 +136,12 @@ public class DesktopWakeTests
         var launchedPid = 0;
         try
         {
+            // Inside the try, deliberately. An earlier version created the directory and wrote the
+            // first owner record ABOVE it, which left a sliver where an IO failure -- access denied,
+            // an antivirus lock -- leaked the directory with no catch to reach TryDelete.
+            System.IO.Directory.CreateDirectory(profile);
+            System.IO.File.WriteAllText(System.IO.Path.Combine(profile, "owner.txt"), "launching");
+
             dispatcher = new AutomationDispatcher();
             mgr = new WindowManager(dispatcher);
             var refs = new RefRegistry();
@@ -187,13 +194,18 @@ public class DesktopWakeTests
             // die before TryDelete, or its children still hold the profile's locks.
             if (launchedPid != 0)
             {
-                try
-                {
-                    using var p = System.Diagnostics.Process.GetProcessById(launchedPid);
-                    if (!p.HasExited) p.Kill(entireProcessTree: true);
-                    p.WaitForExit(5000);
-                }
-                catch { /* already gone, or not inspectable -- nothing further we can do */ }
+                System.Diagnostics.Process? launched = null;
+                try { launched = System.Diagnostics.Process.GetProcessById(launchedPid); }
+                catch { /* already gone */ }
+
+                // Kill and wait live in SEPARATE try blocks, exactly as Rig.Dispose does. Grouping
+                // them means a Kill that throws -- Win32Exception when the process is already
+                // mid-termination -- skips the wait entirely, letting TryDelete race children that
+                // have not yet let go of the profile's locks.
+                try { if (launched is not null && !launched.HasExited) launched.Kill(entireProcessTree: true); }
+                catch { }
+                try { launched?.WaitForExit(5000); } catch { }
+                try { launched?.Dispose(); } catch { }
             }
 
             // Order mirrors Rig.Dispose: WindowManager tears down the automation base via the
@@ -217,7 +229,18 @@ public class DesktopWakeTests
         foreach (var dir in System.IO.Directory.GetDirectories(ProfileParent))
         {
             var record = System.IO.Path.Combine(dir, "owner.txt");
-            var text = System.IO.File.Exists(record) ? System.IO.File.ReadAllText(record) : null;
+            string? text;
+            try
+            {
+                text = System.IO.File.Exists(record) ? System.IO.File.ReadAllText(record) : null;
+            }
+            catch
+            {
+                // Unreadable right now -- most likely a concurrent run mid-write to its own record,
+                // which is a sharing violation, not evidence of death. Unknown is NOT dead: skip it
+                // and let a later sweep decide once it can actually read the file.
+                continue;
+            }
 
             // No record yet, or still "launching": genuinely UNKNOWN, not dead. A concurrent run
             // may be mid-launch. Leave it alone until it ages out.
@@ -256,10 +279,18 @@ public class DesktopWakeTests
     /// </summary>
     private static void TryDelete(string dir)
     {
+        // Already gone is SUCCESS, not something to retry. Without this, a directory that a concurrent
+        // run deleted -- or one whose creation itself failed -- costs the full ~9s backoff and then
+        // emits a "GAVE UP" line about a directory that never existed. Note Directory.GetCreationTimeUtc
+        // does NOT throw for a missing path, it returns the 1601 epoch, so a vanished directory sails
+        // through the sweep's age check and lands here.
+        if (!System.IO.Directory.Exists(dir)) return;
+
         System.Exception? last = null;
         for (var attempt = 0; attempt < 8; attempt++)
         {
             try { System.IO.Directory.Delete(dir, recursive: true); return; }
+            catch (System.IO.DirectoryNotFoundException) { return; } // vanished mid-retry: also success
             catch (System.Exception ex) { last = ex; System.Threading.Thread.Sleep(250 * (attempt + 1)); }
         }
 
