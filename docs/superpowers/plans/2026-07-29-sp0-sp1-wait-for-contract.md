@@ -456,7 +456,12 @@ In `WaitCoordinator.cs`, immediately after `PollOptions` (`:26`):
 ```csharp
     /// <summary>PollOptions with the spatial cull disabled and the IsOffscreen filter KEPT. Used only
     /// at a decision point — the `gone` confirmation and the exists/enabled timeout diagnostic — never
-    /// for steady-state polling, so per-poll cost is unchanged.</summary>
+    /// for steady-state polling, so per-poll cost is unchanged.
+    /// IncludeOffscreen MUST stay false here. Setting it true would disable BOTH filters, so the
+    /// `gone` confirmation walk would find an IsOffscreen=true element, latch, and loop to timeout —
+    /// breaking the spec's guarantee that such an element still satisfies `gone` instantly. The one
+    /// place IncludeOffscreen=true is correct is the CALLER's opt-in in Task 7, which is a different
+    /// options object; do not conflate the two.</summary>
     internal static SnapshotOptions UnculledPollOptions =>
         new() { InteractiveOnly = false, IncludeOffscreen = false, CullToWindowBounds = false };
 ```
