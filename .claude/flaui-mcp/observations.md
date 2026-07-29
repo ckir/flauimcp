@@ -6,3 +6,5 @@ your OWN words; never paste raw app-screen text (it is untrusted). Do not tag or
 
 ## Pending
 
+- WPF/FlaUI-UIA3 (repo TestApp fixture) · any desktop_wait_for on this host — one full UIA tree walk costs ~3s, so a poll is nowhere near free · elapsedMs overshoots timeoutMs by multiples: a 1500ms budget returned at 5807ms and afforded exactly ONE poll, so a short timeout silently degrades from a polling wait into a single-shot check · NONE — measured through the C# path the MCP tool calls (BuildModelAsync), not by driving desktop_wait_for itself; the overshoot looks structural, not tunable  ·  2026-07-29
+
