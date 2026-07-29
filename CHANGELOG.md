@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.20.0] - 2026-07-29
+
+### Added
+- **Desktop suite gate (K command) in the cockpit.** The Category=Desktop suite is now the whole of v1.0's v1.0 gate and needs an entry point. K runs both halves (main suite then PopupGrafting), checks preconditions explicitly rather than assuming them (physical console via qwinsta, active input lease, 0 skipped as proof the suite ran), and names what green does NOT mean — all Category=KnownDefect tests are filtered out by design, so the pass count attests to the suite, not to the absence of filed defects.
+
+- **-WhatIf dry-run mode for the cockpit.** Prints the canonical command every action would delegate to and executes nothing, making the review seam (the action table mapping each key to its command) inspectable at runtime. Every delegated command passes through Invoke-Cmd, so one guard there covers all actions. Owner-gates announce themselves but do not prompt under -WhatIf, since confirmation guarding a no-op trains reflexive acceptance of what the gate exists to prevent.
+
+### Fixed
+- **Pester test failures were silently passing the cockpit's E and G gates.** Pester 5 does not set a process exit code without -CI or -EnableExit; the gate had the broken form. Fixed by switching to -EnableExit (which sets the exit code without writing result files) and verified against a deliberately failing test. The CI pipeline had the correct form all along; contributors running the cockpit before commit saw false green.
+
+- **-WhatIf overstated its own contract.** It claimed nothing executes "not even read-only probes", while Get-Banner shells out to git and the UIA health check resolves a window. Scoped to actions now — no delegated command and no probe — and names the banner as the single exception, because an unstated exception is how contracts decay.
+
+- **The Desktop gate's summary now qualifies what green means.** Category=KnownDefect tests are filtered out by design, so 109/109 attests to the suite, not to the absence of defects. It points at docs/fix-the-tool-backlog/ and names the command to re-check whether a defect still reproduces.
+
+- **Documentation contradicted itself on RDP and synthetic input.** CONTRIBUTING.md and docs/building.md claimed a physical console is not required, based on a 2026-07-03 API-probe that only measured whether SendInput returns success, not whether events land. Landing does not follow from API success over RDP — events are silently no-opped. Both documents now separate the tiers: UIA-pattern tests run over RDP while connected and unlocked; synthetic-input needs the console. A dated correction makes the inference error visible rather than quietly deleted.
+
+- **The GROWTH region contradicted the hand-authored floor by restatement.** It asserted "SendInput never delivers over RDP", duplicating the floor, and was mid-edit toward outright contradiction. Curated to carry only what the floor does not: secondsRemaining is a precondition, and SESSIONNAME is a per-process snapshot frozen at launch. Points at the floor for the RDP answer.
+
+- **CI pipeline filters were inconsistent across workflows and documentation.** Three files were stale: release.yml and docs/building.md had the weaker Category!=Desktop filter instead of the full three-way exclusion that ci.yml uses; the CONTRIBUTING.md and ci.yml comment blocks published a Desktop command that included KnownDefect tests designed to fail. All now match ci.yml's filter — excluding Desktop, SyntheticInput, and KnownDefect from headless runs — with documentation explaining why and how to run the excluded tests deliberately.
+
+- **AGY-CAPSTONE audit found 21 verified defects across two files, folded over 7 rounds.** The majority were in the Desktop test suite (timing budgets too low for measured walk costs, fixture overflow culling half the tree, fixture teardown leaking process handles, hydration treated as a step rather than a ramp) and the test app fixture (three-column layout overflowing, ListItem queries against wrong field names). Several defects were introduced or exposed by the audit's own fixes and were caught by follow-up rounds before shipping. Key findings: (1) one full tree walk costs ~3.0s, so wait_for_stable's 5000ms budget was unreachable by 2.5x; (2) the fixture was clamped to 788px by the work area, hiding half the tree from snapshot tests; (3) teardown waited on all ambient VS Code instances, not just launched children, adding 2.75 minutes per run on a dev machine; (4) hydration is a ramp (measured 14 opaque, 97 at 2s, 142 by 6s), so a fixed 1500ms delay sampled inside it. All 21 fixed and verified before merge.
+
+- **Test fixture layout and integrity guardrails.** The fixture now uses a three-column layout clamped to a 2-D budget (894 x 432 DIP) derived from the floor machine's work area, and includes a geometric containment guard that asserts every element stays inside the window's bounding rectangle. The guard caught future overflow regressions and is proven able to fail.
+
+- **Documentation and observations curated.** The GROWTH region compressed by 41% by merging parallel findings, and five pending observations were processed: three promoted into refined GROWTH rules, one routed to the fix-the-tool backlog with a concrete issue summary, and one dropped as out of scope. Inbox now empty.
+
+### Changed
+- The release pipeline now validates changelog bodies with stricter guards. Delimiter extraction is line-anchored on both open and close (inline mentions of `<changelog>` cannot become delimiters), and unattended resume via `-Yes` requires the body to begin with a section heading. Damaged entries are now refused rather than silently shipped.
+
+- Line endings in the changelog are now preserved through the release cycle. The draft job and release script now normalize to the file's own dominant line ending, preventing spurious diffs on subsequent releases in repos with mixed line endings.
+
+- The changelog's release-section insertion logic and the post-release duplicate guard now share a single CommonMark parser. Disagreement on what is a real section heading (vs. a fence-quoted one) was how a release entry ended up inside a code block; shared logic prevents that recurrence.
+
 ## [0.19.1] - 2026-07-28
 
 ### Fixed
