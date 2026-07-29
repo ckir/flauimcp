@@ -229,21 +229,50 @@ public class DesktopWakeTests
         foreach (var dir in System.IO.Directory.GetDirectories(ProfileParent))
         {
             var record = System.IO.Path.Combine(dir, "owner.txt");
-            string? text;
+            string? text = null;
+            var unreadable = false;
             try
             {
                 text = System.IO.File.Exists(record) ? System.IO.File.ReadAllText(record) : null;
             }
-            catch
+            catch { unreadable = true; }
+
+            // UNREADABLE is weaker evidence than MISSING, and the difference matters in both
+            // directions. A missing record means the owner never got as far as writing one. An
+            // unreadable record means a record EXISTS and we merely cannot see it -- most often a
+            // transient lock from a scanner or a concurrent run mid-write -- over a profile that may
+            // be perfectly alive.
+            //
+            // So it must not be skipped outright (a permanently unreadable record would then never be
+            // reaped by ANY sweep and would leak forever), and it must not inherit the 3-hour fuse
+            // either (that is well inside a debugging session, and deleting a live profile out from
+            // under a developer paused on a breakpoint is far worse than leaving a stale directory).
+            // Age still bounds it, on a fuse no debugging session credibly spans.
+            if (unreadable)
             {
-                // Unreadable -- most likely a concurrent run mid-write to its own record, which is a
-                // sharing violation and not evidence of death. Treat it exactly as a MISSING record:
-                // unknown, not dead, and therefore resolved by age below.
-                //
-                // Deliberately NOT `continue`. Skipping outright would exempt the directory from the
-                // age check as well, so a permanently unreadable record (corrupted ACLs, a stuck lock)
-                // would never be reaped by ANY future sweep and would leak forever.
-                text = null;
+                if (System.IO.Directory.GetCreationTimeUtc(dir) < System.DateTime.UtcNow.AddHours(-24))
+                    TryDelete(dir);
+                continue;
+            }
+
+            // A CORPSE of a partial delete, reaped immediately rather than waiting out the unknown
+            // fuse. Directory.Delete(recursive) is NOT atomic: when a child still holds a lock it can
+            // remove some entries -- owner.txt among them -- and then fail, leaving a directory with
+            // content but no record. That state is distinguishable from a mid-launch directory
+            // precisely because owner.txt is written IMMEDIATELY after CreateDirectory, before the app
+            // is ever started:
+            //   - no record AND empty        => a run created it microseconds ago; genuinely unknown.
+            //   - no record BUT has content  => only the app writes profile data, so a record existed
+            //                                   and has already been deleted. Provably abandoned.
+            // Measured: a run left two such directories whose locks cleared within ~90s, well past the
+            // delete backoff. Reaping them here is what keeps the leak bounded to a single run.
+            if (text is null)
+            {
+                var hasContent = false;
+                try { hasContent = System.IO.Directory.EnumerateFileSystemEntries(dir).Any(); }
+                catch { /* unreadable: fall through to the conservative path below */ }
+
+                if (hasContent) { TryDelete(dir); continue; }
             }
 
             // No record yet, or still "launching": genuinely UNKNOWN, not dead. A concurrent run
@@ -290,12 +319,16 @@ public class DesktopWakeTests
         // through the sweep's age check and lands here.
         if (!System.IO.Directory.Exists(dir)) return;
 
+        // 10 attempts at 300ms increments is ~16.5s. Raised from ~9s after measuring a run that left
+        // two directories behind: their locks had NOT cleared at 9s but had within ~90s, so the old
+        // budget was simply too short under load. This only costs time on the failure path, and the
+        // corpse-reaping in SweepStaleProfiles bounds whatever still escapes to a single run.
         System.Exception? last = null;
-        for (var attempt = 0; attempt < 8; attempt++)
+        for (var attempt = 0; attempt < 10; attempt++)
         {
             try { System.IO.Directory.Delete(dir, recursive: true); return; }
             catch (System.IO.DirectoryNotFoundException) { return; } // vanished mid-retry: also success
-            catch (System.Exception ex) { last = ex; System.Threading.Thread.Sleep(250 * (attempt + 1)); }
+            catch (System.Exception ex) { last = ex; System.Threading.Thread.Sleep(300 * (attempt + 1)); }
         }
 
         // Exhausted. Deliberately does NOT throw: this runs from Dispose and from a catch block, and
@@ -332,16 +365,26 @@ public class DesktopWakeTests
 
         // CONTROL, and it is load-bearing: prove the tree does NOT hydrate on its own before crediting
         // the wake with hydrating it. Every StatsByWindowAsync call is itself a UIA request and
-        // Chromium hydrates lazily in response to UIA activity, so without this the polling loop below
-        // could be what woke the tree while WakeAsync contributed nothing -- and the test would pass
-        // for a reason unrelated to what it claims. 4s is past the point where a woken tree has already
-        // climbed clear of the threshold (measured ~97 nodes by t=2s).
-        await Task.Delay(4000);
-        var unwoken = await rig.Perception.StatsByWindowAsync(rig.Handle);
-        Assert.True(unwoken.Total < before.Total + HydrationDelta,
-            $"the tree hydrated WITHOUT any wake (baseline={before.Total}, after 4s of polling=" +
-            $"{unwoken.Total}, threshold={before.Total + HydrationDelta}); this test cannot attribute " +
-            "hydration to WakeAsync, so its central claim is unverifiable rather than merely failing");
+        // Chromium hydrates lazily in response to UIA activity, so without this the measurement loop
+        // below could be what woke the tree while WakeAsync contributed nothing.
+        //
+        // It replicates the measurement loop's 500ms POLLING CADENCE, not merely its elapsed time. A
+        // control that idles for 4s and takes a single reading proves only that an idle tree stays
+        // opaque -- it does not rule out high-frequency polling being the stimulus, which is precisely
+        // the confound it exists to eliminate. Same stimulus, minus the wake, is the only honest
+        // control. 4s covers the window in which a woken tree has already climbed clear of the
+        // threshold (measured ~97 nodes by t=2s).
+        var controlDeadline = System.DateTime.UtcNow.AddSeconds(4);
+        while (System.DateTime.UtcNow < controlDeadline)
+        {
+            await Task.Delay(500);
+            var unwoken = await rig.Perception.StatsByWindowAsync(rig.Handle);
+            Assert.True(unwoken.Total < before.Total + HydrationDelta,
+                $"the tree hydrated WITHOUT any wake, under the same 500ms polling this test uses " +
+                $"(baseline={before.Total}, got={unwoken.Total}, threshold={before.Total + HydrationDelta}); " +
+                "hydration cannot be attributed to WakeAsync, so the central claim is unverifiable " +
+                "rather than merely failing");
+        }
 
         var wakeId = await rig.Wake.WakeAsync(rig.Handle.Id, rig.Pid);
 
