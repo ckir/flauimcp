@@ -123,11 +123,11 @@ public class DesktopWakeTests
         // record is written into the directory at creation and updated once the pid is known.
         var profile = System.IO.Path.Combine(ProfileParent, System.Guid.NewGuid().ToString("N"));
 
-        // EVERYTHING from here to the successful return is inside one try. The profile directory has
-        // already been created above -- it must be, because its path is passed as a launch argument --
-        // so any throw between that creation and the return leaves no Rig, hence no Dispose, hence a
-        // leaked directory AND leaked COM objects. Wrapping only the launch call was not enough: the
-        // dispatcher and WindowManager constructors sit in the same unprotected window.
+        // EVERYTHING that allocates lives inside the try below -- the directory, the owner record, the
+        // COM objects, and the launch itself. Nothing above it acquires anything, so there is no path
+        // that leaks without reaching the catch. Earlier versions wrapped only the launch call, then
+        // only everything after the directory creation; each left a sliver where a throw leaked the
+        // directory with no catch able to reach TryDelete.
         AutomationDispatcher? dispatcher = null;
         WindowManager? mgr = null;
         // Declared OUTSIDE the try on purpose. If the launch succeeds and something after it throws,
@@ -236,10 +236,14 @@ public class DesktopWakeTests
             }
             catch
             {
-                // Unreadable right now -- most likely a concurrent run mid-write to its own record,
-                // which is a sharing violation, not evidence of death. Unknown is NOT dead: skip it
-                // and let a later sweep decide once it can actually read the file.
-                continue;
+                // Unreadable -- most likely a concurrent run mid-write to its own record, which is a
+                // sharing violation and not evidence of death. Treat it exactly as a MISSING record:
+                // unknown, not dead, and therefore resolved by age below.
+                //
+                // Deliberately NOT `continue`. Skipping outright would exempt the directory from the
+                // age check as well, so a permanently unreadable record (corrupted ACLs, a stuck lock)
+                // would never be reaped by ANY future sweep and would leak forever.
+                text = null;
             }
 
             // No record yet, or still "launching": genuinely UNKNOWN, not dead. A concurrent run
@@ -325,6 +329,19 @@ public class DesktopWakeTests
         var before = await rig.Perception.StatsByWindowAsync(rig.Handle);
         Assert.True(before.Total < OpaqueNodeCeiling,
             $"expected an opaque baseline (<{OpaqueNodeCeiling} nodes), got {before.Total}");
+
+        // CONTROL, and it is load-bearing: prove the tree does NOT hydrate on its own before crediting
+        // the wake with hydrating it. Every StatsByWindowAsync call is itself a UIA request and
+        // Chromium hydrates lazily in response to UIA activity, so without this the polling loop below
+        // could be what woke the tree while WakeAsync contributed nothing -- and the test would pass
+        // for a reason unrelated to what it claims. 4s is past the point where a woken tree has already
+        // climbed clear of the threshold (measured ~97 nodes by t=2s).
+        await Task.Delay(4000);
+        var unwoken = await rig.Perception.StatsByWindowAsync(rig.Handle);
+        Assert.True(unwoken.Total < before.Total + HydrationDelta,
+            $"the tree hydrated WITHOUT any wake (baseline={before.Total}, after 4s of polling=" +
+            $"{unwoken.Total}, threshold={before.Total + HydrationDelta}); this test cannot attribute " +
+            "hydration to WakeAsync, so its central claim is unverifiable rather than merely failing");
 
         var wakeId = await rig.Wake.WakeAsync(rig.Handle.Id, rig.Pid);
 

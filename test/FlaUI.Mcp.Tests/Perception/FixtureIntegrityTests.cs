@@ -99,6 +99,13 @@ public class FixtureIntegrityTests
                     "the window root reported ZERO descendants, so the containment walk would be " +
                     "vacuous and would pass without having checked anything");
 
+            // Counts elements we actually MEASURED, not merely iterated. The per-element catch below
+            // skips an unreadable element, which is correct on its own -- but if every read failed
+            // (UIA connection dropped mid-walk) we would iterate the whole tree, record no violations,
+            // and PASS having checked nothing. Same false-green class as the swallowed walk exception,
+            // one level down.
+            var examined = 0;
+
             foreach (var el in descendants)
             {
                 string aid, name;
@@ -140,7 +147,14 @@ public class FixtureIntegrityTests
                 // them the same way.
                 if (rect.Width <= 0 || rect.Height <= 0) continue;
 
-                if (rect.Bottom > windowRect.Bottom || rect.Right > windowRect.Right)
+                examined++;
+
+                // All FOUR edges. Bottom/Right alone is what a vertical-stack overflow produces, which
+                // is the defect that prompted this guard -- but this is a REGRESSION guard against
+                // future layout drift, and a negative Margin or a Canvas offset pushes content off the
+                // top or left just as invisibly.
+                if (rect.Bottom > windowRect.Bottom || rect.Right > windowRect.Right
+                    || rect.Top < windowRect.Top || rect.Left < windowRect.Left)
                 {
                     var label = !string.IsNullOrEmpty(aid) ? aid
                         : !string.IsNullOrEmpty(name) ? $"{name} ({ct})"
@@ -148,6 +162,11 @@ public class FixtureIntegrityTests
                     found.Add($"{label}: rect={rect} window={windowRect}");
                 }
             }
+
+            if (examined == 0)
+                throw new System.InvalidOperationException(
+                    $"walked {descendants.Length} descendant(s) but could not read a single one, so no " +
+                    "containment check actually ran; the result would be a pass that verified nothing");
 
             return found;
         });
