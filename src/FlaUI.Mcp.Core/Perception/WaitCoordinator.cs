@@ -15,13 +15,19 @@ public sealed class WaitCoordinator
     private readonly PerceptionManager _perception;
     public WaitCoordinator(PerceptionManager perception) => _perception = perception;
 
-    // Test observability for the latch (Task 5): the latch's contract is "one walk per poll after the
-    // first satisfy-attempt, never two", which is only assertable by counting. Incremented on EVERY
-    // BuildModelAsync issued by this coordinator. internal + InternalsVisibleTo("FlaUI.Mcp.Tests")
-    // (src/FlaUI.Mcp.Core/Properties/AssemblyInfo.cs:2). NOT thread-safe by design: one wait call owns
-    // one coordinator in the tests that read it, and production never reads it.
+    // Test observability. WalkCount is the TOTAL walks issued by this coordinator.
+    // PollWalkCount and ConfirmationWalkCount are split out because the latch's contract is only
+    // assertable by distinguishing them: an UNLATCHED build issues one confirmation walk PER POLL,
+    // a latched build issues exactly ONE for the whole call. Asserting on the total cannot tell the
+    // two apart when the budget only affords a single poll -- which is how the original latch test
+    // came to pass whether or not the latch existed. NOT thread-safe by design: one wait call owns
+    // one coordinator in the tests that read these, and production never reads them.
     internal int WalkCount { get; private set; }
+    internal int PollWalkCount { get; private set; }
+    internal int ConfirmationWalkCount { get; private set; }
     private void CountWalk() => WalkCount++;
+    private void CountPollWalk() { WalkCount++; PollWalkCount++; }
+    private void CountConfirmationWalk() { WalkCount++; ConfirmationWalkCount++; }
 
     internal static bool Matches(SnapshotNode n, string by, string value) => by switch
     {
@@ -105,7 +111,7 @@ public sealed class WaitCoordinator
             else
             {
                 var pollOptions = latched ? UnculledPollOptions : PollOptions;
-                CountWalk();
+                CountPollWalk();
                 var (_, model) = await _perception.BuildModelAsync(handle, pollOptions, new RefRegistry());
                 var match = model.Nodes.FirstOrDefault(n => Matches(n, by, value));
                 satisfied = until switch
@@ -123,7 +129,7 @@ public sealed class WaitCoordinator
                 // the confirmation would be byte-identical to the poll we just did.
                 if (satisfied && until == "gone" && !latched)
                 {
-                    CountWalk();
+                    CountConfirmationWalk();
                     bool stillThere;
                     try
                     {

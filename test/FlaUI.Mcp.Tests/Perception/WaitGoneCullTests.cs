@@ -52,15 +52,22 @@ public class WaitGoneCullTests : IClassFixture<TestAppFixture>
         var wait = new WaitCoordinator(perception);
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
 
-        // ~5 polls against a permanently culled element. Without the latch every poll would walk
-        // TWICE (culled says absent -> confirmation finds it), so the count would be about 2x polls.
+        // A tree walk costs seconds on this fixture, so the budget must be large enough to afford
+        // SEVERAL polls. With a short budget the loop completes one iteration and a latched build is
+        // indistinguishable from an unlatched one -- that is precisely how the original version of
+        // this test passed without exercising the latch at all.
         var r = await wait.WaitForAsync(handle, "automationId", "SpatialOffscreenButton",
-            until: "gone", equals: null, timeoutMs: 1500, pollIntervalMs: 300);
+            until: "gone", equals: null, timeoutMs: 15000, pollIntervalMs: 300);
 
         Assert.False(r.Satisfied);
-        // One walk per poll, plus the single confirmation that flipped the latch. Generous upper
-        // bound: assert we are nowhere near the 2x-per-poll shape, without pinning an exact count
-        // that a timing wobble would flake.
-        Assert.InRange(wait.WalkCount, 2, 9);
+
+        // Forced more than one poll, so the latch had an opportunity to fail.
+        Assert.True(wait.PollWalkCount >= 2,
+            $"budget did not afford a second poll (polls={wait.PollWalkCount}, elapsed={r.ElapsedMs}ms); " +
+            "the latch is untested at this walk cost -- raise timeoutMs rather than weakening the assertion");
+
+        // THE LATCH: exactly one confirmation for the whole call, no matter how many polls ran.
+        // An unlatched build would issue one per poll, so this equals PollWalkCount and fails.
+        Assert.Equal(1, wait.ConfirmationWalkCount);
     }
 }
