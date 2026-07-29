@@ -40,6 +40,16 @@ public sealed class WaitCoordinator
     private void CountPollWalk() { WalkCount++; PollWalkCount++; }
     private void CountConfirmationWalk() { WalkCount++; ConfirmationWalkCount++; }
 
+    /// <summary>Never hand a caller-supplied interval straight to Task.Delay. Task.Delay(-1) is
+    /// Timeout.Infinite, so a single argument -- `pollIntervalMs: -1` -- parks the wait FOREVER: these
+    /// loops carry no CancellationToken, and the timeoutMs budget is only consulted after the delay
+    /// returns, so nothing downstream can ever reclaim the call. Every other negative throws
+    /// ArgumentOutOfRangeException instead, which is merely wrong rather than fatal. The documented
+    /// threat model has the MCP client itself possibly prompt-injected, which makes "no caller would
+    /// pass that" not an argument. Clamping to 0 keeps the legitimate poll-as-fast-as-possible case
+    /// (each poll still pays for a full tree walk, so it is not a spin).</summary>
+    private static int SafeDelayMs(int requested) => requested < 0 ? 0 : requested;
+
     internal static bool Matches(SnapshotNode n, string by, string value) => by switch
     {
         "automationId" => string.Equals(n.AutomationId, value, System.StringComparison.Ordinal),
@@ -101,7 +111,7 @@ public sealed class WaitCoordinator
                 return new WaitStableResult(true, (int)sw.ElapsedMilliseconds, snapId);
             }
             if (sw.ElapsedMilliseconds >= timeoutMs) return new WaitStableResult(false, (int)sw.ElapsedMilliseconds, null);
-            await Task.Delay(pollIntervalMs);
+            await Task.Delay(SafeDelayMs(pollIntervalMs));
         }
     }
 
@@ -196,7 +206,13 @@ public sealed class WaitCoordinator
                 var (snapId, real) = await _perception.SnapshotModelForWaitAsync(handle, satisfyOptions);
                 var realMatch = real.Nodes.FirstOrDefault(n => Matches(n, by, value));
 
-                // THE SATISFY WALK MUST AGREE WITH THE WALK THAT DECIDED. The decision and the ref come
+                // THE SATISFY WALK MUST AGREE WITH THE WALK THAT DECIDED, ON PRESENCE. Scope matters:
+                // this re-checks whether the element is THERE, not whether its VALUE still matches. For
+                // `valueEquals` a value can change again in the gap and this guard will not catch it --
+                // deliberately. Re-reading the value would cost another search and still not close the
+                // window, because no wait API can hold a live UI still; every wait is check-then-act.
+                // Presence is re-checked only because the satisfy walk has to run anyway to mint the ref.
+                // The decision and the ref come
                 // from two SEPARATE walks and one walk costs seconds on a real desktop, so a flickering
                 // element -- a toast, a progress dialog, a re-rendering row -- can change state in the
                 // gap and make the two disagree. Both directions of disagreement are a lie, and they are
@@ -225,7 +241,18 @@ public sealed class WaitCoordinator
                 // Diagnose ONCE, on the failure path only. Skipped when the poll walk was already
                 // unculled -- latched, or the caller opted out via includeOffscreen -- because the
                 // diagnostic walk would then be identical to the poll that just failed.
-                if (until != "valueEquals" && !latched && !includeOffscreen)
+                //
+                // `gone` is skipped for TWO independent reasons, and the second is the one that matters.
+                // (1) Cost: an unlatched `gone` timeout means every CULLED poll FOUND the element, which
+                //     already proves it intersects the walk root -- so the intersection test below is
+                //     false before the walk runs, and the walk is ~3s of pure loss on the query STA.
+                // (2) Correctness: if it ever did fire (a popup child outside the WINDOW rect but inside
+                //     its own popup's rect, which is what the popup subtree is culled against), the
+                //     answer would be actively MISLEADING. `outsideWindowBounds` explains why an element
+                //     could not be FOUND; a `gone` wait fails for the opposite reason -- the element was
+                //     found every time. Blaming geometry there sends the caller to fix the wrong thing,
+                //     which is precisely the failure this diagnostic was added to prevent.
+                if (until != "valueEquals" && until != "gone" && !latched && !includeOffscreen)
                 {
                     try
                     {
@@ -251,7 +278,7 @@ public sealed class WaitCoordinator
                 }
                 return new WaitForResult(false, null, (int)sw.ElapsedMilliseconds, null);
             }
-            await Task.Delay(pollIntervalMs);
+            await Task.Delay(SafeDelayMs(pollIntervalMs));
         }
     }
 }

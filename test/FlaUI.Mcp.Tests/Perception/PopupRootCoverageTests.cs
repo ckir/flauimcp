@@ -18,6 +18,39 @@ public class PopupRootCoverageTests : IClassFixture<TestAppFixture>
     private readonly TestAppFixture _app;
     public PopupRootCoverageTests(TestAppFixture app) => _app = app;
 
+    /// <summary>Right-click the fixture's menu target and WAIT until the menu is actually reachable,
+    /// rather than sleeping a fixed 400ms and hoping. The blind sleep was a live flake vector, not a
+    /// theoretical one: this class fails with "expected 1, actual 0" -- the menu never opened -- when
+    /// Desktop classes are co-run, and passes in isolation.
+    /// The readiness probe deliberately uses RAW FlaUI against the window root, NOT PopupFinder or
+    /// PerceptionManager: an arrange step that calls the code under test turns a product regression into
+    /// a confusing arrange failure. Searching `win` alone is correct because of a MEASURED fact recorded
+    /// in this class's docstring -- the WPF context menu is a window CHILD on this host. If that ever
+    /// stops holding, this throws with a named reason instead of an assertion mismatch.</summary>
+    private static async Task OpenContextMenuAsync(WindowManager mgr, WindowHandle handle)
+    {
+        await mgr.FocusAsync(handle);
+        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+        {
+            var target = win.FindFirstDescendant(cf => cf.ByAutomationId("MenuTarget"))!;
+            target.RightClick();
+            return true;
+        });
+
+        for (int attempt = 0; attempt < 25; attempt++)
+        {
+            bool open = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+                win.FindFirstDescendant(cf => cf.ByAutomationId("MenuAlpha")) is not null);
+            if (open) return;
+            await Task.Delay(100);
+        }
+
+        throw new Xunit.Sdk.XunitException(
+            "the fixture's context menu never opened within 2.5s of the right-click. This is an ARRANGE " +
+            "failure, not a product defect: the right-click is coordinate-based, so a sibling TestApp " +
+            "window stacked at the same default position can swallow it. Run this class on its own.");
+    }
+
     [Fact]
     public async Task A_popup_element_is_returned_exactly_once_across_roots()
     {
@@ -26,14 +59,7 @@ public class PopupRootCoverageTests : IClassFixture<TestAppFixture>
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
 
-        await mgr.FocusAsync(handle);
-        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
-        {
-            var target = win.FindFirstDescendant(cf => cf.ByAutomationId("MenuTarget"))!;
-            target.RightClick();
-            return true;
-        });
-        await Task.Delay(400); // let the menu open
+        await OpenContextMenuAsync(mgr, handle);
 
         // FindQuery is a POSITIONAL record (FindQuery.cs:13-19) — object-initializer syntax does not
         // compile. Order: AutomationId, Name, NameMatch, ControlType, EnabledOnly, IgnoreCase=false.
@@ -59,14 +85,7 @@ public class PopupRootCoverageTests : IClassFixture<TestAppFixture>
         var wait = new WaitCoordinator(perception);
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
 
-        await mgr.FocusAsync(handle);
-        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
-        {
-            var target = win.FindFirstDescendant(cf => cf.ByAutomationId("MenuTarget"))!;
-            target.RightClick();
-            return true;
-        });
-        await Task.Delay(400);
+        await OpenContextMenuAsync(mgr, handle);
 
         // MenuAlpha's Header is "Alpha" (MainWindow.xaml:103), and the value read falls back
         // ValuePattern -> Name, so a MenuItem with no ValuePattern yields its Name.
