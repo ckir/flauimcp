@@ -63,7 +63,7 @@ public static class SnapshotEngine
                 foreach (var prid in popupRids)
                     if (RidEqual(rid, prid)) return;
             if (depth > 0 && !options.IncludeOffscreen && Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false)) return;
-            if (depth > 0 && !options.IncludeOffscreen && cullBounds.Width > 0 && cullBounds.Height > 0)
+            if (depth > 0 && !options.IncludeOffscreen && options.CullToWindowBounds && cullBounds.Width > 0 && cullBounds.Height > 0)
             {
                 var rect0 = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
                 if (rect0.Width <= 0 || rect0.Height <= 0 || !rect0.IntersectsWith(cullBounds)) return;
