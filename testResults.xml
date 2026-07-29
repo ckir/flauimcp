@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="1" errors="0" failures="1" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2026-07-29" time="09:19:10">
+  <environment cwd="C:\Users\user\Development\c#\flauimcp" platform="Microsoft Windows 11 Pro|C:\WINDOWS|\Device\Harddisk0\Partition2" user="user" clr-version="10.0.10" user-domain="EIRINI-W" os-version="10.0.26200" machine-name="EIRINI-W" nunit-version="2.5.8.0" />
+  <culture-info current-culture="el-GR" current-uiculture="en-US" />
+  <test-suite type="TestFixture" name="Pester" executed="True" result="Failure" success="False" time="4.3379" asserts="0" description="Pester">
+    <results>
+      <test-suite type="TestFixture" name="C:\Users\user\AppData\Local\Temp\claude\C--Users-user-Development-c--flauimcp\38440fc3-aa2e-4f65-a543-547af668f108\scratchpad\pestercheck\fail.Tests.ps1" executed="True" result="Failure" success="False" time="4.3379" asserts="0" description="C:\Users\user\AppData\Local\Temp\claude\C--Users-user-Development-c--flauimcp\38440fc3-aa2e-4f65-a543-547af668f108\scratchpad\pestercheck\fail.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="deliberate failure" executed="True" result="Failure" success="False" time="1.3693" asserts="0" description="deliberate failure">
+            <results>
+              <test-case description="fails on purpose" name="deliberate failure.fails on purpose" time="1.0417" asserts="0" success="False" result="Failure" executed="True">
+                <failure>
+                  <message>Expected $false, but got $true.</message>
+                  <stack-trace>at Describe 'deliberate failure' { It 'fails on purpose' { $true | Should -Be $false } }, C:\Users\user\AppData\Local\Temp\claude\C--Users-user-Development-c--flauimcp\38440fc3-aa2e-4f65-a543-547af668f108\scratchpad\pestercheck\fail.Tests.ps1:1
+at &lt;ScriptBlock&gt;, C:\Users\user\AppData\Local\Temp\claude\C--Users-user-Development-c--flauimcp\38440fc3-aa2e-4f65-a543-547af668f108\scratchpad\pestercheck\fail.Tests.ps1:1</stack-trace>
+                </failure>
+              </test-case>
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>
