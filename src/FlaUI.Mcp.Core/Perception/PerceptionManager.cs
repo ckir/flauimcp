@@ -493,6 +493,14 @@ public sealed class PerceptionManager
             // valid match from the window and the other popups. A root that throws contributes nothing.
             // Root order is preserved and dedup happens BEFORE the `max` cap below, so truncation never
             // silently prefers window matches over popup ones.
+            // ONE root cannot produce a duplicate: FindAllDescendants yields each descendant once, and
+            // duplication only arises when the SAME element is reachable from two different roots. So the
+            // dedup is skipped entirely in the single-root case -- which is every find with no popup open,
+            // i.e. almost all of them. This is not a micro-optimisation: the RuntimeId read is a COM
+            // property access measured at ~1.0ms PER NODE on this host, so paying it unconditionally would
+            // add ~3s to a find over a 3000-node window, plus ~0.9s for the O(n^2) scan. The whole cost is
+            // charged only when a popup is actually open, where correctness requires it.
+            bool needDedup = roots.Count > 1;
             var rawList = new List<AutomationElement>();
             var seenRids = new List<int[]>();
             foreach (var r in roots)
@@ -503,6 +511,8 @@ public sealed class PerceptionManager
                     perRoot = (hasNative ? r.FindAllDescendants(cf => Build(cf)!) : r.FindAllDescendants()).ToArray();
                 }
                 catch { continue; }
+
+                if (!needDedup) { rawList.AddRange(perRoot); continue; }
 
                 foreach (var el in perRoot)
                 {
