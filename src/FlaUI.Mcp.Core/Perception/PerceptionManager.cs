@@ -518,6 +518,14 @@ public sealed class PerceptionManager
                 {
                     var rid = SafeRead(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? System.Array.Empty<int>();
                     // A window-child popup is reachable from BOTH `win` and its own popup root.
+                    // An element whose RuntimeId is unreadable (the SafeRead fallback) is KEPT rather
+                    // than dropped, so it can in principle appear twice. That is deliberate: with no
+                    // identity to compare, the only alternatives are to emit a possible duplicate or to
+                    // discard a possible unique match, and a dropped match is the worse failure -- find
+                    // silently missing an element is precisely the defect this method was changed to fix.
+                    // Do NOT "fix" this with element equality: the two wrappers come from separate
+                    // FindAllDescendants calls, so any comparison that actually worked would be another
+                    // per-element COM round-trip, reintroducing the cost the roots.Count guard removed.
                     if (rid.Length > 0 && seenRids.Any(s => SnapshotEngine.RidEqual(s, rid))) continue;
                     if (rid.Length > 0) seenRids.Add(rid);
                     rawList.Add(el);
@@ -596,6 +604,14 @@ public sealed class PerceptionManager
             // flag was accepted and ignored on exactly one of the four `until` values.
             bool NotOffscreen(AutomationElement e)
             { if (includeOffscreen) return true; try { return !e.Properties.IsOffscreen.ValueOrDefault; } catch { return false; } }
+
+            // Parsed ONCE, outside the poll loop and outside the per-root loop. by="controlType" used to
+            // enumerate the ENTIRE tree with no native condition and then compare ControlType.ToString()
+            // in managed code -- every element marshalled across the UIA IPC boundary, on EVERY poll of a
+            // wait that polls every 500ms. ControlType is an indexed UIA property, so it pushes down the
+            // same way AutomationId and Name already do (the FindAsync idiom). An unparseable name yields
+            // no condition and therefore no match, which is exactly what the string compare did.
+            bool hasCt = FindQuerySpec.TryParseControlType(value, out var wantedCt);
             AutomationElement? Match()
             {
                 foreach (var r in PopupFinder.SearchRoots(win, desktop))
@@ -607,7 +623,7 @@ public sealed class PerceptionManager
                         {
                             "automationId" => r.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
                             "name" => r.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
-                            "controlType" => r.FindAllDescendants().FirstOrDefault(e => { try { return NotOffscreen(e) && e.ControlType.ToString().Equals(value, System.StringComparison.OrdinalIgnoreCase); } catch { return false; } }),
+                            "controlType" => hasCt ? r.FindAllDescendants(cf => cf.ByControlType(wantedCt)).FirstOrDefault(NotOffscreen) : null,
                             _ => null
                         };
                     }

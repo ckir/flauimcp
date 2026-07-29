@@ -192,7 +192,27 @@ public sealed class WaitCoordinator
                 CountWalk();
                 var (snapId, real) = await _perception.SnapshotModelForWaitAsync(handle, satisfyOptions);
                 var realMatch = real.Nodes.FirstOrDefault(n => Matches(n, by, value));
-                return new WaitForResult(true, realMatch?.Ref, (int)sw.ElapsedMilliseconds, snapId);
+
+                // The decision and the ref come from two SEPARATE walks, and one walk costs seconds on a
+                // real desktop. A transient element -- a toast, a progress dialog, a menu that closes --
+                // can be destroyed in that gap, so a POSITIVE predicate can decide `satisfied` and then
+                // find nothing to hand back. Returning satisfied:true with ref:null there is the same
+                // class of lie this whole change exists to remove: the caller is told the wait succeeded
+                // and given nothing to act on. Treat it as not-yet-satisfied and keep polling; the
+                // element may return, and timeoutMs still bounds the loop.
+                //
+                // `gone` is EXCLUDED, and the exclusion is load-bearing rather than an optimisation: a
+                // satisfied `gone` means the element is absent, so realMatch is null BY DESIGN. Applying
+                // the guard to it would make every successful `gone` retry until it timed out -- a fix
+                // for one predicate that silently destroys another.
+                if (until != "gone" && realMatch is null)
+                {
+                    satisfied = false;
+                }
+                else
+                {
+                    return new WaitForResult(true, realMatch?.Ref, (int)sw.ElapsedMilliseconds, snapId);
+                }
             }
             if (sw.ElapsedMilliseconds >= timeoutMs)
             {
