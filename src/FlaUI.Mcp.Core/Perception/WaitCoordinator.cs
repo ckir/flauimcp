@@ -214,17 +214,24 @@ public sealed class WaitCoordinator
             }
             if (satisfied)
             {
-                // The satisfy snapshot must use options CONSISTENT with how the decision was made, or a
-                // wait can succeed and hand back a null ref. Two paths decide without the spatial cull:
-                // `valueEquals`, whose evaluator (PerceptionManager.EvaluateSelectorValueAsync) filters
-                // IsOffscreen but applies NO bounding-rect cull, and any latched call, which by then is
-                // polling unculled. Re-culling here would drop the very element we just matched.
-                // Must mirror the pollOptions selection above: the satisfy snapshot has to be taken
-                // under options at least as permissive as the walk that DECIDED, or it drops the very
-                // element just matched and returns satisfied:true with ref:null.
+                // The satisfy snapshot must be AT LEAST AS PERMISSIVE as the walk that DECIDED, or it
+                // drops the very element just matched. Two predicates decide without the spatial cull:
+                //   `valueEquals` -- its evaluator (EvaluateSelectorValueAsync) filters IsOffscreen but
+                //     applies NO bounding-rect cull, so a culled satisfy walk returns ref:null.
+                //   `gone`        -- what AUTHORISES satisfying it is the unculled CONFIRMATION walk, not
+                //     the culled poll that proposed it. Keying this on `latched` instead of on the
+                //     predicate got that subtly wrong: a `gone` that succeeds on its FIRST try never
+                //     latches, so the satisfy walk fell back to the culled PollOptions -- less permissive
+                //     than the walk that decided, exactly the rule this comment states. If the element
+                //     reappeared OUTSIDE the window bounds in that gap, the culled walk could not see it,
+                //     realMatch was null, and the wait reported `gone` for a live, merely-clipped element
+                //     -- the precise false positive the confirmation walk exists to prevent.
+                // Keying on the predicate is also strictly simpler: `latched` is only ever set inside the
+                // `gone` branch, so `latched` implies `until == "gone"` and the old expression was a
+                // narrower spelling of this one.
                 var satisfyOptions = includeOffscreen
                     ? PollOptions with { IncludeOffscreen = true }
-                    : (until == "valueEquals" || latched) ? UnculledPollOptions : PollOptions;
+                    : (until == "valueEquals" || until == "gone") ? UnculledPollOptions : PollOptions;
                 CountWalk();
                 var (snapId, real) = await _perception.SnapshotModelForWaitAsync(handle, satisfyOptions);
                 var realMatch = real.Nodes.FirstOrDefault(n => Matches(n, by, value));
@@ -275,7 +282,11 @@ public sealed class WaitCoordinator
                 //     could not be FOUND; a `gone` wait fails for the opposite reason -- the element was
                 //     found every time. Blaming geometry there sends the caller to fix the wrong thing,
                 //     which is precisely the failure this diagnostic was added to prevent.
-                if (until != "valueEquals" && until != "gone" && !latched && !includeOffscreen)
+                // `!latched` is deliberately NOT tested here: latching happens only inside the `gone`
+                // branch, so `until != "gone"` already implies it. Spelling both was accreted redundancy
+                // from folding, and a permanently-true conjunct reads as if latching could affect the
+                // other predicates, which it cannot.
+                if (until != "valueEquals" && until != "gone" && !includeOffscreen)
                 {
                     try
                     {
