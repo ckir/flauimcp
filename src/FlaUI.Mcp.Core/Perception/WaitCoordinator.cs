@@ -103,13 +103,13 @@ public sealed class WaitCoordinator
     }
 
     public async Task<WaitForResult> WaitForAsync(WindowHandle handle, string by, string value,
-        string until, string? equals, int timeoutMs, int pollIntervalMs)
+        string until, string? equals, int timeoutMs, int pollIntervalMs, bool includeOffscreen = false)
     {
         if (until == "valueEquals" && equals is null)
             throw new ToolException(ToolErrorCode.InvalidArguments, "until:valueEquals requires 'equals'.", "pass equals=<expected value>");
         var sw = System.Diagnostics.Stopwatch.StartNew();
         bool latched = false; // per-call; never outlives this wait
-        bool alreadyUnculled = false; // placeholder; the next task gives this its real initialiser
+        bool alreadyUnculled = includeOffscreen; // caller opted out of the filters: no diagnostic walk
         while (true)
         {
             bool satisfied;
@@ -120,7 +120,11 @@ public sealed class WaitCoordinator
             }
             else
             {
-                var pollOptions = latched ? UnculledPollOptions : PollOptions;
+                var pollOptions = (latched || includeOffscreen)
+                    ? (includeOffscreen
+                        ? PollOptions with { IncludeOffscreen = true }   // caller opted out of BOTH filters
+                        : UnculledPollOptions)                            // latched: spatial cull only
+                    : PollOptions;
                 CountPollWalk();
                 var (_, model) = await _perception.BuildModelAsync(handle, pollOptions, new RefRegistry());
                 var match = model.Nodes.FirstOrDefault(n => Matches(n, by, value));
@@ -142,7 +146,7 @@ public sealed class WaitCoordinator
                 // clock advances during the confirmation walk itself), and on any host where one
                 // walk exceeds the whole budget it makes `gone` unsatisfiable at realistic timeouts.
                 // Overshooting timeoutMs by one bounded walk beats an unusable predicate.
-                if (satisfied && until == "gone" && !latched)
+                if (satisfied && until == "gone" && !latched && !includeOffscreen)
                 {
                     CountConfirmationWalk();
                     bool stillThere;
@@ -180,7 +184,12 @@ public sealed class WaitCoordinator
                 // `valueEquals`, whose evaluator (PerceptionManager.EvaluateSelectorValueAsync) filters
                 // IsOffscreen but applies NO bounding-rect cull, and any latched call, which by then is
                 // polling unculled. Re-culling here would drop the very element we just matched.
-                var satisfyOptions = (until == "valueEquals" || latched) ? UnculledPollOptions : PollOptions;
+                // Must mirror the pollOptions selection above: the satisfy snapshot has to be taken
+                // under options at least as permissive as the walk that DECIDED, or it drops the very
+                // element just matched and returns satisfied:true with ref:null.
+                var satisfyOptions = includeOffscreen
+                    ? PollOptions with { IncludeOffscreen = true }
+                    : (until == "valueEquals" || latched) ? UnculledPollOptions : PollOptions;
                 CountWalk();
                 var (snapId, real) = await _perception.SnapshotModelForWaitAsync(handle, satisfyOptions);
                 var realMatch = real.Nodes.FirstOrDefault(n => Matches(n, by, value));

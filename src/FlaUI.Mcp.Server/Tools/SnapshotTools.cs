@@ -63,10 +63,11 @@ public sealed class SnapshotTools
         [Description("exists|enabled|gone|valueEquals (default exists).")] string until = "exists",
         [Description("Required iff until=valueEquals.")] string? equals = null,
         [Description("Total wait budget ms (default 5000).")] int timeoutMs = 5000,
-        [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500)
+        [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500,
+        [Description("Reach elements UIA reports off-screen AND elements laid out past the window edge (default false, matching desktop_snapshot).")] bool includeOffscreen = false)
         => ToolResponse.Guard(async () =>
         {
-            var r = await _wait.WaitForAsync(new WindowHandle(window), by, value, until, equals, timeoutMs, pollIntervalMs);
+            var r = await _wait.WaitForAsync(new WindowHandle(window), by, value, until, equals, timeoutMs, pollIntervalMs, includeOffscreen);
             return ToolResponse.Ok(new
             {
                 satisfied = r.Satisfied, @ref = r.Ref, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId,

@@ -69,4 +69,24 @@ public class WaitDiagnosticTests : IClassFixture<TestAppFixture>
         Assert.False(r.Satisfied);
         Assert.Null(r.UnsatisfiedBecause);
     }
+
+    [Fact]
+    public async Task Opting_in_lets_exists_satisfy_on_a_spatially_culled_element()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var (wait, handle) = await ArrangeAsync(dispatcher, mgr, _app.Process.Id);
+
+        var r = await wait.WaitForAsync(handle, "automationId", "SpatialOffscreenButton",
+            until: "exists", equals: null, timeoutMs: 1500, pollIntervalMs: 300,
+            includeOffscreen: true);
+
+        Assert.True(r.Satisfied);
+
+        // A satisfied `exists` MUST hand back a usable ref. This is not incidental: the satisfy
+        // snapshot is taken in a SEPARATE walk from the one that decided, and if that walk re-applies
+        // the cull it drops the very element just matched, yielding satisfied:true with ref:null.
+        // That exact defect was found by review on the valueEquals path; this pins the opt-in path.
+        Assert.NotNull(r.Ref);
+    }
 }
