@@ -397,10 +397,22 @@ public sealed class WindowManager : IDisposable, IHwndSource
     {
         // Snapshot all existing PIDs before launch so we can detect newly spawned ones
         // (needed for apps like Win11 Notepad that delegate to a host process under a different PID).
-        var preExistingPids = Process.GetProcesses().Select(p => p.Id).ToHashSet();
         // The launched exe's base name (e.g. "notepad"), used to attach only to a window
         // owned by the app we actually started — not the first unrelated window that opens.
         var expectedProcessName = Path.GetFileNameWithoutExtension(path);
+
+        var preExisting = Process.GetProcesses();
+        var preExistingPids = preExisting.Select(p => p.Id).ToHashSet();
+
+        // Captured UP FRONT, and that timing is the point. A single-instance app hands the launch off
+        // to its ambient process and exits, so the window that appears belongs to a PRE-EXISTING pid
+        // and both eligibility branches below correctly reject it — the loop then starves. Deciding
+        // this at the throw site instead would re-enumerate a desktop that may no longer contain the
+        // ambient instance, degrading the diagnostic to the generic message in exactly the case it
+        // exists to explain. Uses the SAME matcher as the eligibility filter (LaunchedWindowMatcher),
+        // so the explanation can never claim a cause the filter would not actually have hit.
+        bool ambientInstanceWasRunning = preExisting.Any(p =>
+            LaunchedWindowMatcher.IsExpectedApp(expectedProcessName, SafeProcessNameOf(p)));
 
         Process proc;
         try
@@ -433,9 +445,42 @@ public sealed class WindowManager : IDisposable, IHwndSource
 
             await Task.Delay(150);
         }
-        throw new ToolException(ToolErrorCode.LaunchTimeout,
-            $"{path} started but showed no titled window within {timeoutMs} ms.",
-            "increase timeoutMs or check for a splash screen");
+        throw LaunchTimeoutFor(path, expectedProcessName, timeoutMs, ambientInstanceWasRunning);
+    }
+
+    /// <summary>Builds the LaunchTimeout thrown when the wait loop starves. Split out as a pure
+    /// function of the decision so it can be unit-tested headlessly: the backlog entry this closes
+    /// (launch-starves-on-ambient-single-instance) argued that an end-to-end test would pin a THIRD
+    /// PARTY's single-instance behaviour — VS Code's IPC hand-off, Notepad's tabbing — and would go
+    /// green when Microsoft changed a launcher rather than when we fixed the wording. The condition is
+    /// entirely ours, so the honest test is of this decision.</summary>
+    internal static ToolException LaunchTimeoutFor(
+        string path, string expectedProcessName, int timeoutMs, bool ambientInstanceWasRunning)
+    {
+        if (!ambientInstanceWasRunning)
+            return new ToolException(ToolErrorCode.LaunchTimeout,
+                $"{path} started but showed no titled window within {timeoutMs} ms.",
+                "increase timeoutMs or check for a splash screen");
+
+        // Both halves of the generic message are actively WRONG here: the app started fine and its
+        // window appeared almost immediately, and no timeout is long enough because waiting never
+        // changes which pids are eligible. Naming the real cause beats a longer wait.
+        return new ToolException(ToolErrorCode.LaunchTimeout,
+            $"'{expectedProcessName}' was already running before this launch, and only the pid we " +
+            $"started — or a NEW pid of the same name — is eligible to attach. A single-instance app " +
+            $"hands the launch off to its existing process and exits, so the window that appeared " +
+            $"belongs to a pre-existing pid and was refused BY DESIGN, not by a timeout ({timeoutMs} ms " +
+            $"was never the constraint).",
+            "attach to the running instance with desktop_open_window by:pid|title instead of launching; " +
+            "or pass instance-isolating arguments (Chromium/Electron: a fresh --user-data-dir plus " +
+            "--new-window). Note a pristine profile shows FIRST-RUN UI — trust prompts, welcome tabs, " +
+            "extension toasts — which changes the node count, so isolation alone trades one " +
+            "nondeterminism for another unless first-run is suppressed too.");
+    }
+
+    private static string SafeProcessNameOf(Process p)
+    {
+        try { return p.ProcessName; } catch { return "unknown"; }
     }
 
     private Task<WindowHandle?> TryOpenByPidQuiet(int pid) =>
