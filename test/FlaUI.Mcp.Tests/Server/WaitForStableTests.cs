@@ -18,8 +18,13 @@ public class WaitForStableTests : IClassFixture<TestAppFixture>
     [Fact]
     public async Task Structure_is_stable_despite_a_live_ticker()
     {
+        // Budget: one full walk of this window measures P ~ 3.0s. WaitForStableAsync needs
+        // ceil(quiet/poll) = 2 identical polls, i.e. 3 polls, PLUS a final confirming walk => a
+        // ~4P ~ 12.5s floor. The old 5000ms budget was unreachable by 2.5x even against a
+        // perfectly static tree. 25000ms leaves headroom for the node-count growth that the
+        // fixture restructure and the added ListItems introduce.
         var (snap, handle) = await Setup();
-        var json = await snap.DesktopWaitForStable(handle, null, null, false, 500, 5000, 250);
+        var json = await snap.DesktopWaitForStable(handle, null, null, false, 500, 25000, 250);
         Assert.True(JsonDocument.Parse(json).RootElement.GetProperty("stable").GetBoolean());
     }
 
@@ -27,8 +32,17 @@ public class WaitForStableTests : IClassFixture<TestAppFixture>
     public async Task IncludeText_on_a_live_ticker_times_out_unstable()
     {
         var (snap, handle) = await Setup();
-        var json = await snap.DesktopWaitForStable(handle, null, null, true, 500, 1500, 250);
-        Assert.False(JsonDocument.Parse(json).RootElement.GetProperty("stable").GetBoolean());
+
+        // The real claim: with includeText the live ticker's text changes every 120ms, so the
+        // signature never repeats and the wait cannot settle even given a generous budget.
+        var withText = await snap.DesktopWaitForStable(handle, null, null, true, 500, 25000, 250);
+        Assert.False(JsonDocument.Parse(withText).RootElement.GetProperty("stable").GetBoolean());
+
+        // Control: the SAME window under the SAME budget DOES settle without text, which is what
+        // makes the assertion above meaningful. Without this the test passed on a timeout alone and
+        // would have passed against a frozen tree -- coverage that could not fail.
+        var withoutText = await snap.DesktopWaitForStable(handle, null, null, false, 500, 25000, 250);
+        Assert.True(JsonDocument.Parse(withoutText).RootElement.GetProperty("stable").GetBoolean());
     }
 
     private async Task<(SnapshotTools, string)> Setup()

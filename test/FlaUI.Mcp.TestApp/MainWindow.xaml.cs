@@ -11,6 +11,17 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Min(), never bind, and never a bare literal. An unclamped literal is not hermetic
+        // because a work area's size IN DIPS shrinks as display scaling rises. Binding the width to
+        // the work area is worse: on a very wide primary monitor it could grow the window past the
+        // Canvas.Left="5000" sentinel and invert OffscreenCullTests. Min can only ever shrink.
+        //
+        // NOTE: SystemParameters.WorkArea wraps SPI_GETWORKAREA and reports the PRIMARY monitor,
+        // which on a multi-monitor setup may not be the display hosting this window. That is
+        // tolerable only because the design constants below already fit the declared floor machine
+        // unaided -- the clamp is belt-and-braces, not the mechanism this depends on.
+        Width = System.Math.Min(880, SystemParameters.WorkArea.Width);
+        Height = System.Math.Min(420, SystemParameters.WorkArea.Height);
         Secret.Password = SecretValue;
         Grid.ItemsSource = new[]
         {
@@ -30,13 +41,25 @@ public partial class MainWindow : Window
     // Clear and re-create the items as NEW ListBoxItem objects (same AutomationIds). This destroys
     // the old elements, so a held ref's cached UIA element goes invalid and its RuntimeId no longer
     // matches — forcing the option-C descriptor RE-WALK (the cache fast-path can't short-circuit).
+    //
+    // All SIX, matching the XAML. Recreating only ItemA/B/C would permanently drop ItemOne/ItemTwo
+    // and make any later `contains "Item"` query in the same app instance return 0. That cannot
+    // bite today — every FindTests [Fact] builds its own TestAppFixture, so the rebuilding test
+    // cannot contaminate the querying ones — but that is a fixture-LIFETIME argument, and the
+    // classes that share one app (WaitForTests, AmbiguousResolutionTests, both
+    // IClassFixture<TestAppFixture>) would not be protected by it.
     private void RebuildItemsButton_Click(object sender, RoutedEventArgs e)
     {
         ItemList.Items.Clear();
-        foreach (var (aid, content) in new[] { ("ItemA", "A"), ("ItemB", "B"), ("ItemC", "C") })
+        foreach (var (aid, content) in new[]
+                 {
+                     ("ItemA", "A"), ("ItemB", "B"), ("ItemC", "C"),
+                     ("", "NamedOnly"), ("ItemD", "ItemOne"), ("ItemE", "ItemTwo")
+                 })
         {
             var item = new System.Windows.Controls.ListBoxItem { Content = content };
-            System.Windows.Automation.AutomationProperties.SetAutomationId(item, aid);
+            if (!string.IsNullOrEmpty(aid))
+                System.Windows.Automation.AutomationProperties.SetAutomationId(item, aid);
             ItemList.Items.Add(item);
         }
     }
