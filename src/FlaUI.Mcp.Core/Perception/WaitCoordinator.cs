@@ -109,7 +109,6 @@ public sealed class WaitCoordinator
             throw new ToolException(ToolErrorCode.InvalidArguments, "until:valueEquals requires 'equals'.", "pass equals=<expected value>");
         var sw = System.Diagnostics.Stopwatch.StartNew();
         bool latched = false; // per-call; never outlives this wait
-        bool alreadyUnculled = includeOffscreen; // caller opted out of the filters: no diagnostic walk
         while (true)
         {
             bool satisfied;
@@ -198,8 +197,9 @@ public sealed class WaitCoordinator
             if (sw.ElapsedMilliseconds >= timeoutMs)
             {
                 // Diagnose ONCE, on the failure path only. Skipped when the poll walk was already
-                // unculled: the diagnostic walk would be identical to the poll that just failed.
-                if (until != "valueEquals" && !latched && !alreadyUnculled)
+                // unculled -- latched, or the caller opted out via includeOffscreen -- because the
+                // diagnostic walk would then be identical to the poll that just failed.
+                if (until != "valueEquals" && !latched && !includeOffscreen)
                 {
                     try
                     {

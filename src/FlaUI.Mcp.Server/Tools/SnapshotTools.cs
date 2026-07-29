@@ -55,7 +55,7 @@ public sealed class SnapshotTools
             });
         });
 
-    [McpServerTool(ReadOnly = true), Description("Poll a window until a selector condition holds. by=automationId|name|controlType, value=target, until=exists|enabled|gone|valueEquals (equals required for valueEquals; compares ValuePattern→Name→LegacyIAccessible). Timeout returns {satisfied:false} (NOT an error). On success returns the matched ref + a fresh snapshotId. Polls are transient (no ref growth). On an exists/enabled timeout where the element resolves but lies outside the window rect, returns unsatisfiedBecause=\"outsideWindowBounds\" plus elementBounds and windowBounds ({x,y,w,h} arrays) so a geometry failure is not mistaken for a timing one.")]
+    [McpServerTool(ReadOnly = true), Description("Poll a window until a selector condition holds. by=automationId|name|controlType, value=target, until=exists|enabled|gone|valueEquals (equals required for valueEquals; compares ValuePattern→Name→LegacyIAccessible). Timeout returns {satisfied:false} (NOT an error). On success returns the matched ref + a fresh snapshotId. Polls are transient (no ref growth). On an exists/enabled timeout where the element resolves but lies outside the window rect, returns unsatisfiedBecause=\"outsideWindowBounds\" plus elementBounds and windowBounds (each [x, y, width, height]) so a geometry failure is not mistaken for a timing one.")]
     public Task<string> DesktopWaitFor(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("automationId|name|controlType.")] string by,

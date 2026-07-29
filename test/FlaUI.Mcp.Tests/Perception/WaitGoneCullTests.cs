@@ -75,4 +75,25 @@ public class WaitGoneCullTests : IClassFixture<TestAppFixture>
         // An unlatched build would issue one per poll, so this equals PollWalkCount and fails.
         Assert.Equal(1, wait.ConfirmationWalkCount);
     }
+
+    /// <summary>The caller-opt-in path (Task 7) had no `gone` coverage at all: every other test here
+    /// runs with includeOffscreen=false, so nothing pinned what happens when the caller has ALREADY
+    /// disabled both filters. Two claims, and the second is the one that can silently regress —
+    /// deleting the `!includeOffscreen` guard on the confirmation block still leaves Satisfied=false,
+    /// so only the walk count catches the redundant second walk per poll.</summary>
+    [Fact]
+    public async Task Gone_under_includeOffscreen_sees_the_element_and_skips_the_confirmation_walk()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var wait = new WaitCoordinator(perception);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var r = await wait.WaitForAsync(handle, "automationId", "SpatialOffscreenButton",
+            until: "gone", equals: null, timeoutMs: 1500, pollIntervalMs: 300, includeOffscreen: true);
+
+        Assert.False(r.Satisfied);
+        Assert.Equal(0, wait.ConfirmationWalkCount);
+    }
 }
