@@ -15,16 +15,39 @@
 
     Design: docs/superpowers/specs/2026-07-18-developers-cockpit-design.md (owner + agy converged).
 
+.PARAMETER WhatIf
+    Dry run. Prints the exact canonical command every action WOULD delegate to, and executes
+    NOTHING — no build, no test, no push, no probe. The design calls the action table "the review
+    seam: eyeball each Key -> canonical command"; this makes that seam inspectable at runtime
+    instead of only by reading the source.
+
+    The rule is deliberately absolute — nothing executes, not even the read-only health probes.
+    Predictability beats convenience here: an operator must never have to remember which subset of
+    a dry run was actually live.
+
+    Owner-gates are announced but NOT prompted under -WhatIf. A confirmation guarding a no-op is
+    theatre, and worse, it trains the operator to type the confirmation word reflexively — which
+    is precisely the habit the gate exists to prevent.
+
 .EXAMPLE
     pwsh -File DevelopersCockpit.ps1
+
+.EXAMPLE
+    pwsh -File DevelopersCockpit.ps1 -WhatIf
+    Browse the menu and see what each key would run, without running any of it.
 #>
 [CmdletBinding()]
-param()
+param(
+    [switch]$WhatIf
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 # Delegated commands resolve from the repo root regardless of the caller's cwd.
 Set-Location $PSScriptRoot
+
+# Hoisted to script scope so the delegation chokepoint and the gates can both see it.
+$script:WhatIf = [bool]$WhatIf
 
 # ---------------------------------------------------------------------------
 # Presentation (honors NO_COLOR + non-TTY)
@@ -42,6 +65,12 @@ function Write-C([string]$Text = '', [string]$Color = 'Gray') {
 function Invoke-Cmd([string]$Cmd) {
     # $Cmd is always a hardcoded literal from the $Actions table (or a handler's own literal),
     # never operator free-text, so Invoke-Expression here runs OUR delegation strings.
+    #
+    # This is the single chokepoint every delegated command passes through, which is what makes
+    # -WhatIf trustworthy: one guard here covers every Cmd row AND every handler, so no action can
+    # acquire a live side effect without also acquiring a dry-run bypass.
+    if ($script:WhatIf) { Write-C "  WHATIF > $Cmd" 'DarkCyan'; return }
+
     Write-C "  > $Cmd" 'DarkGray'
     Invoke-Expression $Cmd
     if ($LASTEXITCODE -ne 0) { throw "command exited with code $LASTEXITCODE" }
@@ -56,6 +85,12 @@ function Read-Trimmed([string]$Prompt) { return (Read-Host $Prompt).Trim() }
 function Confirm-Owner([string[]]$Commands) {
     Write-C '  OWNER-GATED — this will run:' 'Yellow'
     foreach ($c in $Commands) { Write-C "    $c" 'Yellow' }
+
+    # Under -WhatIf nothing downstream executes, so prompting would be theatre — and it would train
+    # the operator to type the confirmation word reflexively, which is the exact habit this gate
+    # exists to prevent. Announce the bypass and let the caller through to Invoke-Cmd, which prints.
+    if ($script:WhatIf) { Write-C '  (WHATIF — gate skipped; nothing below will execute)' 'DarkCyan'; return $true }
+
     $ans = Read-Host "  type 'push' (exactly) to proceed"
     if ($ans -cne 'push') { Write-C '  aborted.' 'DarkGray'; return $false }
     return $true
@@ -104,6 +139,7 @@ $script:Actions = @(
     [pscustomobject]@{ Key='G'; Tier=1; Desc='Dev gate (build+test+Pester)'; Note=''; Handler={ Invoke-DevGate } }
     [pscustomobject]@{ Key='E'; Tier=1; Desc='Pester (scripts/)';      Note='';       Cmd='pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/"' }
     [pscustomobject]@{ Key='I'; Tier=1; Desc='Install smoke';          Note='';       Cmd='pwsh -File scripts/install-smoke.ps1' }
+    [pscustomobject]@{ Key='K'; Tier=1; Desc='Desktop suite (the v1.0 gate)'; Note='CONSOLE+LEASE'; Handler={ Invoke-DesktopSuite } }
 
     # [3] SHIP & RELEASE
     [pscustomobject]@{ Key='V'; Tier=2; Desc='Release preview (-WhatIf)'; Note='';    Cmd='pwsh -File scripts/release.ps1 -WhatIf' }
@@ -133,6 +169,47 @@ function Invoke-DevGate {
     Invoke-Cmd 'pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/"'
 }
 
+# The Category=Desktop suite is Track A's definition of done, and it is the one gate that CANNOT be run
+# unattended or headless. Two properties make stating the preconditions load-bearing rather than polite:
+# SendInput does not deliver over RDP, and the lease-guarded tests are [SkippableFact] -- xUnit exits 0
+# on a skipped test, so a lease-less run prints a clean pass having bypassed every assertion that
+# matters. That failure mode is silent, which is why the skipped count is called out as part of the gate.
+function Invoke-DesktopSuite {
+    Write-C '  PRECONDITIONS — all four, or the result is meaningless:' 'Yellow'
+    Write-C '    1. a PHYSICAL console session, NOT RDP (SendInput does not deliver over RDP)' 'Yellow'
+    Write-C '       check with: qwinsta   -- trust that, NOT $env:SESSIONNAME, which is a stale' 'DarkGray'
+    Write-C '       per-process snapshot and keeps reporting RDP after you attach to the console' 'DarkGray'
+    Write-C '    2. an active input lease, granted by a human:' 'Yellow'
+    Write-C '       flaui-mcp unlock --minutes 45 --allow-shells' 'DarkGray'
+    Write-C '       --allow-shells is MANDATORY, or the terminal-tab tests fail for an unrelated reason' 'DarkGray'
+    Write-C '       it must stay live for the WHOLE run (~12 min) -- if it lapses midway, the' 'DarkGray'
+    Write-C '       SyntheticInput tests silently start skipping instead of asserting' 'DarkGray'
+    Write-C '    3. step away — the suite drives the real mouse and keyboard throughout' 'Yellow'
+    Write-C '    4. no orphaned testhost.exe / FlaUI.Mcp.TestApp.exe left from a previous run:' 'Yellow'
+    Write-C '       Get-Process testhost,FlaUI.Mcp.TestApp -EA SilentlyContinue | % { taskkill /PID $_.Id /T /F }' 'DarkGray'
+    Write-C '       do NOT kill Code.exe by name — an ambient VS Code is a legitimate part of the' 'DarkGray'
+    Write-C '       hermeticity case, and killing it makes the suite prove green in a pristine' 'DarkGray'
+    Write-C '       environment it quietly created for itself' 'DarkGray'
+    Write-Host ''
+    Write-C '  A "Skipped" count above ZERO means the lease was not active: the run proved NOTHING.' 'Red'
+    Write-Host ''
+
+    if ($script:WhatIf) {
+        Write-C '  (WHATIF — gate skipped; nothing below will execute)' 'DarkCyan'
+    } else {
+        $ans = Read-Host "  type 'run' (exactly) to proceed"
+        if ($ans -cne 'run') { Write-C '  aborted.' 'DarkGray'; return }
+    }
+
+    Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"'
+    Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~PopupGrafting"'
+
+    Write-Host ''
+    Write-C '  READ BOTH SUMMARIES ABOVE — the gate is:' 'Cyan'
+    Write-C '    main suite:    109 passed / 0 failed / 0 SKIPPED' 'Cyan'
+    Write-C '    PopupGrafting:   1 passed / 0 failed / 0 SKIPPED' 'Cyan'
+}
+
 function Invoke-Push {
     # release.ps1 only pushes atomically-within-a-release; this is the orthogonal "sync my commits" action.
     if (-not (Confirm-Owner @('git push'))) { return }
@@ -155,6 +232,16 @@ $script:HealthProbes = @(
 )
 
 function Invoke-HealthCheck {
+    # Probes are read-only, so running them under -WhatIf would be harmless -- but "nothing executes"
+    # has to hold without exceptions, or the operator is left having to remember which parts of a dry
+    # run were secretly live. List what would be probed instead.
+    if ($script:WhatIf) {
+        Write-C '  WHATIF — would probe, nothing executed:' 'DarkCyan'
+        foreach ($p in $script:HealthProbes) { Write-C ('    {0,-20} {1}' -f $p.Name, $p.Cmd) 'DarkCyan' }
+        Write-C ('    {0,-20} {1}' -f 'Pester', 'Get-Module -ListAvailable Pester (pinned 5.8.0)') 'DarkCyan'
+        return
+    }
+
     foreach ($p in $script:HealthProbes) {
         $exe = $p.Cmd.Split(' ')[0]
         if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) {
@@ -183,6 +270,9 @@ function Render-Menu {
     if ($script:Interactive) { Clear-Host }
     Write-Host ''
     Write-C ('DEVELOPERS COCKPIT — flaui-mcp   [{0}]' -f (Get-Banner)) 'Cyan'
+    # Loud, not subtle: mistaking a dry run for a live one is the failure mode worth preventing,
+    # and it is far likelier in the direction of "I thought that had run".
+    if ($script:WhatIf) { Write-C '*** -WhatIf — commands are PRINTED, NOT EXECUTED ***' 'DarkCyan' }
     Write-Host ''
     for ($t = 0; $t -lt $script:Tiers.Count; $t++) {
         Write-C $script:Tiers[$t] 'Magenta'
