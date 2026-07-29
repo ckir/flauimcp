@@ -409,10 +409,11 @@ public sealed class WindowManager : IDisposable, IHwndSource
         // and both eligibility branches below correctly reject it — the loop then starves. Deciding
         // this at the throw site instead would re-enumerate a desktop that may no longer contain the
         // ambient instance, degrading the diagnostic to the generic message in exactly the case it
-        // exists to explain. Uses the SAME matcher as the eligibility filter (LaunchedWindowMatcher),
-        // so the explanation can never claim a cause the filter would not actually have hit.
-        bool ambientInstanceWasRunning = preExisting.Any(p =>
-            LaunchedWindowMatcher.IsExpectedApp(expectedProcessName, SafeProcessNameOf(p)));
+        // exists to explain.
+        // The NAMES, not a pre-computed verdict, are what get handed to the throw builder: that keeps
+        // the match decision inside the unit-tested function instead of leaving a bare bool at the
+        // call site that a later edit could hardcode while every test stayed green.
+        var preExistingProcessNames = preExisting.Select(SafeProcessNameOf).ToArray();
 
         Process proc;
         try
@@ -445,37 +446,49 @@ public sealed class WindowManager : IDisposable, IHwndSource
 
             await Task.Delay(150);
         }
-        throw LaunchTimeoutFor(path, expectedProcessName, timeoutMs, ambientInstanceWasRunning);
+        throw LaunchTimeoutFor(path, expectedProcessName, timeoutMs, preExistingProcessNames);
     }
 
-    /// <summary>Builds the LaunchTimeout thrown when the wait loop starves. Split out as a pure
-    /// function of the decision so it can be unit-tested headlessly: the backlog entry this closes
+    /// <summary>Builds the LaunchTimeout thrown when the wait loop starves. Pure, so the DECISION and
+    /// the wording are unit-tested together and headlessly: the backlog entry this closes
     /// (launch-starves-on-ambient-single-instance) argued that an end-to-end test would pin a THIRD
     /// PARTY's single-instance behaviour — VS Code's IPC hand-off, Notepad's tabbing — and would go
-    /// green when Microsoft changed a launcher rather than when we fixed the wording. The condition is
-    /// entirely ours, so the honest test is of this decision.</summary>
+    /// green when Microsoft changed a launcher rather than when we fixed the wording.
+    /// Takes the pre-existing process NAMES rather than a ready-made bool, so the match runs inside the
+    /// tested function. Matching via LaunchedWindowMatcher — the SAME matcher as the eligibility filter
+    /// — so the explanation can never claim a cause the filter would not actually have hit.</summary>
     internal static ToolException LaunchTimeoutFor(
-        string path, string expectedProcessName, int timeoutMs, bool ambientInstanceWasRunning)
+        string path, string expectedProcessName, int timeoutMs,
+        IEnumerable<string> preExistingProcessNames)
     {
+        bool ambientInstanceWasRunning = preExistingProcessNames
+            .Any(n => LaunchedWindowMatcher.IsExpectedApp(expectedProcessName, n));
+
         if (!ambientInstanceWasRunning)
             return new ToolException(ToolErrorCode.LaunchTimeout,
                 $"{path} started but showed no titled window within {timeoutMs} ms.",
                 "increase timeoutMs or check for a splash screen");
 
-        // Both halves of the generic message are actively WRONG here: the app started fine and its
-        // window appeared almost immediately, and no timeout is long enough because waiting never
-        // changes which pids are eligible. Naming the real cause beats a longer wait.
+        // Say ONLY what is known, and mark the rest as inference. What the code can prove: an instance
+        // of this name was already running, and no ELIGIBLE window appeared. What it cannot prove is
+        // that a window appeared at all — an immediate post-start failure (bad arguments, say) is
+        // indistinguishable from a single-instance hand-off from in here, since the process we started
+        // exits promptly either way. An earlier draft asserted the hand-off as fact, which would have
+        // sent a caller hunting an instance-isolation problem when their real problem was a typo in
+        // args: the same confidently-wrong attribution this whole change exists to remove.
         return new ToolException(ToolErrorCode.LaunchTimeout,
-            $"'{expectedProcessName}' was already running before this launch, and only the pid we " +
-            $"started — or a NEW pid of the same name — is eligible to attach. A single-instance app " +
-            $"hands the launch off to its existing process and exits, so the window that appeared " +
-            $"belongs to a pre-existing pid and was refused BY DESIGN, not by a timeout ({timeoutMs} ms " +
-            $"was never the constraint).",
+            $"'{expectedProcessName}' was ALREADY running when this launch began, and only the pid we " +
+            $"started — or a NEW pid of the same name — is eligible to attach; no such window appeared " +
+            $"within {timeoutMs} ms. LIKELY cause: a single-instance app hands the launch to its " +
+            $"existing process and exits, so its window belongs to a pre-existing pid and is refused BY " +
+            $"DESIGN — in which case no timeout can help. But a launch that failed for an unrelated " +
+            $"reason looks identical from here, so rule that out too.",
             "attach to the running instance with desktop_open_window by:pid|title instead of launching; " +
-            "or pass instance-isolating arguments (Chromium/Electron: a fresh --user-data-dir plus " +
-            "--new-window). Note a pristine profile shows FIRST-RUN UI — trust prompts, welcome tabs, " +
-            "extension toasts — which changes the node count, so isolation alone trades one " +
-            "nondeterminism for another unless first-run is suppressed too.");
+            "or verify the arguments actually start a window; or pass instance-isolating arguments " +
+            "(Chromium/Electron: a fresh --user-data-dir plus --new-window). Note a pristine profile " +
+            "shows FIRST-RUN UI — trust prompts, welcome tabs, extension toasts — which changes the node " +
+            "count, so isolation alone trades one nondeterminism for another unless first-run is " +
+            "suppressed too.");
     }
 
     private static string SafeProcessNameOf(Process p)

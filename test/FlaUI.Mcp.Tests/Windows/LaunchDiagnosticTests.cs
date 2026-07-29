@@ -26,11 +26,18 @@ public class LaunchDiagnosticTests
     public void An_ambient_instance_is_named_as_the_cause_and_never_blamed_on_the_timeout()
     {
         var ex = WindowManager.LaunchTimeoutFor(Path, ProcName, timeoutMs: 5000,
-            ambientInstanceWasRunning: true);
+            preExistingProcessNames: new[] { "explorer", "contoso", "svchost" });
 
         Assert.Equal(ToolErrorCode.LaunchTimeout, ex.Code);
         Assert.Contains(ProcName, ex.Message);
-        Assert.Contains("already running", ex.Message);
+        Assert.Contains("ALREADY running", ex.Message);
+
+        // The message must not assert more than the code can prove. A window may never have appeared
+        // at all -- an immediate post-start failure is indistinguishable from a hand-off from in here --
+        // so the hand-off is offered as the LIKELY cause with the alternative named, not stated as fact.
+        Assert.Contains("LIKELY", ex.Message);
+        Assert.Contains("looks identical", ex.Message);
+        Assert.Contains("verify the arguments", ex.SuggestedRecovery);
 
         // THE LOAD-BEARING ASSERTION. Both halves of the old message were wrong for this case, and the
         // remedy was the actively harmful half: waiting longer can never change which pids are
@@ -47,11 +54,30 @@ public class LaunchDiagnosticTests
     public void With_no_ambient_instance_the_generic_timeout_message_is_unchanged()
     {
         var ex = WindowManager.LaunchTimeoutFor(Path, ProcName, timeoutMs: 5000,
-            ambientInstanceWasRunning: false);
+            preExistingProcessNames: new[] { "explorer", "svchost", "ContosoHelper" });
 
         Assert.Equal(ToolErrorCode.LaunchTimeout, ex.Code);
         Assert.Contains("no titled window", ex.Message);
         Assert.Contains("increase timeoutMs", ex.SuggestedRecovery);
+    }
+
+    /// <summary>The MATCH now happens inside the tested function rather than at the call site, which is
+    /// what makes these two cases assertable at all. Previously the caller passed a ready-made bool, so a
+    /// later edit could hardcode it to false and every test here would have stayed green while the
+    /// feature was dead in production. The residual untested wiring is one argument — that the caller
+    /// snapshots the names BEFORE Process.Start — which no unit test can reach without launching a
+    /// third-party app, the very thing this design avoids.</summary>
+    [Theory]
+    [InlineData(new[] { "contoso" }, true)]              // case-insensitive, as the filter is
+    [InlineData(new[] { "Contoso" }, true)]
+    [InlineData(new[] { "ContosoHelper" }, false)]       // near-miss name must NOT trigger it
+    [InlineData(new[] { "unknown" }, false)]             // SafeProcessNameOf's fallback must not match
+    [InlineData(new string[0], false)]                   // empty snapshot
+    public void The_ambient_verdict_is_decided_inside_the_tested_function(string[] names, bool ambient)
+    {
+        var ex = WindowManager.LaunchTimeoutFor(Path, ProcName, timeoutMs: 5000, preExistingProcessNames: names);
+        Assert.Equal(ambient, ex.Message.Contains("ALREADY running"));
+        Assert.Equal(!ambient, ex.SuggestedRecovery!.Contains("increase timeoutMs"));
     }
 
     /// <summary>The diagnostic must use the SAME notion of "same app" as the eligibility filter it
