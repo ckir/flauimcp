@@ -20,8 +20,13 @@ jobs:
       - name: Build
         run: dotnet build -c Release
 
+      # Must stay IDENTICAL to ci.yml's filter. This job runs ON TAG, after `git push --atomic` has
+      # already published the tag -- so a filter that is laxer than CI's fails the release build at the
+      # one moment a failure is most expensive. Excluding only Desktop was harmless purely by accident
+      # (every SyntheticInput/KnownDefect test also carries Desktop); the first headless-only
+      # KnownDefect test would pass CI and break the release.
       - name: Test (non-UIA only; runners are headless)
-        run: dotnet test -c Release --filter "Category!=Desktop"
+        run: dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"
 
       - name: Publish self-contained single-file exe
         run: >

@@ -11,8 +11,8 @@ Requires the **.NET 10 SDK** (the project targets `net10.0-windows`).
 dotnet build test/FlaUI.Mcp.TestApp
 dotnet test
 
-# Run only the non-desktop unit tests (e.g. in headless CI)
-dotnet test --filter "Category!=Desktop"
+# Run only the headless unit tests — this is exactly what CI runs
+dotnet test --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"
 
 # Produce the self-contained single-file exe
 dotnet publish src/FlaUI.Mcp.Server -c Release -r win-x64 --self-contained `

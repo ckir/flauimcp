@@ -27,8 +27,13 @@ dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Cate
 
 # 2. Desktop/UIA tests — you MUST run these locally, on an UNLOCKED, connected session
 #    (CI can't: GitHub-hosted runners have no interactive desktop):
-dotnet test --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"   # UIA pattern tests
+dotnet test --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"
 dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # synthetic input
+
+# KnownDefect is excluded above because those tests fail BY DESIGN — each is a repro for a filed,
+# unfixed defect in docs/fix-the-tool-backlog/. Run them deliberately when you want to check whether
+# one still reproduces:
+dotnet test --filter "Category=KnownDefect"
 ```
 
 **Over RDP:** both sets run over RDP **as long as the session stays connected and unlocked** — this is a

@@ -23,8 +23,12 @@ jobs:
   # windows-latest runners have no usable interactive session for UIA — the WPF TestApp launches but
   # UIA attach/snapshot blocks until timeout (verified: run 28227526600 hung ~15min on the test step).
   # Desktop tests are run locally on an interactive session:
-  #   dotnet test --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"   # UIA pattern tests
+  #   dotnet test --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"
   #   dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # synthetic input
+  # KnownDefect is excluded because those tests fail BY DESIGN (a filed, unfixed defect with a repro).
+  # Leaving them in makes the gate unreadable — "N passed, 1 expected failure" is the kind of caveat
+  # that decays into someone waving off a real failure. Run them deliberately: --filter Category=KnownDefect
+  # Easiest path for the whole gate: DevelopersCockpit.ps1, key K (states the preconditions first).
   # The synthetic-input test additionally needs a real (non-RDP, physical-console) input session.
   # A self-hosted runner with an interactive desktop could host these in the future.
 
