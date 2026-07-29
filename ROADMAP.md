@@ -326,6 +326,14 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   `WindowInfo.Hint` carries `WhenWritingNull` and is OMITTED, keeping its PascalCase record name.
 - **Micro belt-and-suspenders:** redact descriptor `Name` for `IsPassword` controls (`Name` is empty
   for conformant password controls today, so no secret is stored — pure defense-in-depth).
+- **Desktop-level popup coverage is structural, not test-proven.** SP1 routed `find` and
+  `wait_for(valueEquals)` through `PopupFinder.SearchRoots`, so both now reach popups at either level —
+  but this host's WPF context menu is a window CHILD (measured: `viaWindowRoot=1, viaPopupRoots=1`), so
+  the fixture exercises cross-root DEDUP and cannot reproduce desktop-level blindness at all. The fix is
+  the same structural routing every other perception path already used, and `PopupRootCoverageTests`
+  deliberately claims no blindness test. To close it for real, the fixture needs a Win32 `#32768` menu or
+  an older `HwndWrapper` popup host that lands at the desktop level. Recorded here because the backlog
+  entry it came from was retired when the code shipped.
 - **Batch the walk's per-node property reads (`CacheRequest`) — MEASURED, and the single biggest lever
   on this tool's latency.** Attribution on a warm 98-node WPF window: desktop/popup scan 593 ms · single-
   call tree enumeration 421 ms · full build 6098 ms ⇒ **per-node property traffic is ~90%+ of the walk**,
