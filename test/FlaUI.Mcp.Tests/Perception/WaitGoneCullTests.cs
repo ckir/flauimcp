@@ -41,6 +41,11 @@ public class WaitGoneCullTests : IClassFixture<TestAppFixture>
             until: "gone", equals: null, timeoutMs: 2000, pollIntervalMs: 300);
 
         Assert.True(r.Satisfied);
+
+        // Pins the MECHANISM, not just the outcome: the confirmation walk must actually have run and
+        // must not have blocked the happy path. Without this the test passes with the whole
+        // confirmation block deleted, since a culled poll already reports a missing element as gone.
+        Assert.Equal(1, wait.ConfirmationWalkCount);
     }
 
     [Fact]
