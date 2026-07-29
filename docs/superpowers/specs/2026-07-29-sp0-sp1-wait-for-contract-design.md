@@ -63,13 +63,29 @@ No behaviour change. Tool-level tests asserting that fields survive the anonymou
 tool layer.
 
 1. `truncatedFrom` and `Hint` survive projection (ROADMAP item 6 as filed).
-2. **`wait_for`'s current result shape is pinned** — `satisfied`, `ref`, `elapsedMs`, `snapshotId`.
+2. **`wait_for`'s current result shape is pinned** — `satisfied`, `ref`, `elapsedMs`, `snapshotId`,
+   **including that a timeout emits `"ref":null,"snapshotId":null` rather than omitting them.** That
+   null-emission is the convention SP1's new fields follow, so it must be pinned, not assumed.
 
 Reason for (2): SP1 adds fields to that result. Pinning the shape first means a later regression
 surfaces as a failed assertion instead of a field that quietly stopped being emitted. Same
 instrument-before-repairing move that paid off in A1a's T3.
 
-These are headless tests, plain `[Fact]`, in the default CI scope.
+**Two layers, because one is not achievable.** An earlier draft said "headless, plain `[Fact]`, default
+CI scope". That is impossible for the tool layer: `DesktopWaitFor` and the `get_text` tools are
+instance methods needing a live `WindowHandle`, and `PerceptionManager` is a concrete class with no
+interface to fake. So:
+
+- **Layer 1 — headless, plain `[Fact]`, default CI scope.** Pin the *record* shapes: `WaitForResult`
+  (`WaitCoordinator.cs:7`) and `TextReadResult` (`PerceptionManager.cs:698`) carry the expected
+  properties. Catches a field deleted from the record. Cheap and CI-gated.
+- **Layer 2 — `Category=Desktop`.** Call the real tool method against the TestApp fixture and assert
+  on the returned JSON keys. This is the layer that actually catches projection drift, which is the
+  failure mode item 6 names. It runs in the Desktop gate — the same gate that validates SP1 — not in
+  CI.
+
+Layer 1 alone would be false comfort: the projection is where fields get dropped, and the record test
+cannot see the projection.
 
 ---
 
@@ -179,17 +195,32 @@ Additive only. Existing fields keep their names, types and meanings.
 
 | Field | When |
 |---|---|
-| `unsatisfiedBecause` | **closed set**, present only on an unsatisfied result whose cause was determined |
-| `elementBounds` | present with `unsatisfiedBecause` |
-| `windowBounds` | present with `unsatisfiedBecause` |
+| `unsatisfiedBecause` | **closed set**, non-null only on an unsatisfied result whose cause was determined |
+| `elementBounds` | non-null with `unsatisfiedBecause` |
+| `windowBounds` | non-null with `unsatisfiedBecause` |
 
 `unsatisfiedBecause` is a **closed set of tokens, not free text** — an undefined string cannot be
 asserted on and would be an un-pinnable contract. SP1 defines exactly one token,
-`outsideWindowBounds`; the field is absent when the cause was not determined. Adding a token later is
-additive, and SP0's tripwire is what will catch a token that stops being emitted.
+`outsideWindowBounds`. Adding a token later is additive, and SP0's tripwire is what will catch a
+token that stops being emitted.
 
-`elementBounds` and `windowBounds` use the **existing rectangle serialization** already emitted by
-`desktop_find`'s `FindMatch` — do not introduce a second rect shape on the wire.
+**The three fields are emitted as `null`, NOT omitted.** This corrects an earlier draft that demanded
+structural absence. `desktop_wait_for` is projected through an **anonymous** object
+(`SnapshotTools.cs:70`), so `[JsonIgnore]` on `WaitForResult` would never be consulted — the record is
+not what gets serialized. And `ToolResponse.cs:12` builds its `JsonSerializerOptions` with no
+`DefaultIgnoreCondition`, so **this tool already emits `"ref":null,"snapshotId":null` on every
+timeout today.** Emitting null for the new fields matches the shape callers already receive; demanding
+absence would mean conditionally constructing two different anonymous types for no gain, and would
+make the new fields behave unlike the two nullable fields already beside them.
+
+`elementBounds` and `windowBounds` are **`int[]` in `{X, Y, Width, Height}` order** — the shape
+`FindMatch.Bounds` declares (`FindQuery.cs:28`) and `desktop_find` builds at
+`PerceptionManager.cs:534` (`new[] { b.X, b.Y, b.Width, b.Height }`), passed through unchanged at
+`FindTools.cs:42`. Same convention as `DesktopEventPayload.cs:17` and `FindTextTools.cs:70`.
+
+Note the repo has a **second, different** rect shape — the `{x,y,w,h}` *object* at
+`ScreenshotTools.cs:47` and `:62`. That one is for capture geometry, not element bounds. Use the
+array. Do not introduce a third.
 
 **Both rects come from the model already in hand — no extra UIA call, no signature change.**
 `SnapshotEngine.cs:74` always includes the depth-0 root node, and `SnapshotModel.Nodes`
@@ -200,16 +231,10 @@ window to get this — that would be a redundant cross-thread COM call for a val
 
 `satisfied`, `ref`, `elapsedMs`, `snapshotId` are untouched — SP0 pins them.
 
-**These fields must be added to the anonymous projection in the tool layer, not only to the record.**
-That projection dropping fields is the exact failure mode SP0 exists to police; a new field added to
-`WaitForResult` alone would never reach the wire.
-
-**Absence is achieved with the repo's existing idiom, not by hoping a serializer omits nulls.**
-`[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]` on the record property — the pattern
-already used at `VerifyResult.cs:30-40`, `WindowManager.cs:17-20`, `DesktopEventPayload.cs:14-17` and
-`ForegroundGate.cs:13-14`. `ToolResponse.cs:12` sets no global ignore condition, so a plain anonymous
-projection would emit `"unsatisfiedBecause": null` rather than omitting the field. Follow the typed-
-record idiom; if the tool layer projects anonymously, the projection must preserve the omission.
+**These fields must be added to the anonymous projection at `SnapshotTools.cs:70`, not only to the
+record.** That projection dropping fields is the exact failure mode SP0 exists to police; a field
+added to `WaitForResult` alone would never reach the wire, because the anonymous object — not the
+record — is what `ToolResponse.Ok` serializes.
 
 ### Error handling for the added walks
 
@@ -349,3 +374,13 @@ outright: a two-walk presence inference cannot tell culling from lateness, so th
 Every factual claim here was verified against the code, not accepted on assertion — six peer findings
 were confidently stated and wrong, including one that was in the do-not-re-raise ledger because the
 peer itself had refuted it two rounds earlier.
+
+**One correction landed AFTER the GREEN verdict, and it reverses a refutation.** While gathering line
+citations for the plan, `SnapshotTools.cs:70` turned out to project `desktop_wait_for` through an
+**anonymous** object, so the `[JsonIgnore]`-on-a-typed-record idiom I used to refute the peer's
+Protocol Pedant finding does not apply to this tool at all. The peer was closer to right than I was;
+my refutation reasoned about the repo's general convention instead of this call site, and the
+round-4 Refutation Auditor re-checked my reasoning rather than the call site, so it passed too. The
+wire rule is now emit-null, matching what the tool already does for `ref` and `snapshotId`. **A panel
+GREEN means no reachable defect was found by reading — it is not a substitute for opening the exact
+call site you are about to change.**
