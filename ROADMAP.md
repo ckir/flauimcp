@@ -318,9 +318,12 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   signal (vs the current best-effort restore-on-confirmed-consumption).
 - **v0.13.0 micro follow-ups:** surface each `TabItem`'s `tabIndex` in `desktop_snapshot` (or have
   `desktop_read_terminal_tab` echo the `index→title` map) so ordinal selection isn't hand-counted
-  (consumer-UX, from live smoke — design fork, agy-first before implementing); tool-level JSON-shape
-  tests asserting `truncatedFrom` (`desktop_get_text`) and `Hint` (`desktop_list_windows`) surface
-  through the anonymous projections.
+  (consumer-UX, from live smoke — design fork, agy-first before implementing).
+- ~~**Tool-level JSON-shape tests**~~ — **DONE (SP0).** `truncatedFrom` (`desktop_get_text`) is pinned
+  through the anonymous projection in `ToolProjectionShapeTests`; `Hint` (`desktop_list_windows`) in
+  `ListWindowsProjectionShapeTests`. The two surfaces disagree by design and both halves are now pinned:
+  the anonymous projections EMIT their nulls (`ToolResponse` sets no `DefaultIgnoreCondition`), while
+  `WindowInfo.Hint` carries `WhenWritingNull` and is OMITTED, keeping its PascalCase record name.
 - **Micro belt-and-suspenders:** redact descriptor `Name` for `IsPassword` controls (`Name` is empty
   for conformant password controls today, so no secret is stored — pure defense-in-depth).
 

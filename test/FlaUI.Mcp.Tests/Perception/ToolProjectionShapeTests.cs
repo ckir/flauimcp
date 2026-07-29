@@ -2,6 +2,7 @@ using System.Text.Json;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Tools;
 using Xunit;
 
@@ -61,5 +62,43 @@ public class ToolProjectionShapeTests : IClassFixture<TestAppFixture>
         Assert.Equal(JsonValueKind.Null, root.GetProperty("unsatisfiedBecause").ValueKind);
         Assert.Equal(JsonValueKind.Null, root.GetProperty("elementBounds").ValueKind);
         Assert.Equal(JsonValueKind.Null, root.GetProperty("windowBounds").ValueKind);
+    }
+
+    /// <summary>ROADMAP opportunistic item 6, the desktop_get_text half. TextReadResult.TruncatedFrom
+    /// was already pinned at the RECORD level (WaitContractShapeTests, ContentToolsTests) — but the tool
+    /// re-projects through an ANONYMOUS object (ContentTools.cs:83), so a record field reaching the wire
+    /// is a SEPARATE claim, and the one a consuming agent actually depends on. Both branches matter: the
+    /// truncated read must carry the direction, and the untruncated read must still EMIT the key as an
+    /// explicit null rather than dropping it (ToolResponse.cs:10 sets no DefaultIgnoreCondition), because
+    /// an absent key and a null key are different things to parse against.</summary>
+    [Fact]
+    public async Task Get_text_surfaces_truncatedFrom_through_the_anonymous_projection()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var tools = new ContentTools(perception, mgr, new ServerOptions(ReadOnly: false, AllowElevation: false));
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var snap = await perception.SnapshotAsync(handle,
+            new SnapshotOptions { InteractiveOnly = false, IncludeOffscreen = true, FullProperties = true });
+        string textRef = RefLineHelper.RefFor(snap.Tree, "TextDoc");
+
+        // TestApp's TextDoc is "line one\nline two\nline three" — a head read of 4 chars drops the tail.
+        string truncated = await tools.DesktopGetText(
+            window: handle.Id, @ref: textRef, maxLength: 4, fromEnd: false);
+        using (var doc = JsonDocument.Parse(truncated))
+        {
+            Assert.True(doc.RootElement.GetProperty("truncated").GetBoolean());
+            Assert.Equal("tail", doc.RootElement.GetProperty("truncatedFrom").GetString());
+        }
+
+        string full = await tools.DesktopGetText(
+            window: handle.Id, @ref: textRef, maxLength: 10000, fromEnd: false);
+        using (var doc = JsonDocument.Parse(full))
+        {
+            Assert.False(doc.RootElement.GetProperty("truncated").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("truncatedFrom").ValueKind);
+        }
     }
 }
