@@ -71,6 +71,13 @@ public class DesktopWakeTests
         public required int Pid { get; init; }
         public required string ProfileDir { get; init; }
 
+        /// <summary>
+        /// Code.exe pids that already existed when we launched -- the developer's own editor. Teardown
+        /// must be able to tell those from our tree: we never kill them, so waiting on them blocks the
+        /// full timeout apiece for no reason.
+        /// </summary>
+        public required System.Collections.Generic.HashSet<int> PreExistingCodePids { get; init; }
+
         public void Dispose()
         {
             // Order matters and every part of it is load-bearing.
@@ -84,8 +91,25 @@ public class DesktopWakeTests
             {
                 var root = System.Diagnostics.Process.GetProcessById(Pid);
                 held.Add(root);
-                held.AddRange(System.Diagnostics.Process.GetProcessesByName("Code")
-                    .Where(p => { try { return p.Id != Pid && !p.HasExited; } catch { return false; } }));
+
+                // OUR TREE ONLY. GetProcessesByName("Code") returns EVERY VS Code on the machine,
+                // including the developer's own editor -- which step 2 never kills, so the
+                // WaitForExit in step 3 would block its FULL timeout on each one. Measured: with 11
+                // ambient Code.exe processes this added ~55s to every test in this class (4s -> 59s),
+                // i.e. ~2.75 minutes per suite run, on any machine with VS Code open. PreExistingCodePids
+                // is snapshotted immediately before launch, so anything absent from it is ours.
+                foreach (var p in System.Diagnostics.Process.GetProcessesByName("Code"))
+                {
+                    bool ours;
+                    try { ours = p.Id != Pid && !PreExistingCodePids.Contains(p.Id) && !p.HasExited; }
+                    catch { ours = false; }
+
+                    if (ours) held.Add(p);
+                    // Dispose what we do NOT hold: Process wraps a Win32 handle, and anything not added
+                    // to `held` is never reached by the disposal loop below, so it would leak until GC
+                    // finalisation.
+                    else try { p.Dispose(); } catch { }
+                }
             }
             catch { /* already gone */ }
 
@@ -121,6 +145,15 @@ public class DesktopWakeTests
         System.IO.Directory.CreateDirectory(profile);
         System.IO.File.WriteAllText(System.IO.Path.Combine(profile, "owner.txt"), "launching");
 
+        // Snapshot the developer's own Code.exe pids BEFORE launching, so teardown can distinguish
+        // their editor from our tree. Dispose the handles straight away -- only the ids are wanted.
+        var preExistingCodePids = new System.Collections.Generic.HashSet<int>();
+        foreach (var p in System.Diagnostics.Process.GetProcessesByName("Code"))
+        {
+            preExistingCodePids.Add(p.Id);
+            try { p.Dispose(); } catch { }
+        }
+
         var dispatcher = new AutomationDispatcher();
         var mgr = new WindowManager(dispatcher);
         var refs = new RefRegistry();
@@ -150,7 +183,24 @@ public class DesktopWakeTests
             "--disable-extensions");
 
         // 40s, not 20s: a first-run launch is slower than the 8-15s measured on a warm profile.
-        var (handle, pid) = await mgr.LaunchAppAsync(ResolveVsCode(), args, 40000);
+        WindowHandle handle;
+        int pid;
+        try
+        {
+            (handle, pid) = await mgr.LaunchAppAsync(ResolveVsCode(), args, 40000);
+        }
+        catch
+        {
+            // The profile directory has to be created BEFORE the launch, because its path is passed as
+            // a launch argument. So if the launch throws -- LaunchTimeout, VS Code missing -- no Rig is
+            // returned, Rig.Dispose never runs, and the directory plus the automation objects leak. The
+            // sweep would eventually reap the directory via its 3-hour backstop, but the dispatcher and
+            // WindowManager would not be reclaimed at all.
+            try { mgr.Dispose(); } catch { }
+            try { dispatcher.Dispose(); } catch { }
+            TryDelete(profile);
+            throw;
+        }
 
         System.IO.File.WriteAllText(System.IO.Path.Combine(profile, "owner.txt"),
             $"{pid}|{System.Diagnostics.Process.GetProcessById(pid).StartTime.Ticks}");
@@ -158,7 +208,8 @@ public class DesktopWakeTests
         return new Rig
         {
             Dispatcher = dispatcher, Windows = mgr, Registry = registry, Wake = wake,
-            Perception = perception, Handle = handle, Pid = pid, ProfileDir = profile
+            Perception = perception, Handle = handle, Pid = pid, ProfileDir = profile,
+            PreExistingCodePids = preExistingCodePids
         };
     }
 

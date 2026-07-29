@@ -85,15 +85,19 @@ public class FixtureIntegrityTests
             // GroupBoxes arranged to their column width regardless of content, so a widened inner
             // Button overflows and culls while the GroupBox rect stays neatly inside. Only a full
             // descendant walk closes both holes.
-            AutomationElement[] descendants;
-            try
-            {
-                descendants = win.FindAllDescendants();
-            }
-            catch
-            {
-                descendants = System.Array.Empty<AutomationElement>();
-            }
+            // DELIBERATELY NOT wrapped in a catch that falls back to an empty array. If the walk
+            // itself throws, this test has verified NOTHING -- and an empty descendant list makes the
+            // loop below vacuous, so `found` stays empty and the assertion PASSES. That is a false
+            // GREEN on the one guard protecting the layout, and a test that cannot fail is worse than
+            // no test because it reads as coverage. An unverifiable run must be RED.
+            //
+            // The per-ELEMENT reads further down are still defended, and that is not inconsistent: a
+            // single element vanishing mid-walk is normal and does not invalidate the other 100+.
+            var descendants = win.FindAllDescendants();
+            if (descendants.Length == 0)
+                throw new System.InvalidOperationException(
+                    "the window root reported ZERO descendants, so the containment walk would be " +
+                    "vacuous and would pass without having checked anything");
 
             foreach (var el in descendants)
             {
