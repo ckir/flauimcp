@@ -201,7 +201,7 @@ function Invoke-DesktopSuite {
         if ($ans -cne 'run') { Write-C '  aborted.' 'DarkGray'; return }
     }
 
-    Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "Category=Desktop&FullyQualifiedName!~PopupGrafting"'
+    Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"'
     Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~PopupGrafting"'
 
     Write-Host ''

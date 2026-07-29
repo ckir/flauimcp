@@ -321,20 +321,16 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
 
 <!-- AUTOTRAIN:GROWTH:START -->
 <!-- Machine-owned region (flaui-curate). Do not hand-edit. HARD CAP: ≤ 30 lines between the markers. -->
-- **New Win11 Notepad — detect unsaved tabs via the `TabItem` Name suffix.** Each tab's dirty state is
-  encoded in the `TabItem` accessible **Name** as a trailing `". Modified."` (e.g. `"<title>. Modified."`),
-  while the tab's child `Text` node carries the clean title. Find unsaved tabs by that Name suffix (or the
-  window title's leading `*`) — the child `Text` alone does not reveal dirty state. *(verified live 2026-07-15)*
-- **Find a CLI app in Windows Terminal — tab title is a fast HINT, never a complete filter.** Filter
-  `desktop_list_windows` to `ProcessName == WindowsTerminal` (also flagged by `Hint`), then `desktop_find <wt>
-  controlType:"TabItem"` lists every tab name in ONE cheap call (no full snapshot). An app that SETS its terminal
-  title (agy: a braille spinner + its task) is spotted instantly. BUT a tab named for its bare launcher
-  (`cmd.exe`/`PowerShell`) is NOT proof it's a shell — apps that DON'T set a title hide there (verified live:
-  nano ran in a `PowerShell` tab; a second Gemini/agy ran in a `cmd.exe` tab, while only the first agy titled
-  its tab). So to find a SPECIFIC app that isn't the distinctively-titled one, you MUST `desktop_read_terminal_tab`
-  the generic-titled tabs too — a distinctive tab present does NOT license skipping them. Don't assume the titled
-  tab is active/index 0; `read_terminal_tab` really switches + restores (`restoreConfidence` can drop to
-  `reduced` when switching through a full-screen TUI like nano). *(verified live 2026-07-17)*
+- **New Win11 Notepad — unsaved tabs live in the `TabItem` NAME, not its child `Text`.** The Name carries a
+  trailing `". Modified."` while the child `Text` holds the clean title; the window title's leading `*` works
+  too. *(verified live 2026-07-15)*
+- **Find a CLI app in Windows Terminal — and never ask the human instead.** An unresponsive agent/service is a
+  PERCEPTION task: one shallow `desktop_list_windows` finding no top-level window is NOT an answer — a CLI
+  agent lives in a TAB, and the WT window's `Hint` says so. Filter `ProcessName == WindowsTerminal`, then
+  `desktop_find <wt> controlType:"TabItem"` lists every tab in ONE cheap call. **A tab title is a HINT, never
+  a filter** — an app that sets none hides behind its bare launcher (`cmd.exe`/`PowerShell`), so read the
+  generic-titled ones too. `read_terminal_tab` really switches + restores (`restoreConfidence` can drop to
+  `reduced` through a TUI). *(live 2026-07-17; driver anti-pattern re-observed 2026-07-27)*
 - Shell surfaces (Notification Center `Win+N`; Start/Search `Ctrl+Esc` — bare `Win` isn't a valid chord; likely Quick Settings `Win+A`) are NOT in `desktop_list_windows` — open the surface, then `desktop_get_focused_element` returns its hidden handle → snapshot/find/type it; the UIA walk is non-ephemeral; Start's `SearchTextBox` Edit types clean.
 - Win11 modern context menu = one/two empty `PopupHost` top-level windows (no items in UIA) — drive by keyboard (menu has focus: arrows+Enter) or `find_text`+`click_at`; DETECT a menu/popup open via `structure_changed` (poll `drain_events`), NOT `window_opened` (doesn't fire for PopupHost).
 - Read off-screen/virtualized list rows with `desktop_get_grid_cell(row,col)` — a details-view list (`[Grid]`) returns off-screen rows WITHOUT scrolling (snapshot shows only rendered items); the recovery for the off-screen catch-22; out-of-range error reveals dims.
@@ -345,9 +341,12 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
 - `wake_accessibility` on Chromium (Chrome) hydrates the browser CHROME (tabs/toolbars/buttons) but NOT the page DOM (stays empty Panes) — use `find_text` (OCR) for page content.
 - `desktop_clipboard_get` returns `""` for BOTH empty AND non-text (file/image) clipboards (no format signal); `desktop_paste_text` refuses `ClipboardHoldsNonText` (`forceOverwriteClipboard` to override).
 *(rules above verified live 2026-07-17)*
-- **An unresponsive AGENT or SERVICE is a desktop-perception task — never a reason to ask the human.** One
-  shallow `desktop_list_windows` finding no top-level window for it is NOT an answer: a CLI agent lives inside
-  a terminal TAB, and the `Hint` on the WT window says so. Enumerate and read the tabs (rule above) before
-  reporting anything unreachable — having the tools loaded and still deferring to the user is the failure.
-  *(driver anti-pattern, observed live 2026-07-27)*
+- **WPF trees are FLATTER and DENSER than the XAML implies.** Layout panels (`Grid`/`StackPanel`/`Canvas`/
+  `Border`) never override `OnCreateAutomationPeer` → ABSENT from the tree, so an `AutomationId` on one can
+  never scope a find (use a `GroupBox`, or walk from the window root — same set). And a `Button`'s `Content`
+  gets its OWN child `Text` peer at the button's rect: one button is TWO nodes. *(verified live 2026-07-28)*
+- **Before leased input verify BOTH preconditions — each fails SILENTLY.** `SendInput` never delivers over RDP
+  and `$env:SESSIONNAME` is a stale per-process snapshot (seen reading `RDP-Tcp#0` on a genuine console) —
+  trust `qwinsta`'s current row. And `desktop_input_status` returns `secondsRemaining`, not just active/locked:
+  a lease lapsing mid-operation turns guarded work from asserting into SKIPPING. *(live 2026-07-28)*
 <!-- AUTOTRAIN:GROWTH:END -->
