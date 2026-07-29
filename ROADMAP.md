@@ -326,6 +326,25 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   `WindowInfo.Hint` carries `WhenWritingNull` and is OMITTED, keeping its PascalCase record name.
 - **Micro belt-and-suspenders:** redact descriptor `Name` for `IsPassword` controls (`Name` is empty
   for conformant password controls today, so no secret is stored — pure defense-in-depth).
+- **Batch the walk's per-node property reads (`CacheRequest`) — MEASURED, and the single biggest lever
+  on this tool's latency.** Attribution on a warm 98-node WPF window: desktop/popup scan 593 ms · single-
+  call tree enumeration 421 ms · full build 6098 ms ⇒ **per-node property traffic is ~90%+ of the walk**,
+  ~58 ms/node against ~34 cross-process reads per node (22 scalar properties + 12 pattern probes). Caveat
+  on that split, stated because it is easy to over-read: the engine walks with per-parent
+  `FindAllChildren`, so the delta also contains ~100–200 ms of enumeration-shape difference, not property
+  reads alone. This settles an attribution that had been argued both ways — the desktop scan is ~10%, not
+  the dominant term.
+  Approach (agy-consulted): one `CacheRequest` carrying all 22 properties + 12 patterns, `Activate()`d
+  **tightly** around a per-parent `FindAll(TreeScope.Children)`, elements in `AutomationElementMode.Full`,
+  and the engine reading **Cached** accessors — keeping the mid-walk cull so a hidden 10k-item list is
+  never fetched. Hazards, all first-class: a single missed `.Current`/`.Value` accessor silently falls
+  back to a live cross-process read and quietly restores the cost (detect by asserting walk time drops to
+  the ~100 ms order, not 1–2 s); `AutomationElementMode.None` would break the promise that refs stay
+  resolvable after the walk; `TreeScope.Descendants` + cache defeats culling; parallelising the walk
+  deadlocks providers serialized on their own UI thread. Precedent + the known trap already live in
+  `Watch/Uia3EventSource.cs:69-90` — `CacheRequest.Activate()` is thread-local, scope it tight.
+  Not free: cached values are captured at fetch time, so this trades a little staleness for a large
+  latency win — weigh it against `wait_for`'s "never report a wrong belief" contract before adopting.
 - **`desktop_find` pays a RuntimeId read per element while a popup is open.** Cross-root dedup needs an
   identity for every candidate, and a RuntimeId read measured ~1.0 ms/node on this host — so a find over
   a large window with a menu open costs seconds it would not otherwise. Already gated to the multi-root
