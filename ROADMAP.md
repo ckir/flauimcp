@@ -326,6 +326,14 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   `WindowInfo.Hint` carries `WhenWritingNull` and is OMITTED, keeping its PascalCase record name.
 - **Micro belt-and-suspenders:** redact descriptor `Name` for `IsPassword` controls (`Name` is empty
   for conformant password controls today, so no secret is stored — pure defense-in-depth).
+- **`desktop_find` pays a RuntimeId read per element while a popup is open.** Cross-root dedup needs an
+  identity for every candidate, and a RuntimeId read measured ~1.0 ms/node on this host — so a find over
+  a large window with a menu open costs seconds it would not otherwise. Already gated to the multi-root
+  case, which is the cheap half of the fix. The cheaper remaining idea, not attempted because it changes
+  `PopupFinder`'s contract: it finds popups by two paths, and Path-2 popups are *window children* whose
+  elements the window enumeration already returned — so if `SearchRoots` said which path found each root,
+  find could skip Path-2 roots outright and drop the dedup entirely. Verify that claim before relying on
+  it; the trade is correctness (a duplicated ref) against latency, and correctness won.
 
 ---
 
