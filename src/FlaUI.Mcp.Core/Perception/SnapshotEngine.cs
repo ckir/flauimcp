@@ -181,7 +181,7 @@ public static class SnapshotEngine
     }
 
     // Zero-allocation RuntimeId equality (UIA RuntimeIds are small int[]).
-    private static bool RidEqual(int[] a, int[] b)
+    internal static bool RidEqual(int[] a, int[] b)
     {
         if (a.Length != b.Length) return false;
         for (int i = 0; i < a.Length; i++)

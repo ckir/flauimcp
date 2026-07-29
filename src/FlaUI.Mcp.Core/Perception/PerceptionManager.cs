@@ -464,9 +464,12 @@ public sealed class PerceptionManager
                     $"Unknown controlType '{query.ControlType}'.",
                     "use a UIA ControlType name, e.g. Button, Edit, ListItem");
 
-            AutomationElement root = string.IsNullOrEmpty(scopeRef)
-                ? win
-                : _refs.Resolve(handle.Id, scopeRef!, PopupFinder.SearchRoots(win, desktop));
+            // A popup can live at the desktop level (Win32 #32768) or as a window child (WPF/.NET 10) —
+            // PopupFinder.cs:21-25. Rooting at bare `win` reaches only the second, so find disagreed with
+            // snapshot about whether a menu item exists.
+            IReadOnlyList<AutomationElement> roots = string.IsNullOrEmpty(scopeRef)
+                ? PopupFinder.SearchRoots(win, desktop)
+                : new[] { _refs.Resolve(handle.Id, scopeRef!, PopupFinder.SearchRoots(win, desktop)) };
 
             // Native condition for the indexed props (AutomationId, ControlType, exact Name). Name
             // "contains" and enabledOnly are not indexed-expressible -> post-filter.
@@ -485,12 +488,32 @@ public sealed class PerceptionManager
             // NOT a TrueCondition/double-negation surrogate.
             bool hasNative = !string.IsNullOrEmpty(query.AutomationId) || hasCtConstraint
                 || (!string.IsNullOrEmpty(query.Name) && string.Equals(query.NameMatch, "eq", System.StringComparison.Ordinal) && !query.IgnoreCase);
-            AutomationElement[] raw;
-            try
+            // PER-ROOT isolation: one broad catch around the whole loop would let a transient
+            // ElementNotAvailableException in ANY popup (a tooltip closing mid-search) discard every
+            // valid match from the window and the other popups. A root that throws contributes nothing.
+            // Root order is preserved and dedup happens BEFORE the `max` cap below, so truncation never
+            // silently prefers window matches over popup ones.
+            var rawList = new List<AutomationElement>();
+            var seenRids = new List<int[]>();
+            foreach (var r in roots)
             {
-                raw = (hasNative ? root.FindAllDescendants(cf => Build(cf)!) : root.FindAllDescendants()).ToArray();
+                AutomationElement[] perRoot;
+                try
+                {
+                    perRoot = (hasNative ? r.FindAllDescendants(cf => Build(cf)!) : r.FindAllDescendants()).ToArray();
+                }
+                catch { continue; }
+
+                foreach (var el in perRoot)
+                {
+                    var rid = SafeRead(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? System.Array.Empty<int>();
+                    // A window-child popup is reachable from BOTH `win` and its own popup root.
+                    if (rid.Length > 0 && seenRids.Any(s => SnapshotEngine.RidEqual(s, rid))) continue;
+                    if (rid.Length > 0) seenRids.Add(rid);
+                    rawList.Add(el);
+                }
             }
-            catch { raw = System.Array.Empty<AutomationElement>(); }
+            AutomationElement[] raw = rawList.ToArray();
 
             var matches = new List<FindMatch>();
             int total = 0;
@@ -554,23 +577,34 @@ public sealed class PerceptionManager
         return (snapshotId, model);
     }
 
-    public Task<(bool Found, string? Value)> EvaluateSelectorValueAsync(WindowHandle handle, string by, string value) =>
+    public Task<(bool Found, string? Value)> EvaluateSelectorValueAsync(WindowHandle handle, string by, string value,
+        bool includeOffscreen = false) =>
         _windows.RunWithWindowAndDesktopAsync<(bool, string?)>(handle, (win, desktop) =>
         {
-            bool NotOffscreen(AutomationElement e) { try { return !e.Properties.IsOffscreen.ValueOrDefault; } catch { return false; } }
+            // includeOffscreen is the CALLER's opt-out (desktop_wait_for's parameter). Without threading
+            // it here, wait_for(until:valueEquals, includeOffscreen:true) silently kept filtering — the
+            // flag was accepted and ignored on exactly one of the four `until` values.
+            bool NotOffscreen(AutomationElement e)
+            { if (includeOffscreen) return true; try { return !e.Properties.IsOffscreen.ValueOrDefault; } catch { return false; } }
             AutomationElement? Match()
             {
-                try
+                foreach (var r in PopupFinder.SearchRoots(win, desktop))
                 {
-                    return by switch
+                    AutomationElement? hit = null;
+                    try
                     {
-                        "automationId" => win.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
-                        "name" => win.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
-                        "controlType" => win.FindAllDescendants().FirstOrDefault(e => { try { return NotOffscreen(e) && e.ControlType.ToString().Equals(value, System.StringComparison.OrdinalIgnoreCase); } catch { return false; } }),
-                        _ => null
-                    };
+                        hit = by switch
+                        {
+                            "automationId" => r.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
+                            "name" => r.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
+                            "controlType" => r.FindAllDescendants().FirstOrDefault(e => { try { return NotOffscreen(e) && e.ControlType.ToString().Equals(value, System.StringComparison.OrdinalIgnoreCase); } catch { return false; } }),
+                            _ => null
+                        };
+                    }
+                    catch { continue; }   // per-root isolation
+                    if (hit is not null) return hit;
                 }
-                catch { return null; }
+                return null;
             }
             var el = Match();
             if (el is null) return (false, null);

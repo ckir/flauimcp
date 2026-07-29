@@ -114,7 +114,7 @@ public sealed class WaitCoordinator
             bool satisfied;
             if (until == "valueEquals")
             {
-                var (found, live) = await _perception.EvaluateSelectorValueAsync(handle, by, value);
+                var (found, live) = await _perception.EvaluateSelectorValueAsync(handle, by, value, includeOffscreen);
                 satisfied = found && string.Equals(live, equals, System.StringComparison.Ordinal);
             }
             else
