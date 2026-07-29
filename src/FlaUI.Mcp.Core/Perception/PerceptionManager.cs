@@ -464,9 +464,12 @@ public sealed class PerceptionManager
                     $"Unknown controlType '{query.ControlType}'.",
                     "use a UIA ControlType name, e.g. Button, Edit, ListItem");
 
-            AutomationElement root = string.IsNullOrEmpty(scopeRef)
-                ? win
-                : _refs.Resolve(handle.Id, scopeRef!, PopupFinder.SearchRoots(win, desktop));
+            // A popup can live at the desktop level (Win32 #32768) or as a window child (WPF/.NET 10) —
+            // PopupFinder.cs:21-25. Rooting at bare `win` reaches only the second, so find disagreed with
+            // snapshot about whether a menu item exists.
+            IReadOnlyList<AutomationElement> roots = string.IsNullOrEmpty(scopeRef)
+                ? PopupFinder.SearchRoots(win, desktop)
+                : new[] { _refs.Resolve(handle.Id, scopeRef!, PopupFinder.SearchRoots(win, desktop)) };
 
             // Native condition for the indexed props (AutomationId, ControlType, exact Name). Name
             // "contains" and enabledOnly are not indexed-expressible -> post-filter.
@@ -485,12 +488,66 @@ public sealed class PerceptionManager
             // NOT a TrueCondition/double-negation surrogate.
             bool hasNative = !string.IsNullOrEmpty(query.AutomationId) || hasCtConstraint
                 || (!string.IsNullOrEmpty(query.Name) && string.Equals(query.NameMatch, "eq", System.StringComparison.Ordinal) && !query.IgnoreCase);
-            AutomationElement[] raw;
-            try
+            // PER-ROOT isolation: one broad catch around the whole loop would let a transient
+            // ElementNotAvailableException in ANY popup (a tooltip closing mid-search) discard every
+            // valid match from the window and the other popups. A root that throws contributes nothing.
+            // Root order is preserved and dedup happens BEFORE the `max` cap below, so truncation never
+            // silently prefers window matches over popup ones.
+            // ONE root cannot produce a duplicate: FindAllDescendants yields each descendant once, and
+            // duplication only arises when the SAME element is reachable from two different roots. So the
+            // dedup is skipped entirely in the single-root case -- which is every find with no popup open,
+            // i.e. almost all of them. This is not a micro-optimisation: the RuntimeId read is a COM
+            // property access measured at ~1.0ms PER NODE on this host, so paying it unconditionally would
+            // add ~3s to a find over a 3000-node window, plus ~0.9s for the O(n^2) scan. The whole cost is
+            // charged only when a popup is actually open, where correctness requires it.
+            bool needDedup = roots.Count > 1;
+            var rawList = new List<AutomationElement>();
+            var seenRids = new List<int[]>();
+            AutomationElement[] Enumerate(AutomationElement r)
+                => (hasNative ? r.FindAllDescendants(cf => Build(cf)!) : r.FindAllDescendants()).ToArray();
+
+            for (int rootIndex = 0; rootIndex < roots.Count; rootIndex++)
             {
-                raw = (hasNative ? root.FindAllDescendants(cf => Build(cf)!) : root.FindAllDescendants()).ToArray();
+                AutomationElement[] perRoot;
+                if (rootIndex == 0)
+                {
+                    // roots[0] is the WINDOW (PopupFinder.cs:16) -- or, under a scopeRef, the single
+                    // resolved element. A failure here is the target dying, not a popup closing
+                    // mid-search, and swallowing it made find answer "no matches" for a window that no
+                    // longer exists: a wrong belief dressed as an empty result, which is the same defect
+                    // class this branch exists to remove. EvaluateSelectorValueAsync was given this
+                    // exemption first; leaving find without it left the two siblings disagreeing about
+                    // what a dead window means.
+                    perRoot = Enumerate(roots[rootIndex]);
+                }
+                else
+                {
+                    // PER-ROOT isolation, popups only: a tooltip closing mid-search must not zero out
+                    // the window's own matches. A root that throws contributes nothing.
+                    try { perRoot = Enumerate(roots[rootIndex]); }
+                    catch { continue; }
+                }
+
+                if (!needDedup) { rawList.AddRange(perRoot); continue; }
+
+                foreach (var el in perRoot)
+                {
+                    var rid = SafeRead(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? System.Array.Empty<int>();
+                    // A window-child popup is reachable from BOTH `win` and its own popup root.
+                    // An element whose RuntimeId is unreadable (the SafeRead fallback) is KEPT rather
+                    // than dropped, so it can in principle appear twice. That is deliberate: with no
+                    // identity to compare, the only alternatives are to emit a possible duplicate or to
+                    // discard a possible unique match, and a dropped match is the worse failure -- find
+                    // silently missing an element is precisely the defect this method was changed to fix.
+                    // Do NOT "fix" this with element equality: the two wrappers come from separate
+                    // FindAllDescendants calls, so any comparison that actually worked would be another
+                    // per-element COM round-trip, reintroducing the cost the roots.Count guard removed.
+                    if (rid.Length > 0 && seenRids.Any(s => SnapshotEngine.RidEqual(s, rid))) continue;
+                    if (rid.Length > 0) seenRids.Add(rid);
+                    rawList.Add(el);
+                }
             }
-            catch { raw = System.Array.Empty<AutomationElement>(); }
+            AutomationElement[] raw = rawList.ToArray();
 
             var matches = new List<FindMatch>();
             int total = 0;
@@ -554,26 +611,107 @@ public sealed class PerceptionManager
         return (snapshotId, model);
     }
 
-    public Task<(bool Found, string? Value)> EvaluateSelectorValueAsync(WindowHandle handle, string by, string value) =>
+    public Task<(bool Found, string? Value)> EvaluateSelectorValueAsync(WindowHandle handle, string by, string value,
+        bool includeOffscreen = false) =>
         _windows.RunWithWindowAndDesktopAsync<(bool, string?)>(handle, (win, desktop) =>
         {
-            bool NotOffscreen(AutomationElement e) { try { return !e.Properties.IsOffscreen.ValueOrDefault; } catch { return false; } }
+            // includeOffscreen is the CALLER's opt-out (desktop_wait_for's parameter). Without threading
+            // it here, wait_for(until:valueEquals, includeOffscreen:true) silently kept filtering — the
+            // flag was accepted and ignored on exactly one of the four `until` values.
+            // WHAT AN UNREADABLE IsOffscreen MEANS -- the two sides of this codebase used to disagree.
+            // SnapshotEngine reads it as Safe(..., fallback: false), so an element whose IsOffscreen
+            // THROWS is treated as on-screen and KEPT in the walk. This evaluator did the opposite: its
+            // catch returned false for "not offscreen", so the element was silently DROPPED. Net effect,
+            // for an element with a throwing IsOffscreen: until=exists satisfies, until=valueEquals can
+            // never satisfy, forever. Two predicates disagreeing about whether an element exists at all.
+            //
+            // Aligned here, but NOT by simply flipping the catch to "keep it" as first proposed. This is
+            // a FIRST-MATCH selector: flipping the fallback makes a broken element WIN over a healthy
+            // sibling carrying the same automationId, so a wait that works today would start timing out.
+            // Instead: prefer a definitely-visible match, and fall back to an unreadable one only when
+            // there is no visible candidate at all -- which is precisely the case where the engine would
+            // have kept it, so the divergence closes without reordering anything that already worked.
+            // Definitely-OFFSCREEN elements are still skipped outright; that was never in question.
+            static bool? TryReadOffscreen(AutomationElement e)
+            { try { return e.Properties.IsOffscreen.ValueOrDefault; } catch { return null; } }
+
+            AutomationElement? PickVisible(AutomationElement[] candidates)
+            {
+                AutomationElement? unreadable = null;
+                foreach (var e in candidates)
+                {
+                    if (includeOffscreen) return e;          // caller opted out of the filter entirely
+                    var offscreen = TryReadOffscreen(e);
+                    if (offscreen == false) return e;        // definitely on-screen: best answer, stop
+                    if (offscreen is null) unreadable ??= e; // could not tell: hold as a last resort
+                }
+                return unreadable;
+            }
+
+            // Parsed once per CALL, hoisted out of the per-root loop below. (Not once per WAIT: the
+            // caller polls this method, so the parse still runs each poll -- it is a string parse, not
+            // the tree walk that mattered.) by="controlType" used to enumerate the ENTIRE tree with no
+            // native condition and then compare ControlType.ToString() in managed code -- every element
+            // marshalled across the UIA IPC boundary, on EVERY poll of a wait that polls every 500ms.
+            // ControlType is an indexed UIA property, so it pushes down the same way AutomationId and
+            // Name already do (the FindAsync idiom). An unparseable name yields no condition and
+            // therefore no match, which is exactly what the string compare did.
+            bool hasCt = FindQuerySpec.TryParseControlType(value, out var wantedCt);
+            AutomationElement? Probe(AutomationElement r) => by switch
+            {
+                "automationId" => PickVisible(r.FindAllDescendants(cf => cf.ByAutomationId(value))),
+                "name" => PickVisible(r.FindAllDescendants(cf => cf.ByName(value))),
+                "controlType" => hasCt ? PickVisible(r.FindAllDescendants(cf => cf.ByControlType(wantedCt))) : null,
+                _ => null
+            };
+
             AutomationElement? Match()
             {
-                try
+                var roots = PopupFinder.SearchRoots(win, desktop);
+                for (int i = 0; i < roots.Count; i++)
                 {
-                    return by switch
+                    AutomationElement? hit;
+                    if (i == 0)
                     {
-                        "automationId" => win.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
-                        "name" => win.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
-                        "controlType" => win.FindAllDescendants().FirstOrDefault(e => { try { return NotOffscreen(e) && e.ControlType.ToString().Equals(value, System.StringComparison.OrdinalIgnoreCase); } catch { return false; } }),
-                        _ => null
-                    };
+                        // SearchRoots[0] IS the window (PopupFinder.cs:16). A failure here means the
+                        // window died, not that a popup closed mid-search, and swallowing it made
+                        // valueEquals the ONE predicate that reports a plain "condition not met" for a
+                        // dead window and then keeps polling to the full budget -- exists/enabled/gone
+                        // all surface the death immediately, because BuildModelAsync throws straight out
+                        // of the loop. Let it propagate so all four predicates agree.
+                        hit = Probe(r: roots[i]);
+                    }
+                    else
+                    {
+                        // PER-ROOT isolation, for POPUPS only: a tooltip or menu closing mid-search must
+                        // not zero out the window's own matches. A root that throws contributes nothing.
+                        try { hit = Probe(r: roots[i]); }
+                        catch { continue; }
+                    }
+                    if (hit is not null) return hit;
                 }
-                catch { return null; }
+                return null;
             }
             var el = Match();
             if (el is null) return (false, null);
+
+            // INV-5, applied here for the first time. This method reads an element's VALUE and its only
+            // consumer, wait_for(until:valueEquals), reports whether that value equals a caller-supplied
+            // string -- which is a password ORACLE if the element is a password field: no secret crosses
+            // the wire, but an agent can CONFIRM a guess, and confirming is the whole attack. Every
+            // sibling path already applies this floor (snapshot renders "[REDACTED]", find matches on the
+            // redacted name so a password is unfindable by name, get_text redacts the text); this one
+            // relied on the UIA provider to blank the value itself.
+            // MEASURED before adding: a conformant WPF PasswordBox returns an EMPTY ValuePattern value,
+            // so there is no live leak on the fixture and both oracle probes (right password and wrong)
+            // came back unsatisfied. This closes the NON-conformant case -- a provider that sets
+            // IsPassword and still exposes the value through LegacyIAccessible -- which is exactly the
+            // case RedactionPolicy.IsPasswordOrFailClosed exists for: it fails CLOSED on a throwing read
+            // rather than trusting the control. Returning null (not "") also means valueEquals can never
+            // satisfy on a password field, since `equals` is required to be non-null.
+            if (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault))
+                return (true, null);
+
             try { var vp = el.Patterns.Value.PatternOrDefault; if (vp is not null) return (true, vp.Value.ValueOrDefault); } catch { }
             try { var nm = el.Name; if (!string.IsNullOrEmpty(nm)) return (true, nm); } catch { }
             try { var la = el.Patterns.LegacyIAccessible.PatternOrDefault; if (la is not null) return (true, la.Value.ValueOrDefault); } catch { }

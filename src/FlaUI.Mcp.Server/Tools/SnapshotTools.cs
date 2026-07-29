@@ -55,7 +55,7 @@ public sealed class SnapshotTools
             });
         });
 
-    [McpServerTool(ReadOnly = true), Description("Poll a window until a selector condition holds. by=automationId|name|controlType, value=target, until=exists|enabled|gone|valueEquals (equals required for valueEquals; compares ValuePattern→Name→LegacyIAccessible). Timeout returns {satisfied:false} (NOT an error). On success returns the matched ref + a fresh snapshotId. Polls are transient (no ref growth).")]
+    [McpServerTool(ReadOnly = true), Description("Poll a window until a selector condition holds. by=automationId|name|controlType, value=target, until=exists|enabled|gone|valueEquals (equals required for valueEquals; reads ValuePattern→Name→LegacyIAccessible). Timeout returns {satisfied:false}, NOT an error. Success returns the matched ref + a fresh snapshotId; polls are transient (no ref growth). On an exists/enabled timeout where the element resolves but sits outside the window rect, adds unsatisfiedBecause=\"outsideWindowBounds\" + elementBounds/windowBounds (each [x, y, width, height]) so geometry is not mistaken for timing. until=gone means gone from the WALK, and splits two cases: an element UIA reports offscreen satisfies instantly; one merely laid out past the window edge does NOT. includeOffscreen:true makes gone STRICTER — offscreen elements stay in the walk, so it waits for real removal. valueEquals never applied the window-edge cull, so it reaches past-the-edge elements either way. BUDGET: every poll is a full tree walk (seconds on a big window) and the budget is checked only BETWEEN polls, so elapsedMs overshoots timeoutMs by whole walks and a short budget becomes a single-shot check. gone pays one extra confirmation walk before reporting success; an exists/enabled timeout pays one more for the diagnostic.")]
     public Task<string> DesktopWaitFor(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("automationId|name|controlType.")] string by,
@@ -63,11 +63,16 @@ public sealed class SnapshotTools
         [Description("exists|enabled|gone|valueEquals (default exists).")] string until = "exists",
         [Description("Required iff until=valueEquals.")] string? equals = null,
         [Description("Total wait budget ms (default 5000).")] int timeoutMs = 5000,
-        [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500)
+        [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500,
+        [Description("Reach elements UIA reports off-screen AND elements laid out past the window edge (default false, matching desktop_snapshot).")] bool includeOffscreen = false)
         => ToolResponse.Guard(async () =>
         {
-            var r = await _wait.WaitForAsync(new WindowHandle(window), by, value, until, equals, timeoutMs, pollIntervalMs);
-            return ToolResponse.Ok(new { satisfied = r.Satisfied, @ref = r.Ref, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId });
+            var r = await _wait.WaitForAsync(new WindowHandle(window), by, value, until, equals, timeoutMs, pollIntervalMs, includeOffscreen);
+            return ToolResponse.Ok(new
+            {
+                satisfied = r.Satisfied, @ref = r.Ref, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId,
+                unsatisfiedBecause = r.UnsatisfiedBecause, elementBounds = r.ElementBounds, windowBounds = r.WindowBounds
+            });
         });
 
     [McpServerTool(ReadOnly = true), Description("Poll until a window subtree stops structurally changing. Optional scope via by+value (default whole window). includeText folds Name into the signature (wait on a status-text settle; do NOT use on a window with a live clock/counter). Timeout returns {stable:false}.")]
