@@ -73,10 +73,19 @@ public sealed class WaitCoordinator
         return false;
     }
 
+    /// <summary>INV-5 applies to the MATCH, not just the render. `find` already matches on the REDACTED
+    /// name (PerceptionManager: "match on the redacted name (no name-oracle)") and the snapshot renderer
+    /// already shows "[REDACTED]" — but wait_for compared the RAW Name, so it was the one surviving
+    /// name-oracle on this contract: wait_for(by:"name", value:"<guess>", until:"exists") returning
+    /// satisfied:true CONFIRMS a password element's name. Nothing crosses the wire, and confirming is
+    /// the whole attack. Matching the redacted string makes a password field unfindable BY NAME here
+    /// exactly as it already is via find and snapshot — this applies the existing invariant to the path
+    /// that was missed, it does not invent a new policy. automationId and controlType are unaffected:
+    /// neither carries content, and both are how you legitimately target a password box.</summary>
     internal static bool Matches(SnapshotNode n, string by, string value) => by switch
     {
         "automationId" => string.Equals(n.AutomationId, value, System.StringComparison.Ordinal),
-        "name" => string.Equals(n.Name, value, System.StringComparison.Ordinal),
+        "name" => string.Equals(n.IsPassword ? "[REDACTED]" : n.Name, value, System.StringComparison.Ordinal),
         "controlType" => string.Equals(n.ControlType.ToString(), value, System.StringComparison.OrdinalIgnoreCase),
         _ => false
     };
