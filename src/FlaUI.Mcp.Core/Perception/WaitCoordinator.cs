@@ -4,7 +4,13 @@ using FlaUI.Mcp.Core.Windows;
 
 namespace FlaUI.Mcp.Core.Perception;
 
-public sealed record WaitForResult(bool Satisfied, string? Ref, int ElapsedMs, string? SnapshotId);
+/// <summary>UnsatisfiedBecause is a CLOSED token set, not free text — SP1 defines exactly one token,
+/// "outsideWindowBounds". The three diagnostic members are optional positional parameters so every
+/// existing `new WaitForResult(a, b, c, d)` call site keeps compiling unchanged. Bounds are
+/// int[] {X, Y, Width, Height} — the same shape FindMatch.Bounds uses (FindQuery.cs:28, built at
+/// PerceptionManager.cs:534). NOT the {x,y,w,h} object form ScreenshotTools uses for capture geometry.</summary>
+public sealed record WaitForResult(bool Satisfied, string? Ref, int ElapsedMs, string? SnapshotId,
+    string? UnsatisfiedBecause = null, int[]? ElementBounds = null, int[]? WindowBounds = null);
 public sealed record WaitStableResult(bool Stable, int ElapsedMs, string? SnapshotId);
 
 /// <summary>Polling read-only wait conditions. Each poll issues ONE short query-STA Build with a
@@ -103,6 +109,7 @@ public sealed class WaitCoordinator
             throw new ToolException(ToolErrorCode.InvalidArguments, "until:valueEquals requires 'equals'.", "pass equals=<expected value>");
         var sw = System.Diagnostics.Stopwatch.StartNew();
         bool latched = false; // per-call; never outlives this wait
+        bool alreadyUnculled = false; // placeholder; the next task gives this its real initialiser
         while (true)
         {
             bool satisfied;
@@ -179,7 +186,36 @@ public sealed class WaitCoordinator
                 var realMatch = real.Nodes.FirstOrDefault(n => Matches(n, by, value));
                 return new WaitForResult(true, realMatch?.Ref, (int)sw.ElapsedMilliseconds, snapId);
             }
-            if (sw.ElapsedMilliseconds >= timeoutMs) return new WaitForResult(false, null, (int)sw.ElapsedMilliseconds, null);
+            if (sw.ElapsedMilliseconds >= timeoutMs)
+            {
+                // Diagnose ONCE, on the failure path only. Skipped when the poll walk was already
+                // unculled: the diagnostic walk would be identical to the poll that just failed.
+                if (until != "valueEquals" && !latched && !alreadyUnculled)
+                {
+                    try
+                    {
+                        CountWalk();
+                        var (_, diag) = await _perception.BuildModelAsync(handle, UnculledPollOptions, new RefRegistry());
+                        var hit = diag.Nodes.FirstOrDefault(n => Matches(n, by, value));
+                        var root = diag.Nodes.FirstOrDefault();   // depth-0 node IS the window: PollOptions sets no RootRef
+                        if (hit is not null && root is not null)
+                        {
+                            // MEASURE the geometry. Do NOT infer "it was culled" from the element being
+                            // absent in the culled walk and present here: an element that rendered in the
+                            // gap between the last poll and this walk satisfies that inference while
+                            // sitting on screen, and a merely-disabled in-window element is present in
+                            // both walks. The intersection test is the actual cull condition.
+                            if (!root.Bounds.IntersectsWith(hit.Bounds))
+                                return new WaitForResult(false, null, (int)sw.ElapsedMilliseconds, null,
+                                    "outsideWindowBounds",
+                                    new[] { hit.Bounds.X, hit.Bounds.Y, hit.Bounds.Width, hit.Bounds.Height },
+                                    new[] { root.Bounds.X, root.Bounds.Y, root.Bounds.Width, root.Bounds.Height });
+                        }
+                    }
+                    catch { /* best-effort: a failed diagnostic degrades to the bare result, never throws */ }
+                }
+                return new WaitForResult(false, null, (int)sw.ElapsedMilliseconds, null);
+            }
             await Task.Delay(pollIntervalMs);
         }
     }

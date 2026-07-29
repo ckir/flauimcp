@@ -40,4 +40,26 @@ public class ToolProjectionShapeTests : IClassFixture<TestAppFixture>
         Assert.Equal(JsonValueKind.Null, root.GetProperty("snapshotId").ValueKind);
         Assert.True(root.GetProperty("elapsedMs").GetInt32() >= 0);
     }
+
+    [Fact]
+    public async Task Wait_for_timeout_emits_the_three_diagnostic_keys_as_explicit_nulls_when_undetermined()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var wait = new WaitCoordinator(perception);
+        var tools = new SnapshotTools(perception, wait);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        string json = await tools.DesktopWaitFor(
+            window: handle.Id, by: "automationId", value: "NoSuchElement_SP0",
+            until: "exists", equals: null, timeoutMs: 600, pollIntervalMs: 200);
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("unsatisfiedBecause").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("elementBounds").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("windowBounds").ValueKind);
+    }
 }
