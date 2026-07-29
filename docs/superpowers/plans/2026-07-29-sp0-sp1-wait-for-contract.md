@@ -902,7 +902,50 @@ Both paths root at bare `win` while `BuildModelAsync` passes owner-popups (`:424
 
 This is the measurement gate. Whether a WPF window-child menu reproduces the blindness is empirical, and the `MenuTarget` fixture probably does **not** — a window-child popup *is* a descendant of `win` (`PopupFinder.cs:21-25`, `:58-60`).
 
-Write a throwaway probe (do not commit it) that opens the fixture's context menu exactly as `PopupGraftingTests.cs:22-29` does, then reports whether `win.FindAllDescendants(cf => cf.ByAutomationId("MenuAlpha"))` returns anything. **Record the answer in the commit message.**
+Add this probe to `PopupRootCoverageTests.cs`, run it, read the assertion message, then **delete the probe** before committing. It is a measurement instrument, not a test — it asserts a falsehood so the runner prints the answer.
+
+```csharp
+    // TEMPORARY PROBE — run once, read the message, then DELETE this method.
+    // Answers: is the fixture's WPF context menu a descendant of `win` (window-child) or a
+    // desktop-level popup? PopupFinder.cs:21-25 says both shapes exist; which one this OS build
+    // produces decides whether the fixture can reproduce the blindness at all.
+    [Fact]
+    public async Task PROBE_is_the_fixture_menu_reachable_from_the_window_root()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        await mgr.FocusAsync(handle);
+        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+        {
+            var target = win.FindFirstDescendant(cf => cf.ByAutomationId("MenuTarget"))!;
+            target.RightClick();
+            return true;
+        });
+        await Task.Delay(400);
+
+        var (fromWindow, fromPopupRoots) = await mgr.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
+        {
+            int viaWin = win.FindAllDescendants(cf => cf.ByAutomationId("MenuAlpha")).Length;
+            int viaPopups = PopupFinder.FindOwnerPopups(desktop, win)
+                .Sum(p => p.FindAllDescendants(cf => cf.ByAutomationId("MenuAlpha")).Length);
+            return (viaWin, viaPopups);
+        });
+
+        // Deliberately fails so the runner prints the measurement.
+        Assert.True(false, $"PROBE RESULT: viaWindowRoot={fromWindow}, viaPopupRoots={fromPopupRoots}");
+    }
+```
+
+Run: `dotnet test --filter "FullyQualifiedName~PROBE_is_the_fixture_menu"`
+
+Read `PROBE RESULT` from the failure message and **record both numbers in Task 8 Step 8's commit message.** Then delete the probe method.
+
+Interpreting it:
+- `viaWindowRoot >= 1` → the menu is a **window child**. The fixture **cannot** reproduce the blindness; write only the dedup test. Note that `viaWindowRoot >= 1 && viaPopupRoots >= 1` is the **dedup** case — the element is reachable twice, which is exactly what Step 5's `RidEqual` dedup exists to collapse.
+- `viaWindowRoot == 0 && viaPopupRoots >= 1` → **desktop-level**. The fixture *does* reproduce it; add a blindness test asserting `find` returns the item after the fix.
+- Both zero → the menu did not open. Do not proceed; the arrange is broken, not the theory.
 
 - If it **does** find it: the fixture cannot reproduce the blindness; write only the dedup test below, and say so.
 - If it does **not**: write both the dedup test and a blindness test.
@@ -955,8 +998,45 @@ public class PopupRootCoverageTests : IClassFixture<TestAppFixture>
         Assert.Equal(1, r.Matches.Count(m => m.AutomationId == "MenuAlpha"));
         Assert.Equal(1, r.TotalMatches);
     }
+
+    /// <summary>Step 6 rewrites EvaluateSelectorValueAsync's search into a multi-root loop, and it is
+    /// the ONLY consumer of that method — until="valueEquals". Without this, a typo in that loop shows
+    /// up as a valueEquals that silently never satisfies, which is indistinguishable from a slow app.
+    /// Note this asserts coverage, not the fix: if the fixture's menu is a window child (see the probe
+    /// in Step 1), valueEquals could already reach it before Step 6. It still guards the rewrite.</summary>
+    [Fact]
+    public async Task ValueEquals_reaches_an_element_inside_an_open_popup()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var wait = new WaitCoordinator(perception);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        await mgr.FocusAsync(handle);
+        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+        {
+            var target = win.FindFirstDescendant(cf => cf.ByAutomationId("MenuTarget"))!;
+            target.RightClick();
+            return true;
+        });
+        await Task.Delay(400);
+
+        // MenuAlpha's Header is "Alpha" (MainWindow.xaml:100), and the value read falls back
+        // ValuePattern -> Name, so a MenuItem with no ValuePattern yields its Name.
+        var r = await wait.WaitForAsync(handle, "automationId", "MenuAlpha",
+            until: "valueEquals", equals: "Alpha", timeoutMs: 1500, pollIntervalMs: 300);
+
+        Assert.True(r.Satisfied);
+    }
 }
 ```
+
+If the third assertion fails because the menu item's value is not literally `"Alpha"`, read what
+`EvaluateSelectorValueAsync` actually returned before changing the expectation — the fallback chain is
+`ValuePattern → Name`, and a WPF `MenuItem`'s UIA `Name` normally is its `Header`. Adjust the expected
+string to the measured one and say so in the commit; do **not** weaken the assertion to
+`Assert.NotNull`.
 
 - [ ] **Step 3: Run to verify it fails**
 
@@ -1070,7 +1150,7 @@ At `:557-571`, replace the single-root `Match()` with a per-root scan that keeps
 - [ ] **Step 7: Run the tests**
 
 Run: `dotnet test --filter "FullyQualifiedName~PopupRootCoverageTests"`
-Expected: `Passed! - Failed: 0, Passed: 1`
+Expected: `Passed! - Failed: 0, Passed: 2` — the dedup test and the `valueEquals` coverage test. If it reports 3, the temporary probe from Step 1 was not deleted; delete it.
 
 Run: `dotnet test --filter "FullyQualifiedName~FindTests"`
 Expected: all pass, unedited. `find`'s existing contract must not move.
@@ -1220,3 +1300,10 @@ git commit -m "docs: record the wait_for gone/includeOffscreen distinction"
 **Type consistency.** `WaitForResult` gains `UnsatisfiedBecause` / `ElementBounds` / `WindowBounds` in Task 6 and is used under those exact names in Tasks 6, 7, 10. `CullToWindowBounds` is defined in Task 3 and used in Tasks 5 and 7. `UnculledPollOptions` is defined in Task 5 Step 3 and used in Tasks 5, 6. `WalkCount` / `CountWalk` are defined in Task 4 and used in Tasks 5, 6, 9. `RidEqual` becomes `internal` in Task 8 Step 4 before its use in Step 5. `alreadyUnculled` is introduced as a placeholder in Task 6 Step 4 and given its real initialiser in Task 7 Step 3 — flagged explicitly at both sites.
 
 **Ordering hazard, called out.** Task 6 depends on Task 5's `latched` variable and `UnculledPollOptions`, and Task 7 rewrites two lines Task 5 and Task 6 introduce. Execute 3 → 4 → 5 → 6 → 7 in order. Tasks 8–11 are independent of that chain.
+
+**Plan review, folded.** An adversarial pass over this document returned two findings, both accepted:
+
+1. **`EvaluateSelectorValueAsync` was changed but untested.** Task 8 Step 6 rewrites its search into a multi-root loop, and `until="valueEquals"` is its only consumer — so a typo there would surface as a `valueEquals` that silently never satisfies, indistinguishable from a slow app. Task 8 Step 2 now carries `ValueEquals_reaches_an_element_inside_an_open_popup`.
+2. **Task 8 Step 1 told the implementer to "write a throwaway probe" without giving the code**, violating this plan's own no-placeholders standard. The probe is now written out in full, with the three result interpretations enumerated and an explicit instruction to delete it before committing.
+
+Findings on citations, compilation, ordering, type consistency and missing tasks: none.
