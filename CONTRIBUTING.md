@@ -36,15 +36,24 @@ dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # sy
 dotnet test --filter "Category=KnownDefect"
 ```
 
-**Over RDP:** both sets run over RDP **as long as the session stays connected and unlocked** — this is a
-*session-state* requirement, not an RDP limitation. The UIA-pattern tests drive UIA; the synthetic-input
-tests fire real `SendInput`, which injects fine into a connected, unlocked session (measured 2026-07-03:
-`OpenInputDesktop` succeeds and `SendInput` returns non-zero with `GetLastError`=0 over live RDP — a
-**physical console is not required**). The synthetic-input tests additionally need a granted lease
-(`flaui-mcp unlock`). What breaks input is **disconnecting or locking** the session: the active desktop
-switches to the secure `WinSta0\Winlogon` and calls fail (`InputDesktopUnavailable`) — which is exactly
-the state an unattended CI runner is in. So run either set yourself in a connected, unlocked session; do
-**not** assume a headless/physical-console box is required.
+**Over RDP:** the two tiers differ, and conflating them is the easy mistake.
+
+The **UIA-pattern** tests run fine over RDP as long as the session stays **connected and unlocked** —
+that much really is a session-state requirement rather than an RDP limitation. Disconnecting or locking
+is what breaks them: the active desktop switches to the secure `WinSta0\Winlogon` and calls fail
+`InputDesktopUnavailable`, which is exactly the state an unattended CI runner sits in.
+
+The **synthetic-input** tests need a **physical console**. A 2026-07-03 probe found that over live RDP
+`OpenInputDesktop` succeeds and `SendInput` returns non-zero with `GetLastError`=0 — but that measures
+the API *accepting* the events, not the events *landing*. Queued is not delivered: a real type or click
+into a foreground window can silently no-op over RDP. So an RDP run of this tier does not fail loudly,
+it produces **wrong results**, which is worse.
+
+> This paragraph previously concluded from that same probe that "a physical console is not required".
+> That does not follow from an API-level return value, and it contradicted the delivery finding recorded
+> in the `driving-flaui-mcp` skill's RDP-vs-console rule. Corrected 2026-07-29.
+
+Either tier additionally needs a granted lease (`flaui-mcp unlock`) for anything that fires input.
 
 CI runs **only the headless suite**. The maintainer does a final interactive verification of the
 Desktop tests before merging — so your PR must state you ran them locally (or that they're N/A).

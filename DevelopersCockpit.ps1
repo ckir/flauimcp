@@ -176,9 +176,13 @@ function Invoke-DevGate {
 # matters. That failure mode is silent, which is why the skipped count is called out as part of the gate.
 function Invoke-DesktopSuite {
     Write-C '  PRECONDITIONS — all four, or the result is meaningless:' 'Yellow'
-    Write-C '    1. a PHYSICAL console session, NOT RDP (SendInput does not deliver over RDP)' 'Yellow'
-    Write-C '       check with: qwinsta   -- trust that, NOT $env:SESSIONNAME, which is a stale' 'DarkGray'
-    Write-C '       per-process snapshot and keeps reporting RDP after you attach to the console' 'DarkGray'
+    Write-C '    1. a PHYSICAL console session, connected and unlocked — NOT RDP.' 'Yellow'
+    Write-C '       SendInput RETURNS SUCCESS over RDP (non-zero, GetLastError=0) but the keystroke can' 'DarkGray'
+    Write-C '       silently fail to LAND — queued is not delivered. So an RDP run does not error, it' 'DarkGray'
+    Write-C '       produces wrong results, which is worse. See the RDP-vs-console rule in the' 'DarkGray'
+    Write-C '       driving-flaui-mcp skill.' 'DarkGray'
+    Write-C '       check with: qwinsta   -- read the STATE column, NOT $env:SESSIONNAME, which is a' 'DarkGray'
+    Write-C '       per-process snapshot frozen at launch and keeps reporting the old session.' 'DarkGray'
     Write-C '    2. an active input lease, granted by a human:' 'Yellow'
     Write-C '       flaui-mcp unlock --minutes 45 --allow-shells' 'DarkGray'
     Write-C '       --allow-shells is MANDATORY, or the terminal-tab tests fail for an unrelated reason' 'DarkGray'

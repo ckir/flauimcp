@@ -341,8 +341,5 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   `Border`) never override `OnCreateAutomationPeer` → ABSENT from the tree, so an `AutomationId` on one can
   never scope a find (use a `GroupBox`, or walk from the window root — same set). And a `Button`'s `Content`
   gets its OWN child `Text` peer at the button's rect: one button is TWO nodes. *(verified live 2026-07-28)*
-- **Before leased input verify BOTH preconditions — each fails SILENTLY.** `SendInput` never delivers over RDP
-  and `$env:SESSIONNAME` is a stale per-process snapshot (seen reading `RDP-Tcp#0` on a genuine console) —
-  trust `qwinsta`'s current row. And `desktop_input_status` returns `secondsRemaining`, not just active/locked:
-  a lease lapsing mid-operation turns guarded work from asserting into SKIPPING. *(live 2026-07-28)*
+- **The lease's REMAINING time is a precondition, not just its existence.** `desktop_input_status` returns `secondsRemaining`, not merely active/locked — compare it against the WHOLE operation BEFORE starting, because a lease that lapses mid-run turns lease-guarded work from asserting into SKIPPING, which most runners report as success. And to establish *which session you are actually in* (see the RDP-vs-console rule in the manual above), read the STATE column from `qwinsta` — never `$env:SESSIONNAME`, which is a per-process snapshot frozen at launch and was seen still reporting `RDP-Tcp#0` well after the session had moved to the physical console. *(live 2026-07-28/29)*
 <!-- AUTOTRAIN:GROWTH:END -->

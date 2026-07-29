@@ -5,9 +5,10 @@
 Requires the **.NET 10 SDK** (the project targets `net10.0-windows`).
 
 ```powershell
-# Build + run tests. The Desktop-category tests need an interactive desktop; over RDP they run while the
-# session stays connected and unlocked. SendInput works over connected RDP too (session-state, not RDP —
-# no physical console required); it fails only when the session is disconnected/locked. See CONTRIBUTING.md.
+# Build + run tests. The Desktop-category tests need an interactive desktop, connected and unlocked.
+# The UIA-pattern tests run over RDP; the synthetic-input tests need a PHYSICAL CONSOLE — SendInput
+# returns success over RDP but the keystroke can silently fail to LAND, so an RDP run yields wrong
+# results rather than an error. See CONTRIBUTING.md.
 dotnet build test/FlaUI.Mcp.TestApp
 dotnet test
 
