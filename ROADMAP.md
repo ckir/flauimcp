@@ -2,7 +2,7 @@
 
 Design spec: [`docs/superpowers/specs/2026-06-25-flaui-mcp-server-design.md`](docs/superpowers/specs/2026-06-25-flaui-mcp-server-design.md)
 
-## Status: v1 feature-complete (2026-07-11, v0.13.0)
+## Status: v1 feature-complete (2026-07-11, v0.13.0) · **Track A complete — the v1.0 gate is met (2026-07-29)**
 
 The full phased v1 plan has shipped — window management, hybrid perception (a11y tree +
 screenshot/coordinates), pattern-based interaction, synthetic input behind the safety stack,
@@ -13,6 +13,11 @@ to *perceive and drive an arbitrary Windows desktop app* is present and dogfoode
 
 The roadmap therefore pivots from **"phases toward v1"** to **two forward tracks plus a formal
 drop-list.** Track A finishes the road to a stamped **v1.0**; Track B is curated post-v1.0 features.
+
+**Track A closed on 2026-07-29** — A1a delivered, and A1b (unattended runner) and A2 (code signing) were
+both dropped rather than deferred. Two consequences worth stating plainly, because they are permanent
+stances and not waiting states: **the product ships unsigned**, and **the Desktop suite is gated
+locally, not in CI**. Everything below Track A is now post-v1.0 work.
 
 ## v1 scope (in the spec)
 
@@ -28,93 +33,59 @@ scoping, connection-lifecycle cleanup, DPI-aware coordinate contract.
 
 ## Track A — v1.0 Release Candidate Path
 
-**Completing Track A is what stamps the official v1.0.** These are productionization/trust items, not
-features: they make the already-complete v1 surface *provably correct* and *trusted at install*. Ordered.
+**Completing Track A is what stamps the official v1.0.** This is a productionization item, not a feature:
+it makes the already-complete v1 surface *provably correct*.
 
-### A1 — Continuous interactive CI (Desktop/UIA + synthetic input) — **DO FIRST**
+### A1 — Continuous interactive CI (Desktop/UIA + synthetic input)
 
-Today the green CI badge proves only the *headless* half; the `Category=Desktop` suite — UIA + real
-`SendInput`, the product's entire reason to exist — is maintainer-run at manual smoke time. A regression
-in real interaction behavior is not caught continuously. This is the single biggest correctness blind
-spot, and it gates everything else: sign and ship only a tool that CI proves works.
+The green CI badge proves only the *headless* half; the `Category=Desktop` suite — UIA + real
+`SendInput`, the product's entire reason to exist — is maintainer-run at manual smoke time. **A1a is the
+whole of Track A, and therefore the whole of the v1.0 gate.**
 
-**Split (agy-consulted, user-decided 2026-07-11): A1a before A1b** — ship the test hygiene as its own
-green-locally increment first, then stand up the runner. Fixing flakes *inside* the runner work creates a
-"two variables" problem: a red build is then ambiguous between a bad test and a bad runner environment.
+#### A1a — Desktop suite reliably green **locally** ✅ **DELIVERED (2026-07-29)**
 
-#### A1a — Desktop suite reliably green **locally** (test hygiene) — the increment to build first
+**Definition of done met: `109 passed / 109`, plus the `PopupGrafting` half `1/1`, `0 skipped`,** run
+twice consecutively on a physical console with an ambient VS Code present — so the hermeticity case is
+the one that was measured, not a clean-room. Suite time 9.99 min.
 
-Pure test-harness work against code that exists today; no infra, no hardware. Definition of done: the
-whole `Category=Desktop` suite runs reliably green on a connected+leased dev console.
+> **⚠️ The previous entry here was WRONG, and the error is worth keeping.** It said the remaining work
+> was *"only to **validate** it green"*. The first real run measured **6 failed / 102 passed / 108**.
+> This was repair work, not validation. A claim that a suite is green because its known blockers were
+> fixed is not evidence that it is green — only running it is.
 
-- **`InputToolsTests` harness — ALREADY FIXED (`d84fedf`, 2026-07-03).** The Phase 7 §9 "known-broken
-  harness" note is stale: the `RefForAid` failure was resolved same-day by snapshotting with
-  `FullProperties=true` (which emits the `aid=` tokens `RefForAid` scans). Remaining A1a work here is
-  only to *validate* it green on a connected+leased console (needs the physical console + a lease).
-- **`TerminalTabE2ETests` title-settle flake — FIXED (this increment).** The independent restore-verify
-  hard-asserted after only a 5s bound on WT's async caption repaint; widened to the discovery poll's
-  proven 15s so the async-settle tail can't flake it under load.
+The six, and only one was the flake the entry assumed:
 
-#### A1b — Unattended interactive runner (infra) — **DEFERRED pending a ~$150 mini-PC** (decided 2026-07-11)
+| # | Test | Actual cause |
+|---|---|---|
+| 1 | `DesktopWakeTests.Waking_hydrates_the_tree_while_held` | Chromium hydration is a **ramp, not a step**; the fixed `Delay(1500)` sampled inside it |
+| 2 | `PresenceDesktopTests.Real_idle_source_reports_active_right_after_input` | Asserted a **human** had typed within 60s while synthesising nothing — so it failed whenever nobody had touched the machine, which is the state the suite requires |
+| 3 | `WaitForStableTests.Structure_is_stable_despite_a_live_ticker` | **Arithmetic, not flakiness.** One full walk costs ~3.0s, so `wait_for_stable` floors at ~12.5s against a 5000ms budget — unreachable by 2.5× even against a static tree |
+| 4,5 | `FindTests` ×2 | The tests confused `AutomationId` with **Name**. A `ListBoxItem`'s UIA Name is its `Content`, so items were `A/B/C/NamedOnly` and `contains "Item"` matched nothing. **Wrong since authored** — Desktop is not a CI job, so nothing caught it |
+| 6 | `WaitForTests.Delayed_control_becomes_satisfied_with_a_ref` | The fixture **overflowed its own clamped window**, so the bottom of the UIA tree was spatially culled: the second `DupRow` GroupBox was gone entirely and `Row1Btn`'s text survived on a 2px sliver |
 
-**Decision (agy-consulted divergent pass + user, 2026-07-11):** the maintainer has only a daily-driver
-machine. Forcing a focus-stealing `Category=Desktop` suite onto a working box is a path of endless
-friction, so A1b is **deferred until a cheap dedicated box exists** (~$150 mini-PC). At that point the
-plan-of-record below applies as-is. **v1.0 consequence:** completing Track A stamps v1.0, so v1.0 is now
-gated on this hardware — reconsider whether A1b must block v1.0 or can move to a v1.0.x follow-on (open).
+**#6 was the root defect** — one ~890 DIP column in a window the work area clamps. Fixed once, at the
+fixture, by a three-column layout against a two-dimensional budget derived from a 1366×768 @150% floor
+machine, with the window clamped to `Min(constant, WorkArea)` in both axes. A new
+`FixtureIntegrityTests` guard now fails loudly if any descendant escapes the window's bounds again.
 
-<details><summary>Daily-driver alternatives considered and parked (so a future session need not re-derive)</summary>
+**Three defects nobody was looking for** came out alongside: a test that **could not fail** (it asserted
+only a timeout under a budget one poll already overran, so it would have passed against a frozen
+window); a containment guard that would have **passed vacuously** if its tree walk threw; and teardown
+that waited on the developer's **entire VS Code installation** — 4s → 59s per test, ~2.75 min per run.
 
-- **V2 — GHA self-hosted runner + manual `workflow_dispatch`** (leanest, ~15 min): runner on the daily
-  driver, Desktop job runs only when manually dispatched against a **fresh clone**; you trigger it when
-  stepping away. Tests the *committed* tree (PR = source of truth). Not auto-continuous; risk of an
-  accidental mid-work input seize if left armed.
-- **V1 — Hyper-V VM in *Basic* Session Mode** (true continuous, ~2 h + perpetual 4–8 GB RAM): a runner
-  inside a local VM. **Key fact:** *Basic* (not *Enhanced*/RDP) session keeps a **synthetic physical
-  console** (virtual framebuffer), so `SendInput` inside the VM works fully, decoupled from the host
-  input even when minimized. This is the one way to get continuous gating on a single machine — costs a
-  second OS running forever.
-- **Rejected — local script gating** (agy's challenge, correct): a local `dotnet test` script tests the
-  **dirty working tree, not the commit** → you pass locally, tag, then find an un-`git add`ed file.
-  Whatever ships MUST run via a GHA runner against a fresh clone, never a working-tree script.
+**AGY-CAPSTONE: GREEN at round 7**, folding **21 verified defects out of two files**. In every round up
+to the sixth, the *previous round's fixes* were a main source of the next round's findings. Roughly
+three findings were refuted by measurement, and twice a correct finding arrived with a wrong or
+incomplete fix — so each proposed fix was traced through its own case matrix before being committed.
 
-</details>
+**Still true and NOT a defect:** the suite is not in CI and requires a **physical console** (`SendInput`
+does not deliver over RDP) plus an **input lease** (`flaui-mcp unlock --minutes N --allow-shells`), and
+the operator must step away. `0 skipped` is part of the gate: several tests are `[SkippableFact]`
+lease-guarded and xUnit exits 0 on a skip, so a lease-less run reports a clean exit while bypassing
+every assertion that matters. Run it from the cockpit (`K`).
 
-When the box exists — the **sound** unattended approach (feasibility validated 2026-07-03): `SendInput` works in any
-*connected, unlocked* session, so a local connected+leased run is already a legitimate pre-tag gate.
-For unattended: Sysinternals **Autologon → box boots into an unlocked physical console → run the CI agent
-as an interactive startup app** (never a Session-0 Windows service). `tscon /dest:console` is **not**
-sound (resolution collapse breaks bounds/visibility tests; WS2022/Win11 harden against `tscon` hijacking).
-
-Plan-of-record for the A1b spec (agy-consulted 2026-07-11):
-- **Runner model:** self-hosted **GitHub Actions** runner launched via the **startup folder**
-  (`shell:startup`, *not* a service — so it inherits the Autologon unlocked session), labeled e.g.
-  `[self-hosted, windows-desktop-automation]` so existing workflows fan a `Category=Desktop` job onto it.
-  Keeps all signal on the PR ("PR is source of truth"), vs. an out-of-band nightly task hiding failures
-  in local logs.
-- **Gating posture:** **informational first** (runs on PRs, non-blocking), promote to a *required* check
-  only after a few weeks of proven-green — real-`SendInput` UI tests are inherently flake-prone (focus
-  theft, update reboots, timing jitter), so day-one blocking self-inflicts merge blocks.
-- **Host:** a **dedicated box/VM, not the maintainer's daily driver** (a push would seize the mouse
-  mid-work; an RDP disconnect locks the session → `SendInput` silently drops). Physical headless box
-  needs an **HDMI dummy plug** (else Windows collapses to 640×480 and breaks bounds tests); manage a VM
-  via the Hyper-V console, never RDP.
-- **Host hardening (runner reliability):** disable screen-sleep + lock-on-idle (or PowerToys Awake) — an
-  idle lock after ~15 min fails all subsequent jobs; and debloat / disable notifications (Windows Update,
-  Edge "make default", AV scans steal focus mid-test).
-- Complements the deferred "Full DPI × OS × integrity test matrix in CI" (kept in v2 — CI runners are
-  single-DPI/non-elevated; the DPI matrix stays a documented manual gate).
-
-### A2 — Code signing the distributed exe
-
-An unsigned, self-extracting binary that **synthesizes input and configures agents** is a rough
-first-touch trust barrier for a *security* tool — a strong AV/SmartScreen trigger. Authenticode signing
-(cert) materially improves the install experience and unblocks locked-down environments. v1 ships
-unsigned + checksum + "Run anyway" docs; signing is the last thing before the v1.0 stamp.
-
-> **Ordering note (agy-consulted, user-decided 2026-07-11):** A1 before A2 — *guarantee the tool works
-> (CI) before asking the OS to vouch for it (signing).* The exception that would flip it: a hard adoption
-> wall where target users literally cannot run an unsigned exe. Not the case today.
+**Track A is therefore complete, and the v1.0 gate is met** — stamping v1.0 is a release decision, not a
+remaining engineering task.
 
 ---
 
