@@ -618,8 +618,35 @@ public sealed class PerceptionManager
             // includeOffscreen is the CALLER's opt-out (desktop_wait_for's parameter). Without threading
             // it here, wait_for(until:valueEquals, includeOffscreen:true) silently kept filtering — the
             // flag was accepted and ignored on exactly one of the four `until` values.
-            bool NotOffscreen(AutomationElement e)
-            { if (includeOffscreen) return true; try { return !e.Properties.IsOffscreen.ValueOrDefault; } catch { return false; } }
+            // WHAT AN UNREADABLE IsOffscreen MEANS -- the two sides of this codebase used to disagree.
+            // SnapshotEngine reads it as Safe(..., fallback: false), so an element whose IsOffscreen
+            // THROWS is treated as on-screen and KEPT in the walk. This evaluator did the opposite: its
+            // catch returned false for "not offscreen", so the element was silently DROPPED. Net effect,
+            // for an element with a throwing IsOffscreen: until=exists satisfies, until=valueEquals can
+            // never satisfy, forever. Two predicates disagreeing about whether an element exists at all.
+            //
+            // Aligned here, but NOT by simply flipping the catch to "keep it" as first proposed. This is
+            // a FIRST-MATCH selector: flipping the fallback makes a broken element WIN over a healthy
+            // sibling carrying the same automationId, so a wait that works today would start timing out.
+            // Instead: prefer a definitely-visible match, and fall back to an unreadable one only when
+            // there is no visible candidate at all -- which is precisely the case where the engine would
+            // have kept it, so the divergence closes without reordering anything that already worked.
+            // Definitely-OFFSCREEN elements are still skipped outright; that was never in question.
+            static bool? TryReadOffscreen(AutomationElement e)
+            { try { return e.Properties.IsOffscreen.ValueOrDefault; } catch { return null; } }
+
+            AutomationElement? PickVisible(AutomationElement[] candidates)
+            {
+                AutomationElement? unreadable = null;
+                foreach (var e in candidates)
+                {
+                    if (includeOffscreen) return e;          // caller opted out of the filter entirely
+                    var offscreen = TryReadOffscreen(e);
+                    if (offscreen == false) return e;        // definitely on-screen: best answer, stop
+                    if (offscreen is null) unreadable ??= e; // could not tell: hold as a last resort
+                }
+                return unreadable;
+            }
 
             // Parsed once per CALL, hoisted out of the per-root loop below. (Not once per WAIT: the
             // caller polls this method, so the parse still runs each poll -- it is a string parse, not
@@ -632,9 +659,9 @@ public sealed class PerceptionManager
             bool hasCt = FindQuerySpec.TryParseControlType(value, out var wantedCt);
             AutomationElement? Probe(AutomationElement r) => by switch
             {
-                "automationId" => r.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
-                "name" => r.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
-                "controlType" => hasCt ? r.FindAllDescendants(cf => cf.ByControlType(wantedCt)).FirstOrDefault(NotOffscreen) : null,
+                "automationId" => PickVisible(r.FindAllDescendants(cf => cf.ByAutomationId(value))),
+                "name" => PickVisible(r.FindAllDescendants(cf => cf.ByName(value))),
+                "controlType" => hasCt ? PickVisible(r.FindAllDescendants(cf => cf.ByControlType(wantedCt))) : null,
                 _ => null
             };
 
