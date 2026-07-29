@@ -33,6 +33,17 @@ public sealed class WaitCoordinator
 
     internal static SnapshotOptions PollOptions => new() { InteractiveOnly = false, IncludeOffscreen = false };
 
+    /// <summary>PollOptions with the spatial cull disabled and the IsOffscreen filter KEPT. Used only
+    /// at a decision point — the `gone` confirmation and the exists/enabled timeout diagnostic — never
+    /// for steady-state polling, so per-poll cost is unchanged.
+    /// IncludeOffscreen MUST stay false here. Setting it true would disable BOTH filters, so the
+    /// `gone` confirmation walk would find an IsOffscreen=true element, latch, and loop to timeout —
+    /// breaking the spec's guarantee that such an element still satisfies `gone` instantly. The one
+    /// place IncludeOffscreen=true is correct is the CALLER's opt-in in Task 7, which is a different
+    /// options object; do not conflate the two.</summary>
+    internal static SnapshotOptions UnculledPollOptions =>
+        new() { InteractiveOnly = false, IncludeOffscreen = false, CullToWindowBounds = false };
+
     private static string Signature(IEnumerable<SnapshotNode> nodes, bool includeText)
         => string.Join("\n", nodes.Select(n => includeText
             ? $"{n.ControlType}:{n.AutomationId}:{n.Depth}:{n.Name}"
@@ -82,6 +93,7 @@ public sealed class WaitCoordinator
         if (until == "valueEquals" && equals is null)
             throw new ToolException(ToolErrorCode.InvalidArguments, "until:valueEquals requires 'equals'.", "pass equals=<expected value>");
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        bool latched = false; // per-call; never outlives this wait
         while (true)
         {
             bool satisfied;
@@ -92,13 +104,48 @@ public sealed class WaitCoordinator
             }
             else
             {
+                var pollOptions = latched ? UnculledPollOptions : PollOptions;
                 CountWalk();
-                var (_, model) = await _perception.BuildModelAsync(handle, PollOptions, new RefRegistry());
+                var (_, model) = await _perception.BuildModelAsync(handle, pollOptions, new RefRegistry());
                 var match = model.Nodes.FirstOrDefault(n => Matches(n, by, value));
                 satisfied = until switch
                 {
-                    "exists" => match is not null, "gone" => match is null, "enabled" => match is { Enabled: true }, _ => match is not null
+                    "exists" => match is not null,
+                    "gone" => match is null,
+                    "enabled" => match is { Enabled: true },
+                    _ => match is not null
                 };
+
+                // `gone` is the one predicate where the spatial cull causes a false POSITIVE: a culled
+                // element is absent from the model, so `match is null` reports it destroyed when it is
+                // merely clipped. Before satisfying, confirm against a walk without the spatial cull.
+                // Skipped when the poll walk is ALREADY unculled (latched, or the caller opted in) —
+                // the confirmation would be byte-identical to the poll we just did.
+                if (satisfied && until == "gone" && !latched)
+                {
+                    CountWalk();
+                    bool stillThere;
+                    try
+                    {
+                        var (_, unculled) = await _perception.BuildModelAsync(handle, UnculledPollOptions, new RefRegistry());
+                        stillThere = unculled.Nodes.Any(n => Matches(n, by, value));
+                    }
+                    catch
+                    {
+                        // Best-effort: a window closed or denied mid-wait must not convert a completed
+                        // wait into a throw. Could not confirm -> keep the culled walk's answer.
+                        stillThere = false;
+                    }
+
+                    if (stillThere)
+                    {
+                        satisfied = false;
+                        // LATCH: this element is present-but-culled, so every later poll would repeat
+                        // this same double walk. Switch to the unculled walk for the rest of the call —
+                        // one walk per poll, not two, and only after the expensive case is proven.
+                        latched = true;
+                    }
+                }
             }
             if (satisfied)
             {
