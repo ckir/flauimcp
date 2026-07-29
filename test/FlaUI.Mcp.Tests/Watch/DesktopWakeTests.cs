@@ -71,65 +71,42 @@ public class DesktopWakeTests
         public required int Pid { get; init; }
         public required string ProfileDir { get; init; }
 
-        /// <summary>
-        /// Code.exe pids that already existed when we launched -- the developer's own editor. Teardown
-        /// must be able to tell those from our tree: we never kill them, so waiting on them blocks the
-        /// full timeout apiece for no reason.
-        /// </summary>
-        public required System.Collections.Generic.HashSet<int> PreExistingCodePids { get; init; }
-
         public void Dispose()
         {
-            // Order matters and every part of it is load-bearing.
-            // 1. Open and HOLD handles for the whole tree BEFORE signalling termination. Querying
-            //    the tree after Kill returns nothing useful (parent gone, children reparented), and
-            //    GetProcessById on an already-dead child throws -- which would crash teardown
-            //    before the delete loop runs. A handle opened before the kill stays valid after
-            //    the process exits; a raw integer pid does not.
-            var held = new System.Collections.Generic.List<System.Diagnostics.Process>();
-            try
-            {
-                var root = System.Diagnostics.Process.GetProcessById(Pid);
-                held.Add(root);
-
-                // OUR TREE ONLY. GetProcessesByName("Code") returns EVERY VS Code on the machine,
-                // including the developer's own editor -- which step 2 never kills, so the
-                // WaitForExit in step 3 would block its FULL timeout on each one. Measured: with 11
-                // ambient Code.exe processes this added ~55s to every test in this class (4s -> 59s),
-                // i.e. ~2.75 minutes per suite run, on any machine with VS Code open. PreExistingCodePids
-                // is snapshotted immediately before launch, so anything absent from it is ours.
-                foreach (var p in System.Diagnostics.Process.GetProcessesByName("Code"))
-                {
-                    bool ours;
-                    try { ours = p.Id != Pid && !PreExistingCodePids.Contains(p.Id) && !p.HasExited; }
-                    catch { ours = false; }
-
-                    if (ours) held.Add(p);
-                    // Dispose what we do NOT hold: Process wraps a Win32 handle, and anything not added
-                    // to `held` is never reached by the disposal loop below, so it would leak until GC
-                    // finalisation.
-                    else try { p.Dispose(); } catch { }
-                }
-            }
+            // 1. Hold the ROOT handle, opened BEFORE the kill. A handle opened before termination
+            //    stays valid afterwards; a raw integer pid does not, and GetProcessById on an
+            //    already-dead process throws -- which would crash teardown before the delete runs.
+            System.Diagnostics.Process? root = null;
+            try { root = System.Diagnostics.Process.GetProcessById(Pid); }
             catch { /* already gone */ }
 
-            // 2. Kill the tree.
-            try { if (held.Count > 0 && !held[0].HasExited) held[0].Kill(entireProcessTree: true); }
+            // 2. Kill the whole tree; this signals our children too.
+            try { if (root is not null && !root.HasExited) root.Kill(entireProcessTree: true); }
             catch { }
-
-            // 3. WaitForExit on EVERY held handle, not just the root. Kill is non-blocking, and
-            //    WaitForExit blocks only on the handle it is called on -- waiting on the root alone
-            //    returns while the GPU/renderer children still hold the profile's SQLite locks.
-            foreach (var p in held)
-            {
-                try { p.WaitForExit(5000); } catch { }
-                try { p.Dispose(); } catch { }
-            }
+            try { root?.WaitForExit(5000); } catch { }
+            try { root?.Dispose(); } catch { }
 
             try { Windows.Dispose(); } catch { }
             try { Dispatcher.Dispose(); } catch { }
 
-            // 4. Delete with backoff -- the observable to poll is "the directory is gone".
+            // 3. DELETING THE DIRECTORY IS THE REAL OBSERVABLE, and it is deliberately the ONLY thing
+            //    guarding against still-exiting children.
+            //
+            //    Two earlier versions enumerated Code.exe to wait on the children individually. Both
+            //    were wrong, and the second was wrong in the opposite direction from the first:
+            //      - waiting on EVERY Code.exe blocks the full timeout on the developer's own editor,
+            //        which we never kill. Measured at 11 ambient processes: 4s -> 59s per test.
+            //      - waiting only on pids absent from a pre-launch snapshot misclassifies in BOTH
+            //        directions -- a recycled pid makes one of OUR children look ambient so it is
+            //        never waited on, and an ambient process spawned mid-test looks like ours so we
+            //        block 5s on something we never killed.
+            //    Distinguishing our process tree from a foreign one is not reliably expressible here,
+            //    so it is the wrong mechanism. Polling the observable we actually care about is the
+            //    right one, and it is immune to both misclassifications by construction.
+            //
+            //    Kill is non-blocking and WaitForExit binds to a single handle, so GPU/renderer
+            //    children can briefly outlive the root while still holding the profile's SQLite
+            //    locks. The backoff simply retries until they let go.
             TryDelete(ProfileDir);
         }
     }
@@ -145,72 +122,66 @@ public class DesktopWakeTests
         System.IO.Directory.CreateDirectory(profile);
         System.IO.File.WriteAllText(System.IO.Path.Combine(profile, "owner.txt"), "launching");
 
-        // Snapshot the developer's own Code.exe pids BEFORE launching, so teardown can distinguish
-        // their editor from our tree. Dispose the handles straight away -- only the ids are wanted.
-        var preExistingCodePids = new System.Collections.Generic.HashSet<int>();
-        foreach (var p in System.Diagnostics.Process.GetProcessesByName("Code"))
-        {
-            preExistingCodePids.Add(p.Id);
-            try { p.Dispose(); } catch { }
-        }
-
-        var dispatcher = new AutomationDispatcher();
-        var mgr = new WindowManager(dispatcher);
-        var refs = new RefRegistry();
-        var registry = new WakeRegistry();
-        var source = new Uia3EventSource(mgr);
-        var wake = new WakeService(source, registry, mgr);
-        var perception = new PerceptionManager(mgr, refs, new SnapshotCache());
-
-        // Instance isolation. NOTE the reason, which is NOT what an earlier draft claimed: this does
-        // not prevent waking a process that does not own the measured window -- LaunchAppAsync
-        // (WindowManager.cs:396-439) snapshots pre-existing pids and accepts a window only from the
-        // launched pid or a NEW same-named one, so it can never latch an ambient instance. What it
-        // WOULD do without isolation is fall through to the LaunchTimeout throw at :436 whenever a
-        // developer already has VS Code open. Isolation is what makes this green on any dev machine.
-        //
-        // A pristine --user-data-dir yields the FIRST-RUN tree, not a clean one: trust prompts,
-        // welcome/release-notes tabs and extension toasts steal focus and change the node count,
-        // which is exactly what the hydration assertion measures. First-run suppression is therefore
-        // not optional decoration -- it is forced by the isolation above.
-        var args = string.Join(' ',
-            $"--user-data-dir \"{profile}\"",
-            "--new-window",
-            "--disable-workspace-trust",
-            "--skip-welcome",
-            "--skip-release-notes",
-            "--disable-telemetry",
-            "--disable-extensions");
-
-        // 40s, not 20s: a first-run launch is slower than the 8-15s measured on a warm profile.
-        WindowHandle handle;
-        int pid;
+        // EVERYTHING from here to the successful return is inside one try. The profile directory has
+        // already been created above -- it must be, because its path is passed as a launch argument --
+        // so any throw between that creation and the return leaves no Rig, hence no Dispose, hence a
+        // leaked directory AND leaked COM objects. Wrapping only the launch call was not enough: the
+        // dispatcher and WindowManager constructors sit in the same unprotected window.
+        AutomationDispatcher? dispatcher = null;
+        WindowManager? mgr = null;
         try
         {
-            (handle, pid) = await mgr.LaunchAppAsync(ResolveVsCode(), args, 40000);
+            dispatcher = new AutomationDispatcher();
+            mgr = new WindowManager(dispatcher);
+            var refs = new RefRegistry();
+            var registry = new WakeRegistry();
+            var source = new Uia3EventSource(mgr);
+            var wake = new WakeService(source, registry, mgr);
+            var perception = new PerceptionManager(mgr, refs, new SnapshotCache());
+
+            // Instance isolation. NOTE the reason, which is NOT what an earlier draft claimed: this
+            // does not prevent waking a process that does not own the measured window --
+            // LaunchAppAsync (WindowManager.cs:396-439) snapshots pre-existing pids and accepts a
+            // window only from the launched pid or a NEW same-named one, so it can never latch an
+            // ambient instance. What it WOULD do without isolation is fall through to the
+            // LaunchTimeout throw at :436 whenever a developer already has VS Code open. Isolation is
+            // what makes this green on any dev machine.
+            //
+            // A pristine --user-data-dir yields the FIRST-RUN tree, not a clean one: trust prompts,
+            // welcome/release-notes tabs and extension toasts steal focus and change the node count,
+            // which is exactly what the hydration assertion measures. First-run suppression is
+            // therefore not optional decoration -- it is forced by the isolation above.
+            var args = string.Join(' ',
+                $"--user-data-dir \"{profile}\"",
+                "--new-window",
+                "--disable-workspace-trust",
+                "--skip-welcome",
+                "--skip-release-notes",
+                "--disable-telemetry",
+                "--disable-extensions");
+
+            // 40s, not 20s: a first-run launch is slower than the 8-15s measured on a warm profile.
+            var (handle, pid) = await mgr.LaunchAppAsync(ResolveVsCode(), args, 40000);
+
+            System.IO.File.WriteAllText(System.IO.Path.Combine(profile, "owner.txt"),
+                $"{pid}|{System.Diagnostics.Process.GetProcessById(pid).StartTime.Ticks}");
+
+            return new Rig
+            {
+                Dispatcher = dispatcher, Windows = mgr, Registry = registry, Wake = wake,
+                Perception = perception, Handle = handle, Pid = pid, ProfileDir = profile
+            };
         }
         catch
         {
-            // The profile directory has to be created BEFORE the launch, because its path is passed as
-            // a launch argument. So if the launch throws -- LaunchTimeout, VS Code missing -- no Rig is
-            // returned, Rig.Dispose never runs, and the directory plus the automation objects leak. The
-            // sweep would eventually reap the directory via its 3-hour backstop, but the dispatcher and
-            // WindowManager would not be reclaimed at all.
-            try { mgr.Dispose(); } catch { }
-            try { dispatcher.Dispose(); } catch { }
+            // Ownership has NOT transferred to a Rig, so this is the only place these can be released.
+            // Order mirrors Rig.Dispose: WindowManager tears down the automation base via the
+            // dispatcher, so it must go first while the dispatcher is still alive.
+            try { mgr?.Dispose(); } catch { }
+            try { dispatcher?.Dispose(); } catch { }
             TryDelete(profile);
             throw;
         }
-
-        System.IO.File.WriteAllText(System.IO.Path.Combine(profile, "owner.txt"),
-            $"{pid}|{System.Diagnostics.Process.GetProcessById(pid).StartTime.Ticks}");
-
-        return new Rig
-        {
-            Dispatcher = dispatcher, Windows = mgr, Registry = registry, Wake = wake,
-            Perception = perception, Handle = handle, Pid = pid, ProfileDir = profile,
-            PreExistingCodePids = preExistingCodePids
-        };
     }
 
     /// <summary>
@@ -255,12 +226,19 @@ public class DesktopWakeTests
         }
     }
 
+    /// <summary>
+    /// Retry-with-backoff delete. This is now the SOLE guard against a still-exiting Electron child
+    /// holding the profile's SQLite locks, so it is deliberately more patient than a bare delete:
+    /// 8 attempts at 250ms increments is ~9s of total tolerance, against children that normally let go
+    /// within a second of a tree kill. If it still cannot delete, the stale-profile sweep reaps the
+    /// directory on a later run -- that backstop is why giving up here is safe rather than silent.
+    /// </summary>
     private static void TryDelete(string dir)
     {
-        for (var attempt = 0; attempt < 5; attempt++)
+        for (var attempt = 0; attempt < 8; attempt++)
         {
             try { System.IO.Directory.Delete(dir, recursive: true); return; }
-            catch { System.Threading.Thread.Sleep(200 * (attempt + 1)); }
+            catch { System.Threading.Thread.Sleep(250 * (attempt + 1)); }
         }
     }
 
