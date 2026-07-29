@@ -129,6 +129,10 @@ public class DesktopWakeTests
         // dispatcher and WindowManager constructors sit in the same unprotected window.
         AutomationDispatcher? dispatcher = null;
         WindowManager? mgr = null;
+        // Declared OUTSIDE the try on purpose. If the launch succeeds and something after it throws,
+        // we own a running VS Code tree that no Rig will ever dispose -- and a pid scoped inside the
+        // try is invisible to the catch, so the tree would be orphaned permanently.
+        var launchedPid = 0;
         try
         {
             dispatcher = new AutomationDispatcher();
@@ -162,6 +166,7 @@ public class DesktopWakeTests
 
             // 40s, not 20s: a first-run launch is slower than the 8-15s measured on a warm profile.
             var (handle, pid) = await mgr.LaunchAppAsync(ResolveVsCode(), args, 40000);
+            launchedPid = pid;
 
             System.IO.File.WriteAllText(System.IO.Path.Combine(profile, "owner.txt"),
                 $"{pid}|{System.Diagnostics.Process.GetProcessById(pid).StartTime.Ticks}");
@@ -174,7 +179,23 @@ public class DesktopWakeTests
         }
         catch
         {
-            // Ownership has NOT transferred to a Rig, so this is the only place these can be released.
+            // Ownership has NOT transferred to a Rig, so this is the only place any of it gets
+            // released. The launched process comes FIRST: if the launch succeeded and a later step
+            // threw -- the owner.txt write, or GetProcessById on a process that is already exiting --
+            // then a full VS Code tree is running with nothing holding a reference to it, and killing
+            // it here is the only thing standing between that and a permanent orphan. It also has to
+            // die before TryDelete, or its children still hold the profile's locks.
+            if (launchedPid != 0)
+            {
+                try
+                {
+                    using var p = System.Diagnostics.Process.GetProcessById(launchedPid);
+                    if (!p.HasExited) p.Kill(entireProcessTree: true);
+                    p.WaitForExit(5000);
+                }
+                catch { /* already gone, or not inspectable -- nothing further we can do */ }
+            }
+
             // Order mirrors Rig.Dispose: WindowManager tears down the automation base via the
             // dispatcher, so it must go first while the dispatcher is still alive.
             try { mgr?.Dispose(); } catch { }
@@ -235,11 +256,22 @@ public class DesktopWakeTests
     /// </summary>
     private static void TryDelete(string dir)
     {
+        System.Exception? last = null;
         for (var attempt = 0; attempt < 8; attempt++)
         {
             try { System.IO.Directory.Delete(dir, recursive: true); return; }
-            catch { System.Threading.Thread.Sleep(250 * (attempt + 1)); }
+            catch (System.Exception ex) { last = ex; System.Threading.Thread.Sleep(250 * (attempt + 1)); }
         }
+
+        // Exhausted. Deliberately does NOT throw: this runs from Dispose and from a catch block, and
+        // turning a passing test red over a cleanup hiccup would misreport what actually happened.
+        // But it must not be SILENT either -- a give-up that leaves no trace is indistinguishable from
+        // a clean delete, so a genuine leak would look exactly like success. Say so, loudly enough to
+        // find afterwards, and let the stale-profile sweep reap it on the next run.
+        System.Console.WriteLine(
+            $"[wake-teardown] GAVE UP deleting profile after 8 attempts (~9s): {dir} -- " +
+            $"something still holds it ({last?.GetType().Name}: {last?.Message}). " +
+            "The stale-profile sweep will reap it on a later run.");
     }
 
     [Fact]
