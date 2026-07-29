@@ -15,6 +15,14 @@ public sealed class WaitCoordinator
     private readonly PerceptionManager _perception;
     public WaitCoordinator(PerceptionManager perception) => _perception = perception;
 
+    // Test observability for the latch (Task 5): the latch's contract is "one walk per poll after the
+    // first satisfy-attempt, never two", which is only assertable by counting. Incremented on EVERY
+    // BuildModelAsync issued by this coordinator. internal + InternalsVisibleTo("FlaUI.Mcp.Tests")
+    // (src/FlaUI.Mcp.Core/Properties/AssemblyInfo.cs:2). NOT thread-safe by design: one wait call owns
+    // one coordinator in the tests that read it, and production never reads it.
+    internal int WalkCount { get; private set; }
+    private void CountWalk() => WalkCount++;
+
     internal static bool Matches(SnapshotNode n, string by, string value) => by switch
     {
         "automationId" => string.Equals(n.AutomationId, value, System.StringComparison.Ordinal),
@@ -50,6 +58,7 @@ public sealed class WaitCoordinator
         bool scopeRequested = !string.IsNullOrEmpty(by) && !string.IsNullOrEmpty(value);
         while (true)
         {
+            CountWalk();
             var (_, model) = await _perception.BuildModelAsync(handle, PollOptions, new RefRegistry());
             var sub = Subtree(model, by, value);
             if (scopeRequested && sub.Count == 0)
@@ -58,6 +67,7 @@ public sealed class WaitCoordinator
             stableCount = sig == last ? stableCount + 1 : 0; last = sig;
             if (stableCount >= needed)
             {
+                CountWalk();
                 var (snapId, _) = await _perception.SnapshotModelForWaitAsync(handle, PollOptions);
                 return new WaitStableResult(true, (int)sw.ElapsedMilliseconds, snapId);
             }
@@ -82,6 +92,7 @@ public sealed class WaitCoordinator
             }
             else
             {
+                CountWalk();
                 var (_, model) = await _perception.BuildModelAsync(handle, PollOptions, new RefRegistry());
                 var match = model.Nodes.FirstOrDefault(n => Matches(n, by, value));
                 satisfied = until switch
@@ -91,6 +102,7 @@ public sealed class WaitCoordinator
             }
             if (satisfied)
             {
+                CountWalk();
                 var (snapId, real) = await _perception.SnapshotModelForWaitAsync(handle, PollOptions);
                 var realMatch = real.Nodes.FirstOrDefault(n => Matches(n, by, value));
                 return new WaitForResult(true, realMatch?.Ref, (int)sw.ElapsedMilliseconds, snapId);
