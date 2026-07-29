@@ -50,6 +50,29 @@ public sealed class WaitCoordinator
     /// (each poll still pays for a full tree walk, so it is not a spin).</summary>
     private static int SafeDelayMs(int requested) => requested < 0 ? 0 : requested;
 
+    /// <summary>True when the element at <paramref name="hitIndex"/> was walked under the WINDOW root,
+    /// so the window's rect is the rect it was actually culled against.
+    /// This gate exists because "outsideWindowBounds" is only a true statement about window-rooted
+    /// elements. SnapshotEngine visits each grafted popup with ITS OWN rect as the cull bounds, and a
+    /// menu or dropdown routinely renders past the owner window's edge — so comparing a popup child
+    /// against the WINDOW rect answers a question nobody asked. It fails in BOTH directions: a popup
+    /// child outside its popup but inside the window is missed, and — far worse — a popup child that is
+    /// perfectly visible inside its popup but beyond the window edge gets confidently blamed on
+    /// geometry, when the real reason the wait failed is something else entirely (it was never enabled).
+    /// This class's own docstring says blaming the wrong cause confidently is worse than the bare
+    /// timeout it replaces, so a popup-rooted element gets NO geometry blame rather than a wrong one.
+    /// Reporting the popup's rect instead is not an option: the field is named windowBounds and
+    /// UnsatisfiedBecause is a closed one-token set.
+    /// Mechanism: the window root is nodes[0]; every grafted popup root is also emitted at depth 0
+    /// (SnapshotEngine visits them with depth 0). So the nearest depth-0 node at or before the hit IS
+    /// its walk root, and only index 0 is the window.</summary>
+    private static bool CulledAgainstTheWindow(IReadOnlyList<SnapshotNode> nodes, int hitIndex)
+    {
+        for (int i = hitIndex; i >= 0; i--)
+            if (nodes[i].Depth == 0) return i == 0;
+        return false;
+    }
+
     internal static bool Matches(SnapshotNode n, string by, string value) => by switch
     {
         "automationId" => string.Equals(n.AutomationId, value, System.StringComparison.Ordinal),
@@ -258,9 +281,11 @@ public sealed class WaitCoordinator
                     {
                         CountWalk();
                         var (_, diag) = await _perception.BuildModelAsync(handle, UnculledPollOptions, new RefRegistry());
-                        var hit = diag.Nodes.FirstOrDefault(n => Matches(n, by, value));
-                        var root = diag.Nodes.FirstOrDefault();   // depth-0 node IS the window: PollOptions sets no RootRef
-                        if (hit is not null && root is not null)
+                        var nodes = diag.Nodes.ToList();
+                        int hitIndex = nodes.FindIndex(n => Matches(n, by, value));
+                        var hit = hitIndex >= 0 ? nodes[hitIndex] : null;
+                        var root = nodes.Count > 0 ? nodes[0] : null;   // depth-0 node IS the window: PollOptions sets no RootRef
+                        if (hit is not null && root is not null && CulledAgainstTheWindow(nodes, hitIndex))
                         {
                             // MEASURE the geometry. Do NOT infer "it was culled" from the element being
                             // absent in the culled walk and present here: an element that rendered in the

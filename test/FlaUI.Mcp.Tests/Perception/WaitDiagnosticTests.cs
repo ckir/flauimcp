@@ -70,6 +70,31 @@ public class WaitDiagnosticTests : IClassFixture<TestAppFixture>
         Assert.Null(r.UnsatisfiedBecause);
     }
 
+    /// <summary>`gone` is excluded from the timeout diagnostic entirely. Asserting UnsatisfiedBecause is
+    /// null would NOT pin that -- an in-window element intersects the window rect, so the diagnostic
+    /// would decline to blame geometry anyway and the assertion passes with the exclusion deleted. The
+    /// WALK COUNT is what discriminates: with the exclusion the timeout path issues no extra walk, and
+    /// without it a ~3s unculled walk runs to compute an answer that is false before it starts.
+    /// An unlatched `gone` timeout is the reachable shape here -- the element is present in the CULLED
+    /// poll every time, so nothing ever satisfies, nothing confirms, and nothing latches.</summary>
+    [Fact]
+    public async Task Gone_timing_out_does_not_pay_for_a_diagnostic_walk()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var (wait, handle) = await ArrangeAsync(dispatcher, mgr, _app.Process.Id);
+
+        var r = await wait.WaitForAsync(handle, "automationId", "DisabledButton",
+            until: "gone", equals: null, timeoutMs: 900, pollIntervalMs: 300);
+
+        Assert.False(r.Satisfied);
+        Assert.Null(r.UnsatisfiedBecause);
+
+        // Never satisfied => no confirmation walk and no satisfy walk, so every walk issued was a poll.
+        Assert.Equal(0, wait.ConfirmationWalkCount);
+        Assert.Equal(wait.PollWalkCount, wait.WalkCount);
+    }
+
     [Fact]
     public async Task Opting_in_lets_exists_satisfy_on_a_spatially_culled_element()
     {

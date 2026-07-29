@@ -503,14 +503,30 @@ public sealed class PerceptionManager
             bool needDedup = roots.Count > 1;
             var rawList = new List<AutomationElement>();
             var seenRids = new List<int[]>();
-            foreach (var r in roots)
+            AutomationElement[] Enumerate(AutomationElement r)
+                => (hasNative ? r.FindAllDescendants(cf => Build(cf)!) : r.FindAllDescendants()).ToArray();
+
+            for (int rootIndex = 0; rootIndex < roots.Count; rootIndex++)
             {
                 AutomationElement[] perRoot;
-                try
+                if (rootIndex == 0)
                 {
-                    perRoot = (hasNative ? r.FindAllDescendants(cf => Build(cf)!) : r.FindAllDescendants()).ToArray();
+                    // roots[0] is the WINDOW (PopupFinder.cs:16) -- or, under a scopeRef, the single
+                    // resolved element. A failure here is the target dying, not a popup closing
+                    // mid-search, and swallowing it made find answer "no matches" for a window that no
+                    // longer exists: a wrong belief dressed as an empty result, which is the same defect
+                    // class this branch exists to remove. EvaluateSelectorValueAsync was given this
+                    // exemption first; leaving find without it left the two siblings disagreeing about
+                    // what a dead window means.
+                    perRoot = Enumerate(roots[rootIndex]);
                 }
-                catch { continue; }
+                else
+                {
+                    // PER-ROOT isolation, popups only: a tooltip closing mid-search must not zero out
+                    // the window's own matches. A root that throws contributes nothing.
+                    try { perRoot = Enumerate(roots[rootIndex]); }
+                    catch { continue; }
+                }
 
                 if (!needDedup) { rawList.AddRange(perRoot); continue; }
 
