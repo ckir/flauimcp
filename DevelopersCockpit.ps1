@@ -141,7 +141,7 @@ $script:Actions = @(
 
     # [2] QUALITY GATE
     [pscustomobject]@{ Key='G'; Tier=1; Desc='Dev gate (build+test+Pester)'; Note=''; Handler={ Invoke-DevGate } }
-    [pscustomobject]@{ Key='E'; Tier=1; Desc='Pester (scripts/)';      Note='';       Cmd='pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/ -CI"' }
+    [pscustomobject]@{ Key='E'; Tier=1; Desc='Pester (scripts/)';      Note='';       Cmd='pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/ -EnableExit"' }
     [pscustomobject]@{ Key='I'; Tier=1; Desc='Install smoke';          Note='';       Cmd='pwsh -File scripts/install-smoke.ps1' }
     [pscustomobject]@{ Key='K'; Tier=1; Desc='Desktop suite (the v1.0 gate)'; Note='CONSOLE+LEASE'; Handler={ Invoke-DesktopSuite } }
 
@@ -170,7 +170,7 @@ function Invoke-Scaffold {
 function Invoke-DevGate {
     Invoke-Cmd 'dotnet build FlaUI.Mcp.slnx -c Debug'
     Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"'
-    Invoke-Cmd 'pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/ -CI"'
+    Invoke-Cmd 'pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/ -EnableExit"'
 }
 
 # The Category=Desktop suite is Track A's definition of done, and it is the one gate that CANNOT be run
@@ -209,17 +209,30 @@ function Invoke-DesktopSuite {
         if ($ans -cne 'run') { Write-C '  aborted.' 'DarkGray'; return }
     }
 
-    Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"'
-    Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~PopupGrafting"'
-
-    Write-Host ''
-    Write-C '  READ BOTH SUMMARIES ABOVE — the gate is:' 'Cyan'
-    Write-C '    main suite:    109 passed / 0 failed / 0 SKIPPED' 'Cyan'
-    Write-C '    PopupGrafting:   1 passed / 0 failed / 0 SKIPPED' 'Cyan'
-    Write-C '  Green here means the SUITE passed, NOT that the product has no known defects:' 'DarkGray'
-    Write-C '  Category=KnownDefect is filtered out above, and each of those is a filed repro in' 'DarkGray'
-    Write-C '  docs/fix-the-tool-backlog/. Check whether one still reproduces with:' 'DarkGray'
-    Write-C '    dotnet test -c Release --filter "Category=KnownDefect"' 'DarkGray'
+    # try/finally, because Invoke-Cmd THROWS on a non-zero exit. Without this, a failing main suite
+    # would abort before the guidance below ever printed -- suppressing the explanation of what the
+    # gate does and does not cover at precisely the moment the operator needs it.
+    try {
+        Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"'
+        Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~PopupGrafting"'
+    }
+    finally {
+        Write-Host ''
+        if ($script:WhatIf) {
+            # Never state the gate as though it were a result. Under -WhatIf nothing ran, so there are
+            # no summaries above to read, and printing "109 passed" here would be a false green in the
+            # one mode whose entire promise is that nothing happened.
+            Write-C '  WHATIF — nothing ran, so there is nothing above to read. A real run must show:' 'DarkCyan'
+        } else {
+            Write-C '  READ BOTH SUMMARIES ABOVE — the gate is:' 'Cyan'
+        }
+        Write-C '    main suite:    109 passed / 0 failed / 0 SKIPPED' 'Cyan'
+        Write-C '    PopupGrafting:   1 passed / 0 failed / 0 SKIPPED' 'Cyan'
+        Write-C '  Green there means the SUITE passed, NOT that the product has no known defects:' 'DarkGray'
+        Write-C '  Category=KnownDefect is filtered out above, and each of those is a filed repro in' 'DarkGray'
+        Write-C '  docs/fix-the-tool-backlog/. Check whether one still reproduces with:' 'DarkGray'
+        Write-C '    dotnet test -c Release --filter "Category=KnownDefect"' 'DarkGray'
+    }
 }
 
 function Invoke-Push {
