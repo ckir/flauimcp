@@ -7,8 +7,10 @@ namespace FlaUI.Mcp.Core.Perception;
 /// <summary>UnsatisfiedBecause is a CLOSED token set, not free text — SP1 defines exactly one token,
 /// "outsideWindowBounds". The three diagnostic members are optional positional parameters so every
 /// existing `new WaitForResult(a, b, c, d)` call site keeps compiling unchanged. Bounds are
-/// int[] {X, Y, Width, Height} — the same shape FindMatch.Bounds uses (FindQuery.cs:28, built at
-/// PerceptionManager.cs:534). NOT the {x,y,w,h} object form ScreenshotTools uses for capture geometry.</summary>
+/// int[] {X, Y, Width, Height} — the same shape FindMatch.Bounds uses (FindQuery.cs:28, built where
+/// FindAsync projects `new[] { b.X, b.Y, b.Width, b.Height }`). NOT the {x,y,w,h} OBJECT form
+/// ScreenshotTools uses for capture geometry. Anchored to the code, not a line number: the previous
+/// citation had already drifted 41 lines as this branch grew that method.</summary>
 public sealed record WaitForResult(bool Satisfied, string? Ref, int ElapsedMs, string? SnapshotId,
     string? UnsatisfiedBecause = null, int[]? ElementBounds = null, int[]? WindowBounds = null);
 public sealed record WaitStableResult(bool Stable, int ElapsedMs, string? SnapshotId);
@@ -54,8 +56,9 @@ public sealed class WaitCoordinator
     /// IncludeOffscreen MUST stay false here. Setting it true would disable BOTH filters, so the
     /// `gone` confirmation walk would find an IsOffscreen=true element, latch, and loop to timeout —
     /// breaking the spec's guarantee that such an element still satisfies `gone` instantly. The one
-    /// place IncludeOffscreen=true is correct is the CALLER's opt-in in Task 7, which is a different
-    /// options object; do not conflate the two.</summary>
+    /// place IncludeOffscreen=true is correct is the CALLER's own includeOffscreen opt-in, which builds
+    /// a different options object; do not conflate the two. (This used to cite "Task 7" — a plan-task
+    /// number that means nothing to anyone reading the file after the branch merges.)</summary>
     internal static SnapshotOptions UnculledPollOptions =>
         new() { InteractiveOnly = false, IncludeOffscreen = false, CullToWindowBounds = false };
 
@@ -193,19 +196,22 @@ public sealed class WaitCoordinator
                 var (snapId, real) = await _perception.SnapshotModelForWaitAsync(handle, satisfyOptions);
                 var realMatch = real.Nodes.FirstOrDefault(n => Matches(n, by, value));
 
-                // The decision and the ref come from two SEPARATE walks, and one walk costs seconds on a
-                // real desktop. A transient element -- a toast, a progress dialog, a menu that closes --
-                // can be destroyed in that gap, so a POSITIVE predicate can decide `satisfied` and then
-                // find nothing to hand back. Returning satisfied:true with ref:null there is the same
-                // class of lie this whole change exists to remove: the caller is told the wait succeeded
-                // and given nothing to act on. Treat it as not-yet-satisfied and keep polling; the
-                // element may return, and timeoutMs still bounds the loop.
-                //
-                // `gone` is EXCLUDED, and the exclusion is load-bearing rather than an optimisation: a
-                // satisfied `gone` means the element is absent, so realMatch is null BY DESIGN. Applying
-                // the guard to it would make every successful `gone` retry until it timed out -- a fix
-                // for one predicate that silently destroys another.
-                if (until != "gone" && realMatch is null)
+                // THE SATISFY WALK MUST AGREE WITH THE WALK THAT DECIDED. The decision and the ref come
+                // from two SEPARATE walks and one walk costs seconds on a real desktop, so a flickering
+                // element -- a toast, a progress dialog, a re-rendering row -- can change state in the
+                // gap and make the two disagree. Both directions of disagreement are a lie, and they are
+                // exact mirrors of each other:
+                //   POSITIVE predicate, element vanished  => satisfied:true with ref:null. The caller is
+                //     told the wait succeeded and handed nothing to act on.
+                //   `gone`, element came BACK             => satisfied:true with a LIVE ref. The caller
+                //     is told the element was destroyed and handed a working reference to it.
+                // The second was easy to miss precisely because null is `gone`'s CORRECT result, so the
+                // obvious "realMatch is null" guard reads as if it already covers it. It does not: it
+                // covers the null case, and `gone`'s failure is the NON-null one.
+                // On disagreement, treat the poll as unsatisfied and keep polling -- the element may
+                // settle -- with timeoutMs still bounding the loop.
+                bool satisfyWalkAgrees = until == "gone" ? realMatch is null : realMatch is not null;
+                if (!satisfyWalkAgrees)
                 {
                     satisfied = false;
                 }

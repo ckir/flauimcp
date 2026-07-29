@@ -47,4 +47,41 @@ public class SelectorValueEvaluatorTests : IClassFixture<TestAppFixture>
         Assert.False(found);
         Assert.Null(value);
     }
+
+    /// <summary>INV-5 on the value path. wait_for(until:valueEquals) reports whether an element's value
+    /// equals a caller-supplied string, so without a password floor it is an ORACLE: no secret crosses
+    /// the wire, but a guess can be CONFIRMED, and confirming is the attack. The fixture's PasswordBox
+    /// happens to return an empty ValuePattern value, so this passed before the floor existed too —
+    /// which is exactly why the assertion is written against the ORACLE (can a correct guess ever be
+    /// confirmed?) rather than against the returned string. A provider that sets IsPassword and still
+    /// exposes the value through LegacyIAccessible would satisfy the wait; it now cannot.</summary>
+    [Fact]
+    public async Task A_password_field_is_never_a_valueEquals_oracle()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var (perception, handle) = await ArrangeAsync(mgr);
+        var wait = new WaitCoordinator(perception);
+
+        // The literal the TestApp puts in its PasswordBox (MainWindow.xaml.cs). The test project does
+        // not reference the app assembly, so it is repeated here as ContentToolsTests already does.
+        const string secret = "hunter2-NEVER-LEAK";
+
+        var (found, value) = await perception.EvaluateSelectorValueAsync(handle, "automationId", "Secret");
+        Assert.True(found);              // the element resolves — it is not hidden, only redacted
+        Assert.Null(value);              // and yields NO value to compare against
+        Assert.NotEqual(secret, value);
+
+        var r = await wait.WaitForAsync(handle, "automationId", "Secret",
+            until: "valueEquals", equals: secret, timeoutMs: 1200, pollIntervalMs: 300);
+        Assert.False(r.Satisfied, "a correct password guess must never be confirmable through valueEquals");
+
+        // The by="name" route is the sharper attack and needs its own assertion: the native ByName
+        // condition matches the element's UNREDACTED name, and the value fallback then reads that same
+        // raw Name -- so selector and value agree by construction and the equality holds for free,
+        // without the caller ever knowing the automationId. The IsPassword floor is what stops it.
+        var viaName = await wait.WaitForAsync(handle, "name", secret,
+            until: "valueEquals", equals: secret, timeoutMs: 1200, pollIntervalMs: 300);
+        Assert.False(viaName.Satisfied);
+    }
 }

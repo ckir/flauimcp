@@ -605,35 +605,70 @@ public sealed class PerceptionManager
             bool NotOffscreen(AutomationElement e)
             { if (includeOffscreen) return true; try { return !e.Properties.IsOffscreen.ValueOrDefault; } catch { return false; } }
 
-            // Parsed ONCE, outside the poll loop and outside the per-root loop. by="controlType" used to
-            // enumerate the ENTIRE tree with no native condition and then compare ControlType.ToString()
-            // in managed code -- every element marshalled across the UIA IPC boundary, on EVERY poll of a
-            // wait that polls every 500ms. ControlType is an indexed UIA property, so it pushes down the
-            // same way AutomationId and Name already do (the FindAsync idiom). An unparseable name yields
-            // no condition and therefore no match, which is exactly what the string compare did.
+            // Parsed once per CALL, hoisted out of the per-root loop below. (Not once per WAIT: the
+            // caller polls this method, so the parse still runs each poll -- it is a string parse, not
+            // the tree walk that mattered.) by="controlType" used to enumerate the ENTIRE tree with no
+            // native condition and then compare ControlType.ToString() in managed code -- every element
+            // marshalled across the UIA IPC boundary, on EVERY poll of a wait that polls every 500ms.
+            // ControlType is an indexed UIA property, so it pushes down the same way AutomationId and
+            // Name already do (the FindAsync idiom). An unparseable name yields no condition and
+            // therefore no match, which is exactly what the string compare did.
             bool hasCt = FindQuerySpec.TryParseControlType(value, out var wantedCt);
+            AutomationElement? Probe(AutomationElement r) => by switch
+            {
+                "automationId" => r.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
+                "name" => r.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
+                "controlType" => hasCt ? r.FindAllDescendants(cf => cf.ByControlType(wantedCt)).FirstOrDefault(NotOffscreen) : null,
+                _ => null
+            };
+
             AutomationElement? Match()
             {
-                foreach (var r in PopupFinder.SearchRoots(win, desktop))
+                var roots = PopupFinder.SearchRoots(win, desktop);
+                for (int i = 0; i < roots.Count; i++)
                 {
-                    AutomationElement? hit = null;
-                    try
+                    AutomationElement? hit;
+                    if (i == 0)
                     {
-                        hit = by switch
-                        {
-                            "automationId" => r.FindAllDescendants(cf => cf.ByAutomationId(value)).FirstOrDefault(NotOffscreen),
-                            "name" => r.FindAllDescendants(cf => cf.ByName(value)).FirstOrDefault(NotOffscreen),
-                            "controlType" => hasCt ? r.FindAllDescendants(cf => cf.ByControlType(wantedCt)).FirstOrDefault(NotOffscreen) : null,
-                            _ => null
-                        };
+                        // SearchRoots[0] IS the window (PopupFinder.cs:16). A failure here means the
+                        // window died, not that a popup closed mid-search, and swallowing it made
+                        // valueEquals the ONE predicate that reports a plain "condition not met" for a
+                        // dead window and then keeps polling to the full budget -- exists/enabled/gone
+                        // all surface the death immediately, because BuildModelAsync throws straight out
+                        // of the loop. Let it propagate so all four predicates agree.
+                        hit = Probe(r: roots[i]);
                     }
-                    catch { continue; }   // per-root isolation
+                    else
+                    {
+                        // PER-ROOT isolation, for POPUPS only: a tooltip or menu closing mid-search must
+                        // not zero out the window's own matches. A root that throws contributes nothing.
+                        try { hit = Probe(r: roots[i]); }
+                        catch { continue; }
+                    }
                     if (hit is not null) return hit;
                 }
                 return null;
             }
             var el = Match();
             if (el is null) return (false, null);
+
+            // INV-5, applied here for the first time. This method reads an element's VALUE and its only
+            // consumer, wait_for(until:valueEquals), reports whether that value equals a caller-supplied
+            // string -- which is a password ORACLE if the element is a password field: no secret crosses
+            // the wire, but an agent can CONFIRM a guess, and confirming is the whole attack. Every
+            // sibling path already applies this floor (snapshot renders "[REDACTED]", find matches on the
+            // redacted name so a password is unfindable by name, get_text redacts the text); this one
+            // relied on the UIA provider to blank the value itself.
+            // MEASURED before adding: a conformant WPF PasswordBox returns an EMPTY ValuePattern value,
+            // so there is no live leak on the fixture and both oracle probes (right password and wrong)
+            // came back unsatisfied. This closes the NON-conformant case -- a provider that sets
+            // IsPassword and still exposes the value through LegacyIAccessible -- which is exactly the
+            // case RedactionPolicy.IsPasswordOrFailClosed exists for: it fails CLOSED on a throwing read
+            // rather than trusting the control. Returning null (not "") also means valueEquals can never
+            // satisfy on a password field, since `equals` is required to be non-null.
+            if (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault))
+                return (true, null);
+
             try { var vp = el.Patterns.Value.PatternOrDefault; if (vp is not null) return (true, vp.Value.ValueOrDefault); } catch { }
             try { var nm = el.Name; if (!string.IsNullOrEmpty(nm)) return (true, nm); } catch { }
             try { var la = el.Patterns.LegacyIAccessible.PatternOrDefault; if (la is not null) return (true, la.Value.ValueOrDefault); } catch { }
