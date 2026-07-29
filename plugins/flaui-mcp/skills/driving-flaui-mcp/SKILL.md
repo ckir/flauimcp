@@ -321,16 +321,9 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
 
 <!-- AUTOTRAIN:GROWTH:START -->
 <!-- Machine-owned region (flaui-curate). Do not hand-edit. HARD CAP: ≤ 30 lines between the markers. -->
-- **New Win11 Notepad — unsaved tabs live in the `TabItem` NAME, not its child `Text`.** The Name carries a
-  trailing `". Modified."` while the child `Text` holds the clean title; the window title's leading `*` works
-  too. *(verified live 2026-07-15)*
-- **Find a CLI app in Windows Terminal — and never ask the human instead.** An unresponsive agent/service is a
-  PERCEPTION task: one shallow `desktop_list_windows` finding no top-level window is NOT an answer — a CLI
-  agent lives in a TAB, and the WT window's `Hint` says so. Filter `ProcessName == WindowsTerminal`, then
-  `desktop_find <wt> controlType:"TabItem"` lists every tab in ONE cheap call. **A tab title is a HINT, never
-  a filter** — an app that sets none hides behind its bare launcher (`cmd.exe`/`PowerShell`), so read the
-  generic-titled ones too. `read_terminal_tab` really switches + restores (`restoreConfidence` can drop to
-  `reduced` through a TUI). *(live 2026-07-17; driver anti-pattern re-observed 2026-07-27)*
+- New Win11 Notepad: unsaved tabs show in the `TabItem` **NAME** (trailing `". Modified."`); its child `Text` holds the clean title, so the child alone never reveals dirty state. The window title's leading `*` works too. *(live 2026-07-15)*
+- **Find a CLI app in Windows Terminal — never ask the human instead.** An unresponsive agent/service is a PERCEPTION task: one shallow `desktop_list_windows` finding no top-level window is NOT an answer — a CLI agent lives in a TAB, and the WT window's `Hint` says so. Filter `ProcessName == WindowsTerminal`, then `desktop_find <wt> controlType:"TabItem"` lists every tab in ONE cheap call.
+  **A tab title is a HINT, never a filter** — an app that sets none hides behind its bare launcher (`cmd.exe`/`PowerShell`), so read the generic-titled ones too; a distinctively-titled tab present does NOT license skipping them. `read_terminal_tab` really switches + restores (`restoreConfidence` can drop to `reduced` through a TUI). *(live 2026-07-17; driver anti-pattern re-observed 2026-07-27)*
 - Shell surfaces (Notification Center `Win+N`; Start/Search `Ctrl+Esc` — bare `Win` isn't a valid chord; likely Quick Settings `Win+A`) are NOT in `desktop_list_windows` — open the surface, then `desktop_get_focused_element` returns its hidden handle → snapshot/find/type it; the UIA walk is non-ephemeral; Start's `SearchTextBox` Edit types clean.
 - Win11 modern context menu = one/two empty `PopupHost` top-level windows (no items in UIA) — drive by keyboard (menu has focus: arrows+Enter) or `find_text`+`click_at`; DETECT a menu/popup open via `structure_changed` (poll `drain_events`), NOT `window_opened` (doesn't fire for PopupHost).
 - Read off-screen/virtualized list rows with `desktop_get_grid_cell(row,col)` — a details-view list (`[Grid]`) returns off-screen rows WITHOUT scrolling (snapshot shows only rendered items); the recovery for the off-screen catch-22; out-of-range error reveals dims.
@@ -338,7 +331,10 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
 - Rename a file (F2) opens a SEPARATE top-level window (title=filename) hosting the edit — `set_value` its `System.ItemNameDisplay` "Name" Edit → `Enter`. `explorer.exe <folderpath>` spawns a real new window+pid; launching Notepad instead TABS into the existing process (LaunchTimeout, but a same-pid tab-window appears).
 - Explorer address bar reads empty via `get_text` in breadcrumb mode — read the path from the breadcrumb SplitButton segments (lease-exempt), or `Ctrl+L` to morph it to an editable Edit that returns the full path (`Esc` restores).
 - No window move/resize verb — `desktop_focus_window` then `Win+Left`/`Win+Right` tiles to a half, `Win+Up` maximizes.
-- `wake_accessibility` on Chromium (Chrome) hydrates the browser CHROME (tabs/toolbars/buttons) but NOT the page DOM (stays empty Panes) — use `find_text` (OCR) for page content.
+- **`wake_accessibility` on Chromium/Electron — what it hydrates, and how to MEASURE that it did.** It hydrates the browser CHROME (tabs/toolbars/buttons) but NOT the page DOM (stays empty Panes) — use `find_text` (OCR) for page content.
+  Hydration is a **RAMP, not a step** (measured ~14 nodes opaque → ~97 at 2s → ~137 at 6s → plateau ~142): POLL `snapshot_stats` until it crosses a threshold. One fixed sleep samples mid-ramp, returns a barely-changed count, and reads as "the wake did nothing" — sending you to debug the wake instead of the wait.
+  Assert a **DELTA from the same run's own opaque baseline** — never an absolute count (~231 woken historically vs ~142 later, −41% across app versions, rots an absolute floor into a false red long after the code was last touched) and never a MULTIPLE (hydration adds a roughly fixed population rather than scaling, so a multiplier inverts into a false GREEN on a small baseline).
+  Your own polling is part of the experiment: Chromium hydrates lazily in response to UIA activity, so a control that merely IDLES proves nothing — match the real loop's CADENCE minus the wake. *(measured that way, 500ms polling for 4s did NOT hydrate an opaque tree; live 2026-07-29)*
 - `desktop_clipboard_get` returns `""` for BOTH empty AND non-text (file/image) clipboards (no format signal); `desktop_paste_text` refuses `ClipboardHoldsNonText` (`forceOverwriteClipboard` to override).
 *(rules above verified live 2026-07-17)*
 - **WPF trees are FLATTER and DENSER than the XAML implies.** Layout panels (`Grid`/`StackPanel`/`Canvas`/
