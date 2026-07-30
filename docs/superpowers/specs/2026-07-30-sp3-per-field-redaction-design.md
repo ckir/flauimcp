@@ -310,10 +310,26 @@ enumeration of exactly the elements the policy protects, handed to an agent that
 No secret *value* crosses the wire, so INV-5 is intact; what leaks is the **location and handle set**.
 SP3 widens it, because every rule-redacted field joins the same result set.
 
-**Required fix, in SP3:** a name predicate whose value is exactly the redaction token matches **nothing**.
-The token is a presentation artifact, not a name any real element has, so refusing it costs no legitimate
-caller. This applies to `find`, the selector post-filter, and `wait_for by=name` alike, and it must be
-pinned per path — a fix on `find` alone leaves two open doors, which is the recurring shape §3.4 records.
+**⚠ The first fix drafted for this was wrong, and its replacement is strictly better.** The draft said "a
+name predicate equal to the redaction token matches nothing", justified by "the token is not a name any
+real element has". **That justification is false.** `[REDACTED]` is ordinary content in the exact domains
+this tool is used on — a redacted PDF, a scrubbed log, a compliance report, a page *about* redaction. That
+fix would have made every such element permanently unreachable by name search: a silent blind spot traded
+for an oracle.
+
+**Required fix, in SP3 — filter the RESULTS, not the QUERY:** an element whose classification is
+`Redact == true` is **excluded from name-predicate matching entirely**, whatever the caller searched for.
+
+This is better on both counts:
+- **Closes DEF-3 completely.** The old fix blocked one literal; this blocks the whole channel, including
+  a future token change or a partial/`contains` match against it.
+- **Costs no legitimate caller.** An element genuinely named `[REDACTED]` is not redacted, so it is not
+  excluded, and it remains findable by name.
+- Behaviour for a redacted element is unchanged from today's password case: not findable by name,
+  findable by `automationId`, and reachable by `ref` from a snapshot (BC-1).
+
+Pin it **per path** — `find`, the selector post-filter, and `wait_for by=name` — a fix on `find` alone
+leaves two open doors, which is the recurring shape §3.4 records.
 
 Filed as DEF-3 rather than a design note because it is a **pre-existing reachable defect**, like DEF-1
 and DEF-2: it is fixed here, so the backlog directory stays empty and the v1.0 bar stays met.
@@ -407,13 +423,40 @@ flaui-mcp check-redaction-rules <path> --against-hwnd <n>
   first-match:** more than one hit exits non-zero and prints the candidates with their HWNDs, so the
   operator's next command is an unambiguous `--against-hwnd`. Zero hits is likewise an error.
 - `--against-hwnd` is the precise form, discoverable only via `--list-windows` — which is exactly why
-  `--list-windows` is part of this subcommand rather than an assumed separate step.
+  `--list-windows` is part of this subcommand rather than an assumed separate step. **Its failure
+  semantics are specified, not left to the implementer:** an HWND that is invalid, stale, belongs to
+  another desktop/session, or names a non-window exits **non-zero** with "no window with HWND `<n>` —
+  re-run `--list-windows`". It never exits 0 with an empty node list, which would read as "your rules
+  matched nothing" and send the operator to debug a rule file that was never the problem.
+- `--list-windows` **reuses the existing top-level window enumeration** (`WindowManager.ListWindowsAsync`,
+  the same source `desktop_list_windows` uses) — it does NOT walk the raw UIA root. A raw walk surfaces
+  thousands of zero-sized, hidden and system windows (`Default IME`, `MSCTFIME UI`, orphan tooltips) and
+  would flood the terminal, making the discovery step unusable. Reusing the shipped enumeration also
+  means the operator sees exactly the window list the agent sees.
 - Output is per-node: `ref-less index · controlType · automationId · name (redacted if a rule fires) ·
   the rule that fired, or "-"`. The rule column is the whole point — it is what turns "the agent went
   blind" into "rule `card-fields` matched 40 nodes".
 
 Read-only, one window, **no input lease required** — it reuses the existing read-only perception path,
 which needs none.
+
+**⚠ The dry-run and the running server can disagree, and that false confidence is worse than no dry-run
+at all.** The CLI reads the rule file **from disk**; the server loaded its rules **at boot** and does not
+hot-reload (§5.2). So the natural operator loop — edit `rules.json`, run the dry-run, watch the new rule
+redact the field, tell the agent to proceed — validates a policy **the server is not enforcing**. The
+operator ends up more confident and less protected, which is the worst possible combination for a
+security feature.
+
+Required, and not optional given that the whole point of §5.5 is operator confidence:
+
+1. **Every dry-run output carries a banner** stating that results reflect the FILE, and that a running
+   server enforces what it loaded at boot.
+2. **The dry-run detects the disagreement rather than merely warning about it.** The server records the
+   resolved path and a content hash of the rule file it loaded, in the same diagnostic surface §5.4 uses.
+   The CLI reads that record and, when the hash differs from the file on disk, exits **non-zero** with
+   "the running server loaded a different rule set — restart it to apply these rules". A silent
+   mismatch is the exact failure this section exists to prevent.
+3. If no server is running, the CLI says so plainly rather than implying its results are live.
 
 ## 6. P2 — architecture: classify once, apply four times
 
@@ -519,8 +562,17 @@ under a green gate.
 
 - The swept properties may be read **only** inside a named, closed set of accessors (the family-A/C read
   helpers and `SnapshotEngine`'s node builder). That set is pinned by name in the test.
-- Those accessors return a **classification-carrying type**, not a bare `string`. Obtaining a raw string
-  requires the call that also yields the `Sensitivity`, so the two cannot be separated by forgetting.
+- **The accessors return the ALREADY-REDACTED string.** ⚠ An earlier draft said they return a
+  "classification-carrying type" holding both raw and `Sensitivity` — which does not work: a developer
+  who forgets calls the helper, receives the bag, and writes `return result.RawName;`. The classification
+  was *computed* and never *applied*, and the leak ships under a green gate. Computing is not applying.
+- Raw access exists (identity paths need it — BC-1) but is a **separately named member** on the same
+  result, e.g. `RawForIdentity`, which is itself on the swept property list. Its only legitimate callers
+  are the descriptor/ref-resolution sites, which are few, pinned, and reviewed. A tool author reaching
+  for `RawForIdentity` to build a payload is doing something visibly wrong at the call site, and the
+  sweep flags it.
+- Net effect: the **easy** path — call the helper, return what it gave you — is the **safe** path. That
+  is the property the previous two drafts lacked.
 - A new tool cannot read `el.Name` at all — the sweep fails — so it MUST go through a helper, and the
   helper hands it the classification whether it wanted it or not.
 - **Growing the accessor set is a deliberate act**, not a routine unblock: the list is short, changing it
@@ -681,3 +733,27 @@ Stated openly rather than claimed closed. Two honest consequences:
 - No test proves the list is complete. The guarantee is "every read of a property we know carries names
   is accounted for", which is strictly weaker than "no name can escape" — and the §1 criterion should be
   read with that scope, not as an absolute.
+
+## 11. Parallel surfaces that MUST change with this spec
+
+This project's recurring failure shape, recorded in §3.4 and hit five times during SP2: **the fix lands,
+and a parallel user-facing surface still says the old thing.** SP3 changes wire fields, adds a CLI
+subcommand, and changes what an agent should branch on — so the surfaces below are part of the work, not
+follow-up. Every path here was verified to exist at `57bc7ef`.
+
+| Surface | What goes stale without an edit |
+|---|---|
+| `docs/agent-contract.md` | the payload shapes; it mentions redaction once today and documents no `redacted`/`redactedBy`/`redactedCount` |
+| `docs/operator-manual.md` | has no `--redaction-rules` flag and no `check-redaction-rules` subcommand — the operator's primary reference for a feature only an operator can enable |
+| `docs/architecture-and-safety.md` | describes the perception security floor as denylist + `IsPassword`; that is no longer the whole story |
+| `.claude/skills/driving-flaui-mcp/SKILL.md` **and** `plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md` | agent guidance still says "password fields". ⚠ **These are TWINS pinned byte-identical by `SkillLoadLineTests`** — edit both, and make them identical by copying one over the other, never by editing twice. The GROWTH region has a 30-line hard cap; these edits belong in the hand-authored floor. |
+| Tool `[Description]` strings | `isPassword` is deprecated in favour of `redacted` (§5.3); the descriptions are the only surface that re-enters an agent's context on every load. ⚠ capped at 1500 chars by `ToolTrapFactInvariantTests` |
+| `README.md` | zero redaction mentions today; the feature is invisible to anyone evaluating the tool |
+| Error / recovery strings mentioning redaction or passwords | a rule-redacted field is not a "password field"; a recovery that says so sends the operator to the wrong place |
+
+**The plan must treat this as a task with its own audit step**, not a docs afterthought — SP2 proved that
+a fix plus an un-updated sibling surface is indistinguishable, to an agent, from no fix at all.
+
+*Credit where due: this section exists because a bespoke Superseded-Workflow Consistency seat asked for
+it in panel round 3. The seat named one file that does not exist (`instructions.md`); the finding was
+right anyway, and the real surfaces above are broader than the ones it guessed.*
