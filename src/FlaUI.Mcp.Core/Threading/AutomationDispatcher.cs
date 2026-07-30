@@ -14,6 +14,47 @@ public sealed class AutomationDispatcher : IDisposable
 {
     private const int MaxPendingActions = 5;
 
+    /// <summary>Upper bound on a caller-supplied action timeout. 60s is 7.5x the largest default that
+    /// actually reaches this dispatcher (8000, desktop_read_terminal_tab). The 45000 default on
+    /// desktop_wait_for_foreground is NOT relevant here — that tool runs its own bounded wait via Task.Run
+    /// and never enters RunActionAsync.</summary>
+    internal const int MaxActionTimeoutMs = 60_000;
+
+    /// <summary>Bound a caller-supplied action timeout. ASYMMETRIC ON PURPOSE, and the asymmetry is the whole
+    /// design: a NEGATIVE budget has no valid interpretation, so it is REFUSED; an over-large one has an
+    /// obvious one ("wait as long as you are allowed"), so it is CLAMPED and disclosed.
+    ///
+    /// WHY THIS EXISTS (docs/fix-the-tool-backlog/negative-timeout-disables-the-sta-watchdog.md): a caller
+    /// -1 is Timeout.Infinite, so `Task.WhenAny(work, Task.Delay(-1))` degraded to awaiting `work` alone —
+    /// removing the ONLY bound on a UIA call parked against an unresponsive window. And -1 was never the only
+    /// dangerous value: Task.Delay accepts any non-negative int, so int.MaxValue (~24 days) parks the
+    /// watchdog just as effectively and throws nothing. A lower-bound guard alone does not close this.
+    ///
+    /// BLAST RADIUS, which is why it is a refusal and not a shrug: the slot is held from the Interlocked
+    /// increment in RunActionAsync until the worker thread's finally, which never runs while the call is
+    /// parked. MaxPendingActions is 5, so FIVE such calls exhaust the pool and every subsequent action throws
+    /// TooManyPendingActions for the life of the process — a denial of the entire action surface, reachable
+    /// from five tool calls, by a client the threat model already assumes may be prompt-injected.
+    ///
+    /// DO NOT refactor this to reuse WaitForForeground.ClampTimeout. That helper maps INVALID input to the
+    /// MAXIMUM (`requestedMs > 0 && <= HardCapMs ? requestedMs : HardCapMs`), which is benign for a bounded
+    /// foreground wait and exactly wrong here: it would turn `-1` into a 60-second parked slot instead of an
+    /// instant refusal. Same problem, opposite correct answer.
+    ///
+    /// 0 is deliberately left alone: it fails FAST (an immediate ActionBlockedPending), which is degenerate
+    /// but is the opposite of the hang this guard exists to prevent.</summary>
+    internal static int ClampActionTimeout(int requestedMs)
+    {
+        if (requestedMs < 0)
+            throw new ToolException(
+                ToolErrorCode.InvalidArguments,
+                $"timeoutMs must not be negative (got {requestedMs}); -1 is Timeout.Infinite, which would "
+                + "remove the only bound on a blocked UIA call.",
+                suggestedRecovery: $"pass a positive timeout in ms (server-capped to {MaxActionTimeoutMs})");
+
+        return Math.Min(requestedMs, MaxActionTimeoutMs);
+    }
+
     private readonly StaThreadContext _query = new("uia-query-sta");
     private int _pendingActions;
 
@@ -22,6 +63,10 @@ public sealed class AutomationDispatcher : IDisposable
 
     public Task<T> RunActionAsync<T>(Func<T> func, int timeoutMs)
     {
+        // BEFORE the slot is taken and the thread is started: a refusal here costs nothing, whereas
+        // validating inside AwaitWithTimeout would already have spawned a worker and be holding a slot.
+        timeoutMs = ClampActionTimeout(timeoutMs);
+
         if (Interlocked.Increment(ref _pendingActions) > MaxPendingActions)
         {
             Interlocked.Decrement(ref _pendingActions);
