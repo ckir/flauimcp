@@ -13,6 +13,10 @@ public sealed class PerceptionManager
     private readonly RefRegistry _refs;
     private readonly SnapshotCache _cache;
 
+    /// <summary>The DURABLE registry. Exposed so a wait can resolve a caller's ref against it while
+    /// registering its own per-poll walk into a throwaway (BuildModelAsync's resolveRefs).</summary>
+    internal RefRegistry Refs => _refs;
+
     // Break-glass: FLAUI_MCP_REF_STRICT=off forces Lenient on state-changing paths too (disables INV-8).
     // The env->mode mapping lives in RefResolveConfig.WriteMode so it is unit-tested (see Step 1).
     private static readonly RefResolveMode WriteMode =

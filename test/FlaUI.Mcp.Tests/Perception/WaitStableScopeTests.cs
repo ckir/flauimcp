@@ -100,3 +100,24 @@ public class WaitStableScopeTests : IClassFixture<TestAppFixture>
         Assert.NotEmpty(scoped.Nodes);
     }
 }
+
+/// <summary>Item 3's argument contract. scopeRef roots the POLL walk; by+value keeps working unchanged.
+/// Supplying both is a caller bug and must be REFUSED, never silently resolved in favour of one --
+/// silently picking a scope the caller did not ask for is the wrong-belief class SP1 spent eleven rounds
+/// removing. HEADLESS: this is validation, not UIA.</summary>
+public class WaitStableScopeArgumentTests
+{
+    [Fact]
+    public async Task Supplying_both_scopeRef_and_a_selector_is_refused()
+    {
+        var coordinator = new WaitCoordinator(null!);
+
+        var ex = await Assert.ThrowsAsync<ToolException>(() => coordinator.WaitForStableAsync(
+            new FlaUI.Mcp.Core.Windows.WindowHandle("w1"), by: "automationId", value: "X",
+            includeText: false, quietMs: 100, timeoutMs: 100, pollIntervalMs: 10,
+            scopeRef: "e5", includeOffscreen: false));
+
+        Assert.Equal(ToolErrorCode.InvalidArguments, ex.Code);
+        Assert.Contains("scopeRef", ex.Message);
+    }
+}

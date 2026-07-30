@@ -121,17 +121,35 @@ public sealed class WaitCoordinator
     }
 
     public async Task<WaitStableResult> WaitForStableAsync(WindowHandle handle, string? by, string? value,
-        bool includeText, int quietMs, int timeoutMs, int pollIntervalMs)
+        bool includeText, int quietMs, int timeoutMs, int pollIntervalMs,
+        string? scopeRef = null, bool includeOffscreen = false)
     {
+        bool scopeRequested = !string.IsNullOrEmpty(by) && !string.IsNullOrEmpty(value);
+        bool refScoped = !string.IsNullOrEmpty(scopeRef);
+        if (refScoped && scopeRequested)
+            throw new ToolException(ToolErrorCode.InvalidArguments,
+                "Pass either scopeRef or by+value to scope stability, not both.",
+                "drop one — scopeRef roots the walk at that element; by+value re-finds a match each poll");
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
         int needed = (int)System.Math.Ceiling((double)quietMs / System.Math.Max(1, pollIntervalMs));
         string? last = null; int stableCount = 0;
-        bool scopeRequested = !string.IsNullOrEmpty(by) && !string.IsNullOrEmpty(value);
+
+        // scopeRef roots the POLL walk only (Strict, so the wait cannot silently rebind to a re-created
+        // element). The final snapshot below stays WHOLE-WINDOW: a caller who waited on a subtree almost
+        // always wants the whole window next, and scoping it would force an immediate second full walk.
+        var pollOptions = PollOptions with
+        {
+            IncludeOffscreen = includeOffscreen,
+            RootRef = scopeRef,
+            RootResolveMode = RefResolveMode.Strict,
+        };
         while (true)
         {
             CountWalk();
-            var (_, model) = await _perception.BuildModelAsync(handle, PollOptions, new RefRegistry());
-            var sub = Subtree(model, by, value);
+            var (_, model) = await _perception.BuildModelAsync(
+                handle, pollOptions, new RefRegistry(), resolveRefs: _perception.Refs);
+            var sub = refScoped ? (IReadOnlyList<SnapshotNode>)model.Nodes.ToList() : Subtree(model, by, value);
             if (scopeRequested && sub.Count == 0)
                 throw new ToolException(ToolErrorCode.SelectorNoMatch, $"No element matched {by}={value} to scope stability.", "widen or correct the selector");
             var sig = Signature(sub, includeText);

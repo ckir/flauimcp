@@ -75,7 +75,7 @@ public sealed class SnapshotTools
             });
         });
 
-    [McpServerTool(ReadOnly = true), Description("Poll until a window subtree stops structurally changing. Optional scope via by+value (default whole window). includeText folds Name into the signature (wait on a status-text settle; do NOT use on a window with a live clock/counter). Timeout returns {stable:false}.")]
+    [McpServerTool(ReadOnly = true), Description("Poll until a window subtree stops structurally changing. Optional scope via by+value (default whole window), OR via scopeRef (a ref from a prior snapshot of this window) — mutually exclusive with by/value. scopeRef roots the POLL walk only: the returned snapshotId is still the WHOLE window, not the scoped subtree. includeText folds Name into the signature (wait on a status-text settle; do NOT use on a window with a live clock/counter). includeOffscreen reaches off-screen elements in the poll walk (default false, matching desktop_snapshot). stable:true means the subtree WAS quiet for the required consecutive polls — the returned snapshot is taken AFTERWARDS, so it is not a frozen view of what was actually measured. Timeout returns {stable:false}.")]
     public Task<string> DesktopWaitForStable(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Optional scope kind: automationId|name|controlType.")] string? by = null,
@@ -83,10 +83,12 @@ public sealed class SnapshotTools
         [Description("Fold Name into the signature (default false).")] bool includeText = false,
         [Description("Quiet window ms (default 500).")] int quietMs = 500,
         [Description("Total budget ms (default 5000).")] int timeoutMs = 5000,
-        [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500)
+        [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500,
+        [Description("Optional ref to scope stability to (from a prior snapshot of this window). Cheaper than by+value: the poll walk is rooted here, not at the window. Mutually exclusive with by/value. Scopes the WAIT only - the returned snapshotId is still the whole window.")] string? scopeRef = null,
+        [Description("Include off-screen elements and elements laid out past the window edge (default false, matching desktop_snapshot).")] bool includeOffscreen = false)
         => ToolResponse.Guard(async () =>
         {
-            var r = await _wait.WaitForStableAsync(new WindowHandle(window), by, value, includeText, quietMs, timeoutMs, pollIntervalMs);
+            var r = await _wait.WaitForStableAsync(new WindowHandle(window), by, value, includeText, quietMs, timeoutMs, pollIntervalMs, scopeRef, includeOffscreen);
             return ToolResponse.Ok(new { stable = r.Stable, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId });
         });
 
