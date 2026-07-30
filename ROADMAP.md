@@ -324,8 +324,13 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   `ListWindowsProjectionShapeTests`. The two surfaces disagree by design and both halves are now pinned:
   the anonymous projections EMIT their nulls (`ToolResponse` sets no `DefaultIgnoreCondition`), while
   `WindowInfo.Hint` carries `WhenWritingNull` and is OMITTED, keeping its PascalCase record name.
-- **Micro belt-and-suspenders:** redact descriptor `Name` for `IsPassword` controls (`Name` is empty
-  for conformant password controls today, so no secret is stored — pure defense-in-depth).
+- ~~**Micro belt-and-suspenders:** redact descriptor `Name` for `IsPassword` controls.~~ — **RETIRED
+  (SP2).** Premise was false: `RefRegistry` falls back to Name+ControlType as the ref identity key when
+  `AutomationId` is absent (`RefRegistry.cs:181-182`) and the cached fast path compares the Name (`:334`),
+  so redacting the descriptor `Name` would make an `IsPassword` element with no `AutomationId`
+  permanently unresolvable — breaking exactly the controls this item targeted. `PerceptionManager.cs:580`
+  already documented this. The descriptor `Name` is already never echoed (`RefRegistry.cs:206-209`); that
+  guarantee is now pinned by `PasswordRedactionTestsHeadless`.
 - **Desktop-level popup coverage is structural, not test-proven.** SP1 routed `find` and
   `wait_for(valueEquals)` through `PopupFinder.SearchRoots`, so both now reach popups at either level —
   but this host's WPF context menu is a window CHILD (measured: `viaWindowRoot=1, viaPopupRoots=1`), so
