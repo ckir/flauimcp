@@ -316,9 +316,18 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   documented diff-identity limit on anonymous virtualized recycled rows (diff those by value/text).
 - **Phase 7.1 clipboard:** delayed-render `WM_RENDERFORMAT` clipboard for a precise paste-consumption
   signal (vs the current best-effort restore-on-confirmed-consumption).
-- **v0.13.0 micro follow-ups:** surface each `TabItem`'s `tabIndex` in `desktop_snapshot` (or have
+- ~~**v0.13.0 micro follow-ups:** surface each `TabItem`'s `tabIndex` in `desktop_snapshot` (or have
   `desktop_read_terminal_tab` echo the `index→title` map) so ordinal selection isn't hand-counted
-  (consumer-UX, from live smoke — design fork, agy-first before implementing).
+  (consumer-UX, from live smoke — design fork, agy-first before implementing).~~ — **DONE (SP2, item
+  5).** Both original options were rejected after measurement: a `desktop_snapshot` ordinal is not
+  usable as a `tabIndex`, because five filters sit between the raw child array and an emitted
+  snapshot node and four of them can drop a `TabItem` (`SnapshotEngine.cs:62` popup dedup, `:65`
+  IsOffscreen, `:66-70` CullToWindowBounds, `:101-104` MaxDepth). Shipped a NEW read-only tool
+  instead, `desktop_list_terminal_tabs`: lists a Windows Terminal window's tabs as
+  `{ tabs: [{ index, title, active }], activeTabIndex }` WITHOUT selecting any (works in
+  `--read-only-mode`). `TerminalTabReader.List` shares `EnumerateTabs` with `Run`, so the index
+  spaces match **by construction**, not by agreement. `ReadOnly = true`, uses `ToolResponse.Guard`
+  (not `GuardWrite`).
 - ~~**Tool-level JSON-shape tests**~~ — **DONE (SP0).** `truncatedFrom` (`desktop_get_text`) is pinned
   through the anonymous projection in `ToolProjectionShapeTests`; `Hint` (`desktop_list_windows`) in
   `ListWindowsProjectionShapeTests`. The two surfaces disagree by design and both halves are now pinned:

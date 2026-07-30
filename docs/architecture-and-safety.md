@@ -35,6 +35,8 @@ Any state-changing tool is blocked when the server runs in `--read-only-mode`. T
 
 The two axes are independent. A tool can be destructive but lease-exempt (e.g. `desktop_set_caret`, `desktop_select_text_range`, `desktop_read_terminal_tab` change state and need no lease, but are still blocked in `--read-only-mode`). Unattended-safe operation requires tools that are both lease-exempt and non-destructive (the pure read tools). See the [Agent Contract](agent-contract.md) for each tool's axis.
 
+The two terminal-tab tools sit on opposite sides of this line: `desktop_read_terminal_tab` selects a tab to read it (state-changing, the `Destructive` case above), while `desktop_list_terminal_tabs` never calls `Select` and is a pure read tool — safe under `--read-only-mode` and lease-exempt, alongside `desktop_snapshot`, `desktop_find`, and the rest of perception.
+
 ## Why synthetic input needs a lease
 
 Synthetic input (`SendInput`) drives the desktop exactly as a physical keyboard or mouse does. It bypasses application-level API isolation and can drive high-risk sinks like credential dialogs, run prompts, and shells. The time-lease acts as a dead-man's switch. It ensures synthetic input only fires while a human is present, actively supervising, and has explicitly authorized the time window. The agent cannot grant or extend its own lease; a human grants it out-of-band via the [Operator Manual](operator-manual.md).

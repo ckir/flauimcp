@@ -235,8 +235,11 @@ rather than yanking their screen away from them.
 
 **Quick-path (composite tool, primary):**
 1. `desktop_user_state` — presence check (above).
-2. One scoped `desktop_snapshot` — narrow to the `Tab`/`List` subtree, small `maxLength` — to
-   enumerate `TabItem`s.
+2. `desktop_list_terminal_tabs { window }` — lists every tab's `index`/`title`/`active` WITHOUT
+   selecting any (no visible switch, works in `--read-only-mode`). Use its `index` as `tabIndex`
+   directly; do **not** hand-count `TabItem`s from a `desktop_snapshot` — a snapshot's ordinal is
+   not usable as a `tabIndex` (the walk drops off-screen, culled, and too-deep nodes, so its
+   numbering can disagree with this tool's).
 3. For each **candidate** (a tab not uniquely identifiable by title — skip distinctively-titled
    ones), call `desktop_read_terminal_tab { window, tabIndex, fromEnd:true }`. It selects that
    0-based ordinal tab, settles, reads the buffer tail, and restores the originally-active tab, all
