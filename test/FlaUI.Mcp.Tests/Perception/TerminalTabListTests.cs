@@ -192,8 +192,20 @@ public class TerminalTabListDesktopTests
             Assert.Equal(1, activeIndex);
             Assert.True(tabsEl[1].GetProperty("active").GetBoolean());
             Assert.False(tabsEl[0].GetProperty("active").GetBoolean());
-            Assert.Equal(titleA, tabsEl[0].GetProperty("title").GetString());
-            Assert.Equal(titleB, tabsEl[1].GetProperty("title").GetString());
+            // CONTAINS, not Equals — and that is the contract, not a weakened assertion. A WT tab title is
+            // set by the guest program, so it carries whatever the shell put there: the live run showed
+            // "FlaUiList<guid>B - echo  FlaUiList<guid>B", i.e. the launcher title PLUS the running command.
+            // This is exactly the rule the tool description and the driving skill both state — "a tab title
+            // names the launcher, not the program running in it, so treat every title as a HINT". An
+            // Assert.Equal here would be asserting a guarantee the contract explicitly disclaims, and it
+            // failed on the first real run for precisely that reason. What matters is that each tab's title
+            // carries ITS OWN marker and not the other tab's, which is what pins the index<->tab mapping.
+            string title0 = tabsEl[0].GetProperty("title").GetString() ?? "";
+            string title1 = tabsEl[1].GetProperty("title").GetString() ?? "";
+            Assert.Contains(titleA, title0, StringComparison.Ordinal);
+            Assert.DoesNotContain(titleB, title0, StringComparison.Ordinal);
+            Assert.Contains(titleB, title1, StringComparison.Ordinal);
+            Assert.DoesNotContain(titleA, title1, StringComparison.Ordinal);
 
             // INDEPENDENT confirmation that nothing moved: the window's caption still reflects titleB (the
             // tab WT activated on launch) after the call. If List had switched tabs, WT's caption would show
