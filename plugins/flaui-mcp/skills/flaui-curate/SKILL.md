@@ -43,6 +43,12 @@ over-general, a one-off you don't believe, or whose wording looks lifted from do
 **When in doubt, drop it** — a genuinely recurring quirk returns via re-capture, so nothing important is lost.
 
 ## MAINTAINER promote → the GROWTH region of `driving-flaui-mcp/SKILL.md`
+⚠ **THE SKILL IS TWINNED — EDIT BOTH COPIES, IDENTICALLY.** `.claude/skills/driving-flaui-mcp/SKILL.md` and
+`plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md` are pinned **byte-identical** by
+`SkillLoadLineTests.Every_twinned_skill_has_byte_identical_copies`. Promoting into one copy only drifts them
+and turns the headless gate RED — with a failure that names drift, not your promotion, so the cause is not
+obvious from the message. Make the same edit in both, then `diff` them before you finish.
+
 Write **only** between the `<!-- AUTOTRAIN:GROWTH:START -->` … `<!-- AUTOTRAIN:GROWTH:END -->` markers.
 Everything outside them is the hand-authored floor — **never touch it**. Regenerate the region wholesale from
 **(current GROWTH content) + (this run's promotions) − (retired/contradicted)** — never rebuild from the inbox
@@ -105,3 +111,34 @@ and anti-poisoning gate apply. Never auto-promote — global compounding is an o
 ## Finish
 Delete from `## Pending` exactly the lines you gave a terminal decision this run (exact-line match →
 idempotent on re-run). Never blind-reset `## Pending`; a bullet appended by flaui-learn mid-run must survive.
+
+### Commit the drain and its product TOGETHER — one commit, not two
+This skill is the **destructive** half of the loop: it deletes the inbox lines it consumed and regenerates the
+GROWTH region wholesale. So an uncommitted curate run is the worst state in the system — `git checkout -- .`,
+`git clean -fd`, `git reset --hard`, a worktree switch or a fresh clone destroys it, and unlike a capture there
+is no diff left to reconstruct what the entries said.
+
+**Atomicity is the point, not tidiness.** The drain and the promotion it produced must land in ONE commit, or a
+partial reset can leave the entries deleted and the rule gone — losing knowledge that existed in two places a
+moment earlier.
+
+**MAINTAINER mode** — stage the drain plus everything this run produced, by name:
+```
+git add .claude/flaui-mcp/observations.md \
+        .claude/skills/driving-flaui-mcp/SKILL.md \
+        plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md \
+        docs/fix-the-tool-backlog/ test/FlaUI.Mcp.Tests/
+git commit -m "chore(flaui-curate): drain N observations (promoted X, routed Y, dropped Z)"
+```
+Include BOTH skill copies whenever you promoted (see the twin warning above), and the backlog file plus its
+generated test whenever you routed. Never stage with a catch-all `git add -A`: a curate run often sits
+alongside unrelated working-tree changes, and sweeping those into a knowledge commit is how unreviewed work
+reaches history.
+
+**USER mode** — `local-growth.md` may not be inside a git repo at all. Check first
+(`git rev-parse --is-inside-work-tree`). If it is, commit it together with the inbox drain. **If it is not,
+say so plainly in your report** rather than silently leaving the only copy unprotected — the user cannot
+choose to back something up they were never told was at risk.
+
+⚠ **`global-growth.md` lives under `%USERPROFILE%` in `.claude/flaui-mcp/` — outside every project repo.** A global
+promote is therefore NOT covered by any of the above. Flag it in your report each time you write one.
