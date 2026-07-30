@@ -122,12 +122,26 @@ is no diff left to reconstruct what the entries said.
 partial reset can leave the entries deleted and the rule gone — losing knowledge that existed in two places a
 moment earlier.
 
-**BEFORE you commit, gate on the twins.** If you promoted, run
-`dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~Every_twinned_skill"`
-(or just `diff` the two copies). **A half-applied promotion — one copy edited, the other not — is stageable
-and committable**, because `git add` silently ignores an unmodified path; the drift would then be sealed into
-history and surface later as a red gate that names drift rather than your promotion. Do not treat "I edited
-both" as verified; check it.
+### PRE-FLIGHT — three checks, ALL must pass before you commit anything
+
+A commit that is merely *possible* is not a commit that is *safe*. Run these first; if any fails, **do not
+commit** — go to "If you must not, or cannot, commit" below.
+
+1. **Are you on a branch?** `git symbolic-ref -q HEAD` — empty means **detached HEAD** (mid-bisect, a checked-out
+   tag, an inspected old commit). A commit there SUCCEEDS and is then **orphaned** the moment the user checks
+   out a branch: it leaves history and is eventually garbage-collected. That is the worst outcome in this
+   whole skill — you followed every instruction, the commit reported success, and the knowledge is gone.
+2. **Is a merge/rebase/cherry-pick in progress?** Check for `MERGE_HEAD`, `REBASE_HEAD` or `CHERRY_PICK_HEAD`
+   in the git dir (`git rev-parse --git-path MERGE_HEAD` etc.). If one exists, a bare `git commit -m …`
+   **concludes the user's merge** and sweeps their staged conflict resolutions into your `chore(...)` commit.
+   Never do that — it is the one way this skill can destroy work that is not its own.
+3. **If you promoted, do the twins match?** Run
+   `dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~Every_twinned_skill"`
+   (or `diff` the two copies). **A half-applied promotion — one copy edited, the other not — is stageable and
+   committable**, because `git add` silently ignores an unmodified path; the drift would be sealed into
+   history and surface later as a red gate naming drift rather than your promotion. If it FAILS, fix it by
+   copying one copy over the other, re-run, and only then continue — do NOT abandon the turn with the drain
+   uncommitted.
 
 **MAINTAINER mode** — stage EXACTLY the files this run produced, each by name:
 ```
@@ -145,16 +159,29 @@ skill-copy lines if you did not promote, and the route line if you did not route
 
 **USER mode** — the project may not be a git repo at all. Check once with
 `git rev-parse --is-inside-work-tree`:
-- **In a repo** → commit `local-growth.md` AND `.claude/flaui-mcp/observations.md` together, by name, in one
-  commit. Both live in the project tree, so both are covered by the same check.
+- **In a repo** → `git add` BOTH files, then commit them in one commit:
+  ```
+  git add <project>/.claude/flaui-mcp/local-growth.md .claude/flaui-mcp/observations.md
+  git commit -m "chore(flaui-curate): drain N observations"
+  ```
+  **The `git add` is not optional here.** If you created `local-growth.md` this run it is UNTRACKED, and
+  `git commit <path>` on an untracked path fails outright with "pathspec did not match any files known to
+  git" — so the drain ends up unprotected precisely on the run that produced the most new knowledge.
 - **Not in a repo** → nothing here is committable, including the drain. **Say so plainly in your report** and
   name the two files at risk, rather than silently leaving the only copies unprotected — the user cannot
   choose to back up something they were never told was exposed.
 
-**If the commit itself FAILS** — a rejecting hook, a pathspec that matched nothing, a conflict — **do not end
-your turn quietly.** That is exactly the worst state: the drain is destructive and is now sitting uncommitted.
-Leave the working tree ALONE (never "clean up" by discarding it), report the failure prominently as the
-headline of your result, and state which files are unprotected so the user can commit them by hand.
+### If you must not, or cannot, commit
+
+This covers every exit above: a failed pre-flight check, a commit rejected by a hook, a pathspec that matched
+nothing, USER mode outside a repo.
+
+**Do not end your turn quietly, and do not "tidy up" the working tree** — never discard, stash, or reset it.
+The drain is destructive and is now sitting uncommitted, which is the state this whole section exists to
+prevent. Report it as the HEADLINE of your result, not a footnote: say which check failed, name every file
+left unprotected by full path, and give the exact command the user can run once they have dealt with it.
+A curate run that silently leaves knowledge uncommitted has done net harm — it consumed the inbox and
+protected nothing.
 
 ⚠ **`global-growth.md` lives under `%USERPROFILE%` in `.claude/flaui-mcp/` — outside every project repo.** A global
 promote is therefore NOT covered by any of the above. Flag it in your report each time you write one.
