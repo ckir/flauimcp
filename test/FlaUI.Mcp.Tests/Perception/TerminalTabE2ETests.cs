@@ -110,6 +110,12 @@ public class TerminalTabE2ETests
             // titleB (the tab left active by (b)) is still readable as the active tab afterward.
             var jsonBad = await tools.DesktopReadTerminalTab(win.Id, tabIndex: 99, restoreFocus: true, fromEnd: true, maxLength: 10000, timeoutMs: 8000);
             Assert.Contains("\"error\":\"InvalidArguments\"", jsonBad);
+            // The RECOVERY, not just the code. This used to say "list tabs via desktop_snapshot first" — the
+            // one path guaranteed to disagree with tabIndex, since four of the five snapshot-walk filters can
+            // drop a TabItem. Asserting only the error code left that fix unpinned (AGY-CAPSTONE r4), so a
+            // revert to the snapshot advice would have gone unnoticed.
+            Assert.Contains("desktop_list_terminal_tabs", jsonBad);
+            Assert.DoesNotContain("desktop_snapshot", jsonBad);
 
             var jsonStillB = await tools.DesktopReadTerminalTab(win.Id, tabIndex: 1, restoreFocus: true, fromEnd: true, maxLength: 10000, timeoutMs: 8000);
             Assert.DoesNotContain("\"error\"", jsonStillB);
