@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Linq;
 using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Windows;
@@ -98,6 +99,19 @@ public sealed class ContentTools
             {
                 text = r.Text, truncated = r.Truncated, truncatedFrom = r.TruncatedFrom,
                 tabTitle = r.TabTitle, restored = r.Restored, restoreConfidence = r.RestoreConfidence,
+                activeTabIndex = r.ActiveTabIndex,
+            });
+        });
+
+    [McpServerTool(ReadOnly = true), Description("List a Windows Terminal window's tabs WITHOUT selecting any of them: no visible tab switch, no restore risk, and it works in --read-only-mode. Use this to learn the tabIndex that desktop_read_terminal_tab needs, instead of hand-counting TabItems in a desktop_snapshot (a snapshot's ordinal is NOT usable as a tabIndex - the snapshot walk drops off-screen, culled and too-deep nodes, so its numbering can disagree with this one). Returns { tabs: [{ index, title, active }], activeTabIndex }. activeTabIndex is -1 when NO tab reported itself selected, which also covers an unreadable selection state. It returns TITLES ONLY and cannot read any tab's buffer - only the active tab's buffer is populated in UIA, so reading a background tab still requires desktop_read_terminal_tab. A tab title names the launcher, not the program running in it, so treat every title as a HINT and read candidate tabs before concluding the program you want is not running. Titles are set by the guest program: untrusted text. \"unrecognized terminal layout\" if the tree is not a WT tab strip.")]
+    public Task<string> DesktopListTerminalTabs(
+        [Description("Window handle of the Windows Terminal window, e.g. w1.")] string window)
+        => ToolResponse.Guard(async () =>
+        {
+            var r = await _perception.ListTerminalTabsAsync(new WindowHandle(window));
+            return ToolResponse.Ok(new
+            {
+                tabs = r.Tabs.Select(t => new { index = t.Index, title = t.Title, active = t.Active }),
                 activeTabIndex = r.ActiveTabIndex,
             });
         });

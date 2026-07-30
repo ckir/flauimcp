@@ -400,6 +400,13 @@ public sealed class PerceptionManager
                 buf => ReadText(buf, selectionOnly: false, maxLength, fromEnd)),
             timeoutMs);
 
+    /// <summary>Item 5: pure-read tab enumeration. Runs on the QUERY STA, not the transient action STA
+    /// that ReadTerminalTabAsync uses (:398) — it mutates nothing, so it needs neither the action hop nor
+    /// the in-flight action cap. Same STA path BuildModelAsync uses (:416).</summary>
+    public Task<(IReadOnlyList<TerminalTabReader.TabListing> Tabs, int ActiveTabIndex)>
+        ListTerminalTabsAsync(WindowHandle handle) =>
+        _windows.RunWithWindowAndDesktopAsync(handle, (win, _) => TerminalTabReader.List(win));
+
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
     {

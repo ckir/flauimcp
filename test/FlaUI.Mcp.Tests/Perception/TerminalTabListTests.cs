@@ -1,10 +1,12 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server.Tools;
 using Xunit;
 
 namespace FlaUI.Mcp.Tests.Perception;
@@ -26,6 +28,57 @@ public class TerminalTabListTests
         Assert.Equal(2, t.Index);
         Assert.Equal("pwsh", t.Title);
         Assert.True(t.Active);
+    }
+
+    /// <summary>Pins the WIRE shape of desktop_list_terminal_tabs' anonymous projection (ContentTools.cs,
+    /// DesktopListTerminalTabs). MECHANISM NOTE: this cannot reach the tool's projection by invoking the
+    /// tool method the way ToolProjectionShapeTests does, because the tool's live path
+    /// (PerceptionManager.ListTerminalTabsAsync -> WindowManager.RunWithWindowAndDesktopAsync ->
+    /// TerminalTabReader.List) needs a real window AutomationElement and so is Desktop-gated — that path is
+    /// instead exercised by TerminalTabListDesktopTests below. So this follows ListWindowsProjectionShapeTests'
+    /// mechanism: build the exact production TabListing values and run the SAME anonymous-object shape the
+    /// tool emits (copied verbatim from ContentTools.cs) through the REAL ToolResponse.Ok serializer — that
+    /// still exercises the real record type and the real serializer settings (naming, null-omission), which
+    /// is the part that can silently drift.</summary>
+    [Fact]
+    public void The_tabs_projection_carries_index_title_active_and_emits_a_negative_one_activeTabIndex()
+    {
+        var tabs = new[]
+        {
+            new TerminalTabReader.TabListing(0, "pwsh", false),
+            new TerminalTabReader.TabListing(1, "cmd", false),
+        };
+        int activeTabIndex = -1; // the documented "no tab reported itself selected" sentinel
+                                  // (TerminalTabReader.cs:107) — a default-value-omitting serializer setting
+                                  // would silently drop this, unlike a normal >=0 index, so it is the case
+                                  // that matters to pin.
+
+        string json = ToolResponse.Ok(new
+        {
+            tabs = tabs.Select(t => new { index = t.Index, title = t.Title, active = t.Active }),
+            activeTabIndex,
+        });
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        Assert.True(root.TryGetProperty("activeTabIndex", out var activeEl));
+        Assert.Equal(JsonValueKind.Number, activeEl.ValueKind);
+        Assert.Equal(-1, activeEl.GetInt32());
+
+        var tabsEl = root.GetProperty("tabs");
+        Assert.Equal(JsonValueKind.Array, tabsEl.ValueKind);
+        Assert.Equal(2, tabsEl.GetArrayLength());
+
+        var t0 = tabsEl[0];
+        Assert.Equal(0, t0.GetProperty("index").GetInt32());
+        Assert.Equal("pwsh", t0.GetProperty("title").GetString());
+        Assert.False(t0.GetProperty("active").GetBoolean());
+
+        var t1 = tabsEl[1];
+        Assert.Equal(1, t1.GetProperty("index").GetInt32());
+        Assert.Equal("cmd", t1.GetProperty("title").GetString());
+        Assert.False(t1.GetProperty("active").GetBoolean());
     }
 }
 
@@ -67,6 +120,7 @@ public class TerminalTabListDesktopTests
 
         using var dispatcher = new AutomationDispatcher();
         using var windows = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(windows, new RefRegistry(), new SnapshotCache());
 
         // Poll for our own new WindowsTerminal window by its unique active-tab title (titleB, since the
         // most-recently-created tab is the one WT activates and reflects in the window title).
@@ -87,8 +141,10 @@ public class TerminalTabListDesktopTests
         var win = handle!.Value;
         try
         {
-            var (tabs, activeIndex) = await windows.RunOnWindowActionAsync(win,
-                (w, _) => TerminalTabReader.List(w), timeoutMs: 8000);
+            // Retargeted at the production path (Task 3): the shipped tool goes through
+            // PerceptionManager.ListTerminalTabsAsync (the QUERY STA), not RunOnWindowActionAsync (the
+            // ACTION STA) — this exercises the same hop desktop_list_terminal_tabs actually uses.
+            var (tabs, activeIndex) = await perception.ListTerminalTabsAsync(win);
 
             Assert.Equal(2, tabs.Count);
             for (int i = 0; i < tabs.Count; i++) Assert.Equal(i, tabs[i].Index);
