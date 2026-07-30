@@ -171,6 +171,35 @@ public class WaitStableScopeMissTests : IClassFixture<TestAppFixture>
         Assert.Contains("scopeRef", ex.SuggestedRecovery);
     }
 
+    /// <summary>Pins the OTHER half of the flag-aware recovery, which shipped unpinned: when the caller
+    /// ALREADY passed includeOffscreen:true, the recovery must not tell them to pass it. That branch is the
+    /// only one such a caller can reach — the confirmation walk is skipped entirely when the flag is true
+    /// (ScopeNotFound's `if (!includeOffscreen)`), so `existsUnculled` stays false and control falls straight
+    /// through. Telling someone to set a flag they just set reads as "the flag does not work" and sends them
+    /// to re-check a parameter that was already correct.
+    ///
+    /// Also asserts ZERO confirmation walks, which is the mechanism half: it proves the skip actually
+    /// happened rather than the message merely reading correctly.</summary>
+    [Fact]
+    public async Task A_caller_who_already_passed_includeOffscreen_is_not_told_to_pass_it()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var wait = new WaitCoordinator(perception);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var ex = await Assert.ThrowsAsync<ToolException>(() => wait.WaitForStableAsync(
+            handle, by: "automationId", value: "NoSuchElement_SP2",
+            includeText: false, quietMs: 100, timeoutMs: 100, pollIntervalMs: 50,
+            scopeRef: null, includeOffscreen: true));
+
+        Assert.Equal(ToolErrorCode.SelectorNoMatch, ex.Code);
+        Assert.DoesNotContain("pass includeOffscreen:true", ex.SuggestedRecovery);
+        Assert.Contains("correct the selector", ex.SuggestedRecovery);
+        Assert.Equal(0, wait.ConfirmationWalkCount); // the walk is skipped when the flag is already set
+    }
+
     [Fact]
     public async Task Genuinely_absent_does_not_assert_non_existence_and_still_offers_includeOffscreen()
     {
