@@ -309,6 +309,39 @@ nor the agent opening the skill).
 
 Not scheduled on their own — pick up when touching the surrounding code. None block anything.
 
+### The post-v0.20.0 defect-elimination decomposition (SP0–SP4) — canonical index
+
+**Written down here on 2026-07-30 because it existed NOWHERE in this repo.** An audit found the item
+numbering and the SP→item mapping lived only in one session's local agent-memory file: every SP spec cites
+"item 3" or "item 7" without any document defining the list, so losing that memory would have left no way to
+reconstruct which bullet is item 4 versus item 8. The numbering below is now the repo's own record.
+
+Scope of the increment: **the 2 filed defects + ALL 8 opportunistic items = 10**. Sequence between
+subprojects does not matter; what matters is that **`docs/fix-the-tool-backlog/` is EMPTY before v1.0.0 is
+stamped** — v1.0.0 ships with no known defects.
+
+| # | Item | SP | Status |
+|---|---|---|---|
+| 1 | `wait-for-cull-disagrees-with-find` (filed defect) | SP1 | ✅ fixed — backlog file deleted in `7802736` |
+| 2 | `launch-starves-on-ambient-single-instance` (filed defect) | SP1 | ✅ fixed — backlog file deleted in `5892ddc` |
+| 3 | `wait_for_stable` scope-by-ref | SP2 | ✅ shipped + MEASURED (see the item-3 entry below) |
+| 4 | snapshot/diff value-change detection | SP4 | ⬜ not started |
+| 5 | terminal tab ordinal discovery | SP2 | ✅ shipped as the new `desktop_list_terminal_tabs` |
+| 6 | JSON-shape tripwires | SP0 | ✅ merged (`015f23c`) |
+| 7 | redact descriptor `Name` for `IsPassword` | SP2 | ✅ RETIRED as invalid; the real guarantee is now pinned |
+| 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ⬜ not started |
+| 9 | per-field redaction | SP3 | ⬜ not started |
+| 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower |
+
+Also fixed en route, though never one of the ten: `value-and-find-paths-miss-desktop-level-popups`
+(deleted in `94e932a`).
+
+⚠ **Items 4, 8, 9 and 10 are HARDENING, not defects.** The "no known defects at v1.0.0" bar is therefore
+**not** gated on finishing SP3/SP4 — it is gated on emptying the backlog directory. As of 2026-07-30 that
+directory holds exactly one file, `negative-timeout-disables-the-sta-watchdog.md`, and **no subproject owns
+it.** Its design is resolved inside that file (and the defect is wider than originally filed); only the cap
+value and the blast-radius-of-the-change question remain open for the maintainer.
+
 - **Phase 3b-1 perception leftovers:** occlusion-aware capture (`PrintWindow`, vs the current
   focus-first screen-scrape); full-desktop *per-field* redaction for non-denied windows (denylist
   whole-window refuse is the floor); snapshot/diff *value*-change detection (needs opt-in per-node value
