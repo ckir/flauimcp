@@ -112,6 +112,34 @@ public class SkillLoadLineTests
             File.ReadAllBytes(RepoPaths.At(BuildInput.Split('/'))),
             File.ReadAllBytes(RepoPaths.At(RepoTwin.Split('/'))));
 
+    /// <summary>EVERY twinned skill, not just driving-flaui-mcp. This project ships three skills in two
+    /// tracked copies each (`.claude/skills/` and `plugins/flaui-mcp/skills/`), but only the driving pair was
+    /// pinned — the other two matched by discipline alone, so editing one copy and forgetting the other
+    /// produced no failure anywhere. Found while adding a commit step to flaui-learn: the fix itself would
+    /// have been unprotected against exactly the drift it had to avoid.
+    ///
+    /// Enumerated from the DIRECTORY rather than a hard-coded list, so a fourth skill inherits the pin for
+    /// free instead of silently opting out of it.</summary>
+    [Fact]
+    public void Every_twinned_skill_has_byte_identical_copies()
+    {
+        var claudeSkills = new DirectoryInfo(RepoPaths.At(".claude", "skills"));
+        var pluginSkills = new DirectoryInfo(RepoPaths.At("plugins", "flaui-mcp", "skills"));
+
+        var drifted = new List<string>();
+        foreach (var dir in claudeSkills.GetDirectories())
+        {
+            var a = Path.Combine(dir.FullName, "SKILL.md");
+            var b = Path.Combine(pluginSkills.FullName, dir.Name, "SKILL.md");
+            if (!File.Exists(a) || !File.Exists(b)) continue; // not a twinned skill
+            if (!File.ReadAllBytes(a).SequenceEqual(File.ReadAllBytes(b)))
+                drifted.Add(dir.Name);
+        }
+
+        Assert.True(drifted.Count == 0,
+            "these skills' two tracked copies have DRIFTED — edit both or neither: " + string.Join(", ", drifted));
+    }
+
     private static string Frontmatter(string rel)
     {
         var text = Read(rel);
