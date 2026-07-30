@@ -911,15 +911,30 @@ including the two families that deliberately get none (§5.3) · failure semanti
 
 **Placeholders:** none. No "TBD"/"decide later" remains.
 
-**Requirement → section map:** guarantee-without-vigilance → §6, §7.2 · policy beyond `IsPassword` →
-§4, §5.1 · opt-in/off by default → §4.3 · false-positive mitigation → §4.2, §5.3, BC-2 · the two
-measured defects → §3.3, §7.1 · identity stays pristine → BC-1.
+**Requirement → section map:** guarantee-without-vigilance → §6, §7.2, §7.2.1 · policy beyond
+`IsPassword` → §4, §5.1 · opt-in/off by default → §4.3 · false-positive mitigation → §4.2, §5.3, §5.5,
+BC-2 · the three measured defects → §3.3, §5.3, §7.1 · identity stays pristine → BC-1 · operator can
+author and debug rules → §5.4, §5.5 · nothing downstream keeps saying the old thing → §11.
 
-**Edges covered:** throwing `IsPassword` read (fail-closed, §5.2) · rule matching a denylisted process
-(denylist refuses first — §3.2 is enforced upstream of every classifier call) · `global` + `processName`
-together (rejected) · duplicate rule names (rejected) · no element predicate (rejected) · regex
-catastrophic backtracking (timeout, §5.1) · provenance on oracle paths (deliberately absent — would
-re-create the oracle, §5.3).
+**Edges covered.** ⚠ *This list was written at round 0 and re-verified after round 7; one entry below was
+stale and is corrected, which is exactly the drift §3.4 documents in the code.*
+
+- throwing `IsPassword` read → fail-closed (§5.2)
+- a rule predicate throwing → fail-closed **at the predicate**, AND still applies (§5.2)
+- ~~regex catastrophic backtracking → per-match timeout~~ → **superseded**: patterns are compiled
+  `NonBacktracking` and **rejected at load** if unsupported (§5.1). The timeout survives only as
+  belt-and-braces for pathological input length.
+- rule matching a denylisted process → denylist refuses first, upstream of every classifier call (§3.2)
+- `global` + `processName` together · duplicate rule `name` · no element predicate · `> MaxRules` ·
+  unknown `version` · unreadable file at a passed path → all rejected at load (§5.4)
+- flag absent vs file missing → different outcomes, tabulated (§5.4)
+- provenance on oracle paths → deliberately absent; adding it re-creates the oracle (§5.3)
+- an element legitimately **named** `[REDACTED]` → still findable; results are filtered, not queries (§5.3)
+- a redacted element with **no `AutomationId`** → still targetable by `ref` (BC-1, pinned by a Desktop fact)
+- PID recycling · access denied reading process state · `stateVersion` skew · two servers running →
+  all resolved without ever reporting "no server is running" (§5.5)
+- a swept-property read that is legitimate **identity**, not egress → the census classifies it; raw
+  access takes two forms by what the caller holds (§7.2, §7.2.1)
 
 **Deliberately deferred to the PLAN, not gaps in the spec:**
 1. ~~The parse mechanism of the §7.2 sweep is a free implementation choice.~~ **WITHDRAWN — it is not
@@ -932,19 +947,32 @@ re-create the oracle, §5.3).
 3. Whether `redactedBy` on family A is added per-DTO or via a shared projection helper — depends on how
    many of A1–A5 use anonymous vs typed projections, which the plan must grep per site.
 
-**Known residual risk, narrowed after the panel.** §7.2's inversion (allowlist of *reads*, not of
-redactions) closes the case that previously dominated this risk — a new live-element tool that reads
-`el.Name` and never types the redaction token. What remains is genuinely narrower: a leak through a
-property **not on the swept list** — a UIA pattern this design did not enumerate (`ExpandCollapse`,
-`Selection` item names, a provider's custom property), or a name obtained by a route the sweep cannot
-see (reflection, a string built from `HelpText`, an interop call outside FlaUI's wrappers).
+**Known residual risk — restated after eight rounds, because the earlier wording described a boundary the
+spec no longer has.**
 
-Stated openly rather than claimed closed. Two honest consequences:
-- The swept-property list in §7.2 is **part of the contract** and must be revisited whenever a new UIA
-  pattern is consumed. The plan adds that instruction to the pattern-adding path, not just to this doc.
-- No test proves the list is complete. The guarantee is "every read of a property we know carries names
-  is accounted for", which is strictly weaker than "no name can escape" — and the §1 criterion should be
-  read with that scope, not as an absolute.
+What §7.2's inversion genuinely closes: a new live-element tool that reads `el.Name`, never types the
+redaction token, and would have been invisible to a redaction-keyed sweep. That was the dominant risk and
+it is handled.
+
+What remains, stated without euphemism: **the boundary is a curated list of content-bearing properties,
+and no test proves that list is complete.** A leak survives if it goes through a property nobody
+enumerated — an unconsidered UIA pattern (`ExpandCollapse`, `Selection` item names, a provider's custom
+property), or a route the sweep cannot see (reflection, a string assembled from `HelpText`, interop
+outside FlaUI's wrappers).
+
+**Review defeated six successive versions of this mechanism** (redaction-keyed sweep; growable list plus
+"contains a call"; an accessor returning a raw/classification bag; generic `GetCurrentPropertyValue`;
+`ITextRange.GetText` off a non-`DocumentRange` range; a type-level ban that proved unbuildable). That
+history is the evidence for the claim, not a reason to try a seventh: **a syntactic sweep cannot close
+this class perfectly, and the spec stops asserting otherwise.**
+
+Three honest consequences:
+- The swept-property list is **part of the contract**, revisited whenever a new UIA pattern is consumed —
+  an instruction the plan puts on the pattern-adding path, not only in this document.
+- **The FlaUI version is pinned and a bump requires re-auditing the list**, which is the concrete guard
+  against an upgrade introducing a new accessor spelling.
+- §1's criterion must be read at this scope: *a developer who forgets is caught*. It is not
+  *no content can escape*, and the difference is not rhetorical.
 
 ## 11. Parallel surfaces that MUST change with this spec
 
