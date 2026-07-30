@@ -57,7 +57,7 @@
 
 ```bash
 # Build (run after deleting any test file — --no-build runs deleted tests from the stale DLL)
-dotnet build FlaUI.Mcp.sln
+dotnet build FlaUI.Mcp.slnx
 
 # Headless gate. Baseline at ac430b0: 772 passed, 0 skipped.
 dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "Category!=Desktop&Category!=KnownDefect"
@@ -160,7 +160,7 @@ Add whatever `using` lines the compiler demands for `ToolException`, `ElementDes
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~PasswordRedactionTests&Category!=Desktop"
+dotnet build FlaUI.Mcp.slnx && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~PasswordRedactionTests&Category!=Desktop"
 ```
 Expected: PASS. **These are tripwires on an already-true guarantee, so passing immediately is correct** — which means they prove nothing until mutated.
 
@@ -230,7 +230,7 @@ public class TerminalTabListTests
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln
+dotnet build FlaUI.Mcp.slnx
 ```
 Expected: FAIL — `'TerminalTabReader' does not contain a definition for 'TabListing'`.
 
@@ -276,7 +276,7 @@ Then, immediately before `Run` (`:98`):
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~TerminalTabListTests&Category!=Desktop"
+dotnet build FlaUI.Mcp.slnx && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~TerminalTabListTests&Category!=Desktop"
 ```
 Expected: PASS.
 
@@ -344,7 +344,7 @@ Add `using System.Linq;` if `ContentTools.cs` does not already have it.
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~ToolTrapFactInvariantTests"
+dotnet build FlaUI.Mcp.slnx && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~ToolTrapFactInvariantTests"
 ```
 Expected: PASS. If it fails, **trim the description — never raise `DescriptionBudget`** (`ToolTrapFactInvariantTests.cs:21-22` says raising it is the failure the test exists to catch).
 
@@ -472,7 +472,7 @@ In `RefRegistry.cs`, change `Resolve`'s signature (`:143`) and its fall-through 
 Run:
 ```bash
 grep -rn "\.Resolve(" src/ | grep -v ResolveDescriptor
-dotnet build FlaUI.Mcp.sln && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "Category!=Desktop&Category!=KnownDefect"
+dotnet build FlaUI.Mcp.slnx && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "Category!=Desktop&Category!=KnownDefect"
 ```
 Expected: build clean; headless **772 passed, 0 skipped** — the same count as the baseline, because nothing has changed behaviour yet. **A changed count here means you changed behaviour; stop and find out why.**
 
@@ -489,7 +489,7 @@ Match the fixture mechanism used by the existing SP1 wait Desktop tests (read `W
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~WaitStableScopeTests"
+dotnet build FlaUI.Mcp.slnx && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~WaitStableScopeTests"
 ```
 Expected: PASS.
 
@@ -548,7 +548,7 @@ public class WaitStableScopeTests
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln
+dotnet build FlaUI.Mcp.slnx
 ```
 Expected: FAIL — no such parameters `scopeRef`/`includeOffscreen`.
 
@@ -602,7 +602,7 @@ If `WaitCoordinator` is in a different assembly from `PerceptionManager`, make i
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~WaitStableScopeTests"
+dotnet build FlaUI.Mcp.slnx && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~WaitStableScopeTests"
 ```
 Expected: PASS.
 
@@ -624,7 +624,7 @@ Then extend the tool's `Description` (`:78`) to state: `scopeRef` roots the poll
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "Category!=Desktop&Category!=KnownDefect"
+dotnet build FlaUI.Mcp.slnx && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "Category!=Desktop&Category!=KnownDefect"
 ```
 Expected: PASS, 0 skipped, including `ToolTrapFactInvariantTests`.
 
@@ -720,7 +720,7 @@ If the compiler objects to `throw await` at that site, hoist it (`var ex = await
 
 Run:
 ```bash
-dotnet build FlaUI.Mcp.sln && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "Category!=Desktop&Category!=KnownDefect"
+dotnet build FlaUI.Mcp.slnx && dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "Category!=Desktop&Category!=KnownDefect"
 ```
 Expected: PASS, 0 skipped.
 
@@ -841,7 +841,7 @@ Report any gap **before** running the gates. A gap found here is cheap; found af
 - [ ] **Step 2: Headless gate**
 
 ```bash
-dotnet build FlaUI.Mcp.sln
+dotnet build FlaUI.Mcp.slnx
 dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "Category!=Desktop&Category!=KnownDefect"
 ```
 Expected: **≥ 772 passed, 0 skipped.** A skip is a failure here.
