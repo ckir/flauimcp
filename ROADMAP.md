@@ -358,10 +358,15 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   `:8`), so the caller's own `scopeRef` is dead after a successful call — a second identical call throws
   `RefNotFound`. This is the standing ref-lifetime contract (`docs/agent-contract.md`: refs are bound to a
   snapshot, "Take a fresh snapshot"), now visible on a new parameter. Verified pre-existing: the final
-  settle snapshot is byte-identical at `2bdb609:142`, before item 3. It does mean a caller who wants to keep
-  acting on that element must re-snapshot, which costs a full walk — so a scoped POLL loop saves nothing if
-  the caller needs a live ref each iteration. Left as-is in SP2 rather than bolted on at task 7 of 9;
-  returning a re-resolved ref in the response is a candidate for a later subproject.
+  settle snapshot is byte-identical at `2bdb609:142`, before item 3.
+  **NOT A DEFECT, because the recovery path already ships and is cheap:** `desktop_find` re-acquires a usable
+  ref for the same element WITHOUT a whole-window walk — it runs a targeted UIA query and registers the match
+  **additively**, deliberately not superseding held snapshot refs (`PerceptionManager.cs:478` docstring,
+  `:623` "ADDITIVE, cached"). So the idiom is wait → find, and the two tools compose. The only real hazard was
+  that nothing SAID so; `desktop_wait_for_stable`'s description now does.
+  **Returning a re-resolved `newScopeRef` from `wait_for_stable` was considered and REJECTED** (agy proposed
+  it, then withdrew it on reading `FindAsync`): it would duplicate `desktop_find`'s job inside a wait tool and
+  conflate two orthogonal responsibilities, to save a call that is already cheap.
 - **Batch the walk's per-node property reads (`CacheRequest`) — MEASURED, and the single biggest lever
   on this tool's latency.** Attribution on a warm 98-node WPF window: desktop/popup scan 593 ms · single-
   call tree enumeration 421 ms · full build 6098 ms ⇒ **per-node property traffic is ~90%+ of the walk**,
