@@ -136,7 +136,11 @@ public static class TerminalTabReader
 
         if (tabIndex < 0 || tabIndex >= tabs.Count)
             throw new ToolException(ToolErrorCode.InvalidArguments,
-                $"tabIndex {tabIndex} is out of range (0..{tabs.Count - 1}).", "list tabs via desktop_snapshot first");
+                $"tabIndex {tabIndex} is out of range (0..{tabs.Count - 1}).",
+                // NOT desktop_snapshot: a snapshot's TabItem ordinal is not a valid tabIndex (four of the
+                // five walk filters can drop a TabItem), which is exactly why desktop_list_terminal_tabs
+                // exists. This recovery used to send the caller to the one path guaranteed to disagree.
+                "call desktop_list_terminal_tabs to read the valid indexes for this window");
 
         string targetTitle = NameOf(tabs[tabIndex]);
         bool restoreNeeded = restoreFocus && activeIndex >= 0; // nothing active => nothing to restore

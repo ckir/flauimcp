@@ -218,9 +218,16 @@ public sealed class WaitCoordinator
                 $"{by}={value} matched an element that exists but was culled against the window bounds, so stability could not be scoped to it.",
                 "pass includeOffscreen:true, or scope by scopeRef instead");
 
+        // The recovery MUST depend on what the caller already passed. When includeOffscreen is true the
+        // confirmation walk above is skipped entirely, so this branch is the ONLY one such a caller can
+        // reach -- and telling someone to "pass includeOffscreen:true" when they just did presents as the
+        // flag not working, sending them to re-check a parameter that is already correct. That is the same
+        // blame-the-wrong-cause failure this whole path exists to remove.
         return new ToolException(ToolErrorCode.SelectorNoMatch,
             $"No element matching {by}={value} was found in the searched tree to scope stability.",
-            "correct the selector, or pass includeOffscreen:true to search off-screen and past-the-edge elements");
+            includeOffscreen
+                ? "correct the selector — includeOffscreen:true was already in effect, so off-screen and past-the-edge elements were searched too"
+                : "correct the selector, or pass includeOffscreen:true to search off-screen and past-the-edge elements");
     }
 
     public async Task<WaitForResult> WaitForAsync(WindowHandle handle, string by, string value,

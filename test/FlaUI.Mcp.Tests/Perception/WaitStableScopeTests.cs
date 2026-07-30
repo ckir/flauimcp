@@ -52,6 +52,40 @@ public class WaitStableScopeTests : IClassFixture<TestAppFixture>
         Assert.NotEmpty(scoped.Nodes);
     }
 
+    /// <summary>Pins that includeOffscreen reaches the SETTLE snapshot, not just the poll walks. Added
+    /// because the AGY-CAPSTONE Mechanism Gamer seat correctly observed that the fix for this had landed
+    /// UNPINNED: reverting `PollOptions with { IncludeOffscreen = includeOffscreen }` back to the static
+    /// `PollOptions` failed no test at all.
+    ///
+    /// Mechanism: the test OWNS the SnapshotCache it hands to PerceptionManager, so it can look the returned
+    /// snapshotId up directly (SnapshotCache.TryGet) and inspect the model that was actually cached. Without
+    /// that, WaitStableResult exposes only the id and the settle snapshot's CONTENT is unobservable — which
+    /// is precisely why the fix went in unpinned the first time.
+    ///
+    /// SpatialOffscreenButton is the fixture's spatially-culled-but-present element (the same one
+    /// WaitGoneCullTests and WaitDiagnosticTests use), so it is absent from a default snapshot and present in
+    /// an includeOffscreen one. If the settle snapshot ever reverts to culling, the caller gets back a
+    /// snapshot missing the very element they just proved stable, and this fact goes red.</summary>
+    [Fact]
+    public async Task IncludeOffscreen_reaches_the_settle_snapshot_not_just_the_poll()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var cache = new SnapshotCache();
+        var perception = new PerceptionManager(mgr, new RefRegistry(), cache);
+        var wait = new WaitCoordinator(perception);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var r = await wait.WaitForStableAsync(handle, by: "automationId", value: "SpatialOffscreenButton",
+            includeText: false, quietMs: 400, timeoutMs: 30_000, pollIntervalMs: 200,
+            scopeRef: null, includeOffscreen: true);
+
+        Assert.True(r.Stable, "the culled element is reachable with includeOffscreen:true, so this must settle");
+        Assert.NotNull(r.SnapshotId);
+        Assert.True(cache.TryGet(r.SnapshotId!, out var settled), "the settle snapshot must be cached");
+        Assert.Contains(settled!.Nodes, n => n.AutomationId == "SpatialOffscreenButton");
+    }
+
     /// <summary>THE THROWAWAY HALF — the reason the throwaway exists at all. Each stability poll builds
     /// with `new RefRegistry()` (WaitCoordinator.cs:133) so per-poll walks never grow the durable
     /// registry.
