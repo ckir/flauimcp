@@ -182,8 +182,14 @@ public class TerminalTabListDesktopTests
         {
             // Close only the window we minted (never the shared WT host process — closing IT would risk
             // taking down unrelated windows under WT's single-process-multi-window model).
-            await WtTestWindow.CloseAndVerifyAsync(windows, win, marker); // VERIFIES the close; throws if it leaked
+            await WtTestWindow.CloseAsync(windows, win, marker); // best-effort ONLY — never throws from a finally
             try { if (proc is { HasExited: false }) proc.Kill(); } catch { /* the wt.exe stub is usually already gone */ }
         }
+
+        // OUTSIDE the try/finally, deliberately. Throwing from a `finally` REPLACES any exception already in
+        // flight, so asserting there would mask the real assertion failure the test was reporting (and would
+        // skip the proc.Kill above). Reached only when the body succeeded — which is exactly when a leaked
+        // window is the interesting news. (AGY-CAPSTONE r7 Cascade Analyst.)
+        await WtTestWindow.AssertNoLeakAsync(windows, marker);
     }
 }
