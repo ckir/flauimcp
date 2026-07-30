@@ -31,60 +31,17 @@ public class TerminalTabListTests
         Assert.True(t.Active);
     }
 
-    /// <summary>Pins the SERIALIZER behaviour of desktop_list_terminal_tabs' anonymous projection
-    /// (ContentTools.cs, DesktopListTerminalTabs) — specifically that activeTabIndex:-1 is EMITTED, not
-    /// dropped by a default-value-omitting setting. LIMITATION, stated plainly: this test RE-DECLARES the
-    /// tool's anonymous shape locally (it builds its own `new { index = ..., title = ..., active = ... }`
-    /// rather than calling the tool method), so it does NOT catch the tool's field names drifting from this
-    /// declaration — e.g. renaming `active` to `isActive` in ContentTools.cs would NOT fail this fact. It
-    /// only proves the REAL ToolResponse.Ok serializer, run against this shape, keeps -1 on the wire.
-    /// MECHANISM NOTE: it cannot reach the tool's actual projection by invoking the tool method the way
-    /// ToolProjectionShapeTests does, because the tool's live path (PerceptionManager.ListTerminalTabsAsync
-    /// -> WindowManager.RunWithWindowAndDesktopAsync -> TerminalTabReader.List) needs a real window
-    /// AutomationElement and so is Desktop-gated. THE FIELD-NAME/DRIFT COVERAGE LIVES ELSEWHERE:
-    /// TerminalTabListDesktopTests.List_reports_every_tab_ascending_and_the_originally_active_index_without_selecting
-    /// (below) calls ContentTools.DesktopListTerminalTabs itself and asserts on the parsed JSON, so a field
-    /// rename there fails THAT fact, not this one.</summary>
-    [Fact]
-    public void The_tabs_projection_carries_index_title_active_and_emits_a_negative_one_activeTabIndex()
-    {
-        var tabs = new[]
-        {
-            new TerminalTabReader.TabListing(0, "pwsh", false),
-            new TerminalTabReader.TabListing(1, "cmd", false),
-        };
-        int activeTabIndex = -1; // the documented "no tab reported itself selected" sentinel
-                                  // (TerminalTabReader.cs:107) — a default-value-omitting serializer setting
-                                  // would silently drop this, unlike a normal >=0 index, so it is the case
-                                  // that matters to pin.
-
-        string json = ToolResponse.Ok(new
-        {
-            tabs = tabs.Select(t => new { index = t.Index, title = t.Title, active = t.Active }),
-            activeTabIndex,
-        });
-
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-
-        Assert.True(root.TryGetProperty("activeTabIndex", out var activeEl));
-        Assert.Equal(JsonValueKind.Number, activeEl.ValueKind);
-        Assert.Equal(-1, activeEl.GetInt32());
-
-        var tabsEl = root.GetProperty("tabs");
-        Assert.Equal(JsonValueKind.Array, tabsEl.ValueKind);
-        Assert.Equal(2, tabsEl.GetArrayLength());
-
-        var t0 = tabsEl[0];
-        Assert.Equal(0, t0.GetProperty("index").GetInt32());
-        Assert.Equal("pwsh", t0.GetProperty("title").GetString());
-        Assert.False(t0.GetProperty("active").GetBoolean());
-
-        var t1 = tabsEl[1];
-        Assert.Equal(1, t1.GetProperty("index").GetInt32());
-        Assert.Equal("cmd", t1.GetProperty("title").GetString());
-        Assert.False(t1.GetProperty("active").GetBoolean());
-    }
+    // DELETED here, deliberately: a headless fact that serialized a LOCALLY RE-DECLARED copy of the tool's
+    // anonymous projection and asserted activeTabIndex:-1 survived on the wire. The AGY-CAPSTONE Mechanism
+    // Gamer seat called it vacuous and was right — it would have passed with desktop_list_terminal_tabs
+    // deleted outright, because it never touched the tool. Its stated purpose does not survive scrutiny
+    // either: ToolResponse's serializer is `new() { WriteIndented = false }` (ToolResponse.cs:12) with NO
+    // DefaultIgnoreCondition, and the only setting that omits anything, WhenWritingDefault, drops
+    // default(int) == 0 — never -1. So it guarded a behaviour no realistic configuration change could break.
+    // An honest disclaimer had been added to its docstring, which was the wrong fix: a test whose NAME
+    // claims it pins a projection is a trap even when its comment admits otherwise, because a reader sees
+    // the name and a maintainer sees a passing count.
+    // The wire shape IS pinned, through the real tool, by TerminalTabListDesktopTests below.
 }
 
 // CONSOLE-MACHINE-ONLY: launches a REAL, brand-new Windows Terminal window (via `-w -1`, forcing a new
