@@ -342,8 +342,15 @@ an OS-declared field (permanent) from an operator rule (fixable).
 carries `isPassword` at `Tools/ContentTools.cs:36,39,81,84`, backed by `GridCellInfo.IsPassword` and
 `TextReadResult.IsPassword` (`PerceptionManager.cs:868,870`), plus a password COUNT in `SnapshotStats`
 (`PerceptionManager.cs:797`). Neither obvious answer is acceptable: leaving it `true` for a rule-redacted
-field **lies** (the OS never asserted `IsPassword`), and leaving it `false` **leaks**, because an existing
-consumer keys off `isPassword` to decide whether echoing the value is safe.
+field **lies** (the OS never asserted `IsPassword`), and leaving it `false` **misleads** an existing
+consumer that keys off `isPassword` to decide whether a value is sensitive.
+
+⚠ **An earlier draft said `false` "leaks", and that was wrong — the correction matters because the panel
+read it as the spec mandating the very leak it had just identified.** No secret escapes either way: the
+value is already `"[REDACTED]"` at the same site, by the same decision, whatever the boolean says. What a
+legacy consumer loses is the *knowledge* that the field is sensitive — it may log, cache or display the
+placeholder as though it were genuine content. That is a correctness and interpretation defect, not a
+disclosure, and it is precisely why `redacted` is added rather than `isPassword` being widened.
 
 **Resolution — `isPassword` keeps its literal OS meaning; a new field carries the safety fact:**
 
@@ -499,12 +506,24 @@ Required, and not optional given that the whole point of §5.5 is operator confi
    its rule-file hash "in the same diagnostic surface §5.4 uses" and the CLI "reads that record" — but
    that surface is an append-only human-readable log subject to rotation and concurrent writes, and
    parsing it to recover authoritative state is exactly the kind of invention a spec must not leave to
-   the implementer. The server writes a small JSON state file to a well-known path
-   (`%LOCALAPPDATA%\flaui-mcp\server-state.json`), **written atomically** (temp + rename) at boot,
-   carrying `{ pid, startedAtUtc, redactionRulesPath, redactionRulesSha256 }`. The CLI reads that file.
-   The §5.4 log remains what it is — a human-readable record — and is not load-bearing for any machine.
-4. If no state file exists, or its `pid` is not alive, the CLI says **no server is running** plainly,
-   rather than implying its results are live.
+   the implementer. The server writes a small JSON state file, **atomically** (temp + rename) at boot,
+   carrying `{ pid, processStartTimeUtc, redactionRulesPath, redactionRulesSha256 }`. The §5.4 log
+   remains a human-readable record and is not load-bearing for any machine.
+
+   ⚠ **One file per INSTANCE, not one well-known path.** An earlier draft mandated a single
+   `server-state.json`, which breaks the moment two servers run — a second agent, or a leftover
+   process — because the last to boot silently overwrites the first, and the CLI then validates against
+   an arbitrary instance. Path is `%LOCALAPPDATA%\flaui-mcp\instances\<pid>.json`; the file is deleted
+   on clean shutdown, and the CLI **enumerates** the directory.
+
+4. **Liveness is not "the PID exists".** ⚠ PIDs are recycled, so a stale file whose PID has been reused
+   by an unrelated process would make the CLI report a running server and emit exit `3` when the server
+   is actually down — a wrong answer in the direction that matters. Liveness requires the PID to be
+   alive **and** its process start time to equal `processStartTimeUtc`, which a recycled PID cannot
+   match. Stale files failing that check are ignored (and pruned).
+5. With no live instance, the CLI says **no server is running** plainly, rather than implying its
+   results are live. With more than one, it reports each instance and which rule set each loaded —
+   the operator needs to know *which* server their agent is talking to.
 
 ## 6. P2 — architecture: classify once, apply four times
 
@@ -598,6 +617,12 @@ member on the pinned list. The swept properties are the leak surface itself:
 - `ValuePattern.Value`, `LegacyIAccessiblePattern.Value`, `Properties.Value`
 - `TextPattern.DocumentRange.GetText(...)`
 - `SnapshotNode.Name`, `ElementDescriptor.Name`
+- **`ITextRange.GetText(...)` by METHOD, not by receiver expression.** ⚠ Naming
+  `TextPattern.DocumentRange.GetText` alone — as an earlier draft did — is the **fifth** bypass found in
+  review: a range obtained from `GetSelection()`, `GetVisibleRanges()` or `RangeFromPoint()` reaches the
+  same text while matching none of that syntax, and this repo already reads a selection range
+  (`ReadText`'s `selectionOnly` path). The sweep matches the **method on the range type**, whatever
+  produced the range.
 - **The GENERIC property accessors, as a class:** `GetCurrentPropertyValue(...)`,
   `TryGetCurrentPropertyValue(...)`, and any indexer-style access into a `Properties`/
   `FrameworkAutomationElement` bag. ⚠ These were missing from an earlier draft and are the
@@ -640,6 +665,35 @@ under a green gate.
 edits the accessor set and writes a passthrough defeats it, as they could defeat any in-repo check. §1's
 criterion is about the tool written in a hurry, which is the realistic failure — not an adversarial
 committer, which no test in the same repo can stop.
+
+### 7.2.1 ⚠ TASK ZERO — the census, before any sweep is written
+
+**MEASURED, not estimated:** `src/` currently contains **31** reads matching `.Name` (excluding
+`ProcessName`/`ClassName`/`FileName`/`nameof`) and **22** `GetText`/`DocumentRange`/`GetSelection`
+sites — against the **12** redaction sites of §3.1. So roughly **nineteen** `.Name` reads are legitimate
+NON-redacting reads: `RefRegistry.cs:184-185,304-305,337` (identity re-resolution and the cached fast
+path), `SnapshotEngine.cs:73` (the node builder's raw read), `PerceptionManager.cs:186,598` (descriptor
+keys), and others.
+
+**Consequence, and it is a migration blocker if missed:** switching on the inverted sweep with only the
+12 sites allowlisted would fail immediately on all ~19, and the final migration step would be
+un-mergeable. The legacy checklist tracks redaction sites; the sweep governs *reads*, and those are not
+the same set.
+
+**Therefore the plan's FIRST task is a census**, before any sweep or accessor is written: enumerate every
+read of every swept property in `src/`, and classify each as
+
+| Class | Disposition |
+|---|---|
+| **egress** | must move behind an accessor returning the already-redacted string |
+| **identity** | legitimate raw read (ref resolution, descriptor keys, cached-path compare) — goes on the allowlist as an identity reader, with `RawForIdentity` |
+| **neither** | e.g. a window title, which is not element content — excluded from the swept set with a stated reason |
+
+**The census output IS the initial allowlist.** It is not optional groundwork: without it the sweep
+cannot be switched on at all. Its per-read classification is also the artifact a reviewer checks, since
+a read wrongly classed "identity" is exactly how a leak would survive this design.
+
+### 7.2.2 The legacy inventory is scaffolding
 
 **⚠ The old redaction-keyed sweep CANNOT be kept as a permanent second assertion — an earlier draft said
 it could, and that instruction contradicted §6.1.** §6.1 migrates families B and D to read
