@@ -151,7 +151,7 @@ public sealed class WaitCoordinator
                 handle, pollOptions, new RefRegistry(), resolveRefs: _perception.Refs);
             var sub = refScoped ? (IReadOnlyList<SnapshotNode>)model.Nodes.ToList() : Subtree(model, by, value);
             if (scopeRequested && sub.Count == 0)
-                throw new ToolException(ToolErrorCode.SelectorNoMatch, $"No element matched {by}={value} to scope stability.", "widen or correct the selector");
+                throw await ScopeNotFound(handle, by!, value!, includeOffscreen);
             var sig = Signature(sub, includeText);
             stableCount = sig == last ? stableCount + 1 : 0; last = sig;
             if (stableCount >= needed)
@@ -163,6 +163,45 @@ public sealed class WaitCoordinator
             if (sw.ElapsedMilliseconds >= timeoutMs) return new WaitStableResult(false, (int)sw.ElapsedMilliseconds, null);
             await Task.Delay(SafeDelayMs(pollIntervalMs));
         }
+    }
+
+    /// <summary>The selector matched nothing in the polled model. Upgrade the message with ONE unculled
+    /// walk before giving up, so an existing-but-culled scope is not reported as a missing one.
+    ///
+    /// The confirmation NEVER decides the outcome, only the wording -- if it throws, we still produce the
+    /// unconfirmed answer. But ToolException PROPAGATES: a window that closed mid-wait surfaces
+    /// WindowHandleStale / WindowNotFound (WindowManager.cs:181-199) and a denied target surfaces
+    /// TargetDenied (PerceptionManager.cs:420-423). Those are TRUER than "your selector matched nothing",
+    /// so swallowing them to report a selector problem would send the caller to edit a selector while
+    /// their window is gone. Only raw COM/UIA faults are swallowed.
+    ///
+    /// No latch is needed (unlike the `gone` confirmation): this path throws and terminates the call, so
+    /// there is no subsequent poll for the confirmation to double.</summary>
+    private async Task<ToolException> ScopeNotFound(
+        WindowHandle handle, string by, string value, bool includeOffscreen)
+    {
+        bool existsUnculled = false;
+        if (!includeOffscreen)
+        {
+            try
+            {
+                CountConfirmationWalk();
+                var (_, unculled) = await _perception
+                    .BuildModelAsync(handle, UnculledPollOptions, new RefRegistry());
+                existsUnculled = unculled.Nodes.Any(n => Matches(n, by, value));
+            }
+            catch (ToolException) { throw; }
+            catch { /* raw COM/UIA fault: fall back to the unconfirmed message */ }
+        }
+
+        if (existsUnculled)
+            return new ToolException(ToolErrorCode.SelectorNoMatch,
+                $"{by}={value} matched an element that exists but was culled against the window bounds, so stability could not be scoped to it.",
+                "pass includeOffscreen:true, or scope by scopeRef instead");
+
+        return new ToolException(ToolErrorCode.SelectorNoMatch,
+            $"No element matching {by}={value} was found in the searched tree to scope stability.",
+            "correct the selector, or pass includeOffscreen:true to search off-screen and past-the-edge elements");
     }
 
     public async Task<WaitForResult> WaitForAsync(WindowHandle handle, string by, string value,

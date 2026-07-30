@@ -101,6 +101,112 @@ public class WaitStableScopeTests : IClassFixture<TestAppFixture>
     }
 }
 
+/// <summary>Item 3's selector-miss path. `by`+`value` matching nothing in the CULLED poll model used to
+/// throw "No element matched {by}={value}" unconditionally -- a false statement when the element exists
+/// but was culled against the window bounds. Both branches below must describe what was SEARCHED, never
+/// claim what does not exist: an unculled confirmation walk does not prove non-existence either
+/// (UnculledPollOptions keeps IsOffscreen filtering by design, and MaxDepth still applies,
+/// SnapshotEngine.cs:101-105).
+///
+/// Uses the same fixture elements SP1's wait tests already established: SpatialOffscreenButton is
+/// present but spatially culled (WaitGoneCullTests.cs:8-9, WaitDiagnosticTests.cs:30 -- "reports the
+/// reason and both rects"), and NoSuchElement_SP1 genuinely is not there
+/// (WaitGoneCullTests.cs:32-49, WaitDiagnosticTests.cs:42-55).</summary>
+[Trait("Category", "Desktop")]
+public class WaitStableScopeMissTests : IClassFixture<TestAppFixture>
+{
+    private readonly TestAppFixture _app;
+    public WaitStableScopeMissTests(TestAppFixture app) => _app = app;
+
+    [Fact]
+    public async Task Culled_but_present_names_the_cull_and_offers_includeOffscreen_or_scopeRef()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var wait = new WaitCoordinator(perception);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var ex = await Assert.ThrowsAsync<ToolException>(() => wait.WaitForStableAsync(
+            handle, by: "automationId", value: "SpatialOffscreenButton",
+            includeText: false, quietMs: 100, timeoutMs: 100, pollIntervalMs: 50));
+
+        Assert.Equal(ToolErrorCode.SelectorNoMatch, ex.Code);
+        Assert.Contains("culled", ex.Message);
+        Assert.Contains("includeOffscreen", ex.SuggestedRecovery);
+        Assert.Contains("scopeRef", ex.SuggestedRecovery);
+    }
+
+    [Fact]
+    public async Task Genuinely_absent_does_not_assert_non_existence_and_still_offers_includeOffscreen()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var wait = new WaitCoordinator(perception);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var ex = await Assert.ThrowsAsync<ToolException>(() => wait.WaitForStableAsync(
+            handle, by: "automationId", value: "NoSuchElement_SP1",
+            includeText: false, quietMs: 100, timeoutMs: 100, pollIntervalMs: 50));
+
+        Assert.Equal(ToolErrorCode.SelectorNoMatch, ex.Code);
+        // "was found in the searched tree" is a claim about the SEARCH, not the element's existence.
+        // "does not exist" / "not found" as a standalone existence claim is exactly what this fix removes.
+        Assert.DoesNotContain("does not exist", ex.Message);
+        Assert.Contains("searched", ex.Message);
+        Assert.Contains("includeOffscreen", ex.SuggestedRecovery);
+    }
+
+    /// <summary>The happy path must pay NO extra walk for this confirmation machinery. WaitForStableAsync's
+    /// poll increments only the plain WalkCount (WaitCoordinator.cs:149,159 call CountWalk, never
+    /// CountPollWalk/CountConfirmationWalk), so that is the counter this pins: one CountWalk per poll
+    /// iteration plus one for the final satisfy snapshot, and nothing more.</summary>
+    [Fact]
+    public async Task A_satisfied_wait_pays_no_confirmation_walk()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var wait = new WaitCoordinator(perception);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var r = await wait.WaitForStableAsync(handle, by: null, value: null, includeText: false,
+            quietMs: 1, timeoutMs: 6000, pollIntervalMs: 50);
+
+        Assert.True(r.Stable);
+        // One CountWalk per poll iteration until stable, plus one for the final satisfy snapshot --
+        // ScopeNotFound is never reached because there is no selector miss on this unscoped wait, so
+        // ConfirmationWalkCount must be zero and WalkCount must be small (not inflated by a spurious
+        // confirmation walk on every poll).
+        Assert.Equal(0, wait.ConfirmationWalkCount);
+        Assert.True(wait.WalkCount >= 1, $"expected at least the final satisfy walk, saw {wait.WalkCount}");
+    }
+
+    /// <summary>Would this fact catch the ToolException carve-out mutation (deleting
+    /// `catch (ToolException) { throw; }` so a bare `catch` swallows it)? NO -- SpatialOffscreenButton's
+    /// confirmation walk never throws ToolException, it just returns a model, so mutating the carve-out
+    /// changes nothing observable here. See the report for what fact WOULD catch it (closing the window
+    /// mid-wait to provoke WindowHandleStale from the confirmation's own BuildModelAsync call) and why it
+    /// is not written here.</summary>
+    [Fact]
+    public async Task Culled_but_present_message_never_claims_the_element_does_not_exist()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var wait = new WaitCoordinator(perception);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var ex = await Assert.ThrowsAsync<ToolException>(() => wait.WaitForStableAsync(
+            handle, by: "automationId", value: "SpatialOffscreenButton",
+            includeText: false, quietMs: 100, timeoutMs: 100, pollIntervalMs: 50));
+
+        Assert.DoesNotContain("does not exist", ex.Message);
+        Assert.DoesNotContain("No element matched", ex.Message);
+    }
+}
+
 /// <summary>Item 3's argument contract. scopeRef roots the POLL walk; by+value keeps working unchanged.
 /// Supplying both is a caller bug and must be REFUSED, never silently resolved in favour of one --
 /// silently picking a scope the caller did not ask for is the wrong-belief class SP1 spent eleven rounds
