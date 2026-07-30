@@ -507,7 +507,9 @@ Required, and not optional given that the whole point of §5.5 is operator confi
    that surface is an append-only human-readable log subject to rotation and concurrent writes, and
    parsing it to recover authoritative state is exactly the kind of invention a spec must not leave to
    the implementer. The server writes a small JSON state file, **atomically** (temp + rename) at boot,
-   carrying `{ pid, processStartTimeUtc, redactionRulesPath, redactionRulesSha256 }`. The §5.4 log
+   carrying `{ stateVersion, pid, processStartTimeUtc, redactionRulesPath, redactionRulesSha256 }`
+   (`stateVersion` is currently `1` — see bullet 5; an earlier draft mandated the field in prose and
+   omitted it from this schema). The §5.4 log
    remains a human-readable record and is not load-bearing for any machine.
 
    ⚠ **One file per INSTANCE, not one well-known path.** An earlier draft mandated a single
@@ -527,9 +529,19 @@ Required, and not optional given that the whole point of §5.5 is operator confi
    UI automation, so a non-elevated operator terminal gets `Access Denied`. Treating that as "not alive"
    would report *no server is running* while one is — the operator then trusts a dry-run that is not
    live, which is the precise false confidence §5.5 exists to prevent. On an access-denied or otherwise
-   unreadable check the CLI reports **"a server may be running; its state could not be read — retry from
-   an elevated terminal"** and exits **`4`**. Same treatment for a state file whose `stateVersion` is
-   unrecognised.
+   unreadable check the CLI exits **`4`** and reports the unknown.
+
+   ⚠ **Exit `4` has two causes and they need DIFFERENT messages** — an earlier draft gave both the same
+   "retry from an elevated terminal" text, which sends an operator hitting a version skew to debug a
+   permission problem they do not have:
+
+   | Cause | Message |
+   |---|---|
+   | access denied reading the process | "a server may be running; its state could not be read — retry from an elevated terminal" |
+   | unrecognised `stateVersion` | "a server is running a different version of flaui-mcp than this CLI — upgrade the CLI, or restart the server with the matching build" |
+
+   Both are exit `4` because both mean *the same thing to a script* — liveness is unknown — while telling
+   a human two different stories. Neither is ever reported as "no server is running".
 
 5. **The state file carries `stateVersion` (currently `1`).** It is IPC between a booted server and a
    later, possibly different-version CLI — across an upgrade, one side will read the other's file. An
@@ -661,19 +673,53 @@ identity reader in the codebase. Split explicitly:
 | List | Contains | Reads via | Growth |
 |---|---|---|---|
 | **Egress accessors** | the family-A/C read helpers + `SnapshotEngine`'s node builder | the classifier; returns the **already-redacted** string | closed; adding one is a security review |
-| **Identity readers** | ref resolution, descriptor keys, the cached fast-path compare | `RawForIdentity` | closed; populated once by the census (§7.2.1) |
+| **Identity readers** | ref resolution, descriptor keys, the cached fast-path compare | the raw accessor appropriate to what they hold — see below | closed; populated once by the census (§7.2.1) |
+
+⚠ **Identity readers do NOT all hold a live element, and an earlier draft wrongly routed them all through
+`RawForIdentity` on an accessor's return value.** `RefRegistry.cs:337`'s cached fast path compares a
+cached `ElementDescriptor` in memory and has no `AutomationElement` to hand to a helper; the same is true
+of the descriptor-key comparisons at `:184-185` and `:304-305`. Structurally impossible as written.
+Corrected — raw access has two forms, by what the caller holds:
+
+| Caller holds | Reads via |
+|---|---|
+| a live `AutomationElement` (e.g. minting a descriptor at `SnapshotEngine.cs:73`) | the accessor's `RawForIdentity` |
+| a stored `ElementDescriptor` / `SnapshotNode` (e.g. `RefRegistry.cs:337`, `:184-185`, `:304-305`) | the record's raw `Name` member directly — it is already raw by BC-1 and never left the process |
+
+Both forms are on the identity-reader list and both are swept. The distinction matters because the second
+form is not a UIA read at all: BC-1 requires the stored descriptor stay raw, so there is nothing to
+redact there and nothing to route through a classifier.
 
 Both are **closed sets pinned by name**. A new *tool* joins neither — it calls an egress accessor. That
 is the property the rejected growable design lacked, and it survives the split intact.
 
-**⚠ Whack-a-mole is the wrong game, and six rounds of it settled the mechanism.** Review defeated a
-property-NAME-matching sweep six times running — `GetCurrentPropertyValue`, a range from `GetSelection()`,
-`.Current.Value`, and so on — because for any spelling banned, FlaUI offers another that reaches the same
-COM property. **The sweep therefore bans the TYPES, not the spellings:** outside the two lists above,
-`src/` may not reference `AutomationElement`, a FlaUI pattern type, or their `Current`/`Cached`
-information structs in a value-read position at all. A type-level ban covers accessor spellings nobody
-has thought of yet, including ones added by a future FlaUI upgrade; the property-name list below is kept
-only as a more precise error message, not as the boundary.
+**⚠ A TYPE-level ban was drafted here and is WITHDRAWN — it was unbuildable, and four independent panel
+seats killed it in one round.** The draft said `src/` may not reference `AutomationElement`, FlaUI pattern
+types, or their `Current`/`Cached` structs "in a value-read position" outside the two lists. Why it fails:
+
+1. **It bans reading structural properties too.** `ControlType`, `BoundingRectangle`, `IsEnabled`,
+   `IsOffscreen`, `ProcessId` and `RuntimeId` are read throughout the snapshot walk, the interaction
+   tools, the capture geometry and the policy checks — none of them content. The sweep would fire
+   hundreds of false positives, and the only way to pass would be an allowlist covering nearly every
+   UIA-touching file, which **restores the growable list the ban was meant to replace**.
+2. **It drops coverage it was supposed to keep.** `SnapshotNode.Name` and `ElementDescriptor.Name` are
+   this repo's own records, not FlaUI types, so a FlaUI-type ban does not reach them.
+3. **`ITextRange` is neither a pattern type nor a property struct**, so demoting the property list would
+   have revived the `GetSelection().GetText()` bypass found one round earlier.
+4. "Value-read position" was never defined tightly enough for a Roslyn walk to decide.
+
+**The boundary is the PROPERTY list, and it is content-bearing properties only.** Structural properties
+are explicitly out of scope — they carry no user content, and including them is what made the type ban
+collapse. The list below is therefore load-bearing, not an error-message convenience.
+
+**Six defeated drafts is data, and the honest conclusion is that no syntactic sweep closes this class
+perfectly.** What bounds the residual risk instead of pretending it away:
+
+- **The FlaUI version is pinned, and a version bump requires re-auditing this property list** — added to
+  the dependency-update path, not just written here. That is the concrete answer to "a future upgrade
+  adds a spelling", which was the type ban's one real motivation.
+- §10's residual-risk statement governs: the guarantee is "every read of a property we know carries
+  content is accounted for", which is strictly weaker than "no content can escape".
 
 - The swept properties may be read **only** inside a named, closed set of accessors (the family-A/C read
   helpers and `SnapshotEngine`'s node builder). That set is pinned by name in the test.
