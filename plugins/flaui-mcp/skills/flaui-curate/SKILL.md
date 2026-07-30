@@ -122,23 +122,39 @@ is no diff left to reconstruct what the entries said.
 partial reset can leave the entries deleted and the rule gone — losing knowledge that existed in two places a
 moment earlier.
 
-**MAINTAINER mode** — stage the drain plus everything this run produced, by name:
+**BEFORE you commit, gate on the twins.** If you promoted, run
+`dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~Every_twinned_skill"`
+(or just `diff` the two copies). **A half-applied promotion — one copy edited, the other not — is stageable
+and committable**, because `git add` silently ignores an unmodified path; the drift would then be sealed into
+history and surface later as a red gate that names drift rather than your promotion. Do not treat "I edited
+both" as verified; check it.
+
+**MAINTAINER mode** — stage EXACTLY the files this run produced, each by name:
 ```
 git add .claude/flaui-mcp/observations.md \
         .claude/skills/driving-flaui-mcp/SKILL.md \
-        plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md \
-        docs/fix-the-tool-backlog/ test/FlaUI.Mcp.Tests/
+        plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md
+# plus, ONLY if you routed, the specific files you created — never the directories:
+git add docs/fix-the-tool-backlog/<slug>.md test/FlaUI.Mcp.Tests/<Path>/<YourNewTest>.cs
 git commit -m "chore(flaui-curate): drain N observations (promoted X, routed Y, dropped Z)"
 ```
-Include BOTH skill copies whenever you promoted (see the twin warning above), and the backlog file plus its
-generated test whenever you routed. Never stage with a catch-all `git add -A`: a curate run often sits
-alongside unrelated working-tree changes, and sweeping those into a knowledge commit is how unreviewed work
-reaches history.
+⚠ **Name the FILES, never the directories.** `git add test/FlaUI.Mcp.Tests/` is a catch-all for everything
+modified inside it, so it sweeps any unrelated work-in-progress into a knowledge commit — the same failure as
+`git add -A`, just narrower. A curate run routinely sits alongside unrelated working-tree changes. Drop the
+skill-copy lines if you did not promote, and the route line if you did not route.
 
-**USER mode** — `local-growth.md` may not be inside a git repo at all. Check first
-(`git rev-parse --is-inside-work-tree`). If it is, commit it together with the inbox drain. **If it is not,
-say so plainly in your report** rather than silently leaving the only copy unprotected — the user cannot
-choose to back something up they were never told was at risk.
+**USER mode** — the project may not be a git repo at all. Check once with
+`git rev-parse --is-inside-work-tree`:
+- **In a repo** → commit `local-growth.md` AND `.claude/flaui-mcp/observations.md` together, by name, in one
+  commit. Both live in the project tree, so both are covered by the same check.
+- **Not in a repo** → nothing here is committable, including the drain. **Say so plainly in your report** and
+  name the two files at risk, rather than silently leaving the only copies unprotected — the user cannot
+  choose to back up something they were never told was exposed.
+
+**If the commit itself FAILS** — a rejecting hook, a pathspec that matched nothing, a conflict — **do not end
+your turn quietly.** That is exactly the worst state: the drain is destructive and is now sitting uncommitted.
+Leave the working tree ALONE (never "clean up" by discarding it), report the failure prominently as the
+headline of your result, and state which files are unprotected so the user can commit them by hand.
 
 ⚠ **`global-growth.md` lives under `%USERPROFILE%` in `.claude/flaui-mcp/` — outside every project repo.** A global
 promote is therefore NOT covered by any of the above. Flag it in your report each time you write one.
