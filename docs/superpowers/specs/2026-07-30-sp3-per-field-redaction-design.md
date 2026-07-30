@@ -521,6 +521,19 @@ Required, and not optional given that the whole point of §5.5 is operator confi
    is actually down — a wrong answer in the direction that matters. Liveness requires the PID to be
    alive **and** its process start time to equal `processStartTimeUtc`, which a recycled PID cannot
    match. Stale files failing that check are ignored (and pruned).
+
+   ⚠ **"Cannot determine" is a THIRD state and must never collapse into "no server".** Reading another
+   process's start time needs `PROCESS_QUERY_INFORMATION`; this server is commonly run **elevated** for
+   UI automation, so a non-elevated operator terminal gets `Access Denied`. Treating that as "not alive"
+   would report *no server is running* while one is — the operator then trusts a dry-run that is not
+   live, which is the precise false confidence §5.5 exists to prevent. On an access-denied or otherwise
+   unreadable check the CLI reports **"a server may be running; its state could not be read — retry from
+   an elevated terminal"** and exits **`4`**. Same treatment for a state file whose `stateVersion` is
+   unrecognised.
+
+5. **The state file carries `stateVersion` (currently `1`).** It is IPC between a booted server and a
+   later, possibly different-version CLI — across an upgrade, one side will read the other's file. An
+   unrecognised version is the exit-`4` unknown above, never a crash and never "no server".
 5. With no live instance, the CLI says **no server is running** plainly, rather than implying its
    results are live. With more than one, it reports each instance and which rule set each loaded —
    the operator needs to know *which* server their agent is talking to.
@@ -640,7 +653,27 @@ method to the list and dropping in a dead call —
 would verify the *lexical presence* of a call, not that its result gates anything, and the leak ships
 under a green gate.
 
-**The allowlist is therefore a small FIXED set of accessor helpers, not a growable per-site list.**
+**The allowlist is therefore TWO small FIXED sets, neither growable per-tool.** ⚠ An earlier draft said
+"a small fixed set of accessor helpers" and then, in §7.2.1, told the implementer to add every legitimate
+identity reader to "the allowlist" — which cannot both be closed and be an open registry of every
+identity reader in the codebase. Split explicitly:
+
+| List | Contains | Reads via | Growth |
+|---|---|---|---|
+| **Egress accessors** | the family-A/C read helpers + `SnapshotEngine`'s node builder | the classifier; returns the **already-redacted** string | closed; adding one is a security review |
+| **Identity readers** | ref resolution, descriptor keys, the cached fast-path compare | `RawForIdentity` | closed; populated once by the census (§7.2.1) |
+
+Both are **closed sets pinned by name**. A new *tool* joins neither — it calls an egress accessor. That
+is the property the rejected growable design lacked, and it survives the split intact.
+
+**⚠ Whack-a-mole is the wrong game, and six rounds of it settled the mechanism.** Review defeated a
+property-NAME-matching sweep six times running — `GetCurrentPropertyValue`, a range from `GetSelection()`,
+`.Current.Value`, and so on — because for any spelling banned, FlaUI offers another that reaches the same
+COM property. **The sweep therefore bans the TYPES, not the spellings:** outside the two lists above,
+`src/` may not reference `AutomationElement`, a FlaUI pattern type, or their `Current`/`Cached`
+information structs in a value-read position at all. A type-level ban covers accessor spellings nobody
+has thought of yet, including ones added by a future FlaUI upgrade; the property-name list below is kept
+only as a more precise error message, not as the boundary.
 
 - The swept properties may be read **only** inside a named, closed set of accessors (the family-A/C read
   helpers and `SnapshotEngine`'s node builder). That set is pinned by name in the test.
@@ -668,12 +701,21 @@ committer, which no test in the same repo can stop.
 
 ### 7.2.1 ⚠ TASK ZERO — the census, before any sweep is written
 
-**MEASURED, not estimated:** `src/` currently contains **31** reads matching `.Name` (excluding
-`ProcessName`/`ClassName`/`FileName`/`nameof`) and **22** `GetText`/`DocumentRange`/`GetSelection`
-sites — against the **12** redaction sites of §3.1. So roughly **nineteen** `.Name` reads are legitimate
-NON-redacting reads: `RefRegistry.cs:184-185,304-305,337` (identity re-resolution and the cached fast
-path), `SnapshotEngine.cs:73` (the node builder's raw read), `PerceptionManager.cs:186,598` (descriptor
-keys), and others.
+**MEASURED:** `src/` currently contains **31** reads matching `.Name` (excluding
+`ProcessName`/`ClassName`/`FileName`/`nameof`) and **22** `GetText`/`DocumentRange`/`GetSelection` sites,
+against the **12** redaction sites of §3.1.
+
+⚠ **Do NOT derive "31 − 12 = 19 non-redacting reads" — an earlier draft did, and the subtraction is
+unsound.** The twelve are redaction sites across *all* properties: A1 redacts a grid **Value**, A2 and A5
+a **Text** read, D3 a **Value**, C1 only bounds. Only a minority of the twelve read a `.Name` at all, so
+subtracting the full twelve from a `.Name`-only count mixes two different populations and *understates*
+the non-redacting reads — the number is materially higher than nineteen.
+
+**The correct figure is not derivable from these totals, and the spec deliberately does not invent one.**
+Producing it is the census's job. Known non-redacting `.Name` readers, verified: `RefRegistry.cs:184-185,
+304-305, 337` (identity re-resolution and the cached fast-path compare), `SnapshotEngine.cs:73` (the node
+builder's raw read), `PerceptionManager.cs:186, 598` (descriptor keys). That list is a starting point,
+not a total.
 
 **Consequence, and it is a migration blocker if missed:** switching on the inverted sweep with only the
 12 sites allowlisted would fail immediately on all ~19, and the final migration step would be
@@ -686,7 +728,7 @@ read of every swept property in `src/`, and classify each as
 | Class | Disposition |
 |---|---|
 | **egress** | must move behind an accessor returning the already-redacted string |
-| **identity** | legitimate raw read (ref resolution, descriptor keys, cached-path compare) — goes on the allowlist as an identity reader, with `RawForIdentity` |
+| **identity** | legitimate raw read (ref resolution, descriptor keys, cached-path compare) — goes on the **identity-reader list**, reading via `RawForIdentity` |
 | **neither** | e.g. a window title, which is not element content — excluded from the swept set with a stated reason |
 
 **The census output IS the initial allowlist.** It is not optional groundwork: without it the sweep
