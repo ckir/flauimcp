@@ -70,7 +70,11 @@ No serializer or renderer chokepoint can catch them; they must compare on the re
 | D3 | `Perception/PerceptionManager.cs:746` | `EvaluateSelectorValueAsync` returns `null` so `until:valueEquals` cannot confirm a guess |
 | D4 | `Perception/PerceptionManager.cs:599` | `find` matches on the redacted name (same site as A3) |
 
-Twelve distinct sites; A3/D4 is one site serving two roles.
+**Count, stated precisely because §7.2 pins it:** twelve *roles* across **eleven distinct `(file, member)`
+sites** — A3 and D4 are the same site (`PerceptionManager.cs:599`) serving both an egress and a matching
+role. A4 spans two files (`WatchPayloadBuilder.cs:34` decides, `WatchPump.cs:244-245` supplies the fact),
+so the pinned inventory in §7.2 carries **twelve `(file, member)` entries** for eleven logical sites. Any
+reviewer recounting this must reconcile against §7.2's list, not against this prose.
 
 ### 3.2 The whole-window floor (already shipped, unchanged by SP3)
 
@@ -131,9 +135,23 @@ these references are corrected as part of it (§8, T7).
 2. It is where the false-positive risk concentrates: UUIDs, build hashes and element ids are
    high-entropy strings an agent legitimately needs.
 
-**Why the included signals are free:** `SnapshotEngine.cs` already reads `aid` (used at `:93`, `:95`) and
-`name` per node, and the selector walk already reads both (`PerceptionManager.cs:176`, `:186`). The
-included signals add **zero** additional COM reads on the hot path.
+**Why the included signals add no COM reads:** `SnapshotEngine.cs` already reads `aid` (used at `:93`,
+`:95`) and `name` per node, and the selector walk already reads both (`PerceptionManager.cs:176`, `:186`).
+
+**But "no COM reads" is not "no cost" — the CPU bound is specified here.** Naively, R rules × N nodes
+regex evaluations per walk (20 rules over a 500-node tree = 10 000 matches). Two required mitigations:
+
+1. **`processName` is resolved ONCE per walk, never per node**, and is the first predicate tested — an
+   ordinal string compare that eliminates every non-matching rule before any regex runs. This is sound
+   because a window's UIA tree is process-homogeneous (`PerceptionPolicy.cs:6-8` states it) and
+   `PopupFinder` skips any grafted popup whose `ProcessId` differs from the owner's, so every node in a
+   walk shares one process.
+2. **`MaxRules = 64`**, enforced at config load (§5.4). A deployment needing more has a policy problem,
+   not a configuration problem.
+
+After the `processName` short-circuit, a typical single-process rule set evaluates ≤ a handful of regexes
+per node. **The plan must MEASURE walk time with a worst-case rule set (64 global rules) against the
+95-node WPF TestApp window and record it — no speedup or no-cost claim ships unmeasured.**
 
 ### 4.2 Rule scoping
 
@@ -201,6 +219,22 @@ public sealed class SensitivityClassifier
 `RedactionPolicy.IsPasswordOrFailClosed`; if true the result is `(true, Os, null)` and no rule is
 consulted. Rules are evaluated in file order; the first match wins and supplies `RuleName`.
 
+**Thread-safety:** a `SensitivityClassifier` is **immutable after `Load`** and MUST be safe for
+concurrent use. This is not optional — it is consulted from the query STA, the action STA, and the watch
+pump's own thread. `Regex` instances are thread-safe for matching; the rule list is a frozen array.
+
+**No hot reload.** Rules are read once at startup. An operator editing the file must restart the server.
+Stated explicitly so silence is not read as an oversight: a live-reloading security policy would create a
+window where two concurrent walks disagree about what is sensitive, and the restart cost is trivial for
+an MCP server.
+
+**Match-time regex failure fails CLOSED.** A `RegexMatchTimeoutException` (or any exception) raised while
+evaluating a rule predicate is caught per-rule and treated as **a match** — the field is redacted with
+`Source = Rule` and that rule's name. Rationale: this mirrors `RedactionPolicy`'s per-read fail-closed
+idiom (§3), and a pathological name that stalls a regex is exactly the case where guessing "not
+sensitive" is least defensible. The cost is bounded over-redaction, which BC-2 accepts in preference to a
+leak, and `redactedBy` makes it visible rather than mysterious.
+
 ### 5.3 Wire representation
 
 The literal token stays **`"[REDACTED]"`** on every surface — existing tests pin it and agents
@@ -220,17 +254,66 @@ string-match it. Sensitivity provenance is carried **adjacently**, never by chan
 undebuggable: an operator cannot trace a redaction back to the misfiring rule, and an agent cannot tell
 an OS-declared field (permanent) from an operator rule (fixable).
 
+**⚠ The existing `isPassword` boolean is a breaking collision, and it is resolved here.** The wire ALREADY
+carries `isPassword` at `Tools/ContentTools.cs:36,39,81,84`, backed by `GridCellInfo.IsPassword` and
+`TextReadResult.IsPassword` (`PerceptionManager.cs:868,870`), plus a password COUNT in `SnapshotStats`
+(`PerceptionManager.cs:797`). Neither obvious answer is acceptable: leaving it `true` for a rule-redacted
+field **lies** (the OS never asserted `IsPassword`), and leaving it `false` **leaks**, because an existing
+consumer keys off `isPassword` to decide whether echoing the value is safe.
+
+**Resolution — `isPassword` keeps its literal OS meaning; a new field carries the safety fact:**
+
+| Field | Meaning | Rule-redacted | OS password |
+|---|---|---|---|
+| `isPassword` (existing) | the OS `IsPassword` property, unchanged | `false` | `true` |
+| `redacted` (**new**, bool) | "this value was withheld — do not treat it as content" | `true` | `true` |
+| `redactedBy` (**new**) | provenance | `"rule:<name>"` | `"os"` |
+
+`redacted` gives consumers ONE correct field to branch on. `isPassword` stays honest and is **deprecated
+in the tool descriptions** in favour of `redacted`, but is NOT removed — removing it would break existing
+consumers, and SP3's justification for changing payloads is that redaction is *additive* to them.
+
+`SnapshotStats` keeps its password counter counting OS password nodes only and gains a sibling
+`redactedCount`. Repurposing the existing counter would silently change a shipped number.
+
+**Disclosure accepted, not overlooked:** `redactedBy` tells a (possibly prompt-injected) agent which
+fields the operator considers sensitive, and rule *names* are echoed. This is a deliberate trade — BC-2
+makes false positives the dominant risk, and an undebuggable redaction is a worse failure than a
+disclosed field list. Two consequences the plan must carry: operators are told in the docs that rule
+names reach the agent (so `acme-prod-vault` is a poor name), and family D emits nothing (above), because
+there the same disclosure would re-create the oracle rather than merely describe it.
+
 ### 5.4 Failure semantics
 
 A missing `--redaction-rules` path, malformed JSON, unknown `version`, duplicate rule `name`,
-uncompilable regex, a rule with no element predicate, or `global` together with `processName` ⇒ the
-server **refuses to start**, with the offending rule name/index in the message.
+uncompilable regex, a rule with no element predicate, `global` together with `processName`, or more than
+`MaxRules = 64` rules ⇒ the server **refuses to start**, with the offending rule name/index in the message.
 
 Rationale: an operator who authored a rule file is depending on a shield. Starting with an empty rule
 set silently voids protection they explicitly asked for; redacting everything is unusable and hides the
 cause. A loud exit is the only defensible posture for a security mechanism. This is a deliberate
 departure from `RedactionPolicy`'s per-read fail-closed idiom, which governs a *runtime read*, not a
 *configuration error*.
+
+**⚠ "Refuse to start" is only correct if the operator can SEE why, and by default they cannot.** This
+server runs as an MCP child process launched by a client; a non-zero exit makes the whole tool set
+silently vanish from the agent's view, with the reason buried in a stderr stream the operator may never
+open. A loud failure nobody hears is a silent one. Two required mitigations:
+
+1. **The validation error is written to the install/diagnostic log**, not stderr alone — the same channel
+   the existing install-status surface uses, so `flaui-mcp` self-diagnosis reports it.
+2. **A dry-run validator: `flaui-mcp check-redaction-rules <path>`.** Exit 0 with a per-rule summary, or
+   non-zero naming the first bad rule. This is the ONLY way an operator can iterate on rules without
+   restarting the server and guessing, and BC-2 makes that iteration the feature's dominant cost.
+
+### 5.5 Rule authoring diagnostics (BC-2's counterweight)
+
+BC-2 says a false positive blinds the agent, and §5.3 gives the *agent* provenance. The **operator** needs
+the mirror of that: `check-redaction-rules` above accepts an optional `--against <window>` argument that
+takes a live snapshot of one window and lists, per node, which rule (if any) would redact it. Without
+this, an operator's only feedback loop for a misfiring regex is an agent that has mysteriously gone
+blind. This is scoped deliberately small: read-only, one window, no lease required — it reuses the
+existing read-only perception path.
 
 ## 6. P2 — architecture: classify once, apply four times
 
@@ -244,7 +327,31 @@ departure from `RedactionPolicy`'s per-read fail-closed idiom, which governs a *
    payload build  SnapshotDiff             builder         redacted form
 ```
 
-**Why not one chokepoint.** `ToolResponse.Ok` (`src/FlaUI.Mcp.Server/Tools/ToolResponse.cs:14`) with its
+### 6.1 WHERE the one decision happens: at node build, not at each egress
+
+**`SnapshotNode.IsPassword` (`Perception/SnapshotNode.cs:23`) becomes `Sensitivity Sensitivity`.** The
+classification is computed **once**, at `SnapshotEngine.cs:83` — exactly where the `IsPassword` decision
+is already made, while the live `AutomationElement`, its `aid` and its `name` are all in hand — and is
+then carried on the node. B1, B2 and D1 read it off the node and never re-classify.
+
+**This is forced, not stylistic.** `WaitCoordinator.cs:88` (D1) matches against a `SnapshotNode`, not a
+live element: it has no `AutomationElement`, no `processName`, and no way to evaluate a process-scoped
+rule at match time. Classifying at egress would make family D structurally unable to apply the policy —
+and family D is where the *oracle* lives, so a gap there is not cosmetic. Deciding at node build also
+guarantees B1/B2/D1 cannot disagree with each other about the same node, which hand-written per-site
+checks can and (per §3.4) demonstrably do.
+
+The live-element families (A, C) classify at their own read, since no `SnapshotNode` exists there; they
+call the same `Classify` with the walk-hoisted `processName` (§4.1).
+
+**Existing consumers of the removed member:** `PerceptionManager.cs:797` (`Tally`, the `snapshot_stats`
+password count) reads `n.IsPassword` and must move to `n.Sensitivity.Source == RedactionSource.Os` to
+keep its shipped meaning (§5.3). The plan must grep every `.IsPassword` read on `SnapshotNode` before
+changing the member — the count is not assumed here.
+
+### 6.2 Why not one chokepoint
+
+`ToolResponse.Ok` (`src/FlaUI.Mcp.Server/Tools/ToolResponse.cs:14`) with its
 single `JsonSerializerOptions` (`:12`) is a genuine funnel for family A. It cannot serve B (the render is
 already a string by the time it arrives), C (not JSON), or D (a comparison, not a payload).
 
@@ -269,15 +376,42 @@ here.** 48 of the 49 tools return `Task<string>` — already-serialized JSON —
   **not matchable** at D1–D4.
 - DEF-1: a throwing `IsPassword` read yields a mask rect (currently it does not).
 - DEF-2: full-desktop capture masks password rects.
+- **Match-time regex failure fails CLOSED** (§5.2): a rule whose predicate throws redacts the field.
+- **`isPassword` stays `false` for a rule-redacted field while `redacted` is `true`** (§5.3) — the
+  collision resolution, pinned on both the grid-cell and get-text payloads.
+- **`SnapshotStats`' password count is unchanged by a rule-redacted node**; `redactedCount` counts both.
+- **BC-1 targetability (Desktop):** a rule-redacted element with **no `AutomationId`** is still resolvable
+  by `ref` and still actionable. This is the item-7 hazard; it is proven, not asserted.
+- **Thread-safety:** the classifier is consulted concurrently from two STAs and the watch pump without
+  torn reads (a stress fact over a frozen rule set).
+- **`check-redaction-rules`** (§5.4): exit 0 on a valid file, non-zero naming the first bad rule.
 
 ### 7.2 The guarantee: `RedactionSurfaceInventoryTests`
 
 A source-level sweep over `src/` for the literal `"[REDACTED]"` and for `IsPasswordOrFailClosed`,
-asserting the set of `(file, containing member)` pairs equals a **pinned list of the twelve sites**.
+asserting the set of `(file, containing member)` pairs equals the **pinned twelve-entry list** of §3.1
+(eleven logical sites; A4 spans two files).
 
-- A new site ⇒ test fails ⇒ the author must add it to the list, which is the moment they are forced to
-  route it through the classifier. This is what makes the §1 success criterion checkable.
+- A new site ⇒ test fails ⇒ the author must add it to the list.
 - A removed site ⇒ test fails ⇒ nobody deletes a redaction silently.
+
+**⚠ Notice is not correctness — the naive version of this test is compliance theater, and §1 overclaims
+without the following.** A developer who adds a leaking site satisfies a pure inventory test by appending
+one line to the list. The list therefore pins, per entry, **the classifier call itself**: each entry
+records `(file, member, expected-decision-source)` where the source must be a call to
+`SensitivityClassifier.Classify` or to `RedactionPolicy.IsPasswordOrFailClosed` *within that member*. An
+entry whose member contains a redaction literal but no decision call **fails**. Appending to the list is
+then not a bypass — it is a claim the test independently checks.
+
+This narrows but does not close the gap, and the §10 residual-risk note states the remainder honestly:
+a genuinely novel egress that never touches either token is invisible to this sweep.
+
+**Locating `src/` from a test running in `bin/`:** the sweep resolves the repo root by walking up from
+`AppContext.BaseDirectory` to the first directory containing `FlaUI.Mcp.slnx` (note the `.slnx`
+extension — there is no `.sln` in this repo), and **fails loudly if it cannot find it** rather than
+sweeping zero files and passing. A sweep that silently matches nothing is the exact false-GREEN this
+whole section exists to prevent. It scans `src/**/*.cs` only — never `test/` or `docs/`, both of which
+legitimately contain the literal.
 - Precedent: `test/FlaUI.Mcp.Tests/Server/ToolTrapFactInvariantTests.cs` already sweeps every tool
   method **and parameter** description by reflection and has caught a real regression. Its own docstring
   records the lesson this design reuses: *a tripwire is only as wide as the surface it actually reads* —
@@ -311,6 +445,24 @@ diagnostics.
 *This replaces SP2's "may not break any existing consumer", which SP3 cannot inherit — per-field
 redaction changes payloads by design.*
 
+**BC-1 has a second half that rule-based redaction newly stresses: the element must stay TARGETABLE.**
+Because D2/D4 redact *before* matching, a rule-redacted field — like a password field today — cannot be
+found by `desktop_find by=name`. For an OS password field that is harmless: it has an `AutomationId`, or
+the agent already holds a `ref` from the snapshot. A `namePattern` rule can now hit an element that has
+**no `AutomationId` and whose Name was its only searchable identity**, and that is the exact shape of the
+trap that got ROADMAP item 7 retired.
+
+**It stays targetable, and here is the mechanism:** the snapshot still LISTS the element, with its `ref`
+and its redacted display name, and `RefRegistry` still holds the **raw** descriptor — so `Resolve` uses
+`Name`+`ControlType` (`RefRegistry.cs:184-185`) and the cached fast path compares the raw `Name`
+(`:337`) exactly as before. Targeting is by `ref`, which is unaffected. Only *name-based search* is
+withheld, which is the intended effect.
+
+**The plan must pin this**, with a Desktop fact: a rule-redacted element with no `AutomationId` is
+resolvable by `ref` and actionable (`desktop_set_value`/`desktop_invoke`) after being redacted in the
+snapshot. Item 7 was retired on exactly this hazard; SP3 must prove it does not reintroduce it rather
+than assert it does not.
+
 **BC-2 — Over-redaction is a real cost, not a cosmetic one.** A false positive blinds the agent, and it
 cannot distinguish an empty field from a hidden one. Every design decision above that looks
 conservative (process scoping, opt-in, off by default, `redactedBy`, excluding value-shape) is paying
@@ -338,8 +490,9 @@ re-create the oracle, §5.3).
 
 **Deliberately deferred to the PLAN, not gaps in the spec:**
 1. The exact parse mechanism of the §7.2 source sweep (regex vs Roslyn syntax walk over `src/`). The
-   *contract* — the pinned twelve-site list and its failure modes — is fixed here; the parse strategy is
-   an implementation choice with no contract consequence.
+   *contract* — the pinned twelve-entry list, the per-entry decision-call assertion, and the loud failure
+   when the repo root cannot be located — is fixed here; the parse strategy is an implementation choice
+   with no contract consequence.
 2. Whether DEF-1 and DEF-2 land as one commit or two. Sequencing only; both are in scope either way.
 3. Whether `redactedBy` on family A is added per-DTO or via a shared projection helper — depends on how
    many of A1–A5 use anonymous vs typed projections, which the plan must grep per site.
