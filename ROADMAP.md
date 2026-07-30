@@ -381,6 +381,16 @@ value and the blast-radius-of-the-change question remain open for the maintainer
   deliberately claims no blindness test. To close it for real, the fixture needs a Win32 `#32768` menu or
   an older `HwndWrapper` popup host that lands at the desktop level. Recorded here because the backlog
   entry it came from was retired when the code shipped.
+- **A genuinely hung window still consumes an action slot permanently — KNOWN, BY DESIGN, and NOT what the
+  timeout guard fixes.** Stated here because the two are easy to conflate. The `timeoutMs` guard
+  (`AutomationDispatcher.ClampActionTimeout`) closes the *caller-input* vector: no argument can now make the
+  watchdog wait forever. It cannot reclaim a slot lost to a REAL COM/UIA block — the worker thread blocks
+  inside the native call, so its `finally { Interlocked.Decrement(...) }` never runs, and five such calls
+  exhaust `MaxPendingActions` for the life of the process. That is inherent to abandoning a blocked STA call
+  (a thread parked in COM cannot be killed safely), and the class docstring already flags it as bounded "until
+  Phase 4's full action budget". Surfaced by the AGY-CAPSTONE Boundary Smuggler seat, which confirmed the
+  input vector IS closed. Not filed as a defect: it needs a genuinely unresponsive window, not attacker-
+  controlled input.
 - **`wait_for_stable` scope-by-ref (`scopeRef`) — SHIPPED in SP2, and MEASURED. The poll got ~8x cheaper;
   the tool did NOT get usable at its default budget.** Measured on the WPF TestApp window (95 whole-window
   nodes, scoped to a depth-4 subtree), driving `WaitCoordinator` directly:
