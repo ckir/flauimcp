@@ -83,7 +83,9 @@ set (`:15-28`), enforced at `PerceptionManager.cs:290,436,489,805`, `Watch/Watch
 `Watch/WatchPump.cs:208`, `Tools/WakeTools.cs:45`, `Tools/ScreenshotTools.cs:35,42`,
 `Tools/FindTextTools.cs:60,92`, `Interaction/ActionPolicy.cs:36`. SP3 does not modify the denylist.
 
-### 3.3 Two defects found while verifying, both in scope
+### 3.3 Defects found while verifying — all in scope
+
+*(DEF-3, the locator oracle, was found by the panel and is documented at §5.3 where its fix belongs.)*
 
 **DEF-1 — the pixel path fails OPEN while every text path fails CLOSED.**
 `PerceptionManager.cs:818` reads `d.Properties.IsPassword.ValueOrDefault` **raw**, inside `try/catch {}`.
@@ -187,8 +189,22 @@ Enabled by a new server option `--redaction-rules <path>`; absent ⇒ feature of
 - `processName` — matched case-insensitively against `Process.ProcessName` (no `.exe`), mirroring
   `PerceptionPolicy.cs:13-14`'s documented convention. Required unless `global: true`.
 - `global` — optional bool, default `false`. `true` with a `processName` present is a config error.
-- Element predicates: `automationId` (exact, Ordinal), `automationIdPattern`, `namePattern` (both .NET
-  regex, compiled at load with a 100 ms `RegexOptions.NonBacktracking`-equivalent timeout).
+- Element predicates: `automationId` (exact, Ordinal), `automationIdPattern`, `namePattern`.
+
+  **⚠ Regex is bounded at LOAD, not by a per-match timeout — an earlier draft got this wrong and the
+  error was unbounded, not cosmetic.** A per-match timeout is charged **per rule per node**: one
+  catastrophically backtracking pattern at a 100 ms budget over a 1 000-node tree burns **100 seconds of
+  blocking STA time on every snapshot**, and `MaxRules` does nothing to bound it because a single bad
+  rule suffices. The fix is to make catastrophic backtracking *unrepresentable*:
+
+  - Patterns are compiled at load with **`RegexOptions.NonBacktracking`** (a real .NET option, available
+    on the pinned framework — not the "equivalent" the earlier draft hand-waved). It guarantees linear
+    time in the input length and has no catastrophic backtracking by construction.
+  - `NonBacktracking` does not support backreferences, lookaround, or atomic groups. A pattern using
+    them **fails to compile and is a fatal config error** (§5.4), naming the rule and the unsupported
+    construct. Rejecting expressive-but-unbounded patterns is the point, not a limitation to work around.
+  - A small per-match timeout (100 ms) remains as belt-and-braces for pathological *input* length, and
+    its expiry is handled by §5.2's fail-closed rule.
 - **At least one element predicate is required**; a rule with none would redact an entire process.
 - A rule matches iff **all** its specified predicates match (AND).
 
@@ -250,6 +266,27 @@ string-match it. Sensitivity provenance is carried **adjacently**, never by chan
 - **Oracle suppression (D):** no wire change. These paths already report "no match" and must continue
   to be indistinguishable from a genuine miss; adding provenance here would **re-create the oracle**.
 
+**⚠ DEF-3 — the redaction token is itself a LOCATOR ORACLE, and it is reachable today.** Because `find`
+matches on the redacted name (`PerceptionManager.cs:599-601`) and so does the selector walk (`:187-189`),
+a caller can search for the literal token:
+
+```
+desktop_find window=w1 name="[REDACTED]" mode="eq"
+```
+
+and receive the `ref` and bounding rect of **every password field in the window** — a ready-made
+enumeration of exactly the elements the policy protects, handed to an agent that may be prompt-injected.
+No secret *value* crosses the wire, so INV-5 is intact; what leaks is the **location and handle set**.
+SP3 widens it, because every rule-redacted field joins the same result set.
+
+**Required fix, in SP3:** a name predicate whose value is exactly the redaction token matches **nothing**.
+The token is a presentation artifact, not a name any real element has, so refusing it costs no legitimate
+caller. This applies to `find`, the selector post-filter, and `wait_for by=name` alike, and it must be
+pinned per path — a fix on `find` alone leaves two open doors, which is the recurring shape §3.4 records.
+
+Filed as DEF-3 rather than a design note because it is a **pre-existing reachable defect**, like DEF-1
+and DEF-2: it is fixed here, so the backlog directory stays empty and the v1.0 bar stays met.
+
 `redactedBy` exists because a false positive is the top risk of this feature and is otherwise
 undebuggable: an operator cannot trace a redaction back to the misfiring rule, and an agent cannot tell
 an OS-declared field (permanent) from an operator rule (fixable).
@@ -285,9 +322,17 @@ there the same disclosure would re-create the oracle rather than merely describe
 
 ### 5.4 Failure semantics
 
-A missing `--redaction-rules` path, malformed JSON, unknown `version`, duplicate rule `name`,
-uncompilable regex, a rule with no element predicate, `global` together with `processName`, or more than
-`MaxRules = 64` rules ⇒ the server **refuses to start**, with the offending rule name/index in the message.
+**The flag's two states are distinct and an earlier draft conflated them:**
+
+| State | Meaning | Behaviour |
+|---|---|---|
+| `--redaction-rules` **not passed at all** | operator wants no rules | **feature off**, `OsOnly` classifier, server starts normally |
+| flag passed, **file does not exist / cannot be read** | operator asked for a shield that isn't there | **fatal** |
+
+Fatal at startup: an unreadable/nonexistent file at a passed path, malformed JSON, unknown `version`,
+duplicate rule `name`, an unsupported or uncompilable regex, a rule with no element predicate, `global`
+together with `processName`, or more than `MaxRules = 64` rules ⇒ the server **refuses to start**, naming
+the offending rule (or index, for a rule too malformed to have a usable name).
 
 Rationale: an operator who authored a rule file is depending on a shield. Starting with an empty rule
 set silently voids protection they explicitly asked for; redacting everything is unusable and hides the
@@ -300,8 +345,11 @@ server runs as an MCP child process launched by a client; a non-zero exit makes 
 silently vanish from the agent's view, with the reason buried in a stderr stream the operator may never
 open. A loud failure nobody hears is a silent one. Two required mitigations:
 
-1. **The validation error is written to the install/diagnostic log**, not stderr alone — the same channel
-   the existing install-status surface uses, so `flaui-mcp` self-diagnosis reports it.
+1. **The validation error is written to the install/diagnostic log**, not stderr alone.
+   ⚠ **This is NOT agent-reachable and must not be described as if it were.** A server that refused to
+   start has no tool surface, so the agent cannot call any self-diagnosis tool to read that log — the
+   log is for the **human**, read out-of-band. The agent's only signal is that the tool set vanished.
+   That asymmetry is precisely why mitigation 2 is required rather than optional.
 2. **A dry-run validator: `flaui-mcp check-redaction-rules <path>`.** Exit 0 with a per-rule summary, or
    non-zero naming the first bad rule. This is the ONLY way an operator can iterate on rules without
    restarting the server and guessing, and BC-2 makes that iteration the feature's dominant cost.
@@ -376,6 +424,9 @@ here.** 48 of the 49 tools return `Task<string>` — already-serialized JSON —
   **not matchable** at D1–D4.
 - DEF-1: a throwing `IsPassword` read yields a mask rect (currently it does not).
 - DEF-2: full-desktop capture masks password rects.
+- **DEF-3 (§5.3), pinned on ALL THREE paths separately:** `find`, the selector post-filter, and
+  `wait_for by=name` each return **no match** for `name == "[REDACTED]"`. One fact per path — a single
+  aggregate test would let two of the three regress silently, which is §3.4's recurring failure shape.
 - **Match-time regex failure fails CLOSED** (§5.2): a rule whose predicate throws redacts the field.
 - **`isPassword` stays `false` for a rule-redacted field while `redacted` is `true`** (§5.3) — the
   collision resolution, pinned on both the grid-cell and get-text payloads.
@@ -388,9 +439,31 @@ here.** 48 of the 49 tools return `Task<string>` — already-serialized JSON —
 
 ### 7.2 The guarantee: `RedactionSurfaceInventoryTests`
 
-A source-level sweep over `src/` for the literal `"[REDACTED]"` and for `IsPasswordOrFailClosed`,
-asserting the set of `(file, containing member)` pairs equals the **pinned twelve-entry list** of §3.1
-(eleven logical sites; A4 spans two files).
+**⚠ The sweep is an allowlist of READS, not an allowlist of redactions. An earlier draft had it
+backwards, and backwards it was a false-GREEN machine.**
+
+Sweeping for the literal `"[REDACTED]"` only finds code that *already* redacts. The developer this test
+exists to catch is the one who **forgot** — they write a new live-element tool, read `el.Name` straight
+off UIA, return it, and never type the token at all. Eight of the eleven sites are live-element reads, so
+that is the *likely* shape of a new tool, not a corner case. A redaction-keyed sweep ignores it entirely
+and reports green.
+
+**Inverted, the test asserts:** every read of a sensitive-bearing property in `src/` occurs inside a
+member on the pinned list. The swept properties are the leak surface itself:
+
+- `AutomationElement.Name`, `.Current.Name`
+- `ValuePattern.Value`, `LegacyIAccessiblePattern.Value`
+- `TextPattern.DocumentRange.GetText(...)`
+- `SnapshotNode.Name`, `ElementDescriptor.Name`
+
+Each occurrence must be inside a member on the pinned list, and each listed member must contain a call to
+`SensitivityClassifier.Classify` or `RedactionPolicy.IsPasswordOrFailClosed`. A new read outside the list
+fails; adding to the list forces the decision call, which the test independently checks. **That is what
+makes the §1 success criterion true rather than aspirational.**
+
+The old redaction-keyed sweep is kept as a second, weaker assertion (it still catches a *deleted*
+redaction), asserting the `(file, member)` set for the literal `"[REDACTED]"` and `IsPasswordOrFailClosed`
+equals the **pinned twelve-entry list** of §3.1 (eleven logical sites; A4 spans two files).
 
 - A new site ⇒ test fails ⇒ the author must add it to the list.
 - A removed site ⇒ test fails ⇒ nobody deletes a redaction silently.
@@ -433,8 +506,18 @@ thread, on a quiet machine, under a user-granted lease** — never concurrently 
 
 ## 9. Binding constraints
 
-**BC-1 — Redaction is strictly an egress/presentation transformation.** Internal state and identity
-matching stay pristine so an agent can still target and interact with a redacted control. This is
+**BC-1 — Redaction is strictly an egress/presentation transformation.** *Identity resolution* stays
+pristine so an agent can still target and interact with a redacted control.
+
+⚠ **"Identity matching" and "name search" are DIFFERENT things and an earlier draft of this line
+conflated them, which read as a direct contradiction of D2/D4.** Stated precisely:
+
+| Path | Operates on | Why |
+|---|---|---|
+| Ref resolution (`RefRegistry.Resolve`, cached fast path, `ReVerify`) | the **RAW** name in the stored descriptor | this is identity; redacting it is what retired item 7 |
+| Name **search** (`find`, selector post-filter, `wait_for by=name` — D1/D2/D4) | the **REDACTED** name | deliberate: matching raw would make the search a name oracle |
+
+Both are correct simultaneously. BC-1 constrains the first and says nothing about the second. This is
 load-bearing, not stylistic: `RefRegistry.cs:184-185` falls back to `Name`+`ControlType` as a ref's
 identity key when `AutomationId` is absent, and `:337` compares `Name` on the cached fast path.
 Redacting the stored descriptor makes a redacted element with no `AutomationId` permanently
@@ -489,16 +572,26 @@ catastrophic backtracking (timeout, §5.1) · provenance on oracle paths (delibe
 re-create the oracle, §5.3).
 
 **Deliberately deferred to the PLAN, not gaps in the spec:**
-1. The exact parse mechanism of the §7.2 source sweep (regex vs Roslyn syntax walk over `src/`). The
-   *contract* — the pinned twelve-entry list, the per-entry decision-call assertion, and the loud failure
-   when the repo root cannot be located — is fixed here; the parse strategy is an implementation choice
-   with no contract consequence.
+1. ~~The parse mechanism of the §7.2 sweep is a free implementation choice.~~ **WITHDRAWN — it is not
+   free, and calling it free was the spec dodging a real constraint.** §7.2 requires knowing which
+   *member* lexically contains a given expression, and text regex cannot determine C# member boundaries
+   (expression-bodied members, local functions, lambdas, nested types). The sweep therefore **requires a
+   Roslyn syntax walk**: the TEST project takes a `Microsoft.CodeAnalysis.CSharp` package reference.
+   This is a test-only dependency and ships in nothing. Recorded as a decision, not a deferral.
 2. Whether DEF-1 and DEF-2 land as one commit or two. Sequencing only; both are in scope either way.
 3. Whether `redactedBy` on family A is added per-DTO or via a shared projection helper — depends on how
    many of A1–A5 use anonymous vs typed projections, which the plan must grep per site.
 
-**Known residual risk:** the §7.2 inventory guarantees no *existing-style* site is added without notice,
-but a developer could still egress a raw name through a genuinely novel path that never touches
-`"[REDACTED]"` or `IsPasswordOrFailClosed` — e.g. a new tool that serializes `SnapshotNode.Name`
-directly. Mitigation: the plan adds a second inventory assertion over reads of `SnapshotNode.Name` and
-`ElementDescriptor.Name` outside the pinned set. Stated openly rather than claimed closed.
+**Known residual risk, narrowed after the panel.** §7.2's inversion (allowlist of *reads*, not of
+redactions) closes the case that previously dominated this risk — a new live-element tool that reads
+`el.Name` and never types the redaction token. What remains is genuinely narrower: a leak through a
+property **not on the swept list** — a UIA pattern this design did not enumerate (`ExpandCollapse`,
+`Selection` item names, a provider's custom property), or a name obtained by a route the sweep cannot
+see (reflection, a string built from `HelpText`, an interop call outside FlaUI's wrappers).
+
+Stated openly rather than claimed closed. Two honest consequences:
+- The swept-property list in §7.2 is **part of the contract** and must be revisited whenever a new UIA
+  pattern is consumed. The plan adds that instruction to the pattern-adding path, not just to this doc.
+- No test proves the list is complete. The guarantee is "every read of a property we know carries names
+  is accounted for", which is strictly weaker than "no name can escape" — and the §1 criterion should be
+  read with that scope, not as an absolute.
