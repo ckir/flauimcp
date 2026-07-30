@@ -176,7 +176,18 @@ public sealed class WaitCoordinator
     /// their window is gone. Only raw COM/UIA faults are swallowed.
     ///
     /// No latch is needed (unlike the `gone` confirmation): this path throws and terminates the call, so
-    /// there is no subsequent poll for the confirmation to double.</summary>
+    /// there is no subsequent poll for the confirmation to double.
+    ///
+    /// THE ToolException CARVE-OUT IS DELIBERATELY UNTESTED, and that is a measured conclusion rather than
+    /// an omission. Every ToolException BuildModelAsync can raise -- TargetDenied from the denylist guard,
+    /// WindowHandleStale/WindowNotFound from the window resolve -- would already have fired on the POLL
+    /// walk above, before this helper is ever entered. So the carve-out is only reachable when the window
+    /// is invalidated in the gap between that poll walk and this confirmation walk: two consecutive awaits,
+    /// with the invalidation arriving on an unpredictable ThreadPool proc.Exited callback. There is no test
+    /// seam to pause between them, and racing a Process.Kill against that gap is nondeterministic by
+    /// construction. VERIFIED by mutation: replacing this with `catch (ToolException) { }` leaves all
+    /// seven WaitStableScope* facts GREEN. Keep the carve-out -- it guards a real race -- but do not
+    /// believe it is pinned, and do not delete it because "no test covers it".</summary>
     private async Task<ToolException> ScopeNotFound(
         WindowHandle handle, string by, string value, bool includeOffscreen)
     {
