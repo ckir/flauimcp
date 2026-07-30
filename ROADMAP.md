@@ -339,6 +339,29 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   deliberately claims no blindness test. To close it for real, the fixture needs a Win32 `#32768` menu or
   an older `HwndWrapper` popup host that lands at the desktop level. Recorded here because the backlog
   entry it came from was retired when the code shipped.
+- **`wait_for_stable` scope-by-ref (`scopeRef`) — SHIPPED in SP2, and MEASURED. The poll got ~8x cheaper;
+  the tool did NOT get usable at its default budget.** Measured on the WPF TestApp window (95 whole-window
+  nodes, scoped to a depth-4 subtree), driving `WaitCoordinator` directly:
+  · unscoped poll **~3956 ms/poll** · scoped poll **~479 ms/poll** ⇒ **~8.3x** off the polling phase.
+  · a **settled** scoped wait (quietMs 400, pollIntervalMs 100) finished in **5704 ms** over 6 walks —
+    **over the 5000 ms default budget.**
+  **The honest negative, which is the useful part:** rooting the poll does not make a settled scoped wait
+  fit the default budget, because the settle path takes a final **whole-window** snapshot using the static
+  `PollOptions` (`WaitCoordinator.cs:160`, `RootRef` null), so one full walk (~3956 ms ≈ **80% of the
+  5000 ms budget**) is re-paid at the very end. Two scoped polls on top guarantee the overshoot. So
+  `scopeRef`'s real value is the polling phase — a subtree that would never have settled inside the budget
+  now can, and large trees benefit most — not end-to-end latency at the default. The remaining lever is the
+  `CacheRequest` work below, **not** more scoping. (Independently corroborated by an agy consult, which
+  reached the same reading from the same lines.)
+  **Known sharp edge, PRE-EXISTING and not introduced here:** a settled `wait_for_stable` has always ended
+  with a durable snapshot, and `BeginSnapshot` clears a window's refs (`RefRegistry.cs:36`, class docstring
+  `:8`), so the caller's own `scopeRef` is dead after a successful call — a second identical call throws
+  `RefNotFound`. This is the standing ref-lifetime contract (`docs/agent-contract.md`: refs are bound to a
+  snapshot, "Take a fresh snapshot"), now visible on a new parameter. Verified pre-existing: the final
+  settle snapshot is byte-identical at `2bdb609:142`, before item 3. It does mean a caller who wants to keep
+  acting on that element must re-snapshot, which costs a full walk — so a scoped POLL loop saves nothing if
+  the caller needs a live ref each iteration. Left as-is in SP2 rather than bolted on at task 7 of 9;
+  returning a re-resolved ref in the response is a candidate for a later subproject.
 - **Batch the walk's per-node property reads (`CacheRequest`) — MEASURED, and the single biggest lever
   on this tool's latency.** Attribution on a warm 98-node WPF window: desktop/popup scan 593 ms · single-
   call tree enumeration 421 ms · full build 6098 ms ⇒ **per-node property traffic is ~90%+ of the walk**,
