@@ -143,11 +143,31 @@ these references are corrected as part of it (§8, T7).
 **But "no COM reads" is not "no cost" — the CPU bound is specified here.** Naively, R rules × N nodes
 regex evaluations per walk (20 rules over a 500-node tree = 10 000 matches). Two required mitigations:
 
-1. **`processName` is resolved ONCE per walk, never per node**, and is the first predicate tested — an
-   ordinal string compare that eliminates every non-matching rule before any regex runs. This is sound
-   because a window's UIA tree is process-homogeneous (`PerceptionPolicy.cs:6-8` states it) and
-   `PopupFinder` skips any grafted popup whose `ProcessId` differs from the owner's, so every node in a
-   walk shares one process.
+1. **`processName` is resolved once per walk ROOT, not per node**, and is the first predicate tested — an
+   ordinal compare that eliminates every non-matching rule before any regex runs.
+
+   ⚠ **The justification for this is an UNVERIFIED assumption and the plan MUST measure it before
+   relying on it.** `PerceptionPolicy.cs:6-8` asserts a window's UIA tree is process-homogeneous, and
+   `PopupFinder` does skip grafted popups whose `ProcessId` differs from the owner's — but neither
+   covers an **embedded cross-process HWND**, e.g. a WebView2/CEF renderer hosted inside a native
+   window. UIA traverses such a boundary seamlessly, so nodes below it belong to a different process
+   while a once-per-root `processName` would still report the host's.
+
+   **Consequence if the assumption is false:** embedded nodes are evaluated under the wrong
+   process-scoped rules — silently, in both directions (a rule that should fire does not; a rule scoped
+   to the host fires on foreign content).
+
+   **Required of the plan:** measure against a real embedded-renderer host (the repo already documents
+   Chromium/Electron a11y behaviour, so a fixture exists). If the assumption fails, resolve
+   `processName` per **HWND boundary** — re-read when a node's `NativeWindowHandle` differs from the
+   current root's, which is a bounded number of reads per walk, not one per node. Do not ship the
+   hoist on the strength of the existing comment.
+
+   ⚠ **This also casts doubt on the shipped whole-window denylist** (§3.2), which rests on the same
+   homogeneity claim: a credential-store renderer embedded in an allowed host would not be caught by a
+   process-name check on the host window. **Out of scope for SP3** — it is pre-existing, it is a
+   different subsystem, and widening SP3 to fix it is how a security subproject becomes unshippable.
+   The plan records it as a finding for a follow-up item, with the measurement result attached.
 2. **`MaxRules = 64`**, enforced at config load (§5.4). A deployment needing more has a policy problem,
    not a configuration problem.
 
@@ -244,9 +264,20 @@ Stated explicitly so silence is not read as an oversight: a live-reloading secur
 window where two concurrent walks disagree about what is sensitive, and the restart cost is trivial for
 an MCP server.
 
-**Match-time regex failure fails CLOSED.** A `RegexMatchTimeoutException` (or any exception) raised while
-evaluating a rule predicate is caught per-rule and treated as **a match** — the field is redacted with
-`Source = Rule` and that rule's name. Rationale: this mirrors `RedactionPolicy`'s per-read fail-closed
+**Match-time regex failure fails CLOSED at the PREDICATE, not the rule.** An earlier draft said "caught
+per-rule and treated as a match", which flatly contradicts §5.1's AND semantics: a rule whose
+`automationId` predicate is definitively **false** would have matched anyway because a sibling regex threw.
+Corrected:
+
+1. Predicates are evaluated **cheapest-first**: `processName`, then exact `automationId`, then regexes.
+   A false cheap predicate **short-circuits**, so the regex never runs — this is also what keeps the
+   hot-path cost bounded in the common case (§4.1).
+2. An exception in a **single predicate** makes **that predicate** evaluate `true` (fail-closed).
+3. The rule's AND then applies normally. A rule with a definitively-false predicate does **not** match,
+   whatever another predicate did.
+
+Both properties hold simultaneously: no leak from a failed evaluation, and no rule firing on an element
+it explicitly does not describe. Rationale: this mirrors `RedactionPolicy`'s per-read fail-closed
 idiom (§3), and a pathological name that stalls a regex is exactly the case where guessing "not
 sensitive" is least defensible. The cost is bounded over-redaction, which BC-2 accepts in preference to a
 leak, and `redactedBy` makes it visible rather than mysterious.
@@ -357,11 +388,32 @@ open. A loud failure nobody hears is a silent one. Two required mitigations:
 ### 5.5 Rule authoring diagnostics (BC-2's counterweight)
 
 BC-2 says a false positive blinds the agent, and §5.3 gives the *agent* provenance. The **operator** needs
-the mirror of that: `check-redaction-rules` above accepts an optional `--against <window>` argument that
-takes a live snapshot of one window and lists, per node, which rule (if any) would redact it. Without
-this, an operator's only feedback loop for a misfiring regex is an agent that has mysteriously gone
-blind. This is scoped deliberately small: read-only, one window, no lease required — it reuses the
-existing read-only perception path.
+the mirror of that: a dry-run that shows which rules would fire against a real window. Without it, an
+operator's only feedback loop for a misfiring regex is an agent that has mysteriously gone blind.
+
+⚠ **The window argument cannot be a `w1`-style handle, and an earlier draft left its format undefined.**
+Those handles are minted per-server-session by `desktop_list_windows`; a separate CLI process shares no
+registry with the running server, so `w1` is meaningless there. It also cannot be a bare HWND, which no
+human reading a terminal can discover. The surface is therefore:
+
+```
+flaui-mcp check-redaction-rules <path>                    # validate only; exit 0 or name the bad rule
+flaui-mcp check-redaction-rules <path> --list-windows     # titles + PIDs + HWNDs, the discovery step
+flaui-mcp check-redaction-rules <path> --against-title <substring>
+flaui-mcp check-redaction-rules <path> --against-hwnd <n>
+```
+
+- `--against-title` matches case-insensitively on a substring. **Ambiguity is an error, not a silent
+  first-match:** more than one hit exits non-zero and prints the candidates with their HWNDs, so the
+  operator's next command is an unambiguous `--against-hwnd`. Zero hits is likewise an error.
+- `--against-hwnd` is the precise form, discoverable only via `--list-windows` — which is exactly why
+  `--list-windows` is part of this subcommand rather than an assumed separate step.
+- Output is per-node: `ref-less index · controlType · automationId · name (redacted if a rule fires) ·
+  the rule that fired, or "-"`. The rule column is the whole point — it is what turns "the agent went
+  blind" into "rule `card-fields` matched 40 nodes".
+
+Read-only, one window, **no input lease required** — it reuses the existing read-only perception path,
+which needs none.
 
 ## 6. P2 — architecture: classify once, apply four times
 
@@ -456,10 +508,29 @@ member on the pinned list. The swept properties are the leak surface itself:
 - `TextPattern.DocumentRange.GetText(...)`
 - `SnapshotNode.Name`, `ElementDescriptor.Name`
 
-Each occurrence must be inside a member on the pinned list, and each listed member must contain a call to
-`SensitivityClassifier.Classify` or `RedactionPolicy.IsPasswordOrFailClosed`. A new read outside the list
-fails; adding to the list forces the decision call, which the test independently checks. **That is what
-makes the §1 success criterion true rather than aspirational.**
+**⚠ A GROWABLE per-site list plus a "contains a call" check is still theater, and this is the second
+time that shape failed review.** A developer who forgets can turn the test green by appending their
+method to the list and dropping in a dead call —
+`SensitivityClassifier.Classify(null, null, null, () => false);` — whose result is never used. The test
+would verify the *lexical presence* of a call, not that its result gates anything, and the leak ships
+under a green gate.
+
+**The allowlist is therefore a small FIXED set of accessor helpers, not a growable per-site list.**
+
+- The swept properties may be read **only** inside a named, closed set of accessors (the family-A/C read
+  helpers and `SnapshotEngine`'s node builder). That set is pinned by name in the test.
+- Those accessors return a **classification-carrying type**, not a bare `string`. Obtaining a raw string
+  requires the call that also yields the `Sensitivity`, so the two cannot be separated by forgetting.
+- A new tool cannot read `el.Name` at all — the sweep fails — so it MUST go through a helper, and the
+  helper hands it the classification whether it wanted it or not.
+- **Growing the accessor set is a deliberate act**, not a routine unblock: the list is short, changing it
+  shows up as a diff to a security-critical test, and the plan requires that diff to carry a stated
+  reason. Contrast the rejected design, where every new tool legitimately appended a line.
+
+**Scope of the guarantee, stated honestly:** this defeats *forgetting*, not *malice*. A developer who
+edits the accessor set and writes a passthrough defeats it, as they could defeat any in-repo check. §1's
+criterion is about the tool written in a hurry, which is the realistic failure — not an adversarial
+committer, which no test in the same repo can stop.
 
 The old redaction-keyed sweep is kept as a second, weaker assertion (it still catches a *deleted*
 redaction), asserting the `(file, member)` set for the literal `"[REDACTED]"` and `IsPasswordOrFailClosed`
@@ -479,10 +550,25 @@ then not a bypass — it is a claim the test independently checks.
 This narrows but does not close the gap, and the §10 residual-risk note states the remainder honestly:
 a genuinely novel egress that never touches either token is invisible to this sweep.
 
+**Roslyn version must track the compiler.** The sweep parses `src/` with
+`Microsoft.CodeAnalysis.CSharp`; if that package lags the `LangVersion` used to build `src/`, it hits a
+parse error on a newer language feature and fails with a diagnostic that has nothing to do with
+redaction. Two requirements: the package version is **pinned alongside the SDK** (bumped in the same
+change as any SDK/LangVersion move), and the sweep **reports parse diagnostics explicitly** — "the source
+sweep could not parse X, this is a toolchain mismatch, not a redaction failure" — so the next reader is
+not sent hunting a security defect that is really a version skew.
+
 **Locating `src/` from a test running in `bin/`:** the sweep resolves the repo root by walking up from
 `AppContext.BaseDirectory` to the first directory containing `FlaUI.Mcp.slnx` (note the `.slnx`
 extension — there is no `.sln` in this repo), and **fails loudly if it cannot find it** rather than
-sweeping zero files and passing. A sweep that silently matches nothing is the exact false-GREEN this
+sweeping zero files and passing.
+
+*A binary-only test matrix — running compiled assemblies with no source tree — would fail this suite by
+construction. That matrix does not exist in this repo today (the gate runs `dotnet test` against the
+checkout), so this is a hypothetical, not a live defect. It is handled deliberately rather than left to
+surprise someone: the sweep carries `[Trait("Category","SourceSweep")]`, included in the normal gate and
+excludable by an explicitly source-less matrix. Failing loudly stays the default, because a skip here is
+the false-GREEN this section exists to prevent.* A sweep that silently matches nothing is the exact false-GREEN this
 whole section exists to prevent. It scans `src/**/*.cs` only — never `test/` or `docs/`, both of which
 legitimately contain the literal.
 - Precedent: `test/FlaUI.Mcp.Tests/Server/ToolTrapFactInvariantTests.cs` already sweeps every tool
