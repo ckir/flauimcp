@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Tools;
 using Xunit;
 
@@ -30,16 +31,20 @@ public class TerminalTabListTests
         Assert.True(t.Active);
     }
 
-    /// <summary>Pins the WIRE shape of desktop_list_terminal_tabs' anonymous projection (ContentTools.cs,
-    /// DesktopListTerminalTabs). MECHANISM NOTE: this cannot reach the tool's projection by invoking the
-    /// tool method the way ToolProjectionShapeTests does, because the tool's live path
-    /// (PerceptionManager.ListTerminalTabsAsync -> WindowManager.RunWithWindowAndDesktopAsync ->
-    /// TerminalTabReader.List) needs a real window AutomationElement and so is Desktop-gated — that path is
-    /// instead exercised by TerminalTabListDesktopTests below. So this follows ListWindowsProjectionShapeTests'
-    /// mechanism: build the exact production TabListing values and run the SAME anonymous-object shape the
-    /// tool emits (copied verbatim from ContentTools.cs) through the REAL ToolResponse.Ok serializer — that
-    /// still exercises the real record type and the real serializer settings (naming, null-omission), which
-    /// is the part that can silently drift.</summary>
+    /// <summary>Pins the SERIALIZER behaviour of desktop_list_terminal_tabs' anonymous projection
+    /// (ContentTools.cs, DesktopListTerminalTabs) — specifically that activeTabIndex:-1 is EMITTED, not
+    /// dropped by a default-value-omitting setting. LIMITATION, stated plainly: this test RE-DECLARES the
+    /// tool's anonymous shape locally (it builds its own `new { index = ..., title = ..., active = ... }`
+    /// rather than calling the tool method), so it does NOT catch the tool's field names drifting from this
+    /// declaration — e.g. renaming `active` to `isActive` in ContentTools.cs would NOT fail this fact. It
+    /// only proves the REAL ToolResponse.Ok serializer, run against this shape, keeps -1 on the wire.
+    /// MECHANISM NOTE: it cannot reach the tool's actual projection by invoking the tool method the way
+    /// ToolProjectionShapeTests does, because the tool's live path (PerceptionManager.ListTerminalTabsAsync
+    /// -> WindowManager.RunWithWindowAndDesktopAsync -> TerminalTabReader.List) needs a real window
+    /// AutomationElement and so is Desktop-gated. THE FIELD-NAME/DRIFT COVERAGE LIVES ELSEWHERE:
+    /// TerminalTabListDesktopTests.List_reports_every_tab_ascending_and_the_originally_active_index_without_selecting
+    /// (below) calls ContentTools.DesktopListTerminalTabs itself and asserts on the parsed JSON, so a field
+    /// rename there fails THAT fact, not this one.</summary>
     [Fact]
     public void The_tabs_projection_carries_index_title_active_and_emits_a_negative_one_activeTabIndex()
     {
@@ -83,11 +88,18 @@ public class TerminalTabListTests
 }
 
 // CONSOLE-MACHINE-ONLY: launches a REAL, brand-new Windows Terminal window (via `-w -1`, forcing a new
-// window rather than attaching to any window the human already has open) with two tabs, and calls
-// TerminalTabReader.List directly against it — bypassing ContentTools/PerceptionManager entirely (Task 3
-// wires those; this pins the Core-level read only, which is all that exists at this point in the plan).
-// Fixture mirrors TerminalTabE2ETests: unique per-run title marker so discovery can never match an
-// ambient/pre-existing WT window, and a bounded poll for both window and result.
+// window rather than attaching to any window the human already has open) with two tabs, and drives the
+// PRODUCTION path end to end — ContentTools.DesktopListTerminalTabs (the actual desktop_list_terminal_tabs
+// MCP tool), which goes through PerceptionManager.ListTerminalTabsAsync (the query STA) into
+// TerminalTabReader.List. This pins BOTH the structural behaviour (every tab reported ascending, the
+// originally-active index, no selection touched) AND the tool's WIRE shape — the JSON that
+// DesktopListTerminalTabs' anonymous projection actually emits. The wire-shape half could NOT be pinned
+// headlessly: TerminalTabListTests' headless fact (above) re-declares the same anonymous shape locally to
+// cheaply pin the -1-is-emitted serializer behaviour, but a re-declared shape cannot catch a field rename
+// in ContentTools.cs (e.g. active -> isActive) — only calling the real tool method and parsing its real
+// JSON, as this test does, can. Fixture mirrors TerminalTabE2ETests: unique per-run title marker so
+// discovery can never match an ambient/pre-existing WT window, and a bounded poll for both window and
+// result.
 //
 // Separate class (not extra facts in the headless class above): a class-level [Trait("Category","Desktop")]
 // on the headless class would exclude its own headless fact from the headless gate, and a shared fixture
@@ -139,15 +151,38 @@ public class TerminalTabListDesktopTests
             + "(wt.exe not installed/registered, or the packaged app failed to activate)");
 
         var win = handle!.Value;
+        // Retargeted at the production path (review finding on Task 3, commit d23b8a2): the shipped tool is
+        // ContentTools.DesktopListTerminalTabs (desktop_list_terminal_tabs) itself, not the
+        // PerceptionManager.ListTerminalTabsAsync hop it wraps — calling only the manager hop pinned the
+        // structural record but not the tool's anonymous WIRE projection, so a field rename in
+        // ContentTools.cs (e.g. active -> isActive) could have passed unnoticed. Matches
+        // TerminalTabE2ETests.cs:48's ServerOptions(ReadOnly: false, AllowElevation: false) construction —
+        // the sibling Desktop test that also constructs ContentTools to drive a terminal-tab tool.
+        var tools = new ContentTools(perception, windows, new ServerOptions(ReadOnly: false, AllowElevation: false));
         try
         {
-            // Retargeted at the production path (Task 3): the shipped tool goes through
-            // PerceptionManager.ListTerminalTabsAsync (the QUERY STA), not RunOnWindowActionAsync (the
-            // ACTION STA) — this exercises the same hop desktop_list_terminal_tabs actually uses.
-            var (tabs, activeIndex) = await perception.ListTerminalTabsAsync(win);
+            string json = await tools.DesktopListTerminalTabs(window: win.Id);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
 
-            Assert.Equal(2, tabs.Count);
-            for (int i = 0; i < tabs.Count; i++) Assert.Equal(i, tabs[i].Index);
+            var tabsEl = root.GetProperty("tabs");
+            Assert.Equal(JsonValueKind.Array, tabsEl.ValueKind);
+            Assert.Equal(2, tabsEl.GetArrayLength());
+
+            // Every element carries index/title/active by those EXACT lowercase names, and index ascends
+            // from 0 with no duplicates — the wire-contract half a re-declared-shape headless test cannot
+            // catch (see the headless fact's docstring above).
+            for (int i = 0; i < tabsEl.GetArrayLength(); i++)
+            {
+                var t = tabsEl[i];
+                Assert.True(t.TryGetProperty("index", out var idxEl), $"tabs[{i}] is missing \"index\"");
+                Assert.Equal(i, idxEl.GetInt32());
+                Assert.True(t.TryGetProperty("title", out _), $"tabs[{i}] is missing \"title\"");
+                Assert.True(t.TryGetProperty("active", out _), $"tabs[{i}] is missing \"active\"");
+            }
+
+            Assert.True(root.TryGetProperty("activeTabIndex", out var activeEl), "response is missing \"activeTabIndex\"");
+            int activeIndex = activeEl.GetInt32();
 
             // NECESSARY-BUT-NOT-SUFFICIENT: this would still pass if List selected every tab and restored
             // the original, which is precisely what Run does. It only proves the REPORTED active index and
@@ -155,10 +190,10 @@ public class TerminalTabListDesktopTests
             // structural (List's docstring in TerminalTabReader.cs) plus review — a test cannot observe
             // "no event fired" at runtime, since UIA event callbacks arrive on COM RPC threads.
             Assert.Equal(1, activeIndex);
-            Assert.True(tabs[1].Active);
-            Assert.False(tabs[0].Active);
-            Assert.Equal(titleA, tabs[0].Title);
-            Assert.Equal(titleB, tabs[1].Title);
+            Assert.True(tabsEl[1].GetProperty("active").GetBoolean());
+            Assert.False(tabsEl[0].GetProperty("active").GetBoolean());
+            Assert.Equal(titleA, tabsEl[0].GetProperty("title").GetString());
+            Assert.Equal(titleB, tabsEl[1].GetProperty("title").GetString());
 
             // INDEPENDENT confirmation that nothing moved: the window's caption still reflects titleB (the
             // tab WT activated on launch) after the call. If List had switched tabs, WT's caption would show
