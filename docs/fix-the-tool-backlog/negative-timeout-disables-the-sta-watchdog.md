@@ -46,13 +46,49 @@ private static async Task<T> AwaitWithTimeout<T>(Task<T> work, int timeoutMs)
     ...
 ```
 
-Deliberately unchosen: whether a negative should clamp to the tool's default, clamp to a fixed floor, or
-be rejected up front as `InvalidArguments`. Rejecting is the most honest (the caller asked for something
-incoherent) but changes the error surface of several shipped tools at once; clamping preserves them.
+### DESIGN RESOLVED 2026-07-30 (agy-consulted, every claim below re-verified by measurement)
 
-Worth deciding alongside it: whether `timeoutMs` should also carry an upper bound. The documented threat
-model has the MCP client itself possibly prompt-injected, and an unbounded `timeoutMs` is a legitimate-
-looking way to occupy the single query STA indefinitely.
+**THE DEFECT IS BIGGER THAN THIS FILE ORIGINALLY SAID. Two corrections:**
+
+**1. `-1` is NOT the only dangerous value.** `Task.Delay(int)` accepts any non-negative `int`, so
+`timeoutMs: int.MaxValue` (~24.8 days) parks the watchdog just as effectively as `Timeout.Infinite` — and it
+is a *legal* argument that throws nothing. The real hazard is "any budget that outlives the operator", not
+the single value `-1`. A lower-bound guard alone therefore does NOT close this.
+
+**2. The blast radius is the whole ACTION SURFACE, not one hung call.** `RunActionAsync` holds a slot from
+`Interlocked.Increment` (`AutomationDispatcher.cs:25`) until the worker thread's `finally`
+(`:42`) — which never runs while the UIA call is parked. `MaxPendingActions = 5` (`:15`), so **five**
+such calls exhaust the pool and every subsequent action throws `TooManyPendingActions` (`:28-31`)
+for the life of the process. That is a denial of every action tool, reachable from five tool calls.
+Confirmed scope: 7 tool files pass `timeoutMs` through this path (`ContentTools`, `FindTextTools`,
+`InputTools`, `InteractionTools`, `SnapshotTools`, `WatchTools`, `WindowTools`).
+Not affected: `RunQueryAsync` (`:20-21`) takes no timeout and never reaches `AwaitWithTimeout`.
+
+**F1 — a negative must be REFUSED (`InvalidArguments`), not clamped.** Clamping to a floor of 0 is actively
+harmful: `Task.Delay(0)` completes immediately, so `done != work` and the caller gets
+`ActionBlockedPending` — *"it likely opened a modal dialog"* (`:62-65`) — for a bug that was really their own
+argument. Sending someone hunting a nonexistent dialog is worse than the hang. Refusing does change the
+error surface of shipped tools, but from *silent hang* to *named error*, and no caller can be relying on a
+hang.
+
+**F3 — an UPPER bound is required, and it should CLAMP, following the house idiom.** Precedent already
+exists and the consult missed it: `WaitForForeground.ClampTimeout` (`Attention/WaitForForeground.cs:24-25`)
+enforces a `HardCapMs` and the tool description *documents* it ("server-capped to 45s",
+`FindTextTools.cs:128,131`). So the pattern is a named, testable clamp helper plus disclosure.
+⚠ **Do NOT copy that helper's semantics.** It maps invalid input to the MAXIMUM
+(`requestedMs > 0 && <= HardCapMs ? requestedMs : HardCapMs`), which is benign for a bounded foreground wait
+but exactly wrong for a hang watchdog — a negative would become a 60 s parked slot.
+The asymmetry is principled, not inconsistent: **a negative has no valid interpretation (refuse); an
+excessive value has an obvious one — "wait as long as you can" — so clamp and say so.**
+Pick the cap above the largest shipped default, which is **45000** (`FindTextTools.cs:131`); 60000 leaves
+15 s of headroom. Re-check that number before coding — a new default above 45 s would move it.
+
+**F5 — no accessibility change needed.** `AwaitWithTimeout` can stay `private static` (`:54`). The public
+`RunActionAsync` (`:23`) takes a `Func<T>`, so a test passes a delegate that blocks forever plus a bad
+timeout and asserts a fast, named throw. A tool-surface repro would hang by construction; this does not.
+
+**Still open for the USER:** the exact cap value, and whether refusing negatives on 7 tool files' worth of
+surface is acceptable in one change.
 
 ## Test-gen note (only if no runnable test was generated)
 
