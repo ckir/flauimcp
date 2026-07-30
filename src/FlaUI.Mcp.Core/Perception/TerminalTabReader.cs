@@ -15,6 +15,11 @@ public static class TerminalTabReader
         string Text, bool Truncated, string? TruncatedFrom, string TabTitle,
         bool Restored, string RestoreConfidence, int ActiveTabIndex);
 
+    /// <summary>One tab as reported by a PURE READ. Active means "this tab reported itself selected" —
+    /// not ground truth: IsSelected swallows every COM fault to false (:62-66), so a tab whose
+    /// SelectionItem pattern is unreadable reports Active:false exactly like an unselected one.</summary>
+    public readonly record struct TabListing(int Index, string Title, bool Active);
+
     // Settle bound (spec §5.2.10): re-read + compare; cap the tries so a continuously-streaming pane
     // (never two equal reads) can't loop forever. Delay must exceed a frame so ConPTY auto-scroll lands.
     private const int SettleMaxTries = 4;
@@ -88,6 +93,31 @@ public static class TerminalTabReader
                             .FirstOrDefault(t => Ct(t) == ControlType.Text && t.Patterns.Text.IsSupported);
         }
         catch { return null; } // transient stale-element fault (or strip not realized yet) => treat as not-yet-realized
+    }
+
+    /// <summary>Item 5: enumerate the tab strip WITHOUT selecting anything — no Select, no settle, no
+    /// restore, no visible flicker. Shares EnumerateTabs with Run, which is the whole point: the index
+    /// space is identical BY CONSTRUCTION rather than by agreement.
+    ///
+    /// NEVER call Select from here. That is load-bearing, not incidental — a settle loop or a
+    /// "helpful" activation would silently turn a read-only tool into a destructive one, and the
+    /// no-Select property cannot be proven at runtime (UIA event callbacks arrive on COM RPC threads,
+    /// so a test asserting "no event fired" can pass before the event lands).
+    ///
+    /// ActiveTabIndex is -1 when NO tab reported itself selected, which conflates "nothing selected"
+    /// with "selection state unreadable". Deliberate: see TabListing.</summary>
+    public static (IReadOnlyList<TabListing> Tabs, int ActiveTabIndex) List(AutomationElement win)
+    {
+        var tabs = EnumerateTabs(win);
+        var listing = new List<TabListing>(tabs.Count);
+        int active = -1;
+        for (int i = 0; i < tabs.Count; i++)
+        {
+            bool selected = IsSelected(tabs[i]);
+            if (selected && active < 0) active = i;
+            listing.Add(new TabListing(i, NameOf(tabs[i]), selected));
+        }
+        return (listing, active);
     }
 
     /// <summary>Run the whole dance. <paramref name="readText"/> is PerceptionManager.ReadText bound to
