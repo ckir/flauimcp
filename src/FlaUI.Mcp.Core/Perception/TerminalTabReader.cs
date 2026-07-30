@@ -15,6 +15,11 @@ public static class TerminalTabReader
         string Text, bool Truncated, string? TruncatedFrom, string TabTitle,
         bool Restored, string RestoreConfidence, int ActiveTabIndex);
 
+    /// <summary>One tab as reported by a PURE READ. Active means "this tab reported itself selected" —
+    /// not ground truth: IsSelected swallows every COM fault to false (:62-66), so a tab whose
+    /// SelectionItem pattern is unreadable reports Active:false exactly like an unselected one.</summary>
+    public readonly record struct TabListing(int Index, string Title, bool Active);
+
     // Settle bound (spec §5.2.10): re-read + compare; cap the tries so a continuously-streaming pane
     // (never two equal reads) can't loop forever. Delay must exceed a frame so ConPTY auto-scroll lands.
     private const int SettleMaxTries = 4;
@@ -90,6 +95,31 @@ public static class TerminalTabReader
         catch { return null; } // transient stale-element fault (or strip not realized yet) => treat as not-yet-realized
     }
 
+    /// <summary>Item 5: enumerate the tab strip WITHOUT selecting anything — no Select, no settle, no
+    /// restore, no visible flicker. Shares EnumerateTabs with Run, which is the whole point: the index
+    /// space is identical BY CONSTRUCTION rather than by agreement.
+    ///
+    /// NEVER call Select from here. That is load-bearing, not incidental — a settle loop or a
+    /// "helpful" activation would silently turn a read-only tool into a destructive one, and the
+    /// no-Select property cannot be proven at runtime (UIA event callbacks arrive on COM RPC threads,
+    /// so a test asserting "no event fired" can pass before the event lands).
+    ///
+    /// ActiveTabIndex is -1 when NO tab reported itself selected, which conflates "nothing selected"
+    /// with "selection state unreadable". Deliberate: see TabListing.</summary>
+    public static (IReadOnlyList<TabListing> Tabs, int ActiveTabIndex) List(AutomationElement win)
+    {
+        var tabs = EnumerateTabs(win);
+        var listing = new List<TabListing>(tabs.Count);
+        int active = -1;
+        for (int i = 0; i < tabs.Count; i++)
+        {
+            bool selected = IsSelected(tabs[i]);
+            if (selected && active < 0) active = i;
+            listing.Add(new TabListing(i, NameOf(tabs[i]), selected));
+        }
+        return (listing, active);
+    }
+
     /// <summary>Run the whole dance. <paramref name="readText"/> is PerceptionManager.ReadText bound to
     /// (selectionOnly:false, maxLength, fromEnd) so the settle/read reuse the exact §5.4 read path.
     /// INVARIANTS (agy plan-review): (a) the settled read's text ALWAYS reaches the returned Result on the
@@ -106,7 +136,11 @@ public static class TerminalTabReader
 
         if (tabIndex < 0 || tabIndex >= tabs.Count)
             throw new ToolException(ToolErrorCode.InvalidArguments,
-                $"tabIndex {tabIndex} is out of range (0..{tabs.Count - 1}).", "list tabs via desktop_snapshot first");
+                $"tabIndex {tabIndex} is out of range (0..{tabs.Count - 1}).",
+                // NOT desktop_snapshot: a snapshot's TabItem ordinal is not a valid tabIndex (four of the
+                // five walk filters can drop a TabItem), which is exactly why desktop_list_terminal_tabs
+                // exists. This recovery used to send the caller to the one path guaranteed to disagree.
+                "call desktop_list_terminal_tabs to read the valid indexes for this window");
 
         string targetTitle = NameOf(tabs[tabIndex]);
         bool restoreNeeded = restoreFocus && activeIndex >= 0; // nothing active => nothing to restore

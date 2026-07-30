@@ -40,6 +40,62 @@ public class ToolTrapFactInvariantTests
         Assert.Contains("read every candidate", text, StringComparison.Ordinal);
     }
 
+    /// <summary>Any tool that talks about tabIndex must name where a VALID one comes from. SP2 added
+    /// desktop_list_terminal_tabs precisely because a desktop_snapshot ordinal is NOT usable as a tabIndex —
+    /// four of the five snapshot-walk filters can drop a TabItem — yet desktop_read_terminal_tab's own
+    /// description and its tabIndex parameter both kept telling callers to enumerate via desktop_snapshot,
+    /// which an AGY-CAPSTONE round found only after the skill, the ROADMAP and the out-of-range recovery had
+    /// all been corrected. That is the recurring shape of this whole subproject: the fix lands, and a
+    /// PARALLEL user-facing surface still says the old thing.
+    ///
+    /// This sweeps by REFLECTION rather than naming the two known tools, so a THIRD tool that starts talking
+    /// about tabIndex inherits the rule for free. desktop_list_terminal_tabs is exempt from naming itself.
+    /// Deliberately a POSITIVE assertion ("must name the canonical source") rather than a ban on the string
+    /// "desktop_snapshot" — the corrected description mentions it on purpose, to warn against it.
+    ///
+    /// ⚠ PARAMETER descriptions are swept too, and that is not incidental. The first version of this test
+    /// read only the METHOD's [Description] — so a parameter description could have kept saying "from a
+    /// desktop_snapshot of the tab strip" and this test would have passed. That is exactly the surface the
+    /// original defect lived on (BOTH the tool description and the tabIndex parameter said it), and the
+    /// mutation that "verified" the first version only mutated the method text, so it never exercised the
+    /// gap. Caught by an AGY-CAPSTONE Mechanism Gamer seat. A tripwire is only as wide as the surface it
+    /// actually reads.</summary>
+    [Fact]
+    public void Every_description_mentioning_tabIndex_names_the_canonical_source()
+    {
+        const string Canonical = "desktop_list_terminal_tabs";
+        const string Exempt = $"{nameof(ContentTools)}.{nameof(ContentTools.DesktopListTerminalTabs)}";
+
+        // EACH surface is judged ON ITS OWN. Concatenating method + params would let the method's mention of
+        // the canonical source mask a regressed PARAMETER — which is precisely the shape of the original
+        // defect, where both surfaces said the wrong thing independently.
+        var surfaces = typeof(WindowTools).Assembly.GetTypes()
+            .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .Where(m => m.GetCustomAttributesData().Any(d => d.AttributeType == typeof(McpServerToolAttribute)))
+                .SelectMany(m => new[] { (Tool: $"{t.Name}.{m.Name}", Where: "description",
+                        Text: m.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "") }
+                    .Concat(m.GetParameters().Select(p => (Tool: $"{t.Name}.{m.Name}", Where: $"param '{p.Name}'",
+                        Text: p.GetCustomAttribute<DescriptionAttribute>()?.Description ?? "")))));
+
+        var offenders = surfaces
+            .Where(s => s.Tool != Exempt)
+            // Trigger on a surface that talks about a tab ordinal AND points at the snapshot walk. The
+            // wording varies ("tabIndex" in the tool text, "tab ordinal" in the parameter), so match both.
+            .Where(s => s.Text.Contains("tabIndex", StringComparison.Ordinal)
+                     || s.Text.Contains("tab ordinal", StringComparison.Ordinal))
+            .Where(s => s.Text.Contains("desktop_snapshot", StringComparison.Ordinal))
+            // Naming the canonical source is what makes a desktop_snapshot mention a WARNING rather than
+            // advice — the shipped description deliberately says "NOT from a desktop_snapshot".
+            .Where(s => !s.Text.Contains(Canonical, StringComparison.Ordinal))
+            .Select(s => $"{s.Tool} ({s.Where})")
+            .ToList();
+
+        Assert.True(offenders.Count == 0,
+            $"these tool descriptions mention tabIndex without naming {Canonical}, the only source whose "
+            + $"index space matches by construction:\n" + string.Join("\n", offenders));
+    }
+
     [Fact]
     public void No_tool_description_exceeds_the_budget()
     {

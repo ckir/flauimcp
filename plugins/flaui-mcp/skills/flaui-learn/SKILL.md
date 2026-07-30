@@ -31,4 +31,25 @@ Rules:
 - If a raw anecdote is all you can manage mid-task, still force it into the four `·`-separated fields;
   a bare sentence with no field separators is not a valid capture.
 
-Then return to your task immediately.
+Then **commit the appended line** and return to your task immediately:
+
+```
+git add .claude/flaui-mcp/observations.md && git commit -m "chore(flaui-learn): capture <n> driving observation(s)"
+```
+
+**Two pre-flight checks first — skip the commit (not the capture) if either fails:**
+1. `git symbolic-ref -q HEAD` is empty ⇒ **detached HEAD**. A commit there succeeds and is then ORPHANED when
+   the user checks out a branch — worse than not committing, because it looks like it worked.
+2. `MERGE_HEAD` / `REBASE_HEAD` / `CHERRY_PICK_HEAD` exists ⇒ a merge, rebase or cherry-pick is in progress,
+   and a bare `git commit -m` would CONCLUDE it, sweeping the user's staged conflict resolutions into your
+   chore commit. Never.
+
+In either case: leave the appended line in the working tree, do NOT discard or stash it, and say in one line
+that the capture is uncommitted and why. An unmentioned uncommitted capture is the failure this step exists
+to prevent.
+
+Committing is part of the capture, not an optional tidy-up. The append survives `/compact` (it is on disk,
+not in context) and survives a power cut (it is flushed before the turn ends) — but an UNCOMMITTED working-tree
+change is destroyed by `git checkout -- .`, `git clean -fd`, `git reset --hard`, a worktree switch, or a fresh
+clone, and none of those announce what they took. Observations are earned from live sessions and exist nowhere
+else, so an uncommitted capture is a capture you have not actually made yet.

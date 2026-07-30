@@ -84,6 +84,12 @@ public static class SnapshotEngine
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 var patterns = SupportedPatterns(el);
                 string help = Safe(() => el.HelpText, "");
+                // The RAW name is deliberate and LOAD-BEARING: RefRegistry falls back to
+                // Name+ControlType when AutomationId is absent (RefRegistry.cs:181-182) and the cached
+                // fast path compares it (:334), so redacting it here would make an IsPassword element
+                // with no AutomationId permanently REF_STALE_UNRESOLVABLE. Redaction happens at every
+                // WIRE surface instead (render :133, match WaitCoordinator.cs:88, diff SnapshotDiff.cs:25,
+                // find FindQuery.cs:63, watch WatchPayloadBuilder.cs:34) and Key() never echoes it (:206-209).
                 var descriptor = new ElementDescriptor(rid, ct, aid, name, ancestorAid, indexPath, focused);
                 var @ref = refs.Register(windowId, descriptor, el);
                 items.Add(new SnapshotNode(@ref, depth, indent, ct, aid, name, rect, enabled, focusable,

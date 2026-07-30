@@ -121,30 +121,113 @@ public sealed class WaitCoordinator
     }
 
     public async Task<WaitStableResult> WaitForStableAsync(WindowHandle handle, string? by, string? value,
-        bool includeText, int quietMs, int timeoutMs, int pollIntervalMs)
+        bool includeText, int quietMs, int timeoutMs, int pollIntervalMs,
+        string? scopeRef = null, bool includeOffscreen = false)
     {
+        bool scopeRequested = !string.IsNullOrEmpty(by) && !string.IsNullOrEmpty(value);
+        bool refScoped = !string.IsNullOrEmpty(scopeRef);
+        if (refScoped && scopeRequested)
+            throw new ToolException(ToolErrorCode.InvalidArguments,
+                "Pass either scopeRef or by+value to scope stability, not both.",
+                "drop one — scopeRef roots the walk at that element; by+value re-finds a match each poll");
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
         int needed = (int)System.Math.Ceiling((double)quietMs / System.Math.Max(1, pollIntervalMs));
         string? last = null; int stableCount = 0;
-        bool scopeRequested = !string.IsNullOrEmpty(by) && !string.IsNullOrEmpty(value);
+
+        // scopeRef roots the POLL walk only (Strict, so the wait cannot silently rebind to a re-created
+        // element). The final snapshot below stays WHOLE-WINDOW: a caller who waited on a subtree almost
+        // always wants the whole window next, and scoping it would force an immediate second full walk.
+        var pollOptions = PollOptions with
+        {
+            IncludeOffscreen = includeOffscreen,
+            RootRef = scopeRef,
+            RootResolveMode = RefResolveMode.Strict,
+        };
         while (true)
         {
             CountWalk();
-            var (_, model) = await _perception.BuildModelAsync(handle, PollOptions, new RefRegistry());
-            var sub = Subtree(model, by, value);
+            var (_, model) = await _perception.BuildModelAsync(
+                handle, pollOptions, new RefRegistry(), resolveRefs: _perception.Refs);
+            var sub = refScoped ? (IReadOnlyList<SnapshotNode>)model.Nodes.ToList() : Subtree(model, by, value);
             if (scopeRequested && sub.Count == 0)
-                throw new ToolException(ToolErrorCode.SelectorNoMatch, $"No element matched {by}={value} to scope stability.", "widen or correct the selector");
+                throw await ScopeNotFound(handle, by!, value!, includeOffscreen);
             var sig = Signature(sub, includeText);
             stableCount = sig == last ? stableCount + 1 : 0; last = sig;
             if (stableCount >= needed)
             {
                 CountWalk();
-                var (snapId, _) = await _perception.SnapshotModelForWaitAsync(handle, PollOptions);
+                // includeOffscreen MUST reach the final snapshot too. It stays WHOLE-WINDOW (settled: a
+                // caller who waited on a subtree almost always wants the whole window next, and RootRef is
+                // deliberately NOT set here) -- but culling it would hand back a snapshot that omits the very
+                // element the caller just proved stable, so a wait on a past-the-edge element would succeed
+                // and then leave them unable to get a ref to it. That is the wrong-belief class this branch
+                // exists to remove. Safe for existing callers: includeOffscreen is new in SP2, so nobody
+                // reaching this line before now could have passed true.
+                var (snapId, _) = await _perception.SnapshotModelForWaitAsync(
+                    handle, PollOptions with { IncludeOffscreen = includeOffscreen });
                 return new WaitStableResult(true, (int)sw.ElapsedMilliseconds, snapId);
             }
             if (sw.ElapsedMilliseconds >= timeoutMs) return new WaitStableResult(false, (int)sw.ElapsedMilliseconds, null);
             await Task.Delay(SafeDelayMs(pollIntervalMs));
         }
+    }
+
+    /// <summary>The selector matched nothing in the polled model. Upgrade the message with ONE unculled
+    /// walk before giving up, so an existing-but-culled scope is not reported as a missing one.
+    ///
+    /// The confirmation NEVER decides the outcome, only the wording -- if it throws, we still produce the
+    /// unconfirmed answer. But ToolException PROPAGATES: a window that closed mid-wait surfaces
+    /// WindowHandleStale / WindowNotFound (WindowManager.cs:181-199) and a denied target surfaces
+    /// TargetDenied (PerceptionManager.cs:420-423). Those are TRUER than "your selector matched nothing",
+    /// so swallowing them to report a selector problem would send the caller to edit a selector while
+    /// their window is gone. Only raw COM/UIA faults are swallowed.
+    ///
+    /// No latch is needed (unlike the `gone` confirmation): this path throws and terminates the call, so
+    /// there is no subsequent poll for the confirmation to double.
+    ///
+    /// THE ToolException CARVE-OUT IS DELIBERATELY UNTESTED, and that is a measured conclusion rather than
+    /// an omission. Every ToolException BuildModelAsync can raise -- TargetDenied from the denylist guard,
+    /// WindowHandleStale/WindowNotFound from the window resolve -- would already have fired on the POLL
+    /// walk above, before this helper is ever entered. So the carve-out is only reachable when the window
+    /// is invalidated in the gap between that poll walk and this confirmation walk: two consecutive awaits,
+    /// with the invalidation arriving on an unpredictable ThreadPool proc.Exited callback. There is no test
+    /// seam to pause between them, and racing a Process.Kill against that gap is nondeterministic by
+    /// construction. VERIFIED by mutation: replacing this with `catch (ToolException) { }` leaves all
+    /// seven WaitStableScope* facts GREEN. Keep the carve-out -- it guards a real race -- but do not
+    /// believe it is pinned, and do not delete it because "no test covers it".</summary>
+    private async Task<ToolException> ScopeNotFound(
+        WindowHandle handle, string by, string value, bool includeOffscreen)
+    {
+        bool existsUnculled = false;
+        if (!includeOffscreen)
+        {
+            try
+            {
+                CountConfirmationWalk();
+                var (_, unculled) = await _perception
+                    .BuildModelAsync(handle, UnculledPollOptions, new RefRegistry());
+                existsUnculled = unculled.Nodes.Any(n => Matches(n, by, value));
+            }
+            catch (ToolException) { throw; }
+            catch { /* raw COM/UIA fault: fall back to the unconfirmed message */ }
+        }
+
+        if (existsUnculled)
+            return new ToolException(ToolErrorCode.SelectorNoMatch,
+                $"{by}={value} matched an element that exists but was culled against the window bounds, so stability could not be scoped to it.",
+                "pass includeOffscreen:true, or scope by scopeRef instead");
+
+        // The recovery MUST depend on what the caller already passed. When includeOffscreen is true the
+        // confirmation walk above is skipped entirely, so this branch is the ONLY one such a caller can
+        // reach -- and telling someone to "pass includeOffscreen:true" when they just did presents as the
+        // flag not working, sending them to re-check a parameter that is already correct. That is the same
+        // blame-the-wrong-cause failure this whole path exists to remove.
+        return new ToolException(ToolErrorCode.SelectorNoMatch,
+            $"No element matching {by}={value} was found in the searched tree to scope stability.",
+            includeOffscreen
+                ? "correct the selector — includeOffscreen:true was already in effect, so off-screen and past-the-edge elements were searched too"
+                : "correct the selector, or pass includeOffscreen:true to search off-screen and past-the-edge elements");
     }
 
     public async Task<WaitForResult> WaitForAsync(WindowHandle handle, string by, string value,

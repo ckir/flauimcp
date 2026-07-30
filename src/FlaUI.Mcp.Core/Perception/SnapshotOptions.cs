@@ -4,6 +4,12 @@ public sealed record SnapshotOptions
 {
     /// <summary>Optional ref (from a prior snapshot of the same window) to root the walk at.</summary>
     public string? RootRef { get; init; }
+    /// <summary>How RootRef resolves. Lenient (default = today) re-walks the descriptor and may rebind to
+    /// a re-created element; Strict matches ONLY the exact element by live RuntimeId and never rebinds
+    /// (RefRegistry.cs:160-162). The wait paths use Strict, because a caller who scopes by ref is asking
+    /// about THAT instance -- silently following a replacement would report stability about an object the
+    /// caller never named. Everything else keeps Lenient.</summary>
+    public RefResolveMode RootResolveMode { get; init; } = RefResolveMode.Lenient;
     public int MaxDepth { get; init; } = 40;
     /// <summary>Prune non-interactive container/decoration noise (Playwright-style). Default true.</summary>
     public bool InteractiveOnly { get; init; } = true;

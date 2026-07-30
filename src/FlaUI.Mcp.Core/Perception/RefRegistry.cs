@@ -89,7 +89,7 @@ public sealed class RefRegistry
                 return ee;
             throw new ToolException(ToolErrorCode.RefNotFound,
                 $"Ref '{@ref}' is not in the current snapshot of window '{windowId}'.",
-                "take a fresh desktop_snapshot and use a ref from it");
+                "re-acquire the element with desktop_find (targeted, and it registers additively without superseding your other refs), or take a fresh desktop_snapshot");
         }
     }
 
@@ -140,19 +140,22 @@ public sealed class RefRegistry
     /// window). Searching those small, process-correct subtrees — never the whole Desktop —
     /// avoids cross-application false matches on a shared Name+ControlType. Throws REF_NOT_FOUND if
     /// the ref isn't live for this window. Must be called on the query STA.</summary>
-    public AutomationElement Resolve(string windowId, string @ref, IReadOnlyList<AutomationElement> searchRoots)
+    public AutomationElement Resolve(string windowId, string @ref, IReadOnlyList<AutomationElement> searchRoots,
+        RefResolveMode mode = RefResolveMode.Lenient)
     {
         var entry = Lookup(windowId, @ref); // REF_NOT_FOUND if absent
         var d = entry.Descriptor;
 
         // (1) cached fast-path — query-STA only. RuntimeId AND ControlType match AND not offscreen AND Name matches.
+        // VALID UNDER Strict TOO: it verifies the LIVE RuntimeId, which is exactly what Strict demands, so
+        // it is deliberately left enabled rather than bypassed (that would cost a full re-walk per poll).
         if (entry.Cached is { } cached)
         {
             try { if (FastPathMatches(cached, d)) return cached; }
             catch { /* element gone — fall through to the cache-free walk */ }
         }
 
-        return ResolveDescriptor(d, searchRoots, @ref);
+        return ResolveDescriptor(d, searchRoots, @ref, mode);
     }
 
     /// <summary>Cache-free re-resolution from a descriptor against caller-supplied roots (window
@@ -237,7 +240,7 @@ public sealed class RefRegistry
         if (scopes.Count == 0)
             throw new ToolException(ToolErrorCode.RefStaleUnresolvable,
                 $"Ref '{@ref}' names ancestor container '{d.AncestorAutomationId}' which is no longer present; not widening the search (avoids retargeting a different control).",
-                "take a fresh desktop_snapshot and use a ref from it");
+                "re-acquire the element with desktop_find (targeted, and it registers additively without superseding your other refs), or take a fresh desktop_snapshot");
         if (scopes.Count > MaxResolveScopes)
             throw new ToolException(ToolErrorCode.AmbiguousMatch,
                 $"Ref '{@ref}' names ancestor container '{d.AncestorAutomationId}' which matches {scopes.Count} elements (> cap {MaxResolveScopes}); too many to safely disambiguate.",

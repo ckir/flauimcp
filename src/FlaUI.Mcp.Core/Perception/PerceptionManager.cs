@@ -13,6 +13,10 @@ public sealed class PerceptionManager
     private readonly RefRegistry _refs;
     private readonly SnapshotCache _cache;
 
+    /// <summary>The DURABLE registry. Exposed so a wait can resolve a caller's ref against it while
+    /// registering its own per-poll walk into a throwaway (BuildModelAsync's resolveRefs).</summary>
+    internal RefRegistry Refs => _refs;
+
     // Break-glass: FLAUI_MCP_REF_STRICT=off forces Lenient on state-changing paths too (disables INV-8).
     // The env->mode mapping lives in RefResolveConfig.WriteMode so it is unit-tested (see Step 1).
     private static readonly RefResolveMode WriteMode =
@@ -400,6 +404,13 @@ public sealed class PerceptionManager
                 buf => ReadText(buf, selectionOnly: false, maxLength, fromEnd)),
             timeoutMs);
 
+    /// <summary>Item 5: pure-read tab enumeration. Runs on the QUERY STA, not the transient action STA
+    /// that ReadTerminalTabAsync uses (:398) — it mutates nothing, so it needs neither the action hop nor
+    /// the in-flight action cap. Same STA path BuildModelAsync uses (:416).</summary>
+    public Task<(IReadOnlyList<TerminalTabReader.TabListing> Tabs, int ActiveTabIndex)>
+        ListTerminalTabsAsync(WindowHandle handle) =>
+        _windows.RunWithWindowAndDesktopAsync(handle, (win, _) => TerminalTabReader.List(win));
+
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
     {
@@ -410,8 +421,13 @@ public sealed class PerceptionManager
         catch { return null; }
     }
 
+    /// <summary><paramref name="resolveRefs"/> is the registry the ROOT REF resolves against; refs minted
+    /// by the walk always register into <paramref name="refs"/>. They are the same registry for every
+    /// existing caller (default null => refs), and DIFFERENT only for the wait paths, which resolve a
+    /// caller's durable ref while registering walked nodes into a throwaway so per-poll walks never grow
+    /// the durable registry (WaitCoordinator.cs:18-19).</summary>
     public Task<(string SnapshotId, SnapshotModel Model)> BuildModelAsync(
-        WindowHandle handle, SnapshotOptions options, RefRegistry refs)
+        WindowHandle handle, SnapshotOptions options, RefRegistry refs, RefRegistry? resolveRefs = null)
     {
         return _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
@@ -421,10 +437,28 @@ public sealed class PerceptionManager
                 throw new ToolException(ToolErrorCode.TargetDenied,
                     $"Snapshotting windows owned by '{procName}' is blocked (credential store).",
                     "snapshot a different, non-sensitive window");
+            // ONE popup scan per build. It used to run twice on the RootRef path -- once here and once
+            // inside SearchRoots (PopupFinder.cs:17) -- and each scan is desktop.FindAllChildren() plus
+            // ~6 cross-process reads per desktop child (PopupFinder.cs:35-47). The two consumers below
+            // take DIFFERENT lists and must not be conflated: the grafting loop takes popups ALONE, while
+            // ref resolution needs the WINDOW FIRST (PopupFinder.cs:12-13 -- searchRoots[0] MUST be the
+            // window root, IndexPath is window-relative). Passing popups alone to Resolve makes every
+            // window-rooted ref unresolvable; passing {win}+popups to the grafting loop makes the engine
+            // visit the window a second time as its own popup root (SnapshotEngine.cs:47-54).
             IReadOnlyList<AutomationElement> popups = PopupFinder.FindOwnerPopups(desktop, win);
             bool isFullWindow = string.IsNullOrEmpty(options.RootRef);
-            AutomationElement root = isFullWindow
-                ? win : refs.Resolve(handle.Id, options.RootRef!, PopupFinder.SearchRoots(win, desktop));
+            AutomationElement root;
+            if (isFullWindow)
+            {
+                root = win;
+            }
+            else
+            {
+                var searchRoots = new List<AutomationElement> { win };
+                searchRoots.AddRange(popups);
+                root = (resolveRefs ?? refs).Resolve(
+                    handle.Id, options.RootRef!, searchRoots, options.RootResolveMode);
+            }
             var snapshotId = refs.BeginSnapshot(handle.Id);
             var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id);
             // Phase 9 §3: wakeable hint is a whole-WINDOW opacity signal, not a subtree one — only computed for

@@ -44,6 +44,10 @@ public class TerminalTabE2ETests
 
         using var dispatcher = new AutomationDispatcher();
         using var windows = new WindowManager(dispatcher);
+        // Collect any window a PREVIOUS run leaked (interrupted suite, killed test host, timeout) so
+        // leftovers cannot accumulate across runs — the accumulation the maintainer actually reported.
+        // Only ever touches windows carrying this suite's own marker prefix.
+        await WtTestWindow.SweepStaleAsync(windows);
         var perception = new PerceptionManager(windows, new RefRegistry(), new SnapshotCache());
         var tools = new ContentTools(perception, windows, new ServerOptions(ReadOnly: false, AllowElevation: false));
 
@@ -110,6 +114,12 @@ public class TerminalTabE2ETests
             // titleB (the tab left active by (b)) is still readable as the active tab afterward.
             var jsonBad = await tools.DesktopReadTerminalTab(win.Id, tabIndex: 99, restoreFocus: true, fromEnd: true, maxLength: 10000, timeoutMs: 8000);
             Assert.Contains("\"error\":\"InvalidArguments\"", jsonBad);
+            // The RECOVERY, not just the code. This used to say "list tabs via desktop_snapshot first" — the
+            // one path guaranteed to disagree with tabIndex, since four of the five snapshot-walk filters can
+            // drop a TabItem. Asserting only the error code left that fix unpinned (AGY-CAPSTONE r4), so a
+            // revert to the snapshot advice would have gone unnoticed.
+            Assert.Contains("desktop_list_terminal_tabs", jsonBad);
+            Assert.DoesNotContain("desktop_snapshot", jsonBad);
 
             var jsonStillB = await tools.DesktopReadTerminalTab(win.Id, tabIndex: 1, restoreFocus: true, fromEnd: true, maxLength: 10000, timeoutMs: 8000);
             Assert.DoesNotContain("\"error\"", jsonStillB);
@@ -119,8 +129,14 @@ public class TerminalTabE2ETests
         {
             // Close only the window we minted (never the shared WT host process — closing IT would risk
             // taking down unrelated windows under WT's single-process-multi-window model).
-            try { await windows.CloseAsync(win); } catch { /* best-effort */ }
+            await WtTestWindow.CloseAsync(windows, win, marker); // best-effort ONLY — never throws from a finally
             try { if (proc is { HasExited: false }) proc.Kill(); } catch { /* the wt.exe stub is usually already gone */ }
         }
+
+        // OUTSIDE the try/finally, deliberately. Throwing from a `finally` REPLACES any exception already in
+        // flight, so asserting there would mask the real assertion failure the test was reporting (and would
+        // skip the proc.Kill above). Reached only when the body succeeded — which is exactly when a leaked
+        // window is the interesting news. (AGY-CAPSTONE r7 Cascade Analyst.)
+        await WtTestWindow.AssertNoLeakAsync(windows, marker);
     }
 }

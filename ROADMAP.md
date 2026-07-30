@@ -309,6 +309,40 @@ nor the agent opening the skill).
 
 Not scheduled on their own — pick up when touching the surrounding code. None block anything.
 
+### The post-v0.20.0 defect-elimination decomposition (SP0–SP4) — canonical index
+
+**Written down here on 2026-07-30 because it existed NOWHERE in this repo.** An audit found the item
+numbering and the SP→item mapping lived only in one session's local agent-memory file: every SP spec cites
+"item 3" or "item 7" without any document defining the list, so losing that memory would have left no way to
+reconstruct which bullet is item 4 versus item 8. The numbering below is now the repo's own record.
+
+Scope of the increment: **the 2 filed defects + ALL 8 opportunistic items = 10**. Sequence between
+subprojects does not matter; what matters is that **`docs/fix-the-tool-backlog/` is EMPTY before v1.0.0 is
+stamped** — v1.0.0 ships with no known defects.
+
+| # | Item | SP | Status |
+|---|---|---|---|
+| 1 | `wait-for-cull-disagrees-with-find` (filed defect) | SP1 | ✅ fixed — backlog file deleted in `7802736` |
+| 2 | `launch-starves-on-ambient-single-instance` (filed defect) | SP1 | ✅ fixed — backlog file deleted in `5892ddc` |
+| 3 | `wait_for_stable` scope-by-ref | SP2 | ✅ shipped + MEASURED (see the item-3 entry below) |
+| 4 | snapshot/diff value-change detection | SP4 | ⬜ not started |
+| 5 | terminal tab ordinal discovery | SP2 | ✅ shipped as the new `desktop_list_terminal_tabs` |
+| 6 | JSON-shape tripwires | SP0 | ✅ merged (`015f23c`) |
+| 7 | redact descriptor `Name` for `IsPassword` | SP2 | ✅ RETIRED as invalid; the real guarantee is now pinned |
+| 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ⬜ not started |
+| 9 | per-field redaction | SP3 | ⬜ not started |
+| 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower |
+
+Also fixed en route, though never one of the ten: `value-and-find-paths-miss-desktop-level-popups`
+(deleted in `94e932a`).
+
+⚠ **Items 4, 8, 9 and 10 are HARDENING, not defects.** The "no known defects at v1.0.0" bar is therefore
+**not** gated on finishing SP3/SP4 — it is gated on emptying the backlog directory.
+✅ **That bar is now MET: `docs/fix-the-tool-backlog/` holds no defect files** (only `_template.md`, the blank
+filing form the `flaui-curate` skill fills — scaffolding, never delete it). The last one,
+`negative-timeout-disables-the-sta-watchdog`, was fixed as its own standalone piece of work rather than folded
+into a subproject, and its file deleted per the repo convention that fixing a defect deletes its entry.
+
 - **Phase 3b-1 perception leftovers:** occlusion-aware capture (`PrintWindow`, vs the current
   focus-first screen-scrape); full-desktop *per-field* redaction for non-denied windows (denylist
   whole-window refuse is the floor); snapshot/diff *value*-change detection (needs opt-in per-node value
@@ -316,16 +350,30 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   documented diff-identity limit on anonymous virtualized recycled rows (diff those by value/text).
 - **Phase 7.1 clipboard:** delayed-render `WM_RENDERFORMAT` clipboard for a precise paste-consumption
   signal (vs the current best-effort restore-on-confirmed-consumption).
-- **v0.13.0 micro follow-ups:** surface each `TabItem`'s `tabIndex` in `desktop_snapshot` (or have
+- ~~**v0.13.0 micro follow-ups:** surface each `TabItem`'s `tabIndex` in `desktop_snapshot` (or have
   `desktop_read_terminal_tab` echo the `index→title` map) so ordinal selection isn't hand-counted
-  (consumer-UX, from live smoke — design fork, agy-first before implementing).
+  (consumer-UX, from live smoke — design fork, agy-first before implementing).~~ — **DONE (SP2, item
+  5).** Both original options were rejected after measurement: a `desktop_snapshot` ordinal is not
+  usable as a `tabIndex`, because five filters sit between the raw child array and an emitted
+  snapshot node and four of them can drop a `TabItem` (`SnapshotEngine.cs:62` popup dedup, `:65`
+  IsOffscreen, `:66-70` CullToWindowBounds, `:101-104` MaxDepth). Shipped a NEW read-only tool
+  instead, `desktop_list_terminal_tabs`: lists a Windows Terminal window's tabs as
+  `{ tabs: [{ index, title, active }], activeTabIndex }` WITHOUT selecting any (works in
+  `--read-only-mode`). `TerminalTabReader.List` shares `EnumerateTabs` with `Run`, so the index
+  spaces match **by construction**, not by agreement. `ReadOnly = true`, uses `ToolResponse.Guard`
+  (not `GuardWrite`).
 - ~~**Tool-level JSON-shape tests**~~ — **DONE (SP0).** `truncatedFrom` (`desktop_get_text`) is pinned
   through the anonymous projection in `ToolProjectionShapeTests`; `Hint` (`desktop_list_windows`) in
   `ListWindowsProjectionShapeTests`. The two surfaces disagree by design and both halves are now pinned:
   the anonymous projections EMIT their nulls (`ToolResponse` sets no `DefaultIgnoreCondition`), while
   `WindowInfo.Hint` carries `WhenWritingNull` and is OMITTED, keeping its PascalCase record name.
-- **Micro belt-and-suspenders:** redact descriptor `Name` for `IsPassword` controls (`Name` is empty
-  for conformant password controls today, so no secret is stored — pure defense-in-depth).
+- ~~**Micro belt-and-suspenders:** redact descriptor `Name` for `IsPassword` controls.~~ — **RETIRED
+  (SP2).** Premise was false: `RefRegistry` falls back to Name+ControlType as the ref identity key when
+  `AutomationId` is absent (`RefRegistry.cs:181-182`) and the cached fast path compares the Name (`:334`),
+  so redacting the descriptor `Name` would make an `IsPassword` element with no `AutomationId`
+  permanently unresolvable — breaking exactly the controls this item targeted. `PerceptionManager.cs:580`
+  already documented this. The descriptor `Name` is already never echoed (`RefRegistry.cs:206-209`); that
+  guarantee is now pinned by `PasswordRedactionTestsHeadless`.
 - **Desktop-level popup coverage is structural, not test-proven.** SP1 routed `find` and
   `wait_for(valueEquals)` through `PopupFinder.SearchRoots`, so both now reach popups at either level —
   but this host's WPF context menu is a window CHILD (measured: `viaWindowRoot=1, viaPopupRoots=1`), so
@@ -334,6 +382,44 @@ Not scheduled on their own — pick up when touching the surrounding code. None 
   deliberately claims no blindness test. To close it for real, the fixture needs a Win32 `#32768` menu or
   an older `HwndWrapper` popup host that lands at the desktop level. Recorded here because the backlog
   entry it came from was retired when the code shipped.
+- **A genuinely hung window still consumes an action slot permanently — KNOWN, BY DESIGN, and NOT what the
+  timeout guard fixes.** Stated here because the two are easy to conflate. The `timeoutMs` guard
+  (`AutomationDispatcher.ClampActionTimeout`) closes the *caller-input* vector: no argument can now make the
+  watchdog wait forever. It cannot reclaim a slot lost to a REAL COM/UIA block — the worker thread blocks
+  inside the native call, so its `finally { Interlocked.Decrement(...) }` never runs, and five such calls
+  exhaust `MaxPendingActions` for the life of the process. That is inherent to abandoning a blocked STA call
+  (a thread parked in COM cannot be killed safely), and the class docstring already flags it as bounded "until
+  Phase 4's full action budget". Surfaced by the AGY-CAPSTONE Boundary Smuggler seat, which confirmed the
+  input vector IS closed. Not filed as a defect: it needs a genuinely unresponsive window, not attacker-
+  controlled input.
+- **`wait_for_stable` scope-by-ref (`scopeRef`) — SHIPPED in SP2, and MEASURED. The poll got ~8x cheaper;
+  the tool did NOT get usable at its default budget.** Measured on the WPF TestApp window (95 whole-window
+  nodes, scoped to a depth-4 subtree), driving `WaitCoordinator` directly:
+  · unscoped poll **~3956 ms/poll** · scoped poll **~479 ms/poll** ⇒ **~8.3x** off the polling phase.
+  · a **settled** scoped wait (quietMs 400, pollIntervalMs 100) finished in **5704 ms** over 6 walks —
+    **over the 5000 ms default budget.**
+  **The honest negative, which is the useful part:** rooting the poll does not make a settled scoped wait
+  fit the default budget, because the settle path takes a final **whole-window** snapshot using the static
+  `PollOptions` (`WaitCoordinator.cs:160`, `RootRef` null), so one full walk (~3956 ms ≈ **80% of the
+  5000 ms budget**) is re-paid at the very end. Two scoped polls on top guarantee the overshoot. So
+  `scopeRef`'s real value is the polling phase — a subtree that would never have settled inside the budget
+  now can, and large trees benefit most — not end-to-end latency at the default. The remaining lever is the
+  `CacheRequest` work below, **not** more scoping. (Independently corroborated by an agy consult, which
+  reached the same reading from the same lines.)
+  **Known sharp edge, PRE-EXISTING and not introduced here:** a settled `wait_for_stable` has always ended
+  with a durable snapshot, and `BeginSnapshot` clears a window's refs (`RefRegistry.cs:36`, class docstring
+  `:8`), so the caller's own `scopeRef` is dead after a successful call — a second identical call throws
+  `RefNotFound`. This is the standing ref-lifetime contract (`docs/agent-contract.md`: refs are bound to a
+  snapshot, "Take a fresh snapshot"), now visible on a new parameter. Verified pre-existing: the final
+  settle snapshot is byte-identical at `2bdb609:142`, before item 3.
+  **NOT A DEFECT, because the recovery path already ships and is cheap:** `desktop_find` re-acquires a usable
+  ref for the same element WITHOUT a whole-window walk — it runs a targeted UIA query and registers the match
+  **additively**, deliberately not superseding held snapshot refs (`PerceptionManager.cs:478` docstring,
+  `:623` "ADDITIVE, cached"). So the idiom is wait → find, and the two tools compose. The only real hazard was
+  that nothing SAID so; `desktop_wait_for_stable`'s description now does.
+  **Returning a re-resolved `newScopeRef` from `wait_for_stable` was considered and REJECTED** (agy proposed
+  it, then withdrew it on reading `FindAsync`): it would duplicate `desktop_find`'s job inside a wait tool and
+  conflate two orthogonal responsibilities, to save a call that is already cheap.
 - **Batch the walk's per-node property reads (`CacheRequest`) — MEASURED, and the single biggest lever
   on this tool's latency.** Attribution on a warm 98-node WPF window: desktop/popup scan 593 ms · single-
   call tree enumeration 421 ms · full build 6098 ms ⇒ **per-node property traffic is ~90%+ of the walk**,

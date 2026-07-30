@@ -25,7 +25,7 @@ public sealed record Selector(
             && string.IsNullOrWhiteSpace(ControlType))
             throw new ToolException(ToolErrorCode.InvalidArguments,
                 "selector needs at least one of automationId / name / controlType.",
-                "add a material field (automationId is the most stable), or use a ref from desktop_snapshot");
+                "add a material field (automationId is the most stable), or use a ref from desktop_find or desktop_snapshot");
 
         if (!string.IsNullOrWhiteSpace(ControlType)
             && !FindQuerySpec.TryParseControlType(ControlType, out _))

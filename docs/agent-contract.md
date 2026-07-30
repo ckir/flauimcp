@@ -10,6 +10,7 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 - Bound to an element within a `desktop_snapshot`.
 - Re-resolved on use: state-changing tools require the exact UIA RuntimeId. Read tools fall back to binding within the element's original container.
 - If the element was destroyed and recreated (e.g. a virtualized row recycled its AutomationId), the action is refused with `REF_STALE_UNRESOLVABLE`. Take a fresh snapshot.
+- A `desktop_wait_for_stable` call that returns `stable:true` ends by taking a whole-window snapshot, which supersedes the window's refs — so a `scopeRef` passed to it is dead afterwards, and reusing it returns `REF_NOT_FOUND`. Recover cheaply with `desktop_find` (targeted, and it registers matches **additively** without superseding — `PerceptionManager.cs:478`, `:623`), not another `desktop_snapshot`. A timeout (`stable:false`) does not supersede refs, so `scopeRef` survives it.
 
 **`selector`:**
 - Schema: `{ automationId?, name?, nameMatch?, controlType?, scope?, ignoreCase? }`.
@@ -59,8 +60,8 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 | `desktop_find` | ReadOnly | Query window for refs without full walk. **Params:** `timeoutMs`. |
 | `desktop_screenshot` | ReadOnly | PNG capture. Redacts passwords. **Params:** `window`, `ref`, `maxWidth` (default 1600). |
 | `desktop_get_bounds` | ReadOnly | Get absolute screen bounds, dpiScale, isOffscreen status. |
-| `desktop_wait_for` | ReadOnly | Poll until selector condition holds. **Params:** `by`, `value`, `until`, `equals`, `pollIntervalMs`, `timeoutMs`. |
-| `desktop_wait_for_stable` | ReadOnly | Poll until tree stops changing. **Params:** `by`, `value`, `includeText`, `quietMs`, `pollIntervalMs`, `timeoutMs`. |
+| `desktop_wait_for` | ReadOnly | Poll until selector condition holds. **Params:** `by`, `value`, `until`, `equals`, `pollIntervalMs`, `timeoutMs`, `includeOffscreen`. |
+| `desktop_wait_for_stable` | ReadOnly | Poll until tree stops changing. **Params:** `by`, `value`, `includeText`, `quietMs`, `pollIntervalMs`, `timeoutMs`, `scopeRef`, `includeOffscreen`. |
 | `desktop_user_state` | ReadOnly | Report coarse human presence. Lease-exempt. |
 | `desktop_wait_for_foreground` | ReadOnly | Block until window gains foreground. **Params:** `timeoutMs`. Lease-exempt. |
 
@@ -71,6 +72,7 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 | `desktop_grid_select` | Destructive | Select cell by `(row,col)`. |
 | `desktop_get_text` | ReadOnly | Read element's text. **Params:** `selectionOnly`, `maxLength`, `fromEnd`. |
 | `desktop_read_terminal_tab` | Destructive | Read terminal tab. **Params:** `tabIndex`, `restoreFocus`, `fromEnd`, `maxLength`. The tab title names the **launcher, not the program** — read every candidate tab before concluding the program you want is not running. |
+| `desktop_list_terminal_tabs` | ReadOnly | List a Windows Terminal window's tabs without selecting any. **Params:** `window`. Returns `{ tabs: [{ index, title, active }], activeTabIndex }`; `activeTabIndex` is `-1` when no tab reported itself selected. Use this to learn the `tabIndex` `desktop_read_terminal_tab` needs — a `desktop_snapshot` ordinal is **not** usable as a `tabIndex` (the walk drops off-screen, culled, and too-deep nodes). Titles only — reading a background tab's buffer still needs `desktop_read_terminal_tab`. |
 | `desktop_clipboard_get` | ReadOnly | Read system clipboard as text. |
 | `desktop_clipboard_set` | Destructive | Write text to clipboard. |
 

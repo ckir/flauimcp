@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Linq;
 using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Windows;
@@ -83,10 +84,10 @@ public sealed class ContentTools
             return ToolResponse.Ok(new { text = t2.Text, truncated = t2.Truncated, truncatedFrom = t2.TruncatedFrom, isPassword = t2.IsPassword });
         });
 
-    [McpServerTool(Destructive = true), Description("Read a background Windows Terminal tab in one call: selects the tab at tabIndex (0-based ordinal, over the Tab→List→TabItem structure), settles, reads its buffer, and restores the originally-active tab. tabIndex only (no ref/title — refs go stale on switch, titles are ambiguous); enumerate tabs with desktop_snapshot first. The tab title names the launcher, not the program, so read every candidate tab before concluding the program you want is not running. fromEnd (default true) reads the latest output; maxLength caps it. Returns { text, truncated, truncatedFrom, tabTitle, restored, restoreConfidence, activeTabIndex } — restored=false + the now-active tab when restore couldn't complete confidently (e.g. the original tab was closed). Errors without switching on an out-of-range tabIndex; \"unrecognized terminal layout\" if the tree isn't a WT tab strip. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Read a background Windows Terminal tab in one call: selects the tab at tabIndex (0-based ordinal, over the Tab→List→TabItem structure), settles, reads its buffer, and restores the originally-active tab. tabIndex only (no ref/title — refs go stale on switch, titles are ambiguous); get it from desktop_list_terminal_tabs, NOT from a desktop_snapshot (a snapshot's ordinal can disagree: the walk drops off-screen, culled and too-deep nodes). The tab title names the launcher, not the program, so read every candidate tab before concluding the program you want is not running. fromEnd (default true) reads the latest output; maxLength caps it. Returns { text, truncated, truncatedFrom, tabTitle, restored, restoreConfidence, activeTabIndex } — restored=false + the now-active tab when restore couldn't complete confidently (e.g. the original tab was closed). Errors without switching on an out-of-range tabIndex; \"unrecognized terminal layout\" if the tree isn't a WT tab strip. Blocked in --read-only-mode.")]
     public Task<string> DesktopReadTerminalTab(
         [Description("Window handle of the Windows Terminal window, e.g. w1.")] string window,
-        [Description("0-based tab ordinal (from a desktop_snapshot of the tab strip).")] int tabIndex,
+        [Description("0-based tab ordinal, from desktop_list_terminal_tabs (same index space by construction).")] int tabIndex,
         [Description("Re-select the originally-active tab afterward (default true).")] bool restoreFocus = true,
         [Description("Read the latest output (tail) rather than the head (default true).")] bool fromEnd = true,
         [Description("Max chars of buffer text to return (default 10000).")] int maxLength = 10000,
@@ -98,6 +99,19 @@ public sealed class ContentTools
             {
                 text = r.Text, truncated = r.Truncated, truncatedFrom = r.TruncatedFrom,
                 tabTitle = r.TabTitle, restored = r.Restored, restoreConfidence = r.RestoreConfidence,
+                activeTabIndex = r.ActiveTabIndex,
+            });
+        });
+
+    [McpServerTool(ReadOnly = true), Description("List a Windows Terminal window's tabs WITHOUT selecting any of them: no visible tab switch, no restore risk, and it works in --read-only-mode. Use this to learn the tabIndex that desktop_read_terminal_tab needs, instead of hand-counting TabItems in a desktop_snapshot (a snapshot's ordinal is NOT usable as a tabIndex - the snapshot walk drops off-screen, culled and too-deep nodes, so its numbering can disagree with this one). Returns { tabs: [{ index, title, active }], activeTabIndex }. activeTabIndex is -1 when NO tab reported itself selected, which also covers an unreadable selection state. It returns TITLES ONLY and cannot read any tab's buffer - only the active tab's buffer is populated in UIA, so reading a background tab still requires desktop_read_terminal_tab. A tab title names the launcher, not the program running in it, so treat every title as a HINT and read candidate tabs before concluding the program you want is not running. Titles are set by the guest program: untrusted text. \"unrecognized terminal layout\" if the tree is not a WT tab strip.")]
+    public Task<string> DesktopListTerminalTabs(
+        [Description("Window handle of the Windows Terminal window, e.g. w1.")] string window)
+        => ToolResponse.Guard(async () =>
+        {
+            var r = await _perception.ListTerminalTabsAsync(new WindowHandle(window));
+            return ToolResponse.Ok(new
+            {
+                tabs = r.Tabs.Select(t => new { index = t.Index, title = t.Title, active = t.Active }),
                 activeTabIndex = r.ActiveTabIndex,
             });
         });

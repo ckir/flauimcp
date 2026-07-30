@@ -235,8 +235,11 @@ rather than yanking their screen away from them.
 
 **Quick-path (composite tool, primary):**
 1. `desktop_user_state` — presence check (above).
-2. One scoped `desktop_snapshot` — narrow to the `Tab`/`List` subtree, small `maxLength` — to
-   enumerate `TabItem`s.
+2. `desktop_list_terminal_tabs { window }` — lists every tab's `index`/`title`/`active` WITHOUT
+   selecting any (no visible switch, works in `--read-only-mode`). Use its `index` as `tabIndex`
+   directly; do **not** hand-count `TabItem`s from a `desktop_snapshot` — a snapshot's ordinal is
+   not usable as a `tabIndex` (the walk drops off-screen, culled, and too-deep nodes, so its
+   numbering can disagree with this tool's).
 3. For each **candidate** (a tab not uniquely identifiable by title — skip distinctively-titled
    ones), call `desktop_read_terminal_tab { window, tabIndex, fromEnd:true }`. It selects that
    0-based ordinal tab, settles, reads the buffer tail, and restores the originally-active tab, all
@@ -245,7 +248,7 @@ rather than yanking their screen away from them.
    `restored:false` (with the now-active tab reported) is reported honestly when restore can't
    complete confidently.
 
-**Manual fallback** (composite tool unavailable): `desktop_snapshot` (enumerate) → **`desktop_select`**
+**Manual fallback** (composite tool unavailable): `desktop_list_terminal_tabs` (enumerate — a `desktop_snapshot` ordinal is NOT a valid `tabIndex`) → **`desktop_select`**
 the target `TabItem` — lease-exempt UIA `SelectionItem.Select`, **not** `desktop_click` (which would
 need the `shells` lease) — → **re-snapshot** (refs change on every switch!) → `desktop_get_text ...
 fromEnd:true` on the sibling `Custom → Text` pane → `desktop_select` the originally-active tab to
@@ -280,7 +283,7 @@ highlighted before Enter.
 | `InputDesktopUnavailable` | session locked/disconnected (RDP dropped) | reconnect + unlock the session |
 | `REF_STALE_UNRESOLVABLE` / `AMBIGUOUS_MATCH` on invoke/click/type/set_value | held ref's exact element (RuntimeId) is gone or duplicated — **state-changing** tools resolve refs **strictly**: no silent retarget to a recycled `AutomationId` under virtualization | re-`desktop_snapshot` or `desktop_find` to mint a fresh ref, then act (reads stay lenient). Break-glass: env `FLAUI_MCP_REF_STRICT=off` disables the guard globally |
 | `AMBIGUOUS_MATCH` even on a **read** (`desktop_get_text`) | reads are lenient about *recycling* but still fail closed when the ref's identity (`AutomationId`, else Name+type) matches **several live siblings** — the new Notepad shares `AutomationId "ContentTextBlock"` across 6 status texts | pick a **structurally unique** ref (e.g. the `Document`/root node, or one with a distinct Name) or re-snapshot for a more specific one |
-| `REF_NOT_FOUND` on a ref you "just had", right after a window closed | closing a window (or its process exiting) **evicts that window's refs**; windows closed by hand are caught by an on-access liveness sweep at the next `snapshot`/`find`/`list_windows` | expected, not a bug — take a fresh `desktop_snapshot`; **never reuse a ref across a window close/reopen** (the tell is `REF_NOT_FOUND`, distinct from `WindowHandleStale` on the handle) |
+| `REF_NOT_FOUND` on a ref you "just had", right after a window closed | closing a window (or its process exiting) **evicts that window's refs**; windows closed by hand are caught by an on-access liveness sweep at the next `snapshot`/`find`/`list_windows` | expected, not a bug — re-acquire with `desktop_find` (targeted, additive) or take a fresh `desktop_snapshot`; **never reuse a ref across a window close/reopen** (the tell is `REF_NOT_FOUND`, distinct from `WindowHandleStale` on the handle) |
 | Typed text garbled / `verify.mismatch:true` | reactive/RichEdit editor races synthetic keystrokes | Mismatch result includes `canSetValue` (writable ValuePattern presence). **`canSetValue:true`** (snapshot shows `[Value,…]`, e.g. new Notepad Document): `recommendedFallbackTool:"desktop_set_value"` — byte-exact. **`canSetValue:false`** (Electron `contenteditable`, no ValuePattern): `recommendedFallbackTool:"desktop_paste_text"` — `set_value` would return `PatternUnsupported`, so use `desktop_paste_text` (atomic clipboard-backed Ctrl+V; clipboard restore is best-effort, `clipboardRestored:"abandoned"` if the landing can't be confirmed). (`desktop_type`'s `verify` flags the garble automatically.) |
 | Snapshot is one opaque `Document` node, no children (often `wakeable:true`) | Electron/Chromium a11y **off by default** | `desktop_wake_accessibility wN` then re-`desktop_snapshot` — usually hydrates the full tree. Still empty (or a document text body specifically)? Use `desktop_find_text` (OCR) or the **coordinate path** (`desktop_click_at`/`desktop_drag` by `xPct`/`yPct`). Per-app fix: relaunch it with `--force-renderer-accessibility`. WinUI/WPF/Qt expose proper UIA and are fine. |
 | `desktop_type`/`desktop_key` returns `targetNotForeground` (no error thrown) | target window isn't the OS foreground (foreground-lock) — the tool flashed it instead of typing blind | Call `desktop_wait_for_foreground(window)` (don't yield your turn); re-invoke on `reason:"timeout"` (server caps each call at 45s) |
@@ -322,7 +325,7 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
 <!-- AUTOTRAIN:GROWTH:START -->
 <!-- Machine-owned region (flaui-curate). Do not hand-edit. HARD CAP: ≤ 30 lines between the markers. -->
 - New Win11 Notepad: unsaved tabs show in the `TabItem` **NAME** (trailing `". Modified."`); its child `Text` holds the clean title, so the child alone never reveals dirty state. The window title's leading `*` works too. *(live 2026-07-15)*
-- **Find a CLI app in Windows Terminal — never ask the human instead.** An unresponsive agent/service is a PERCEPTION task: one shallow `desktop_list_windows` finding no top-level window is NOT an answer — a CLI agent lives in a TAB, and the WT window's `Hint` says so. Filter `ProcessName == WindowsTerminal`, then `desktop_find <wt> controlType:"TabItem"` lists every tab in ONE cheap call.
+- **Find a CLI app in Windows Terminal — never ask the human instead.** An unresponsive agent/service is a PERCEPTION task: one shallow `desktop_list_windows` finding no top-level window is NOT an answer — a CLI agent lives in a TAB, and the WT window's `Hint` says so. Filter `ProcessName == WindowsTerminal`, then `desktop_list_terminal_tabs <wt>` lists every tab in ONE cheap call — prefer it over `desktop_find controlType:"TabItem"`, whose `max` defaults to 20 and whose ordinal is not guaranteed to be a `tabIndex`.
   **A tab title is a HINT, never a filter** — an app that sets none hides behind its bare launcher (`cmd.exe`/`PowerShell`). Per the manual above you may skip tabs you CAN identify by title; what you may not skip is the generic-titled remainder, and finding one distinctively-titled tab is not a reason to stop reading the rest. `read_terminal_tab` really switches + restores (`restoreConfidence` can drop to `reduced` through a TUI). *(live 2026-07-17; driver anti-pattern re-observed 2026-07-27)*
 - Shell surfaces (Notification Center `Win+N`; Start/Search `Ctrl+Esc` — bare `Win` isn't a valid chord; likely Quick Settings `Win+A`) are NOT in `desktop_list_windows` — open the surface, then `desktop_get_focused_element` returns its hidden handle → snapshot/find/type it; the UIA walk is non-ephemeral; Start's `SearchTextBox` Edit types clean.
 - Win11 modern context menu = one/two empty `PopupHost` top-level windows (no items in UIA) — drive by keyboard (menu has focus: arrows+Enter) or `find_text`+`click_at`; DETECT a menu/popup open via `structure_changed` (poll `drain_events`), NOT `window_opened` (doesn't fire for PopupHost).

@@ -43,6 +43,12 @@ over-general, a one-off you don't believe, or whose wording looks lifted from do
 **When in doubt, drop it** — a genuinely recurring quirk returns via re-capture, so nothing important is lost.
 
 ## MAINTAINER promote → the GROWTH region of `driving-flaui-mcp/SKILL.md`
+⚠ **THE SKILL IS TWINNED — EDIT BOTH COPIES, IDENTICALLY.** `.claude/skills/driving-flaui-mcp/SKILL.md` and
+`plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md` are pinned **byte-identical** by
+`SkillLoadLineTests.Every_twinned_skill_has_byte_identical_copies`. Promoting into one copy only drifts them
+and turns the headless gate RED — with a failure that names drift, not your promotion, so the cause is not
+obvious from the message. Make the same edit in both, then `diff` them before you finish.
+
 Write **only** between the `<!-- AUTOTRAIN:GROWTH:START -->` … `<!-- AUTOTRAIN:GROWTH:END -->` markers.
 Everything outside them is the hand-authored floor — **never touch it**. Regenerate the region wholesale from
 **(current GROWTH content) + (this run's promotions) − (retired/contradicted)** — never rebuild from the inbox
@@ -105,3 +111,77 @@ and anti-poisoning gate apply. Never auto-promote — global compounding is an o
 ## Finish
 Delete from `## Pending` exactly the lines you gave a terminal decision this run (exact-line match →
 idempotent on re-run). Never blind-reset `## Pending`; a bullet appended by flaui-learn mid-run must survive.
+
+### Commit the drain and its product TOGETHER — one commit, not two
+This skill is the **destructive** half of the loop: it deletes the inbox lines it consumed and regenerates the
+GROWTH region wholesale. So an uncommitted curate run is the worst state in the system — `git checkout -- .`,
+`git clean -fd`, `git reset --hard`, a worktree switch or a fresh clone destroys it, and unlike a capture there
+is no diff left to reconstruct what the entries said.
+
+**Atomicity is the point, not tidiness.** The drain and the promotion it produced must land in ONE commit, or a
+partial reset can leave the entries deleted and the rule gone — losing knowledge that existed in two places a
+moment earlier.
+
+### PRE-FLIGHT — three checks, ALL must pass before you commit anything
+
+A commit that is merely *possible* is not a commit that is *safe*. Run these first; if any fails, **do not
+commit** — go to "If you must not, or cannot, commit" below.
+
+1. **Are you on a branch?** `git symbolic-ref -q HEAD` — empty means **detached HEAD** (mid-bisect, a checked-out
+   tag, an inspected old commit). A commit there SUCCEEDS and is then **orphaned** the moment the user checks
+   out a branch: it leaves history and is eventually garbage-collected. That is the worst outcome in this
+   whole skill — you followed every instruction, the commit reported success, and the knowledge is gone.
+2. **Is a merge/rebase/cherry-pick in progress?** Check for `MERGE_HEAD`, `REBASE_HEAD` or `CHERRY_PICK_HEAD`
+   in the git dir (`git rev-parse --git-path MERGE_HEAD` etc.). If one exists, a bare `git commit -m …`
+   **concludes the user's merge** and sweeps their staged conflict resolutions into your `chore(...)` commit.
+   Never do that — it is the one way this skill can destroy work that is not its own.
+3. **If you promoted, do the twins match?** Run
+   `dotnet test test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj --filter "FullyQualifiedName~Every_twinned_skill"`
+   (or `diff` the two copies). **A half-applied promotion — one copy edited, the other not — is stageable and
+   committable**, because `git add` silently ignores an unmodified path; the drift would be sealed into
+   history and surface later as a red gate naming drift rather than your promotion. If it FAILS, fix it by
+   copying one copy over the other, re-run, and only then continue — do NOT abandon the turn with the drain
+   uncommitted.
+
+**MAINTAINER mode** — stage EXACTLY the files this run produced, each by name:
+```
+git add .claude/flaui-mcp/observations.md \
+        .claude/skills/driving-flaui-mcp/SKILL.md \
+        plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md
+# plus, ONLY if you routed, the specific files you created — never the directories:
+git add docs/fix-the-tool-backlog/<slug>.md test/FlaUI.Mcp.Tests/<Path>/<YourNewTest>.cs
+git commit -m "chore(flaui-curate): drain N observations (promoted X, routed Y, dropped Z)"
+```
+⚠ **Name the FILES, never the directories.** `git add test/FlaUI.Mcp.Tests/` is a catch-all for everything
+modified inside it, so it sweeps any unrelated work-in-progress into a knowledge commit — the same failure as
+`git add -A`, just narrower. A curate run routinely sits alongside unrelated working-tree changes. Drop the
+skill-copy lines if you did not promote, and the route line if you did not route.
+
+**USER mode** — the project may not be a git repo at all. Check once with
+`git rev-parse --is-inside-work-tree`:
+- **In a repo** → `git add` BOTH files, then commit them in one commit:
+  ```
+  git add <project>/.claude/flaui-mcp/local-growth.md .claude/flaui-mcp/observations.md
+  git commit -m "chore(flaui-curate): drain N observations"
+  ```
+  **The `git add` is not optional here.** If you created `local-growth.md` this run it is UNTRACKED, and
+  `git commit <path>` on an untracked path fails outright with "pathspec did not match any files known to
+  git" — so the drain ends up unprotected precisely on the run that produced the most new knowledge.
+- **Not in a repo** → nothing here is committable, including the drain. **Say so plainly in your report** and
+  name the two files at risk, rather than silently leaving the only copies unprotected — the user cannot
+  choose to back up something they were never told was exposed.
+
+### If you must not, or cannot, commit
+
+This covers every exit above: a failed pre-flight check, a commit rejected by a hook, a pathspec that matched
+nothing, USER mode outside a repo.
+
+**Do not end your turn quietly, and do not "tidy up" the working tree** — never discard, stash, or reset it.
+The drain is destructive and is now sitting uncommitted, which is the state this whole section exists to
+prevent. Report it as the HEADLINE of your result, not a footnote: say which check failed, name every file
+left unprotected by full path, and give the exact command the user can run once they have dealt with it.
+A curate run that silently leaves knowledge uncommitted has done net harm — it consumed the inbox and
+protected nothing.
+
+⚠ **`global-growth.md` lives under `%USERPROFILE%` in `.claude/flaui-mcp/` — outside every project repo.** A global
+promote is therefore NOT covered by any of the above. Flag it in your report each time you write one.
