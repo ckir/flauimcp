@@ -397,9 +397,24 @@ open. A loud failure nobody hears is a silent one. Two required mitigations:
    start has no tool surface, so the agent cannot call any self-diagnosis tool to read that log — the
    log is for the **human**, read out-of-band. The agent's only signal is that the tool set vanished.
    That asymmetry is precisely why mitigation 2 is required rather than optional.
-2. **A dry-run validator: `flaui-mcp check-redaction-rules <path>`.** Exit 0 with a per-rule summary, or
-   non-zero naming the first bad rule. This is the ONLY way an operator can iterate on rules without
-   restarting the server and guessing, and BC-2 makes that iteration the feature's dominant cost.
+2. **A dry-run validator: `flaui-mcp check-redaction-rules <path>`** (full surface in §5.5). This is the
+   operator's only way to iterate on rules without restarting and guessing, and BC-2 makes that iteration
+   the feature's dominant cost.
+
+**Blast radius of refuse-to-start — a panel finding, PARTLY REFUTED, recorded so it is not re-raised.**
+Panel round 4 argued a `rules.json` typo becomes a total denial of service because "the agent loses the
+ability to read files, run terminal commands, or fix the typo itself".
+
+**That is false for this architecture, and the correction matters.** `FlaUI.Mcp` exposes only `desktop_*`
+tools; an agent's file and shell tooling come from its harness, not from this server. A refusal to start
+costs **desktop automation**, and nothing else — the agent retains every means of reading and fixing the
+rule file. The claim assumed an all-in-one server this is not.
+
+**The kernel that survives, and is folded:** a typo does disable *all* desktop automation, not just
+redaction, so the failure must be self-explaining and instantly recoverable. The startup error therefore
+names both exits explicitly: *fix the named rule, or remove `--redaction-rules` to start without rules.*
+Refuse-to-start stands (§5.4's rationale is unchanged) — an operator who asked for a shield must not get
+a silently unshielded server.
 
 ### 5.5 Rule authoring diagnostics (BC-2's counterweight)
 
@@ -433,9 +448,23 @@ flaui-mcp check-redaction-rules <path> --against-hwnd <n>
   thousands of zero-sized, hidden and system windows (`Default IME`, `MSCTFIME UI`, orphan tooltips) and
   would flood the terminal, making the discovery step unusable. Reusing the shipped enumeration also
   means the operator sees exactly the window list the agent sees.
-- Output is per-node: `ref-less index · controlType · automationId · name (redacted if a rule fires) ·
-  the rule that fired, or "-"`. The rule column is the whole point — it is what turns "the agent went
-  blind" into "rule `card-fields` matched 40 nodes".
+- Output is per-node: `index · controlType · automationId · name · the rule that fired, or "-"`.
+
+  ⚠ **The dry-run shows the RAW name for rule-matched nodes, and an earlier draft redacted it — which
+  defeated the entire purpose.** An operator debugging a false positive needs to see *what the regex
+  matched*; printing `[REDACTED:rule:card]` tells them a rule fired and hides the one fact that would let
+  them fix it. This is a local human, at their own console, debugging their own rule file — treating them
+  as the prompt-injected agent makes first-try rule refinement impossible, and BC-2 says a bad first try
+  is the expected case.
+
+  **The line is drawn precisely, not abandoned:**
+  - **Rule-matched nodes: raw `Name` is shown.** The operator wrote the rule; the name is what it matched.
+  - **OS `IsPassword` nodes: stay `[REDACTED]`, always.** They are not rule-driven, so showing them helps
+    no one debug anything, and the OS declared them secret.
+  - **No node's VALUE is ever shown**, rule-matched or not. Rules match on name/automationId, so values
+    are never needed to explain a match.
+  - The output goes to the operator's terminal, so it is their responsibility if redirected — stated in
+    the operator manual (§11), not silently assumed.
 
 Read-only, one window, **no input lease required** — it reuses the existing read-only perception path,
 which needs none.
@@ -451,12 +480,31 @@ Required, and not optional given that the whole point of §5.5 is operator confi
 
 1. **Every dry-run output carries a banner** stating that results reflect the FILE, and that a running
    server enforces what it loaded at boot.
-2. **The dry-run detects the disagreement rather than merely warning about it.** The server records the
-   resolved path and a content hash of the rule file it loaded, in the same diagnostic surface §5.4 uses.
-   The CLI reads that record and, when the hash differs from the file on disk, exits **non-zero** with
-   "the running server loaded a different rule set — restart it to apply these rules". A silent
-   mismatch is the exact failure this section exists to prevent.
-3. If no server is running, the CLI says so plainly rather than implying its results are live.
+2. **The dry-run detects the disagreement — but must never REFUSE because of it.** ⚠ An earlier draft had
+   the CLI exit non-zero and halt on a hash mismatch, which destroys the very loop it protects: every
+   regex tweak would require a server restart just to run the check. **The dry-run always evaluates the
+   file and always prints its results.** The mismatch is reported as a prominent banner, and distinguished
+   in the exit code rather than by withholding output:
+
+   | Exit | Meaning |
+   |---|---|
+   | `0` | rules valid, and identical to what the running server loaded — live |
+   | `3` | rules valid, but the running server loaded something else — **restart to apply** |
+   | `1` | rules invalid (the §5.4 rejections); the offending rule is named |
+
+   A script can gate on `0`; a human iterating sees results plus a loud "not live yet" banner and keeps
+   editing. Exit `3` is the honest middle state the earlier draft collapsed into a refusal.
+
+3. **The boot state is a structured state file, not a log.** ⚠ An earlier draft said the server records
+   its rule-file hash "in the same diagnostic surface §5.4 uses" and the CLI "reads that record" — but
+   that surface is an append-only human-readable log subject to rotation and concurrent writes, and
+   parsing it to recover authoritative state is exactly the kind of invention a spec must not leave to
+   the implementer. The server writes a small JSON state file to a well-known path
+   (`%LOCALAPPDATA%\flaui-mcp\server-state.json`), **written atomically** (temp + rename) at boot,
+   carrying `{ pid, startedAtUtc, redactionRulesPath, redactionRulesSha256 }`. The CLI reads that file.
+   The §5.4 log remains what it is — a human-readable record — and is not load-bearing for any machine.
+4. If no state file exists, or its `pid` is not alive, the CLI says **no server is running** plainly,
+   rather than implying its results are live.
 
 ## 6. P2 — architecture: classify once, apply four times
 
@@ -546,10 +594,19 @@ and reports green.
 **Inverted, the test asserts:** every read of a sensitive-bearing property in `src/` occurs inside a
 member on the pinned list. The swept properties are the leak surface itself:
 
-- `AutomationElement.Name`, `.Current.Name`
-- `ValuePattern.Value`, `LegacyIAccessiblePattern.Value`
+- `AutomationElement.Name`, `.Current.Name`, `Properties.Name`
+- `ValuePattern.Value`, `LegacyIAccessiblePattern.Value`, `Properties.Value`
 - `TextPattern.DocumentRange.GetText(...)`
 - `SnapshotNode.Name`, `ElementDescriptor.Name`
+- **The GENERIC property accessors, as a class:** `GetCurrentPropertyValue(...)`,
+  `TryGetCurrentPropertyValue(...)`, and any indexer-style access into a `Properties`/
+  `FrameworkAutomationElement` bag. ⚠ These were missing from an earlier draft and are the
+  **fourth** successful bypass of this guarantee found in review: `el.GetCurrentPropertyValue(
+  AutomationElement.NameProperty)` reads exactly the same COM property while matching none of the
+  strongly-typed accessor names above, so a Roslyn walk keyed on those names never sees it. The sweep
+  therefore bans the generic accessors outright outside the fixed set, regardless of which property
+  literal they are passed — resolving the argument would require constant-folding, and a ban needs no
+  such analysis.
 
 **⚠ A GROWABLE per-site list plus a "contains a call" check is still theater, and this is the second
 time that shape failed review.** A developer who forgets can turn the test green by appending their
@@ -584,9 +641,22 @@ edits the accessor set and writes a passthrough defeats it, as they could defeat
 criterion is about the tool written in a hurry, which is the realistic failure — not an adversarial
 committer, which no test in the same repo can stop.
 
-The old redaction-keyed sweep is kept as a second, weaker assertion (it still catches a *deleted*
-redaction), asserting the `(file, member)` set for the literal `"[REDACTED]"` and `IsPasswordOrFailClosed`
-equals the **pinned twelve-entry list** of §3.1 (eleven logical sites; A4 spans two files).
+**⚠ The old redaction-keyed sweep CANNOT be kept as a permanent second assertion — an earlier draft said
+it could, and that instruction contradicted §6.1.** §6.1 migrates families B and D to read
+`SnapshotNode.Sensitivity` and families A and C to the new accessors, so those members will **no longer
+contain** `IsPasswordOrFailClosed`. Pinning an inventory of the very calls the same spec orders deleted
+would leave the implementer unable to satisfy both.
+
+Corrected — the twelve-entry list of §3.1 is a **migration checklist, used once and then retired**:
+
+1. **Before migration:** the list asserts the pre-SP3 state, so nobody starts from a wrong inventory.
+2. **During migration:** each entry is ticked off as its site moves to the classifier. The list reaching
+   empty is the completeness check that no legacy site was missed — which is the one job it is good at.
+3. **After migration:** the legacy assertion is **deleted**, and the permanent pin is the post-SP3
+   inventory: the fixed accessor set, `SnapshotEngine`'s node builder, and the D-family node reads.
+
+The read-allowlist sweep above is the permanent guarantee. The legacy sweep is scaffolding, and the plan
+must schedule its removal explicitly rather than leaving a self-contradicting test in the tree.
 
 - A new site ⇒ test fails ⇒ the author must add it to the list.
 - A removed site ⇒ test fails ⇒ nobody deletes a redaction silently.
