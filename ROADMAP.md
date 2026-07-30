@@ -337,10 +337,11 @@ Also fixed en route, though never one of the ten: `value-and-find-paths-miss-des
 (deleted in `94e932a`).
 
 ⚠ **Items 4, 8, 9 and 10 are HARDENING, not defects.** The "no known defects at v1.0.0" bar is therefore
-**not** gated on finishing SP3/SP4 — it is gated on emptying the backlog directory. As of 2026-07-30 that
-directory holds exactly one file, `negative-timeout-disables-the-sta-watchdog.md`, and **no subproject owns
-it.** Its design is resolved inside that file (and the defect is wider than originally filed); only the cap
-value and the blast-radius-of-the-change question remain open for the maintainer.
+**not** gated on finishing SP3/SP4 — it is gated on emptying the backlog directory.
+✅ **That bar is now MET: `docs/fix-the-tool-backlog/` holds no defect files** (only `_template.md`, the blank
+filing form the `flaui-curate` skill fills — scaffolding, never delete it). The last one,
+`negative-timeout-disables-the-sta-watchdog`, was fixed as its own standalone piece of work rather than folded
+into a subproject, and its file deleted per the repo convention that fixing a defect deletes its entry.
 
 - **Phase 3b-1 perception leftovers:** occlusion-aware capture (`PrintWindow`, vs the current
   focus-first screen-scrape); full-desktop *per-field* redaction for non-denied windows (denylist
