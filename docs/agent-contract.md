@@ -60,7 +60,7 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 | `desktop_find` | ReadOnly | Query window for refs without full walk. **Params:** `timeoutMs`. |
 | `desktop_screenshot` | ReadOnly | PNG capture. Redacts passwords. **Params:** `window`, `ref`, `maxWidth` (default 1600). |
 | `desktop_get_bounds` | ReadOnly | Get absolute screen bounds, dpiScale, isOffscreen status. |
-| `desktop_wait_for` | ReadOnly | Poll until selector condition holds. **Params:** `by`, `value`, `until`, `equals`, `pollIntervalMs`, `timeoutMs`. |
+| `desktop_wait_for` | ReadOnly | Poll until selector condition holds. **Params:** `by`, `value`, `until`, `equals`, `pollIntervalMs`, `timeoutMs`, `includeOffscreen`. |
 | `desktop_wait_for_stable` | ReadOnly | Poll until tree stops changing. **Params:** `by`, `value`, `includeText`, `quietMs`, `pollIntervalMs`, `timeoutMs`, `scopeRef`, `includeOffscreen`. |
 | `desktop_user_state` | ReadOnly | Report coarse human presence. Lease-exempt. |
 | `desktop_wait_for_foreground` | ReadOnly | Block until window gains foreground. **Params:** `timeoutMs`. Lease-exempt. |

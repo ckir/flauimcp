@@ -89,7 +89,7 @@ public sealed class RefRegistry
                 return ee;
             throw new ToolException(ToolErrorCode.RefNotFound,
                 $"Ref '{@ref}' is not in the current snapshot of window '{windowId}'.",
-                "take a fresh desktop_snapshot and use a ref from it");
+                "re-acquire the element with desktop_find (targeted, and it registers additively without superseding your other refs), or take a fresh desktop_snapshot");
         }
     }
 
@@ -240,7 +240,7 @@ public sealed class RefRegistry
         if (scopes.Count == 0)
             throw new ToolException(ToolErrorCode.RefStaleUnresolvable,
                 $"Ref '{@ref}' names ancestor container '{d.AncestorAutomationId}' which is no longer present; not widening the search (avoids retargeting a different control).",
-                "take a fresh desktop_snapshot and use a ref from it");
+                "re-acquire the element with desktop_find (targeted, and it registers additively without superseding your other refs), or take a fresh desktop_snapshot");
         if (scopes.Count > MaxResolveScopes)
             throw new ToolException(ToolErrorCode.AmbiguousMatch,
                 $"Ref '{@ref}' names ancestor container '{d.AncestorAutomationId}' which matches {scopes.Count} elements (> cap {MaxResolveScopes}); too many to safely disambiguate.",
