@@ -44,6 +44,10 @@ public class TerminalTabE2ETests
 
         using var dispatcher = new AutomationDispatcher();
         using var windows = new WindowManager(dispatcher);
+        // Collect any window a PREVIOUS run leaked (interrupted suite, killed test host, timeout) so
+        // leftovers cannot accumulate across runs — the accumulation the maintainer actually reported.
+        // Only ever touches windows carrying this suite's own marker prefix.
+        await WtTestWindow.SweepStaleAsync(windows);
         var perception = new PerceptionManager(windows, new RefRegistry(), new SnapshotCache());
         var tools = new ContentTools(perception, windows, new ServerOptions(ReadOnly: false, AllowElevation: false));
 
@@ -125,7 +129,7 @@ public class TerminalTabE2ETests
         {
             // Close only the window we minted (never the shared WT host process — closing IT would risk
             // taking down unrelated windows under WT's single-process-multi-window model).
-            try { await windows.CloseAsync(win); } catch { /* best-effort */ }
+            await WtTestWindow.CloseAndVerifyAsync(windows, win, marker); // VERIFIES the close; throws if it leaked
             try { if (proc is { HasExited: false }) proc.Kill(); } catch { /* the wt.exe stub is usually already gone */ }
         }
     }
