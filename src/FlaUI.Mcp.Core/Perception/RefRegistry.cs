@@ -140,19 +140,22 @@ public sealed class RefRegistry
     /// window). Searching those small, process-correct subtrees — never the whole Desktop —
     /// avoids cross-application false matches on a shared Name+ControlType. Throws REF_NOT_FOUND if
     /// the ref isn't live for this window. Must be called on the query STA.</summary>
-    public AutomationElement Resolve(string windowId, string @ref, IReadOnlyList<AutomationElement> searchRoots)
+    public AutomationElement Resolve(string windowId, string @ref, IReadOnlyList<AutomationElement> searchRoots,
+        RefResolveMode mode = RefResolveMode.Lenient)
     {
         var entry = Lookup(windowId, @ref); // REF_NOT_FOUND if absent
         var d = entry.Descriptor;
 
         // (1) cached fast-path — query-STA only. RuntimeId AND ControlType match AND not offscreen AND Name matches.
+        // VALID UNDER Strict TOO: it verifies the LIVE RuntimeId, which is exactly what Strict demands, so
+        // it is deliberately left enabled rather than bypassed (that would cost a full re-walk per poll).
         if (entry.Cached is { } cached)
         {
             try { if (FastPathMatches(cached, d)) return cached; }
             catch { /* element gone — fall through to the cache-free walk */ }
         }
 
-        return ResolveDescriptor(d, searchRoots, @ref);
+        return ResolveDescriptor(d, searchRoots, @ref, mode);
     }
 
     /// <summary>Cache-free re-resolution from a descriptor against caller-supplied roots (window
