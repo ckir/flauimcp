@@ -54,9 +54,15 @@ public class WaitStableScopeTests : IClassFixture<TestAppFixture>
 
     /// <summary>THE THROWAWAY HALF — the reason the throwaway exists at all. Each stability poll builds
     /// with `new RefRegistry()` (WaitCoordinator.cs:133) so per-poll walks never grow the durable
-    /// registry. BeginSnapshot REPLACES a window's ref dictionary (RefRegistry.cs:32-37), so if a poll
-    /// walk ever passed the durable registry as its `refs`, every poll would supersede the caller's held
-    /// refs and this ref would stop resolving mid-wait.
+    /// registry.
+    ///
+    /// WHY THIS PIN BITES, precisely: BeginSnapshot replaces a window's ref dictionary
+    /// (RefRegistry.cs:36) but does NOT touch `_counter`, and Register increments that counter
+    /// monotonically (`:70-71`) — only EvictWindow ever clears it (`:56`). So if a poll walk ever passed
+    /// the durable registry as its `refs`, the first poll would not merely clear `heldRef`: the counter
+    /// guarantees that ref number is NEVER re-minted, so Lookup throws RefNotFound (`:86-92`) and this
+    /// fact goes red. The class docstring states the same property (`:8-9`). That monotonic counter is
+    /// what makes the observable proxy below sound rather than merely suggestive.
     ///
     /// This is the observable-proxy form the plan permits: the throwaway's own refs are unobservable from
     /// outside, so the assertion is that a ref held across the wait still resolves afterwards.
