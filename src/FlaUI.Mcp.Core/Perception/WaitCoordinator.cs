@@ -157,7 +157,15 @@ public sealed class WaitCoordinator
             if (stableCount >= needed)
             {
                 CountWalk();
-                var (snapId, _) = await _perception.SnapshotModelForWaitAsync(handle, PollOptions);
+                // includeOffscreen MUST reach the final snapshot too. It stays WHOLE-WINDOW (settled: a
+                // caller who waited on a subtree almost always wants the whole window next, and RootRef is
+                // deliberately NOT set here) -- but culling it would hand back a snapshot that omits the very
+                // element the caller just proved stable, so a wait on a past-the-edge element would succeed
+                // and then leave them unable to get a ref to it. That is the wrong-belief class this branch
+                // exists to remove. Safe for existing callers: includeOffscreen is new in SP2, so nobody
+                // reaching this line before now could have passed true.
+                var (snapId, _) = await _perception.SnapshotModelForWaitAsync(
+                    handle, PollOptions with { IncludeOffscreen = includeOffscreen });
                 return new WaitStableResult(true, (int)sw.ElapsedMilliseconds, snapId);
             }
             if (sw.ElapsedMilliseconds >= timeoutMs) return new WaitStableResult(false, (int)sw.ElapsedMilliseconds, null);
