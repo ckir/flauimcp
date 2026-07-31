@@ -32,15 +32,13 @@ public static class ElementContent
     public static Read Name(AutomationElement el, SensitivityClassifier classifier, string? processName)
     {
         string raw = Safe(() => el.Name, out bool absent);
-        var s = Classify(el, classifier, processName,
-                         () => Safe(() => el.Properties.AutomationId.ValueOrDefault), () => raw);
+        var s = Classify(el, classifier, processName, raw); // Name already has it — don't re-read it
         return new Read(s.Redact ? RedactedToken : raw, s) { RawForIdentity = raw, Absent = absent };
     }
 
     public static Read Value(AutomationElement el, SensitivityClassifier classifier, string? processName)
     {
-        var s = Classify(el, classifier, processName,
-                         () => Safe(() => el.Properties.AutomationId.ValueOrDefault), () => Safe(() => el.Name));
+        var s = Classify(el, classifier, processName);
         if (s.Redact) return new Read(RedactedToken, s) { RawForIdentity = string.Empty };
         string raw = Safe(() => el.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault ?? string.Empty);
         if (raw.Length == 0) raw = Safe(() => el.Name);
@@ -58,22 +56,34 @@ public static class ElementContent
     public static Read Text(AutomationElement el, SensitivityClassifier classifier, string? processName,
                             Func<string> readText)
     {
-        var s = Classify(el, classifier, processName,
-                         () => Safe(() => el.Properties.AutomationId.ValueOrDefault), () => Safe(() => el.Name));
+        var s = Classify(el, classifier, processName);
         if (s.Redact) return new Read(RedactedToken, s) { RawForIdentity = string.Empty };
         string raw = readText() ?? string.Empty;
         return new Read(raw, s) { RawForIdentity = raw };
     }
 
-    // DEFAULT PATH: with no rules we never construct the thunks — a closure over `el` heap-allocates a
-    // delegate AND a closure on every egress call, before Classify even runs (spec §4.4).
+    /// <summary>DEFAULT PATH (spec §4.4): the rule thunks are constructed only INSIDE the HasRules branch.
+    ///
+    /// ⚠ They must NOT be parameters. C# evaluates arguments at the CALL SITE, so passing them in would
+    /// heap-allocate two delegates plus their closures on every egress read, BEFORE this method's
+    /// HasRules guard could skip them — the guard would sit after the allocation it exists to avoid.
+    /// That is exactly what this code did until an AGY-CAPSTONE round caught it.
+    ///
+    /// One closure remains on the default path — RedactionPolicy.IsPasswordOrFailClosed takes a Func —
+    /// and that is not a regression: every site this type replaced allocated the same one.
+    ///
+    /// <paramref name="alreadyReadName"/> lets a caller that has ALREADY read the name hand it over
+    /// rather than have a rule read it a second time. Null means "read it lazily, only if a rule asks".</summary>
     private static Sensitivity Classify(AutomationElement el, SensitivityClassifier classifier,
-                                        string? processName, Func<string?> aid, Func<string?> name)
+                                        string? processName, string? alreadyReadName = null)
     {
         if (!classifier.HasRules)
             return RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault)
                 ? Sensitivity.OsPassword : Sensitivity.Visible;
-        return classifier.Classify(processName, aid, name, () => el.Properties.IsPassword.ValueOrDefault);
+        return classifier.Classify(processName,
+            () => Safe(() => el.Properties.AutomationId.ValueOrDefault),
+            () => alreadyReadName ?? Safe(() => el.Name),
+            () => el.Properties.IsPassword.ValueOrDefault);
     }
 
     private static string Safe(Func<string?> read)
