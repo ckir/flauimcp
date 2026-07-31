@@ -1141,7 +1141,25 @@ classification was *computed*, not *applied* — a developer who forgets writes 
 and ships the leak under a green gate. Raw access is a **separately named** member.
 
 **Files:** Create `src/FlaUI.Mcp.Core/Perception/ElementContent.cs`; modify `PerceptionManager.cs:317`,
-`:354`, `:599`; `Watch/WatchPayloadBuilder.cs:34`; `Interaction/VerifyReader.cs:24-25`.
+`:354`, `:599`; `Watch/WatchPayloadBuilder.cs:34`; `Interaction/VerifyReader.cs:24-25`;
+`Perception/TerminalTabReader.cs:118`, `:145` (**the 13th site — see the amendment below**).
+
+> **AMENDMENT (2026-07-31, operator-approved).** Spec §3.1 enumerates **twelve** egress sites. It is
+> **incomplete**: `TerminalTabReader.cs:31-32` (`NameOf`) reads a tab's raw `.Name`, and it reaches the
+> wire at **two** exits — `ContentTools.cs:114` (`title`, via `TabListing.Title` built at
+> `TerminalTabReader.cs:118`) and `ContentTools.cs:101` (`tabTitle`, via the `Result.TabTitle` built from
+> `:145`). Nothing in that file touches `RedactionPolicy`. Found INDEPENDENTLY by the Task 1 census and by
+> a blind second pass, which is why it is credited rather than treated as noise. Tab titles routinely
+> carry working directories, SSH destinations and command strings.
+>
+> ⚠ **`NameOf` has FOUR call sites and they SPLIT — do not blanket-redact it.** `:118` and `:145` are
+> **egress**. `:133` and `:135` compute `activeTitle` / `activeTitleUnique` purely to match the tab to
+> restore focus to; they never leave the process and are **identity** — redacting them would break
+> focus-restore for exactly the tabs being protected, which is BC-1's failure mode in miniature. Use the
+> same `Read.Text` / `Read.RawForIdentity` split as the other dual-purpose sites.
+>
+> The spec is frozen at `9c7588e`; this amendment is recorded here because the plan is the executable
+> artifact. Task 12 Step 5 ticks **thirteen** entries, not twelve.
 
 - [ ] **Step 1: Implement `ElementContent.cs`**
 
@@ -1227,6 +1245,8 @@ hid real signature and injection work. Site by site:
 | `PerceptionManager.cs:599` `find` | `ElementContent.Name` | same; pass `read.RawForIdentity` to the descriptor at `:606` — **BC-1, the descriptor keeps the RAW name** |
 | `WatchPayloadBuilder.cs:34` | via the reader | change `IEventSourceReader` (`WatchPayloadBuilder.cs:11-13`) to expose `Sensitivity Sensitivity` and an already-redacted `Name`, instead of `bool IsPassword` + a RAW `Name`. ⚠ **`LiveEventSourceReader` (`WatchPump.cs:227+`) must obtain both by calling `ElementContent.Name`, NOT by classifying itself.** An earlier draft said "it holds the element, so it classifies" — which would read `el.Name` **outside the closed egress list and fail Task 12's sweep**, since that sweep is the whole guarantee. It reuses the `procName` already computed at `WatchPump.cs:207` for the denylist check, so this costs **zero** additional COM reads, and takes the classifier from the `WatchPump` constructor (Task 4b). `NullEventSourceReader` (`WatchPump.cs:283`) returns `Sensitivity.Visible`. |
 | `VerifyReader.cs:24-25` | `ElementContent.Text` | ⚠ `VerifyReader.FromElement` is **`public static`** with no classifier in scope. Add two parameters: `FromElement(AutomationElement el, SensitivityClassifier classifier, string? processName, bool readCapability = false)`. Find and update every caller first: `grep -rn "VerifyReader.FromElement" src test --include=*.cs` |
+
+| `TerminalTabReader.cs:118` (list) and `:145` (read) | `ElementContent.Name` | ⚠ **the 13th site (amendment above)**. `TerminalTabReader` is a `static` helper with no DI: **append** `SensitivityClassifier classifier` and `string? processName` to `ListTabs`/`Run` and thread them from `PerceptionManager.ListTerminalTabsAsync` / the `desktop_read_terminal_tab` path, which already hold both. `:118` and `:145` take `read.Text`; **`:133`/`:135` keep the RAW value** (`RawForIdentity`) — they only match the tab to restore focus to, and redacting them breaks focus-restore for the protected tab |
 
 Keep each site's surrounding behaviour otherwise unchanged — this task is a refactor.
 
@@ -1472,7 +1492,8 @@ The sweep asserts, over `src/**/*.cs` parsed with Roslyn:
       confirm the sweep fails naming it; add a `dynamic` local and confirm it fails; add a
       `GetProp(el, PropertyId)` passthrough and confirm it fails. **Delete all three, rebuild** (⚠
       `--no-build` runs deleted tests from a stale DLL), re-run green.
-- [ ] **Step 5: Retire the legacy inventory.** Tick each of the twelve §3.1 entries — an entry is ticked
+- [ ] **Step 5: Retire the legacy inventory.** Tick each of the **thirteen** entries — §3.1's twelve plus
+      `TerminalTabReader` (the amendment in Task 6) — an entry is ticked
       when the member no longer contains the legacy literal AND appears in the census classification.
       ⚠ **Do NOT verify a tick by "the member contains a `Classify` call"** — a dead call whose result is
       discarded would mark a still-leaking site migrated. When the list is empty, **delete it**.
