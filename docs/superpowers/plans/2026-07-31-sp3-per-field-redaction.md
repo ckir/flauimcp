@@ -1560,6 +1560,29 @@ The sweep asserts, over `src/**/*.cs` parsed with Roslyn:
    `GetProp(el, PropertyId id)` helper would otherwise become a universal raw accessor.
 4. Generic accessors (`GetCurrentPropertyValue`, `TryGetCurrentPropertyValue`) are resolved by **static
    field reference**; an unresolvable argument **fails** and needs an explicit reasoned suppression.
+
+4b. ⚠ **NEW (Task 4b fallout) — every `src/` call passing a classifier must actually pass one.** Task 4b
+   had to make `classifier` an OPTIONAL parameter (`SensitivityClassifier? classifier = null`) at three
+   sites — `PerceptionManager`'s constructor, `WatchPump`'s constructor and **`SnapshotEngine.Build`** —
+   because ~35 pre-existing test files construct these directly and required parameters would have forced
+   editing all of them, which §4.4 forbids.
+
+   That is the right call for the tests and a **hole in the guarantee for production**: a `src/` caller
+   that omits the argument silently gets `OsOnly`, every operator rule stops applying at that site, and
+   **nothing fails to compile**. That is precisely the forget-and-ship failure the closed-list design
+   exists to abolish, and the type system can no longer catch it.
+
+   So the sweep closes it: **assert that every call site in `src/` to `SnapshotEngine.Build`, and every
+   `new PerceptionManager(...)` / `new WatchPump(...)` in `src/`, passes a `classifier` argument
+   explicitly.** Omitting it is a FAILURE naming the call site. `test/` is exempt — that asymmetry is the
+   whole point, and it is why this belongs in the sweep rather than in the signature.
+
+   ⚠ The DI registrations in `Program.cs` are **exempt and must be**: the container resolves the
+   registered singleton in preference to the parameter default, so `AddSingleton<PerceptionManager>()`
+   supplies the real classifier without naming it. Do not "fix" those by hand-constructing.
+
+   ⚠ **MUTATION-VERIFY this rule too** (Step 4): delete the `classifier` argument from one `src/` call to
+   `SnapshotEngine.Build` and confirm the sweep fails naming it, then restore it and rebuild.
 5. The repo root is located by walking up from `AppContext.BaseDirectory` to the first directory
    containing **`FlaUI.Mcp.slnx`**, and **fails loudly** if not found — a sweep that silently matches
    zero files is the false-GREEN this whole task exists to prevent.
