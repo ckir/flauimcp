@@ -1122,8 +1122,34 @@ Do **not** add rule handling here. The commit at Step 8 must build clean and cha
 
 Run: `dotnet build FlaUI.Mcp.slnx -c Release` — fix each remaining compile error by passing a `Sensitivity`.
 Then: `dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: **808 passed / 0 skipped** (805 + 3). ⚠ **No existing test may be edited to accommodate this.**
-If one needs editing, the default path changed — stop and re-read spec §4.4.
+Expected: **818 passed / 0 skipped** (815 + 3).
+
+### ⚠ AMENDMENT — the "no existing test may be edited" rule needs a distinction, or this task deadlocks
+
+An earlier draft said flatly *"No existing test may be edited to accommodate this."* **That is impossible
+as written, and following it literally deadlocks the task.** `SnapshotNode` is a positional record, so
+changing its member changes its CONSTRUCTOR, and **three existing test files already construct or read it**
+(verified at HEAD):
+
+| Site | What it does | Mechanical replacement |
+|---|---|---|
+| `test/…/Perception/WaitNameOracleTests.cs:21` | constructs, `IsPassword: isPassword` (a `bool` parameter) | `Sensitivity: isPassword ? Sensitivity.OsPassword : Sensitivity.Visible` |
+| `test/…/Perception/PasswordRedactionTests.cs:52` | constructs, `IsPassword: true` | `Sensitivity: Sensitivity.OsPassword` |
+| `test/…/Perception/SnapshotModelPinTests.cs:22` | **reads**, `n.IsPassword ? "[REDACTED]" : n.Name` | `n.Sensitivity.Source == RedactionSource.Os ? …` |
+
+**The rule's real intent (spec §4.4) is about ASSERTIONS, not signatures.** Restate it as two rules:
+
+- ✅ **ALLOWED — a mechanical CONSTRUCTION/READ fix** forced by the changed signature, using the exact
+  equivalences in the table above. These preserve today's semantics precisely and change no assertion.
+- ❌ **FORBIDDEN — editing any existing test's ASSERTION, expected string, or expected count** to make it
+  agree with SP3. That is the default-path regression §4.4 exists to prevent. If an assertion needs
+  changing, **STOP** — the rendering changed and it must not have.
+
+⚠ Map reads to **`Source == Os`**, not `.Redact` — see the boxed warning above. The three sites in the
+table are the COMPLETE set at HEAD; if `grep -rn "IsPassword" test --include=*.cs` shows a fourth
+*`SnapshotNode`* site, that is new since this was written — report it rather than adapting. (Other
+`IsPassword` hits in `test/` are unrelated: they belong to `TextReadResult`, `GridCellInfo`,
+`RedactionPolicy` and the watch `FakeReader`, none of which this task changes.)
 
 - [ ] **Step 8: Commit**
 
@@ -1648,9 +1674,20 @@ dotnet test --filter "FullyQualifiedName~PopupGrafting"
 
 Expected: **0 failed, 0 skipped.** ⚠ A green is green **at a SHA** — re-run after the last fix, not before.
 
-- [ ] **Step 5: Default-path regression check.** Confirm **no existing test was edited** to accommodate
-      SP3: `git diff 9c7588e --stat -- test/` should show new files and new facts only. An edited
-      pre-existing assertion means the default path changed — spec §4.4 forbids it.
+- [ ] **Step 5: Default-path regression check.** Run `git diff 3b0ab8d -- test/` (`3b0ab8d` is the branch
+      point; use the diff, not just `--stat`, because the distinction below is invisible in a stat).
+
+      Expect new files and new facts — **plus exactly three mechanically-edited pre-existing files**, all
+      forced by `SnapshotNode`'s changed constructor and all listed in Task 5's amendment:
+      `WaitNameOracleTests.cs`, `PasswordRedactionTests.cs`, `SnapshotModelPinTests.cs`.
+
+      **Read each of those three diffs by eye.** Every hunk must be a `IsPassword: …` → `Sensitivity: …`
+      construction change or the `n.IsPassword` → `n.Sensitivity.Source == RedactionSource.Os` read
+      change. **Any hunk that touches an `Assert`, an expected string, or an expected count is a
+      default-path regression** — spec §4.4 forbids it, and the task is not done until it is reverted and
+      the production code fixed instead.
+
+      A fourth edited pre-existing test file is a finding: name it and justify it, or revert it.
 - [ ] **Step 6: Update `ROADMAP.md`** — mark item 9 done, and commit.
 
 ---
