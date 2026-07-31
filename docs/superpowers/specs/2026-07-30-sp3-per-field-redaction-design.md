@@ -3,6 +3,43 @@
 **Status:** USER-APPROVED design, 2026-07-30. Awaiting adversarial panel.
 **Base:** `master` @ `57bc7ef` (SP2 merged). Every file:line below was grep/read-verified at that SHA.
 
+## 0. The settled design, with no history
+
+*Read this section alone to know WHAT to build. Everything below it adds rationale, measurements, and the
+rejected alternatives — retained deliberately so nobody re-proposes a design nine review rounds killed,
+but not required to implement. Where a later section carries a "⚠ an earlier draft" note, this summary
+already reflects the correction.*
+
+1. **One classifier.** `SensitivityClassifier.Classify(processName, Func<automationId>, Func<rawName>,
+   Func<isPassword>) → Sensitivity(Redact, Source, RuleName)`. OS `IsPassword` wins and is always on;
+   operator rules are consulted only if it does not fire. Immutable after load, thread-safe, no hot
+   reload. `OsOnly` is the zero-rule instance and must allocate nothing and force no COM read.
+2. **Rules** are opt-in via `--redaction-rules <path>` (absent ⇒ feature off). JSON, `version: 1`, at
+   most 64 rules, each with a unique `name`, process-scoped unless `global: true`, and at least one of
+   `automationId` / `automationIdPattern` / `namePattern`. Regexes compile `NonBacktracking` at load;
+   anything unsupported is a fatal config error. Predicates evaluate cheapest-first and AND together; an
+   absent value normalises to empty and matches normally; an *unexpected* failure fails closed at that
+   predicate only.
+3. **Classification happens once per unit of work** — per snapshot walk at node build (`SnapshotNode`
+   carries `Sensitivity`), per operation for single-element reads, per event in the watch pump — and
+   **never per node**. Process name is resolved at that same scope.
+4. **Four egress families apply it** (§3.1): JSON payloads, the rendered snapshot text, the pixel mask
+   rects, and the three name-matching paths, where a redacted element is excluded from name matching
+   entirely rather than the query being filtered.
+5. **Wire:** the `"[REDACTED]"` token is unchanged; `isPassword` keeps its literal OS meaning; new
+   `redacted` (bool) and `redactedBy` (`"os"` | `"rule:<name>"`) carry the safety fact and provenance;
+   `SnapshotStats` gains `redactedCount`. The render marker is emitted **only** for `Source == Rule`.
+6. **Three pre-existing defects are fixed here:** DEF-1 the pixel path fails open; DEF-2 full-desktop
+   capture masks nothing; DEF-3 the redaction token is a locator oracle.
+7. **The guarantee** is a Roslyn source sweep asserting every read of a content-bearing property in
+   `src/` occurs inside one of two closed lists — egress accessors (which return the already-redacted
+   string) or identity readers (which read raw). A census (§7.2.1) is task zero and produces both lists.
+   The guarantee defeats *forgetting*, not malice, and no syntactic sweep closes the class perfectly.
+8. **Operator tooling:** `flaui-mcp check-redaction-rules` validates and dry-runs against a live window,
+   always printing results, with exit codes 0/1/3/4/5. A bad config refuses server start.
+9. **The default path** (no rules) changes only additively, and the render stays byte-identical (§4.4).
+10. **Parallel surfaces** in §11 change with this work, not after it.
+
 ## 1. Goal
 
 Guarantee that a sensitive field's text never reaches the wire, across **every** egress path, **without
