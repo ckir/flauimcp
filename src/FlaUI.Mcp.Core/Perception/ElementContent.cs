@@ -32,16 +32,20 @@ public static class ElementContent
     public static Read Name(AutomationElement el, SensitivityClassifier classifier, string? processName)
     {
         string raw = Safe(() => el.Name, out bool absent);
-        var s = Classify(el, classifier, processName, raw); // Name already has it — don't re-read it
+        var (s, _) = Classify(el, classifier, processName, raw); // Name already has it — don't re-read it
         return new Read(s.Redact ? RedactedToken : raw, s) { RawForIdentity = raw, Absent = absent };
     }
 
     public static Read Value(AutomationElement el, SensitivityClassifier classifier, string? processName)
     {
-        var s = Classify(el, classifier, processName);
+        var (s, readName) = Classify(el, classifier, processName);
         if (s.Redact) return new Read(RedactedToken, s) { RawForIdentity = string.Empty };
         string raw = Safe(() => el.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault ?? string.Empty);
-        if (raw.Length == 0) raw = Safe(() => el.Name);
+        // Reuse the name a RULE already read rather than reading it a second time. Two reads of a live
+        // element are a redaction BYPASS, not just waste: if the name mutates in between, the rule matches
+        // the OLD value and this fallback puts the NEW one on the wire unredacted. Still lazy — with no
+        // rules readName is null and this reads exactly once, as it always did.
+        if (raw.Length == 0) raw = readName ?? Safe(() => el.Name);
         return new Read(raw, s) { RawForIdentity = raw };
     }
 
@@ -56,7 +60,7 @@ public static class ElementContent
     public static Read Text(AutomationElement el, SensitivityClassifier classifier, string? processName,
                             Func<string> readText)
     {
-        var s = Classify(el, classifier, processName);
+        var (s, _) = Classify(el, classifier, processName);
         if (s.Redact) return new Read(RedactedToken, s) { RawForIdentity = string.Empty };
         string raw = readText() ?? string.Empty;
         return new Read(raw, s) { RawForIdentity = raw };
@@ -73,17 +77,30 @@ public static class ElementContent
     /// and that is not a regression: every site this type replaced allocated the same one.
     ///
     /// <paramref name="alreadyReadName"/> lets a caller that has ALREADY read the name hand it over
-    /// rather than have a rule read it a second time. Null means "read it lazily, only if a rule asks".</summary>
-    private static Sensitivity Classify(AutomationElement el, SensitivityClassifier classifier,
-                                        string? processName, string? alreadyReadName = null)
+    /// rather than have a rule read it a second time. Null means "read it lazily, only if a rule asks".
+    ///
+    /// ⚠ The thunks MEMOIZE. RedactionRule.Matches calls the automationId thunk up to TWICE and the name
+    /// thunk once — PER RULE — and MaxRules is 64, so an unmemoized thunk costs up to ~192 COM reads on a
+    /// single element. Worse than the cost: re-reading a LIVE element means rule 1 and rule 40 can see
+    /// different values, and an element that mutates mid-classification can slip past every rule that
+    /// would have matched it. One read per property per classification is a correctness property.
+    ///
+    /// Returns the name it ended up reading (null if nothing asked for it) so a caller that also needs
+    /// the name can reuse it instead of opening the same two-read window again.</summary>
+    private static (Sensitivity Sensitivity, string? ReadName) Classify(
+        AutomationElement el, SensitivityClassifier classifier,
+        string? processName, string? alreadyReadName = null)
     {
         if (!classifier.HasRules)
-            return RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault)
-                ? Sensitivity.OsPassword : Sensitivity.Visible;
-        return classifier.Classify(processName,
-            () => Safe(() => el.Properties.AutomationId.ValueOrDefault),
-            () => alreadyReadName ?? Safe(() => el.Name),
+            return (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault)
+                ? Sensitivity.OsPassword : Sensitivity.Visible, alreadyReadName);
+
+        string? memoAid = null, memoName = alreadyReadName;
+        var s = classifier.Classify(processName,
+            () => memoAid ??= Safe(() => el.Properties.AutomationId.ValueOrDefault),
+            () => memoName ??= Safe(() => el.Name),
             () => el.Properties.IsPassword.ValueOrDefault);
+        return (s, memoName);
     }
 
     private static string Safe(Func<string?> read)

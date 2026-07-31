@@ -47,6 +47,41 @@ public class RestoreTargetPartitionTests
         Assert.Equal(0, r.SelectIndex);
     }
 
+    /// FACT 5 — the SAME oracle in the OTHER direction, and the one facts 1-4 all miss. Here the tab being
+    /// restored is HIDDEN and the decoy is VISIBLE — an attacker titling their own tab to match a protected
+    /// one. Facts 2 and 3 only ever pit a hidden target against other hidden tabs, so an implementation that
+    /// applies the mask ONLY when the recorded tab is Visible passes all four of them while leaving exactly
+    /// this attack open. Found by an AGY-CAPSTONE round; verified by tracing that broken variant against
+    /// facts 1-4 before folding it.
+    [Fact]
+    public void A_visible_decoy_cannot_collide_with_a_REDACTED_target()
+    {
+        var r = RestoreTarget.Resolve("Secret", recordedOrdinal: 0, wasTitleUnique: true,
+            freshTitles: new[] { "Secret", "Secret" },
+            freshSensitivities: new[] { Hidden, Sensitivity.Visible },
+            recordedSensitivity: Hidden);
+        Assert.Equal("high", r.Confidence);
+        Assert.Equal(0, r.SelectIndex);
+    }
+
+    /// FACT 6 — a mask of the WRONG LENGTH is ignored WHOLESALE rather than half-applied. A partly-applied
+    /// mask produces wrong-but-plausible confidences, which is harder to notice than no partition at all.
+    ///
+    /// ⚠ The mask entry here must EXCLUDE index 0, or the fact cannot fail: with a mask of {Visible} both
+    /// the correct implementation and one that guards with `i < mask.Count` return the same answer. With
+    /// {Hidden}, the half-applying implementation skips index 0, matches index 1 uniquely and reports
+    /// high/1 — while the correct one compares both, finds two, and falls back to ordinal.
+    [Fact]
+    public void A_mask_of_the_wrong_length_is_ignored_wholesale_not_half_applied()
+    {
+        var r = RestoreTarget.Resolve("Guess", 0, wasTitleUnique: true,
+            new[] { "Guess", "Guess" },
+            new[] { Hidden },                // one short, and it would exclude index 0
+            Sensitivity.Visible);
+        Assert.Equal("reduced", r.Confidence);  // pre-SP3 behaviour: both compared, so not unique
+        Assert.Equal(0, r.SelectIndex);
+    }
+
     /// FACT 4 — INDEX ALIGNMENT. This is the fact that catches a filtered-list implementation: it returns
     /// 0 here and silently restores the WRONG tab. Facts 1-3 all pass on that broken implementation.
     [Fact]
