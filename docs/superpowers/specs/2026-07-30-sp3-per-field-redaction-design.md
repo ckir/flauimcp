@@ -10,6 +10,13 @@ rejected alternatives — retained deliberately so nobody re-proposes a design n
 but not required to implement. Where a later section carries a "⚠ an earlier draft" note, this summary
 already reflects the correction.*
 
+0. **Two binding constraints govern everything below** (full statement in §9, and neither is negotiable).
+   **BC-1:** redaction is strictly an egress transformation — the **stored descriptor stays RAW**, because
+   `RefRegistry` uses Name+ControlType as a ref's identity when `AutomationId` is absent and compares it
+   on the cached fast path; redacting it makes exactly the controls being protected permanently
+   unresolvable, which is why ROADMAP item 7 was retired as invalid. **BC-2:** over-redaction is a real
+   cost, not a cosmetic one — a false positive blinds the agent, and it cannot distinguish an empty field
+   from a hidden one. Most of the conservatism below is paying down BC-2.
 1. **One classifier.** `SensitivityClassifier.Classify(processName, Func<automationId>, Func<rawName>,
    Func<isPassword>) → Sensitivity(Redact, Source, RuleName)`. OS `IsPassword` wins and is always on;
    operator rules are consulted only if it does not fire. Immutable after load, thread-safe, no hot
@@ -23,6 +30,10 @@ already reflects the correction.*
 3. **Classification happens once per unit of work** — per snapshot walk at node build (`SnapshotNode`
    carries `Sensitivity`), per operation for single-element reads, per event in the watch pump — and
    **never per node**. Process name is resolved at that same scope.
+   ⚠ **The assumption that a window's UIA tree is process-homogeneous is UNVERIFIED and MUST be measured
+   before the hoist ships** (§4.1) — an embedded cross-process HWND (WebView2/CEF) may break it, in which
+   case process name is resolved per HWND boundary instead. Do not ship the hoist on the strength of the
+   existing code comment.
 4. **Four egress families apply it** (§3.1): JSON payloads, the rendered snapshot text, the pixel mask
    rects, and the three name-matching paths, where a redacted element is excluded from name matching
    entirely rather than the query being filtered.
@@ -35,6 +46,10 @@ already reflects the correction.*
    `src/` occurs inside one of two closed lists — egress accessors (which return the already-redacted
    string) or identity readers (which read raw). A census (§7.2.1) is task zero and produces both lists.
    The guarantee defeats *forgetting*, not malice, and no syntactic sweep closes the class perfectly.
+   **`dynamic` is banned in `src/`** (a runtime-bound receiver is invisible to a `SemanticModel`; measured
+   zero uses today), and so is any member that takes a caller-supplied UIA property id and forwards it to
+   a generic accessor — that shape is a universal bypass. The legacy twelve-entry inventory (§7.2.2) is a
+   one-time **migration checklist**, ticked to empty and then deleted; it is not the guarantee.
 8. **Operator tooling:** `flaui-mcp check-redaction-rules` validates and dry-runs against a live window,
    always printing results, with exit codes 0/1/3/4/5. A bad config refuses server start.
 9. **The default path** (no rules) changes only additively, and the render stays byte-identical (§4.4).
@@ -238,6 +253,14 @@ rules path instead. Stated precisely, because a regression here hits everyone.
 | `SnapshotStats` gains `redactedCount` | additive; the existing password counter is untouched |
 | The server writes a per-instance state file at boot (§5.5) | needed for the CLI's no-server detection; no rules required |
 
+⚠ **The server prunes stale instance files at its OWN boot** — it must, and an earlier draft left pruning
+solely to the CLI. A `<pid>.json` is deleted on clean shutdown, but MCP servers are routinely hard-killed,
+and a **default-path operator never runs the CLI at all**, so nothing would ever collect the orphans:
+every killed session would leak a file into `%LOCALAPPDATA%` forever, on the 99% of installs that use no
+rules. The server is already writing to that directory at boot, so it applies the same positive-proof-of-
+death rule (§5.5) to its neighbours while it is there. It prunes only what it can prove dead, never on an
+access-denied read.
+
 **Changes on the default path that are NOT acceptable, and are hereby excluded:**
 
 - **The snapshot RENDER must stay byte-identical when no rules are configured.** §5.3 gives B1 a
@@ -249,6 +272,14 @@ rules path instead. Stated precisely, because a regression here hits everyone.
   is the case that is otherwise undebuggable (§5.5).
 - **No new per-node cost, and no new COM reads.** `SensitivityClassifier.OsOnly` short-circuits to the
   `IsPassword` check with no rule iteration and no allocation.
+  ⚠ **Laziness alone is NOT free, and "allocates nothing" was an overclaim.** Passing
+  `() => el.Properties.AutomationId.ValueOrDefault` instantiates a delegate and heap-allocates a closure
+  capturing `el` — **unconditionally, on every egress call, before `Classify` even runs**. Deferring the
+  COM read while allocating two objects per read is not a zero-cost default path.
+  **Therefore the classifier exposes `bool HasRules`, and the accessors check it FIRST.** When it is
+  false (every zero-rule install) the accessor performs only the `IsPassword` check and **constructs no
+  delegates at all**; `Classify` is not called. The lazy signature governs the rules-loaded path, where
+  the thunks are worth their allocation because they may avoid a COM read.
   ⚠ **This is why `Classify` takes `automationId`/`rawName` as `Func<string?>` and not as strings.** On
   the snapshot walk both are already materialised (the node needs them), so laziness costs nothing
   there — but families A and C read a *single* element, where `automationId` and `Name` are **not**
@@ -362,6 +393,15 @@ Corrected:
    (a timeout, a COM fault), never for a well-defined absent value.
 3. The rule's AND then applies normally. A rule with a definitively-false predicate does **not** match,
    whatever another predicate did.
+
+**A panel round called step 3 a hole in fail-closed; it is not, and the reasoning is recorded because it
+is non-obvious.** The objection: if `automationIdPattern` throws (→ `true`) while `namePattern` evaluates
+a benign name to `false`, the AND is `false` and the element is left unredacted despite a failure. That
+is **correct behaviour**, because the outcome is *determinate*: a determinate `false` makes the whole AND
+`false` regardless of what the throwing predicate would have returned. Fail-closed exists to resolve
+*uncertainty*, and here there is none — the rule provably does not describe this element. Redacting anyway
+would mean any rule containing one fragile pattern redacts elements it explicitly excludes, which is BC-2
+damage bought for no security gain.
 
 Both properties hold simultaneously: no leak from a failed evaluation, and no rule firing on an element
 it explicitly does not describe. Rationale: this mirrors `RedactionPolicy`'s per-read fail-closed
@@ -624,13 +664,23 @@ Required, and not optional given that the whole point of §5.5 is operator confi
    live, which is the precise false confidence §5.5 exists to prevent. On an access-denied or otherwise
    unreadable check the CLI exits **`4`** and reports the unknown.
 
-   ⚠ **An INACCESSIBLE state file is pruned, not escalated — otherwise this becomes a permanent
-   automation outage.** If a server is hard-killed its `<pid>.json` is orphaned; should the OS then
-   recycle that PID onto an elevated system process, an access-denied start-time read would make the CLI
-   exit `4` on **every future invocation**, failing any deployment gate until a human deletes the file by
-   hand. So: a state file whose process cannot be inspected is treated as **not a flaui-mcp instance** —
-   ignored and pruned — and only a file we can positively confirm belongs to a live server counts. Exit
-   `4` is reserved for the case where a server IS confirmed live but its rule state cannot be read.
+   ⚠⚠ **Pruning is allowed ONLY on positive proof of death. An earlier draft pruned anything
+   uninspectable, which is DESTRUCTIVE across a privilege boundary:** this server commonly runs elevated,
+   so a non-elevated operator CLI gets access-denied reading its start time — and would then **delete the
+   healthy elevated server's own state file**, silently degrading the system to a permanent "no server is
+   running" for every later invocation, including elevated ones. A diagnostic tool must never destroy the
+   state it is diagnosing.
+
+   | Observation | Action |
+   |---|---|
+   | PID does not exist at all | orphan — **prune** |
+   | PID exists, start time readable, does not match | recycled PID — **prune** |
+   | PID exists, start time **unreadable** (access denied) | **cannot determine — do NOT prune, do NOT report "no server"**; exit `4` |
+
+   This also answers the earlier concern that drove the over-broad pruning (a recycled PID owned by an
+   elevated system process pinning the CLI at exit `4` forever): the exit-`4` message names the suspect
+   file and points at **`--prune-stale`**, an explicit operator action. A human clearing state
+   deliberately is fine; a diagnostic silently deleting a live server's file is not.
 
    ⚠ **Exit `4` has two causes and they need DIFFERENT messages** — an earlier draft gave both the same
    "retry from an elevated terminal" text, which sends an operator hitting a version skew to debug a
@@ -796,6 +846,16 @@ member on the pinned list. The swept properties are the leak surface itself:
   Where the argument is **not** statically resolvable (a variable, a computed id), the sweep **fails** and
   requires an explicit, reasoned suppression at the call site. Unresolvable is treated as unsafe, so the
   escape hatch is visible in review rather than silent.
+
+  ⚠⚠ **A suppression must not be WIDENABLE into a universal accessor — the seventh bypass found in
+  review.** One suppressed helper defeats the whole architecture:
+  `object GetProp(AutomationElement el, PropertyId id) => el.GetCurrentPropertyValue(id);` — its `id` is a
+  parameter, so it is unresolvable, so it gets a suppression; thereafter any file can call
+  `GetProp(el, AutomationElement.NameProperty)`, which is not a FlaUI call and is therefore never swept.
+  **Closed by banning the passthrough shape itself: outside the two lists, `src/` may not declare a member
+  that takes a UIA property-id-typed parameter and forwards it to a generic accessor.** A suppression is
+  per-call-site and must name the resolved property in its justification; a suppression on a member whose
+  property is caller-supplied is rejected outright, because that member IS the bypass.
 
 **⚠ A GROWABLE per-site list plus a "contains a call" check is still theater, and this is the second
 time that shape failed review.** A developer who forgets can turn the test green by appending their
