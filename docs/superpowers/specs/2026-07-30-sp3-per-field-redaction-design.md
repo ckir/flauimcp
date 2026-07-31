@@ -184,8 +184,47 @@ either would blind the agent to unrelated UI across the whole desktop.
 
 ### 4.3 Default posture
 
-**Off by default.** With no rules configured the classifier is behaviourally identical to today
-(`IsPassword` only). No existing deployment changes behaviour until an operator writes a rule file.
+**Off by default.** With no rules configured the classifier consults `IsPassword` only.
+
+### 4.4 The default path — what SP3 changes for an install with NO rules
+
+⚠ **§4.3 previously claimed "no existing deployment changes behaviour until an operator writes a rule
+file". That is FALSE as the spec now stands**, and it matters more than any rules-path defect: rules are
+opt-in, so the overwhelming majority of installs run this path, and every prior review round examined the
+rules path instead. Stated precisely, because a regression here hits everyone.
+
+**Changes on the default path, intended and accepted:**
+
+| Change | Why it is acceptable |
+|---|---|
+| JSON payloads for an OS password field gain `redacted: true` and `redactedBy: "os"` | purely additive fields; no existing key changes value or disappears (§5.3) |
+| `SnapshotStats` gains `redactedCount` | additive; the existing password counter is untouched |
+| The server writes a per-instance state file at boot (§5.5) | needed for the CLI's no-server detection; no rules required |
+
+**Changes on the default path that are NOT acceptable, and are hereby excluded:**
+
+- **The snapshot RENDER must stay byte-identical when no rules are configured.** §5.3 gives B1 a
+  `redacted:os` / `redacted:rule:<name>` marker in the bracketed state list — but emitting `redacted:os`
+  would alter the rendered line of **every password field in every existing install**, and the render is
+  matched by shipped tests and read by agents trained on the current shape. **Corrected: the marker is
+  emitted ONLY when `Source == Rule`.** `os` provenance is already carried by the `[REDACTED]` name plus
+  the existing `isPassword` field, so the marker adds nothing there — it exists to name the *rule*, which
+  is the case that is otherwise undebuggable (§5.5).
+- **No new per-node cost, and no new COM reads.** `SensitivityClassifier.OsOnly` short-circuits to the
+  `IsPassword` check with no rule iteration and no allocation.
+  ⚠ **This is why `Classify` takes `automationId`/`rawName` as `Func<string?>` and not as strings.** On
+  the snapshot walk both are already materialised (the node needs them), so laziness costs nothing
+  there — but families A and C read a *single* element, where `automationId` and `Name` are **not**
+  otherwise needed. Eager parameters would impose two blocking COM reads on **every grid-cell read, text
+  read and verification read-back, on every default install**, to feed a classifier that ignores them
+  when no rules are loaded. Lazy thunks make the zero-rule path pay literally nothing.
+- The plan must measure the **zero-rule** walk against today's baseline and show no regression — the
+  §4.1 measurement covers only the loaded-rules case.
+
+**The plan carries a default-path regression gate:** the full Desktop suite and the headless suite both
+run with **no rule file configured** — which is how they run today — and must be green with no test
+edited to accommodate SP3. A test that needs changing on the default path is a behaviour change that
+belongs in the table above or must be designed out.
 
 ## 5. Contracts (concrete — no part of this is left to the plan)
 
@@ -246,7 +285,8 @@ public sealed class SensitivityClassifier
     public static SensitivityClassifier Load(string path);   // throws RedactionConfigException
 
     /// readIsPassword is a thunk so the OS check stays fail-closed and is evaluated FIRST.
-    public Sensitivity Classify(string? processName, string? automationId, string? rawName,
+    // Name/automationId are LAZY. See the default-path note below — this is not a style choice.
+    public Sensitivity Classify(string? processName, Func<string?> automationId, Func<string?> rawName,
                                 Func<bool> readIsPassword);
 }
 ```
@@ -547,6 +587,14 @@ Required, and not optional given that the whole point of §5.5 is operator confi
    live, which is the precise false confidence §5.5 exists to prevent. On an access-denied or otherwise
    unreadable check the CLI exits **`4`** and reports the unknown.
 
+   ⚠ **An INACCESSIBLE state file is pruned, not escalated — otherwise this becomes a permanent
+   automation outage.** If a server is hard-killed its `<pid>.json` is orphaned; should the OS then
+   recycle that PID onto an elevated system process, an access-denied start-time read would make the CLI
+   exit `4` on **every future invocation**, failing any deployment gate until a human deletes the file by
+   hand. So: a state file whose process cannot be inspected is treated as **not a flaui-mcp instance** —
+   ignored and pruned — and only a file we can positively confirm belongs to a live server counts. Exit
+   `4` is reserved for the case where a server IS confirmed live but its rule state cannot be read.
+
    ⚠ **Exit `4` has two causes and they need DIFFERENT messages** — an earlier draft gave both the same
    "retry from an elevated terminal" text, which sends an operator hitting a version skew to debug a
    permission problem they do not have:
@@ -602,6 +650,15 @@ root:** every one of these paths already resolves a `WindowHandle` and runs insi
 **once per operation** by the same `SafeProcessName` the denylist already calls there
 (`PerceptionManager.cs:290`, `:436`, `:489`, `:805`). "Once per walk" (§4.1) and "once per operation" are
 the same rule stated for the two shapes of work; neither is ever per-node.
+
+⚠ **The watch pump (A4) is neither, and "every one of these paths" was too strong.** `WatchPump` runs on
+its own event thread and does not go through those orchestrators. A panel round argued this forces a
+per-event process read and "severe blocking COM latency on the global event pump" — **partly refuted by
+measurement: that read already exists.** `WatchPump.cs:207` already calls `SafeProcessName(target)` on
+**every event**, feeding the denylist check at `:208`. So A4 resolves its process name **once per event**,
+reusing the value already computed at `:207` — **zero additional COM reads**, and the classifier call
+simply moves below that existing line. The invariant is therefore "once per unit of work, never per
+node", where the unit is a walk, an operation, or an event.
 
 **Existing consumers of the removed member:** `PerceptionManager.cs:797` (`Tally`, the `snapshot_stats`
 password count) reads `n.IsPassword` and must move to `n.Sensitivity.Source == RedactionSource.Os` to
@@ -675,6 +732,12 @@ member on the pinned list. The swept properties are the leak surface itself:
 - **`ITextRange.GetText(...)` by METHOD, not by receiver expression.** ⚠ Naming
   `TextPattern.DocumentRange.GetText` alone — as an earlier draft did — is the **fifth** bypass found in
   review: a range obtained from `GetSelection()`, `GetVisibleRanges()` or `RangeFromPoint()` reaches the
+  ⚠ **`dynamic` is banned in `src/` for the same reason** — a `dynamic` receiver binds at runtime, so a
+  Roslyn `SemanticModel` cannot resolve the symbol and the read would be invisible to the sweep whatever
+  method it names. **Measured: `src/` contains ZERO uses of `dynamic` today**, so the ban costs nothing
+  and only forecloses a future bypass. The sweep fails on any `dynamic` in `src/`.
+  Naming only the `DocumentRange` form leaves the gap because a range obtained from `GetSelection()`,
+  `GetVisibleRanges()` or `RangeFromPoint()` reaches the
   same text while matching none of that syntax, and this repo already reads a selection range
   (`ReadText`'s `selectionOnly` path). The sweep matches the **method on the range type**, whatever
   produced the range.
@@ -836,6 +899,13 @@ Corrected — the twelve-entry list of §3.1 is a **migration checklist, used on
 1. **Before migration:** the list asserts the pre-SP3 state, so nobody starts from a wrong inventory.
 2. **During migration:** each entry is ticked off as its site moves to the classifier. The list reaching
    empty is the completeness check that no legacy site was missed — which is the one job it is good at.
+
+   ⚠ **Ticking an entry must NOT be verified by "the member contains a `Classify` call".** An earlier
+   draft said exactly that, re-introducing the lexical check §7.2 rejects — a dead `Classify(...)` whose
+   result is discarded would mark a still-leaking site migrated. **An entry is ticked when the member no
+   longer contains the legacy literal AND the member appears in the census's egress or identity
+   classification (§7.2.1).** The real guarantee is the read-allowlist; this checklist only proves
+   nothing was *forgotten*, and it must not pretend to prove correctness.
 3. **After migration:** the legacy assertion is **deleted**, and the permanent pin is the post-SP3
    inventory: the fixed accessor set, `SnapshotEngine`'s node builder, and the D-family node reads.
 
