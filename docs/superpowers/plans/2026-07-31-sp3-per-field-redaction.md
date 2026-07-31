@@ -342,8 +342,14 @@ public sealed class SensitivityClassifier
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~SensitivityClassifierTests"`
-Expected: PASS, 10/10. (`RedactionRule.Matches` lands in Task 3; if it is not yet written this task's
-tests will not compile — write Task 3's `RedactionRule` record first if executing strictly in order.)
+Expected: PASS, 11/11.
+
+⚠ **The `RedactionRule` RECORD belongs to THIS task, not Task 3.** An earlier draft put it in Task 3 and
+told the agent to reach forward — a real ordering hazard, since this task cannot compile without it.
+Create `src/FlaUI.Mcp.Core/Perception/RedactionRules.cs` here containing **only** `RedactionRule`
+(the class shown in Task 3 Step 3, its constructor, `Compile`, `Matches`, `Safe`, `IsMatch`).
+Task 3 then adds `RedactionConfigException`, the DTOs and `RedactionRuleFile` to the same file.
+Neither task reaches forward.
 
 - [ ] **Step 6: Commit**
 
@@ -451,7 +457,11 @@ public class RedactionRuleLoaderTests : IDisposable
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~RedactionRuleLoaderTests"`
 Expected: FAIL — `RedactionRuleFile` / `RedactionConfigException` do not exist.
 
-- [ ] **Step 3: Implement `RedactionRules.cs`**
+- [ ] **Step 3: Implement the loader in `RedactionRules.cs`**
+
+⚠ `RedactionRule` itself was created in **Task 2**. Add only `RedactionConfigException`, `RuleDto`,
+`RuleFileDto` and `RedactionRuleFile` to that existing file — the full listing below shows the whole file
+for context, so do not paste a second copy of `RedactionRule`.
 
 ```csharp
 using System;
@@ -924,6 +934,62 @@ git commit -m "feat(sp3): --redaction-rules, refuse-to-start, per-instance state
 
 ---
 
+## Task 4b — Thread the classifier through the object graph (do this BEFORE any consumer)
+
+⚠ **This task exists because an earlier draft of this plan assumed the classifier was simply "in scope" at
+every consumer, and it is not.** `SnapshotEngine` is static, `VerifyReader.FromElement` is `public
+static`, and `WatchPump` builds its own reader. A review found the gap in three places at once; the fix is
+one coherent task, done first, so Tasks 5–9 can consume the dependency instead of inventing it.
+
+**All four signatures below were verified at `9c7588e`.**
+
+**Files:** `Program.cs`; `Perception/PerceptionManager.cs:31`; `Perception/SnapshotEngine.cs:34`;
+`Watch/WatchService.cs:37`; `Watch/WatchPump.cs:43`; `Interaction/VerifyReader.cs:22`;
+`Server/Tools/InputTools.cs:182,:232,:301,:323`.
+
+- [ ] **Step 1: Register the singleton** — already added in Task 4 Step 6
+      (`builder.Services.AddSingleton(classifier);`). Confirm it is there before continuing.
+
+- [ ] **Step 2: Constructor injection where a constructor exists**
+
+| Type | Current | Change |
+|---|---|---|
+| `PerceptionManager` | `:31` `public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache …)` | **append** `SensitivityClassifier classifier`; store in a readonly field |
+| `WatchService` | `:37` `public WatchService(` (multi-line) | **append** `SensitivityClassifier classifier`; pass to the pump |
+| `WatchPump` | `:43` `public WatchPump(` (multi-line) | **append** `SensitivityClassifier classifier`; store for `LiveEventSourceReader` |
+
+**Append, never reorder** — these are resolved by DI, and reordering silently rebinds arguments.
+
+- [ ] **Step 3: Parameter threading where the member is STATIC**
+
+- `SnapshotEngine.Build` (`:34`, `public static SnapshotModel Build(`): **append**
+  `SensitivityClassifier classifier` and `string? processName`, and thread both down into the private
+  `Visit` local function that reads properties at `:73-96`. `BuildModelAsync` in `PerceptionManager`
+  is the only caller and now holds both — the process name is resolved **once per walk** there.
+- `VerifyReader.FromElement` (`:22`, `public static VerifyRead FromElement(AutomationElement el, bool
+  readCapability = false)`): change to
+  `FromElement(AutomationElement el, SensitivityClassifier classifier, string? processName, bool readCapability = false)`.
+  **It has exactly FOUR callers, all in `Server/Tools/InputTools.cs` — `:182`, `:232`, `:301`, `:323`**
+  (verified). `InputTools` already holds a `PerceptionManager` (`_p`), so expose the classifier from it
+  (`internal SensitivityClassifier Classifier => _classifier;`) rather than adding a second DI parameter
+  to the tool class.
+
+- [ ] **Step 4: Build — expect 0 errors, 0 warnings, and NO behaviour change**
+
+Run: `dotnet build FlaUI.Mcp.slnx -c Release`
+Then: `dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: **805 passed / 0 skipped**, unchanged from Task 4. Nothing consumes the classifier yet; this
+task only makes it reachable. A changed count here means a behaviour change slipped in — revert and redo.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs src/FlaUI.Mcp.Core/Perception/SnapshotEngine.cs src/FlaUI.Mcp.Core/Watch/WatchService.cs src/FlaUI.Mcp.Core/Watch/WatchPump.cs src/FlaUI.Mcp.Core/Interaction/VerifyReader.cs src/FlaUI.Mcp.Server/Tools/InputTools.cs
+git commit -m "refactor(sp3): thread the classifier to every consumer — no behaviour change"
+```
+
+---
+
 ## Task 5 — Classify at node build; `SnapshotNode` carries `Sensitivity`
 
 ⚠ **`SnapshotNode` is a POSITIONAL record** (`SnapshotNode.cs:11-27`) with `bool IsPassword` at
@@ -1040,8 +1106,19 @@ grep -rn "IsPassword" src test --include=*.cs
 ```
 
 For each hit that reads a `SnapshotNode`, substitute the exact equivalent of today's semantics:
-`n.IsPassword` → `n.Sensitivity.Redact`. Do **not** add rule handling here — that is each later task's
-job. The commit at Step 8 must build clean and change no behaviour.
+
+```csharp
+n.IsPassword   →   n.Sensitivity.Source == RedactionSource.Os
+```
+
+⚠ **Map to `Source == Os`, NOT to `.Redact` — and this is not pedantry, it is what keeps every later pin
+honest.** `.Redact` is also true for a *rule* redaction, so using it here would silently implement Tasks
+7 and 9 as a side effect of a compile fix. Their tests would then pass **with their implementation step
+omitted** — a vacuous pin, and this repo has shipped two of those already. `Source == Os` reproduces
+today's behaviour exactly, so each later task's switch to `.Redact` is a real behaviour change that its
+own test catches.
+
+Do **not** add rule handling here. The commit at Step 8 must build clean and change no behaviour.
 
 Run: `dotnet build FlaUI.Mcp.slnx -c Release` — fix each remaining compile error by passing a `Sensitivity`.
 Then: `dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
@@ -1148,7 +1225,7 @@ hid real signature and injection work. Site by site:
 | `PerceptionManager.cs:317` grid cell | `ElementContent.Value` | `PerceptionManager` takes the classifier as a **constructor dependency** (it is already a DI singleton, registered in `Program.cs`); `processName` comes from the operation root already resolved by `EnsureAllowed`/`SafeProcessName` on that path |
 | `PerceptionManager.cs:354` `ReadText` | `ElementContent.Text` | same; ⚠ `ReadText` is `private static` — add `SensitivityClassifier` and `string? processName` as parameters and pass them from both callers (`GetTextAsync`, `GetTextBySelectorAsync`) |
 | `PerceptionManager.cs:599` `find` | `ElementContent.Name` | same; pass `read.RawForIdentity` to the descriptor at `:606` — **BC-1, the descriptor keeps the RAW name** |
-| `WatchPayloadBuilder.cs:34` | via the reader | change `IEventSourceReader` (`WatchPayloadBuilder.cs:11-13`) to expose `Sensitivity Sensitivity` and an already-redacted `Name`, instead of `bool IsPassword` + a RAW `Name`. `LiveEventSourceReader` (`WatchPump.cs:227+`) holds the element, so it classifies — and it **reuses the `procName` already computed at `WatchPump.cs:207`** for the denylist check, so this costs **zero** additional COM reads. `NullEventSourceReader` (`WatchPump.cs:283`) returns `Sensitivity.Visible`. |
+| `WatchPayloadBuilder.cs:34` | via the reader | change `IEventSourceReader` (`WatchPayloadBuilder.cs:11-13`) to expose `Sensitivity Sensitivity` and an already-redacted `Name`, instead of `bool IsPassword` + a RAW `Name`. ⚠ **`LiveEventSourceReader` (`WatchPump.cs:227+`) must obtain both by calling `ElementContent.Name`, NOT by classifying itself.** An earlier draft said "it holds the element, so it classifies" — which would read `el.Name` **outside the closed egress list and fail Task 12's sweep**, since that sweep is the whole guarantee. It reuses the `procName` already computed at `WatchPump.cs:207` for the denylist check, so this costs **zero** additional COM reads, and takes the classifier from the `WatchPump` constructor (Task 4b). `NullEventSourceReader` (`WatchPump.cs:283`) returns `Sensitivity.Visible`. |
 | `VerifyReader.cs:24-25` | `ElementContent.Text` | ⚠ `VerifyReader.FromElement` is **`public static`** with no classifier in scope. Add two parameters: `FromElement(AutomationElement el, SensitivityClassifier classifier, string? processName, bool readCapability = false)`. Find and update every caller first: `grep -rn "VerifyReader.FromElement" src test --include=*.cs` |
 
 Keep each site's surrounding behaviour otherwise unchanged — this task is a refactor.
