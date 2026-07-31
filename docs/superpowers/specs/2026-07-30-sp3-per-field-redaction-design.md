@@ -273,6 +273,16 @@ Corrected:
    A false cheap predicate **short-circuits**, so the regex never runs — this is also what keeps the
    hot-path cost bounded in the common case (§4.1).
 2. An exception in a **single predicate** makes **that predicate** evaluate `true` (fail-closed).
+
+   ⚠ **An ABSENT value is not an exception, and conflating the two would have been catastrophic.**
+   `Regex.IsMatch(null, …)` throws `ArgumentNullException`, and a great many UIA elements legitimately
+   have a null `Name` or `AutomationId`. Under a naive reading of the rule above, every nameless element
+   in a rule's scoped process would throw, fail closed, and be **redacted** — a single `namePattern` rule
+   would blank most of the tree. That is BC-2's worst case, produced by the safety rule itself.
+   **Therefore: a null or absent value is normalised to the empty string BEFORE matching, and evaluates
+   the predicate normally** — `false` unless the pattern genuinely matches empty. A rule describing a
+   name cannot match an element that has no name. Fail-closed is reserved for *unexpected* failures
+   (a timeout, a COM fault), never for a well-defined absent value.
 3. The rule's AND then applies normally. A rule with a definitively-false predicate does **not** match,
    whatever another predicate did.
 
@@ -498,6 +508,12 @@ Required, and not optional given that the whole point of §5.5 is operator confi
    | `0` | rules valid, and identical to what the running server loaded — live |
    | `3` | rules valid, but the running server loaded something else — **restart to apply** |
    | `1` | rules invalid (the §5.4 rejections); the offending rule is named |
+   | `5` | rules valid; **no server is running** — a cold check, nothing to compare against |
+
+   ⚠ Exit `5` was missing from an earlier draft, which specified live-and-identical, live-and-mismatched,
+   unknown and invalid but left the **baseline** case undefined. That is the most common invocation of
+   all — an operator authoring rules before starting anything — and collapsing it into `0` would tell a
+   deployment gate the rules were live in a server that does not exist.
 
    A script can gate on `0`; a human iterating sees results plus a loud "not live yet" banner and keeps
    editing. Exit `3` is the honest middle state the earlier draft collapsed into a refusal.
@@ -576,8 +592,16 @@ and family D is where the *oracle* lives, so a gap there is not cosmetic. Decidi
 guarantees B1/B2/D1 cannot disagree with each other about the same node, which hand-written per-site
 checks can and (per §3.4) demonstrably do.
 
-The live-element families (A, C) classify at their own read, since no `SnapshotNode` exists there; they
-call the same `Classify` with the walk-hoisted `processName` (§4.1).
+The live-element families (A, C) classify at their own read, since no `SnapshotNode` exists there.
+
+⚠ **They cannot use a "walk-hoisted" `processName`, and an earlier draft said they could.** A grid-cell
+read, a `get_text`, a verification read-back and a capture all operate on a single target element or
+window — there is no walk, and so no walk root to hoist from. **The correct scope is the OPERATION
+root:** every one of these paths already resolves a `WindowHandle` and runs inside
+`RunWithWindowAndDesktopAsync`/`RunOnRefReadAsync`, so the owning window's process name is resolved
+**once per operation** by the same `SafeProcessName` the denylist already calls there
+(`PerceptionManager.cs:290`, `:436`, `:489`, `:805`). "Once per walk" (§4.1) and "once per operation" are
+the same rule stated for the two shapes of work; neither is ever per-node.
 
 **Existing consumers of the removed member:** `PerceptionManager.cs:797` (`Tally`, the `snapshot_stats`
 password count) reads `n.IsPassword` and must move to `n.Sensitivity.Source == RedactionSource.Os` to
@@ -611,9 +635,15 @@ here.** 48 of the 49 tools return `Task<string>` — already-serialized JSON —
   **not matchable** at D1–D4.
 - DEF-1: a throwing `IsPassword` read yields a mask rect (currently it does not).
 - DEF-2: full-desktop capture masks password rects.
-- **DEF-3 (§5.3), pinned on ALL THREE paths separately:** `find`, the selector post-filter, and
-  `wait_for by=name` each return **no match** for `name == "[REDACTED]"`. One fact per path — a single
-  aggregate test would let two of the three regress silently, which is §3.4's recurring failure shape.
+- **DEF-3 (§5.3), pinned on ALL THREE paths separately** — `find`, the selector post-filter, and
+  `wait_for by=name`. One fact per path; a single aggregate test would let two of the three regress
+  silently, which is §3.4's recurring failure shape. ⚠ **Each path needs BOTH halves, and an earlier
+  draft pinned only the first — in the wording of the REFUTED fix, contradicting §5.3:**
+  1. a **redacted** element is not returned by a name query, *whatever* string was searched (including
+     its real name and including the token);
+  2. an element **genuinely named `[REDACTED]` that is not redacted IS returned** — this is the half that
+     distinguishes the shipped design (filter results) from the rejected one (ban the query), and without
+     it the test would enforce the very blind spot §5.3 rejects.
 - **Match-time regex failure fails CLOSED** (§5.2): a rule whose predicate throws redacts the field.
 - **`isPassword` stays `false` for a rule-redacted field while `redacted` is `true`** (§5.3) — the
   collision resolution, pinned on both the grid-cell and get-text payloads.
@@ -655,8 +685,17 @@ member on the pinned list. The swept properties are the leak surface itself:
   AutomationElement.NameProperty)` reads exactly the same COM property while matching none of the
   strongly-typed accessor names above, so a Roslyn walk keyed on those names never sees it. The sweep
   therefore bans the generic accessors outright outside the fixed set, regardless of which property
-  literal they are passed — resolving the argument would require constant-folding, and a ban needs no
-  such analysis.
+  literal they are passed.
+
+  ⚠ **An outright ban was drafted and is too broad.** FlaUI does not wrap every UIA property — custom,
+  provider-specific and extended UIA3 properties are reachable *only* through the generic accessors, and
+  those are overwhelmingly structural, non-content reads. Banning the accessors outright would remove the
+  only route to legitimate extended metadata. **Corrected:** the sweep resolves the property argument
+  when it is a static field reference (`AutomationElement.NameProperty`, FlaUI's property-id constants),
+  which is the ordinary spelling and needs no constant-folding — and flags only the content-bearing ones.
+  Where the argument is **not** statically resolvable (a variable, a computed id), the sweep **fails** and
+  requires an explicit, reasoned suppression at the call site. Unresolvable is treated as unsafe, so the
+  escape hatch is visible in review rather than silent.
 
 **⚠ A GROWABLE per-site list plus a "contains a call" check is still theater, and this is the second
 time that shape failed review.** A developer who forgets can turn the test green by appending their
@@ -721,17 +760,20 @@ perfectly.** What bounds the residual risk instead of pretending it away:
 - §10's residual-risk statement governs: the guarantee is "every read of a property we know carries
   content is accounted for", which is strictly weaker than "no content can escape".
 
-- The swept properties may be read **only** inside a named, closed set of accessors (the family-A/C read
-  helpers and `SnapshotEngine`'s node builder). That set is pinned by name in the test.
+- The swept properties may be read **only** inside the two closed lists tabulated above — the egress
+  accessors (the family-A/C read helpers and `SnapshotEngine`'s node builder) **and** the identity
+  readers. ⚠ An earlier draft of this bullet named only the accessors, silently contradicting the split
+  it sits beneath. Both lists are pinned by name in the test.
 - **The accessors return the ALREADY-REDACTED string.** ⚠ An earlier draft said they return a
   "classification-carrying type" holding both raw and `Sensitivity` — which does not work: a developer
   who forgets calls the helper, receives the bag, and writes `return result.RawName;`. The classification
   was *computed* and never *applied*, and the leak ships under a green gate. Computing is not applying.
-- Raw access exists (identity paths need it — BC-1) but is a **separately named member** on the same
-  result, e.g. `RawForIdentity`, which is itself on the swept property list. Its only legitimate callers
-  are the descriptor/ref-resolution sites, which are few, pinned, and reviewed. A tool author reaching
-  for `RawForIdentity` to build a payload is doing something visibly wrong at the call site, and the
-  sweep flags it.
+- Raw access exists (identity paths need it — BC-1) in the **two forms tabulated above**, by what the
+  caller holds: `RawForIdentity` on an accessor's result when a live element is in hand, or the stored
+  record's raw `Name` when it is not. ⚠ An earlier draft of this bullet named only the first form and
+  read as if the two-forms table did not exist. Both forms are swept, and both have few, pinned,
+  reviewed callers. A tool author reaching for either to build a payload is doing something visibly
+  wrong at the call site, and the sweep flags it.
 - Net effect: the **easy** path — call the helper, return what it gave you — is the **safe** path. That
   is the property the previous two drafts lacked.
 - A new tool cannot read `el.Name` at all — the sweep fails — so it MUST go through a helper, and the
