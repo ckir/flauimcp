@@ -1581,8 +1581,43 @@ The sweep asserts, over `src/**/*.cs` parsed with Roslyn:
    registered singleton in preference to the parameter default, so `AddSingleton<PerceptionManager>()`
    supplies the real classifier without naming it. Do not "fix" those by hand-constructing.
 
-   ⚠ **MUTATION-VERIFY this rule too** (Step 4): delete the `classifier` argument from one `src/` call to
-   `SnapshotEngine.Build` and confirm the sweep fails naming it, then restore it and rebuild.
+   ⚠ **"Is the argument present?" is NOT SUFFICIENT — it is bypassable, and the bypass is easy.** A `src/`
+   method can declare its OWN `SensitivityClassifier? classifier = null` parameter, omit it at its own call
+   site, and forward that null down to `SnapshotEngine.Build`. The leaf call then *has* an argument, the
+   syntactic check passes, and the value is null at runtime. So the rule has **three** parts:
+
+   (i) every `src/` call site passes the argument explicitly;
+   (ii) **no `src/` member other than the three sanctioned ones may DECLARE a `SensitivityClassifier`
+        parameter with a `= null` default** — the sanctioned three are `PerceptionManager`'s constructor,
+        `WatchPump`'s constructor and `SnapshotEngine.Build`, and they are optional only to keep ~35
+        pre-existing test constructions compiling. Any fourth is the forwarding bypass;
+   (iii) no `src/` call site passes a **literal `null`** as the classifier argument.
+
+   ⚠ **MUTATION-VERIFY all three** (Step 4): delete the `classifier` argument from one `src/` call to
+   `SnapshotEngine.Build`; add a fourth `src/` method declaring `SensitivityClassifier? c = null`; pass a
+   literal `null` at one call site. Confirm the sweep fails naming each, then revert all three and rebuild
+   (⚠ `--no-build` runs deleted tests from a stale DLL).
+
+4c. ⚠ **PIN THE DI ASSUMPTION — do not leave it as anyone's reasoning.** The exemption in 4b rests on the
+   claim that Microsoft DI injects a *registered* service into a constructor parameter that carries a
+   default, rather than using the default. If that claim is false, production runs with **no operator rules
+   at all** and the entire feature is inert while every test still passes.
+
+   Add a **headless** fact (it needs no window — just a `ServiceCollection`): register a
+   `SensitivityClassifier` built from one recognisable rule, register `PerceptionManager` and its
+   dependencies, resolve `PerceptionManager` from the provider, and assert its `Classifier` **is the
+   registered instance** — `Assert.Same(registered, resolved.Classifier)` — and specifically **not**
+   `SensitivityClassifier.OsOnly`. `Assert.Same`, not `Assert.True(HasRules)`: identity is the claim.
+
+   This converts a load-bearing assumption into a regression test, and it fails loudly if a future DI
+   version changes the resolution rule.
+
+   ⚠ **REJECTED alternative — a `[CallerFilePath]` runtime guard** that throws when the caller's path does
+   not contain `"test"`. It was proposed and refused for three reasons: the discriminator is a substring
+   match on a file path, so any `src/` path containing the letters `test` (`Latest…`, `TestApp…`) silently
+   *skips* the guard — a false negative in the failure-open direction; it throws at construction time
+   rather than at build time, so a rarely-constructed type ships broken; and `[CallerFilePath]` bakes
+   build-machine absolute paths into the binary. Do not reintroduce it.
 5. The repo root is located by walking up from `AppContext.BaseDirectory` to the first directory
    containing **`FlaUI.Mcp.slnx`**, and **fails loudly** if not found — a sweep that silently matches
    zero files is the false-GREEN this whole task exists to prevent.
