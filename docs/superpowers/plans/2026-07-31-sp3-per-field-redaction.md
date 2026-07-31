@@ -1221,6 +1221,61 @@ and ships the leak under a green gate. Raw access is a **separately named** memb
 > The spec is frozen at `9c7588e`; this amendment is recorded here because the plan is the executable
 > artifact. Task 12 Step 5 ticks **thirteen** entries, not twelve.
 
+> ### AMENDMENT 2 (2026-07-31) — citations re-measured at `1fd5ebe`, and four plan defects
+>
+> The task above was authored against `9c7588e`. Tasks 1–5 + 4b moved lines and **already did some of the
+> threading this task budgeted for**. Measured at `1fd5ebe`:
+>
+> | Plan said | Actually at `1fd5ebe` |
+> |---|---|
+> | `PerceptionManager.cs:317` grid cell | `ReadGridCell` is `private static` at `:318`; the `IsPassword` read is `:333`; the return is `:346`; callers `:355`, `:361` |
+> | `PerceptionManager.cs:354` `ReadText` | signature `:365`; the `IsPassword` read is `:371`; callers `:407`, `:411`, `:422` |
+> | `PerceptionManager.cs:599` `find` | `IsPassword` `:612`; `rawName` `:616`; `name` `:617`; descriptor `:639`; `FindMatch` `:642`. `procName` is **already in scope** from `:506` |
+> | `VerifyReader.cs:24-25` + "add two parameters, find every caller" | **Already done by Task 4b.** `FromElement` at `:22-23` already takes `SensitivityClassifier classifier, string? processName`, and all four callers (`InputTools.cs:182`, `:232`, `:301`, `:326`) already pass them. The only site to change is the `IsPassword` read at `:25`. **No signature change, no caller sweep.** |
+> | `WatchPump` "takes the classifier from the constructor (Task 4b)" | Confirmed: field `:29`, property `:34`, ctor `:54`, assignment `:62`. `procName` at `:217`. `LiveEventSourceReader` `:240`, its `IsPassword` `:254-255`, `Name` `:257`, `rawName` `:277`. `ClosedReader.IsPassword` `:293` |
+> | `TerminalTabReader.ListTabs` | **The method is named `List`** (`:109`). `Run` is `:128`. `NameOf` `:31-32`. Egress `:118`, `:145`. Identity `:133`, `:135`, `:207` — all five confirmed present and unchanged |
+> | `RestoreTarget.cs:14-31`, `:28`; `ContentTools.cs:101`, `:114` | all confirmed exact |
+>
+> **DEFECT A — `ElementContent.Text` must NOT wrap `readText` in `Safe`.** The pasted code does. But
+> `PerceptionManager.ReadText` *throws* `ToolException(PatternUnsupported)` from inside that read when the
+> element has no TextPattern (`:375-376`), and lets `UnauthorizedAccessException` propagate to a handler at
+> `:402-403`. `Safe` would swallow both and return `""` — turning two documented, tested errors into a
+> silent empty string. **The thunk owns its own failure policy; `Text` calls it directly.** `Name` and
+> `Value` keep `Safe` (they mirror `SafeRead`/`try{}catch{}` already in place at those sites).
+>
+> **DEFECT B — the watch builder must RE-APPLY the token, not just pass the reader's string through.**
+> The plan makes `IEventSourceReader.Name` already-redacted and deletes the builder's redaction. That
+> makes the existing headless pin `WatchPayloadBuilderTests.Password_source_redacts_name_INV5`
+> (`:44-52`) **vacuous** — it would assert the fake's own literal. `LiveEventSourceReader` is
+> `private sealed` and needs a live element, so there is no headless replacement: INV-5's only headless
+> pin would be lost. Instead: the reader returns the already-redacted name (per §7.2) **and** the builder
+> keeps `name = reader.Sensitivity.Redact ? "[REDACTED]" : reader.Name;`. The builder cannot verify the
+> reader honoured the contract, so re-application is defense-in-depth — and it is what keeps INV-5
+> pinnable with a fake.
+>
+> **DEFECT C — `RestoreTarget.Resolve`'s new partition parameters must be OPTIONAL.** Five existing tests
+> in `RestoreTargetTests.cs` (`:12`, `:22`, `:32`, `:42`, `:52`) call the 4-arg form, and §4.4 forbids
+> editing an existing test to accommodate SP3. A null mask means "no partition" — today's behaviour,
+> byte-identical. ⚠ This re-opens Task 4b's optional-parameter hole (a `src/` caller that omits it silently
+> gets no partition, with no compile error); it is covered by the same three-part sweep rule, and there is
+> exactly ONE `src/` caller (`TerminalTabReader.cs:208`), pinned by DEF-4 fact 4.
+>
+> **DEFECT D — `activeTitleUnique` (`:134-135`) must be partitioned too.** It counts matches across ALL
+> tabs. Partitioning only inside `Resolve` leaves the uniqueness computation itself cross-partition, so a
+> visible tab still suppresses a protected tab's confidence — the same oracle, one step earlier.
+>
+> **Also:** `EnsureAllowed` (`:305-312`) already computes `SafeProcessName(el)` and discards it — **change
+> it to return `string?`** so the grid and text paths get `processName` with zero extra COM reads.
+>
+> **Test edits — the Task 5 precedent applies.** Fixing a construction or a fake's member list so it
+> compiles against a changed type is ALLOWED. Editing an assertion to accommodate SP3 is FORBIDDEN.
+> ⚠ And the vacuous-pin trap: a mechanical `IsPassword = true` → `Sensitivity` fix maps to
+> **`Sensitivity.OsPassword`**, NEVER to a rule sensitivity.
+>
+> **This task ships as THREE commits** — 6a `ElementContent` + the three `PerceptionManager` sites;
+> 6b watch + verify; 6c the 13th site + DEF-4. The headless expectation in Step 3 is **820**, not 808
+> (that figure predates Tasks 4b/5 and the two pre-existing-defect fixes); 6c adds 4, ending at **824**.
+
 - [ ] **Step 1: Implement `ElementContent.cs`**
 
 ```csharp
