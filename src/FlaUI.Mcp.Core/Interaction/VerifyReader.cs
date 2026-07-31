@@ -22,15 +22,24 @@ public static class VerifyReader
     public static VerifyRead FromElement(AutomationElement el, SensitivityClassifier classifier,
         string? processName, bool readCapability = false)
     {
-        bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
-        if (isPwd) return new VerifyRead(null, true, null); // redacted short-circuits before the remedy branch
-        bool? canSet = readCapability ? ValueCapability.CanSetValue(el) : null; // reuse this live element
-        try
+        // The redaction decision short-circuits BEFORE the capability probe and before any text read —
+        // ElementContent.Text never calls the thunk for a redacted element, so the ORDER of the two live
+        // reads (capability, then text) is preserved exactly as it was under the old IsPassword branch.
+        bool? canSet = null;
+        bool readFailed = false;
+        var read = ElementContent.Text(el, classifier, processName, () =>
         {
-            var tp = el.Patterns.Text.PatternOrDefault;
-            if (tp is null) return new VerifyRead(null, false, canSet);
-            return new VerifyRead(tp.DocumentRange.GetText(MaxReadChars), false, canSet);
-        }
-        catch { return new VerifyRead(null, false, canSet); }
+            canSet = readCapability ? ValueCapability.CanSetValue(el) : null; // reuse this live element
+            try
+            {
+                var tp = el.Patterns.Text.PatternOrDefault;
+                if (tp is null) { readFailed = true; return string.Empty; }
+                return tp.DocumentRange.GetText(MaxReadChars);
+            }
+            catch { readFailed = true; return string.Empty; } // a failed read must never fail the type
+        });
+        if (read.Sensitivity.Redact) return new VerifyRead(null, true, null); // redacted -> never echo
+        return readFailed ? new VerifyRead(null, false, canSet)
+                          : new VerifyRead(read.Text, false, canSet);
     }
 }

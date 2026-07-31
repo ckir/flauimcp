@@ -212,13 +212,14 @@ public sealed class WatchPump : IAsyncDisposable
                         : _refs.Resolve(windowId, scopeRef!, PopupFinder.SearchRoots(win, desktop)))
                     : source as AutomationElement; // focus_changed / window_opened: the event source
 
+                string? procName = null;
                 if (target is not null)
                 {
-                    var procName = SafeProcessName(target); // §10 defense-in-depth (process-coarse)
+                    procName = SafeProcessName(target); // §10 defense-in-depth (process-coarse)
                     if (PerceptionPolicy.IsDenied(procName)) return (DesktopEventPayload?)null;
                 }
 
-                var reader = new LiveEventSourceReader(target, _refs, windowId);
+                var reader = new LiveEventSourceReader(target, _refs, windowId, _classifier, procName);
                 return (DesktopEventPayload?)WatchPayloadBuilder.Build(meta, windowId, coalescedCount, reader);
             });
     }
@@ -242,19 +243,37 @@ public sealed class WatchPump : IAsyncDisposable
         private readonly AutomationElement? _el;
         private readonly RefRegistry _refs;
         private readonly string _windowId;
+        private readonly SensitivityClassifier _classifier;
+        private readonly string? _processName;
+        private ElementContent.Read? _content;
 
-        public LiveEventSourceReader(AutomationElement? el, RefRegistry refs, string windowId)
+        public LiveEventSourceReader(AutomationElement? el, RefRegistry refs, string windowId,
+                                     SensitivityClassifier classifier, string? processName)
         {
             _el = el;
             _refs = refs;
             _windowId = windowId;
+            _classifier = classifier;
+            _processName = processName;
         }
 
+        // ONE classification per event, memoized. The builder reads Sensitivity and Name separately and
+        // MintRef needs the RAW name; classifying three times would triple the COM reads AND could
+        // DISAGREE with itself if the element changes mid-build.
+        private ElementContent.Read Content =>
+            _content ??= ElementContent.Name(_el!, _classifier, _processName);
+
         public bool HasSource => _el is not null;
-        public bool IsPassword => _el is not null &&
-            RedactionPolicy.IsPasswordOrFailClosed(() => _el.Properties.IsPassword.ValueOrDefault);
+        public Sensitivity Sensitivity => _el is null ? Sensitivity.Visible : Content.Sensitivity;
         public string? ControlType => _el is null ? null : Safe(() => _el.ControlType.ToString(), null);
-        public string? Name => _el is null ? null : Safe(() => _el.Name, null);
+
+        // Null-vs-"" is a wire contract here: an unnamed or unreadable source has always emitted a NULL
+        // name. ElementContent coalesces both to "", so Absent restores the distinction. A REDACTED name
+        // still wins over absence — matching the old builder, which emitted the token regardless of Name.
+        public string? Name => _el is null ? null
+            : Content.Sensitivity.Redact ? Content.Text
+            : Content.Absent ? null
+            : Content.Text;
 
         public int[]? Bounds
         {
@@ -274,7 +293,7 @@ public sealed class WatchPump : IAsyncDisposable
                 int[] rid = Safe(() => _el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? Array.Empty<int>();
                 var ct = Safe(() => _el.ControlType, FlaUI.Core.Definitions.ControlType.Custom);
                 string aid = Safe(() => _el.AutomationId, "") ?? string.Empty;
-                string rawName = Safe(() => _el.Name, "") ?? string.Empty; // RAW -> descriptor (never redacted)
+                string rawName = Content.RawForIdentity; // RAW -> descriptor (never redacted), BC-1
                 var descriptor = new ElementDescriptor(rid, ct, aid, rawName,
                     SnapshotEngine.NearestAncestorAutomationId(_el), Array.Empty<int>(), false);
                 return _refs.RegisterEventRef(_windowId, descriptor, cached: _el);
@@ -290,7 +309,7 @@ public sealed class WatchPump : IAsyncDisposable
     {
         public static readonly ClosedReader Instance = new();
         public bool HasSource => false;
-        public bool IsPassword => false;
+        public Sensitivity Sensitivity => Sensitivity.Visible;
         public string? ControlType => null;
         public string? Name => null;
         public int[]? Bounds => null;

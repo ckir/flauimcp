@@ -22,14 +22,19 @@ public static class ElementContent
         /// absent). Its only legitimate callers are the descriptor / ref-resolution sites, which are few,
         /// pinned and reviewed. Building a wire payload from this is visibly wrong at the call site.</summary>
         public string RawForIdentity { get; init; } = string.Empty;
+
+        /// <summary>True when the underlying UIA read returned NULL or threw — i.e. the value is ABSENT,
+        /// not empty. Set only by <see cref="Name"/>. It exists because the watch event payload has always
+        /// emitted a null name for an unnamed source, and null-vs-"" on the wire is a contract.</summary>
+        public bool Absent { get; init; }
     }
 
     public static Read Name(AutomationElement el, SensitivityClassifier classifier, string? processName)
     {
-        string raw = Safe(() => el.Name);
+        string raw = Safe(() => el.Name, out bool absent);
         var s = Classify(el, classifier, processName,
                          () => Safe(() => el.Properties.AutomationId.ValueOrDefault), () => raw);
-        return new Read(s.Redact ? RedactedToken : raw, s) { RawForIdentity = raw };
+        return new Read(s.Redact ? RedactedToken : raw, s) { RawForIdentity = raw, Absent = absent };
     }
 
     public static Read Value(AutomationElement el, SensitivityClassifier classifier, string? processName)
@@ -74,5 +79,12 @@ public static class ElementContent
     private static string Safe(Func<string?> read)
     {
         try { return read() ?? string.Empty; } catch { return string.Empty; }
+    }
+
+    // As Safe, but reports whether the value was ABSENT (null return or a throw) rather than empty.
+    private static string Safe(Func<string?> read, out bool absent)
+    {
+        try { var v = read(); absent = v is null; return v ?? string.Empty; }
+        catch { absent = true; return string.Empty; }
     }
 }
