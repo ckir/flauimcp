@@ -812,7 +812,7 @@ public sealed class PerceptionManager
     {
         var nodes = m.Nodes.ToList();
         return new SnapshotStats(id, nodes.Count, nodes.Count(SnapshotEngine.IsInteractiveNode),
-            nodes.Count(n => n.IsOffscreen), nodes.Count(n => n.IsPassword),
+            nodes.Count(n => n.IsOffscreen), nodes.Count(n => n.Sensitivity.Source == RedactionSource.Os),
             nodes.GroupBy(n => n.ControlType.ToString()).ToDictionary(g => g.Key, g => g.Count()));
     }
 

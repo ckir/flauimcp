@@ -83,20 +83,24 @@ public static class SnapshotEngine
                 bool focusable = Safe(() => el.Properties.IsKeyboardFocusable.ValueOrDefault, false);
                 bool focused = Safe(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
                 bool selected = Safe(() => el.Patterns.SelectionItem.PatternOrDefault?.IsSelected.ValueOrDefault ?? false, false);
-                bool isPassword = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
+                Sensitivity sensitivity = nodeClassifier is not null && nodeClassifier.HasRules
+                    ? nodeClassifier.Classify(nodeProcessName, () => aid, () => name,
+                                          () => el.Properties.IsPassword.ValueOrDefault)
+                    : (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault)
+                        ? Sensitivity.OsPassword : Sensitivity.Visible);
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 var patterns = SupportedPatterns(el);
                 string help = Safe(() => el.HelpText, "");
-                // The RAW name is deliberate and LOAD-BEARING: RefRegistry falls back to
-                // Name+ControlType when AutomationId is absent (RefRegistry.cs:181-182) and the cached
-                // fast path compares it (:334), so redacting it here would make an IsPassword element
-                // with no AutomationId permanently REF_STALE_UNRESOLVABLE. Redaction happens at every
-                // WIRE surface instead (render :133, match WaitCoordinator.cs:88, diff SnapshotDiff.cs:25,
-                // find FindQuery.cs:63, watch WatchPayloadBuilder.cs:34) and Key() never echoes it (:206-209).
+                // The RAW name is deliberate and LOAD-BEARING: RefRegistry.ResolveDescriptor falls back to
+                // Name+ControlType when AutomationId is absent, and RefRegistry.FastPathMatches compares
+                // it on the cached fast path, so redacting it here would make a sensitive element with no
+                // AutomationId permanently REF_STALE_UNRESOLVABLE. Redaction happens at every WIRE surface
+                // instead (SnapshotEngine.Render, WaitCoordinator.Matches, SnapshotDiff.ShownName,
+                // FindQuery, WatchPayloadBuilder) and RefRegistry.Key never echoes it.
                 var descriptor = new ElementDescriptor(rid, ct, aid, name, ancestorAid, indexPath, focused);
                 var @ref = refs.Register(windowId, descriptor, el);
                 items.Add(new SnapshotNode(@ref, depth, indent, ct, aid, name, rect, enabled, focusable,
-                    focused, selected, isPassword, offscreen, rid, patterns, help));
+                    focused, selected, sensitivity, offscreen, rid, patterns, help));
                 childIndent = indent + "  ";
             }
             var nextAncestor = string.IsNullOrEmpty(aid) ? ancestorAid : aid;
@@ -139,7 +143,8 @@ public static class SnapshotEngine
         if (n.Focusable) state.Add("focusable");
         if (n.Focused) state.Add("focused");
         if (n.Selected) state.Add("selected");
-        string shownName = n.IsPassword ? "[REDACTED]" : n.Name;
+        if (n.Sensitivity.Source == RedactionSource.Rule) state.Add($"redacted:rule:{n.Sensitivity.RuleName}");
+        string shownName = n.Sensitivity.Redact ? "[REDACTED]" : n.Name;
         var sb = new StringBuilder();
         sb.Append(n.Indent).Append('[').Append(n.Ref).Append("] ").Append(n.ControlType).Append(' ')
           .Append('"').Append(shownName).Append('"')

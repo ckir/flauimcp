@@ -19,7 +19,7 @@ public class SnapshotModelPinTests : IClassFixture<TestAppFixture>
         if (n.Enabled) state.Add("enabled");
         if (n.Focusable) state.Add("focusable");
         if (n.Focused) state.Add("focused");
-        string shown = n.IsPassword ? "[REDACTED]" : n.Name;
+        string shown = n.Sensitivity.Source == RedactionSource.Os ? "[REDACTED]" : n.Name;
         var sb = new System.Text.StringBuilder();
         sb.Append(n.Indent).Append('[').Append(n.Ref).Append("] ").Append(n.ControlType).Append(' ')
           .Append('"').Append(shown).Append('"')

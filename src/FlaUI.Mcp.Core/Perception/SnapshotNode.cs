@@ -20,7 +20,7 @@ public sealed record SnapshotNode(
     bool Focusable,
     bool Focused,
     bool Selected,
-    bool IsPassword,
+    Sensitivity Sensitivity,
     bool IsOffscreen,
     IReadOnlyList<int> RuntimeId,
     IReadOnlyList<string> Patterns,

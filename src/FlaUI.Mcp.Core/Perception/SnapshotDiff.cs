@@ -22,7 +22,7 @@ public static class SnapshotDiff
     /// IsPassword element, matching the snapshot render (SnapshotEngine.cs:131) so a diff never becomes a
     /// name-oracle that plain snapshot already redacts (INV-5). Identity keying keeps the RAW name (internal,
     /// never serialized) so a password node still matches itself across baseline/current.</summary>
-    private static string ShownName(SnapshotNode n) => n.IsPassword ? "[REDACTED]" : n.Name;
+    private static string ShownName(SnapshotNode n) => n.Sensitivity.Source == RedactionSource.Os ? "[REDACTED]" : n.Name;
     private static DiffDescriptor Desc(SnapshotNode n) => new(n.Ref, n.ControlType.ToString(), n.AutomationId, ShownName(n));
     private static NodeState State(SnapshotNode n) => new(ShownName(n), n.Enabled, n.Focused, n.Selected);
 

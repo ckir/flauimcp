@@ -49,7 +49,7 @@ public class PasswordRedactionTestsHeadless
         Ref: "e1", Depth: 1, Indent: "", ControlType: ControlType.Edit,
         AutomationId: "", Name: name, Bounds: new System.Drawing.Rectangle(0, 0, 10, 10),
         Enabled: true, Focusable: true, Focused: false, Selected: false,
-        IsPassword: true, IsOffscreen: false,
+        Sensitivity: Sensitivity.OsPassword, IsOffscreen: false,
         RuntimeId: System.Array.Empty<int>(), Patterns: System.Array.Empty<string>(), HelpText: "");
 
     /// <summary>The rendered tree is the largest wire surface. Asserting only the secret's ABSENCE

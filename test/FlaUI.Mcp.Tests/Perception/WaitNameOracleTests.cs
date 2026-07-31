@@ -18,7 +18,7 @@ public class WaitNameOracleTests
         Ref: "e1", Depth: 1, Indent: "", ControlType: ControlType.Edit,
         AutomationId: "Secret", Name: name, Bounds: new System.Drawing.Rectangle(0, 0, 10, 10),
         Enabled: true, Focusable: true, Focused: false, Selected: false,
-        IsPassword: isPassword, IsOffscreen: false,
+        Sensitivity: isPassword ? Sensitivity.OsPassword : Sensitivity.Visible, IsOffscreen: false,
         RuntimeId: System.Array.Empty<int>(), Patterns: System.Array.Empty<string>(), HelpText: "");
 
     [Fact]
