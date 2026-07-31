@@ -26,6 +26,12 @@ public sealed class WatchPump : IAsyncDisposable
     private readonly WatchRegistry _registry;
     private readonly IEventSink _sink;
     private readonly WatchDrainBuffer _drainBuffer;
+    private readonly SensitivityClassifier _classifier;
+
+    /// <summary>SP3 plumbing (Task 4b): reachable here for a later task's redaction decisions in the
+    /// payload build. Not yet consumed — this accessor exists so the backing field is READ (avoids
+    /// CS0169/CS0414).</summary>
+    internal SensitivityClassifier Classifier => _classifier;
 
     // Worker-confined (single-threaded): the pump constructs and OWNS its coalescer (§11 — shared with nothing).
     private readonly EventCoalescer _coalescer = new(256, DebounceMs);
@@ -40,9 +46,12 @@ public sealed class WatchPump : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
+    // SP3 Task 4b: mirrors PerceptionManager's ctor — DesktopWatchTests.cs constructs WatchPump directly
+    // (not via DI) without a classifier arg. Optional/defaulted so that pre-existing test call keeps
+    // compiling unedited; production/DI always supplies the real singleton (Program.cs AddSingleton(classifier)).
     public WatchPump(
         Channel<EventEnvelope> channel, WindowManager windowManager, RefRegistry refs,
-        WatchRegistry registry, IEventSink sink, WatchDrainBuffer drainBuffer)
+        WatchRegistry registry, IEventSink sink, WatchDrainBuffer drainBuffer, SensitivityClassifier? classifier = null)
     {
         _channel = channel;
         _windowManager = windowManager;
@@ -50,6 +59,7 @@ public sealed class WatchPump : IAsyncDisposable
         _registry = registry;
         _sink = sink;
         _drainBuffer = drainBuffer;
+        _classifier = classifier ?? SensitivityClassifier.OsOnly;
     }
 
     public Task StartAsync(CancellationToken ct = default)

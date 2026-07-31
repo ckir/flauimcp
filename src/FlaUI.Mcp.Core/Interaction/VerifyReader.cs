@@ -19,7 +19,8 @@ public static class VerifyReader
 {
     private const int MaxReadChars = 200000; // mirror GetTextAsync's clamp ceiling; typed <= 4096 so never truncates the compare
 
-    public static VerifyRead FromElement(AutomationElement el, bool readCapability = false)
+    public static VerifyRead FromElement(AutomationElement el, SensitivityClassifier classifier,
+        string? processName, bool readCapability = false)
     {
         bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
         if (isPwd) return new VerifyRead(null, true, null); // redacted short-circuits before the remedy branch

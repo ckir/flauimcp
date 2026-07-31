@@ -179,7 +179,7 @@ public sealed class InputTools
             {
                 el.Focus();
                 var t = InputTargeting.ResolveElementTarget(win, el);
-                var b = verify ? VerifyReader.FromElement(el) : default;
+                var b = verify ? VerifyReader.FromElement(el, _perception.Classifier, t.ProcessName) : default;
                 return (t, b);
             };
 
@@ -229,7 +229,7 @@ public sealed class InputTools
             try
             {
                 after = await _perception.RunOnRefReadAsync(new WindowHandle(window), effectiveRef,
-                    el => VerifyReader.FromElement(el, readCapability: true), timeoutMs);
+                    el => VerifyReader.FromElement(el, _perception.Classifier, target.ProcessName, readCapability: true), timeoutMs);
             }
             catch
             {
@@ -298,7 +298,7 @@ public sealed class InputTools
             {
                 el.Focus();
                 var t = InputTargeting.ResolveElementTarget(win, el);
-                var b = verify ? VerifyReader.FromElement(el) : default;
+                var b = verify ? VerifyReader.FromElement(el, _p.Classifier, t.ProcessName) : default;
                 return (t, b);
             };
             if (_selector is { } sel)
@@ -320,7 +320,10 @@ public sealed class InputTools
         public Task PasteAsync(ActionTarget target) => Task.Run(() => _g.KeyChord(new[] { "Ctrl" }, "V", target));
         public void AuditForceOverwrite() => System.Console.Error.WriteLine("[audit] desktop_paste_text: force-overwrite of a non-text clipboard.");
         public Task<VerifyRead> ReadAfterAsync() =>
-            _p.RunOnRefReadAsync(_win, _resolvedRef ?? _ref!, el => VerifyReader.FromElement(el, readCapability: true), _timeout);
+            // processName: null — the ActionTarget resolved in FocusAndBeforeReadAsync is not retained on
+            // this instance (only _resolvedRef is), and adding new state to carry it is out of scope for
+            // this pure-plumbing task (Task 4b). Reported per the dispatch brief.
+            _p.RunOnRefReadAsync(_win, _resolvedRef ?? _ref!, el => VerifyReader.FromElement(el, _p.Classifier, null, readCapability: true), _timeout);
     }
 
     [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Same lease/deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]

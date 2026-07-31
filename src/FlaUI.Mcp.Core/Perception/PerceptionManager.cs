@@ -12,10 +12,20 @@ public sealed class PerceptionManager
     private readonly WindowManager _windows;
     private readonly RefRegistry _refs;
     private readonly SnapshotCache _cache;
+    private readonly SensitivityClassifier _classifier;
 
     /// <summary>The DURABLE registry. Exposed so a wait can resolve a caller's ref against it while
     /// registering its own per-poll walk into a throwaway (BuildModelAsync's resolveRefs).</summary>
     internal RefRegistry Refs => _refs;
+
+    /// <summary>SP3 plumbing (Task 4b): reachable here for Tasks 5-9's redaction decisions. Not yet
+    /// consumed — this accessor exists so the backing field is READ (avoids CS0169/CS0414) and so
+    /// InputTools can reach the classifier without a second DI parameter (Classifier accessor, not a
+    /// new constructor param). PUBLIC, not internal: InputTools lives in FlaUI.Mcp.Server, a DIFFERENT
+    /// assembly from this Core type, and Core's [assembly: InternalsVisibleTo] (AssemblyInfo.cs:2) grants
+    /// access only to "FlaUI.Mcp.Tests" — an `internal` accessor here is invisible to Server and fails to
+    /// compile (verified: CS1061 across all four InputTools.cs call sites).</summary>
+    public SensitivityClassifier Classifier => _classifier;
 
     // Break-glass: FLAUI_MCP_REF_STRICT=off forces Lenient on state-changing paths too (disables INV-8).
     // The env->mode mapping lives in RefResolveConfig.WriteMode so it is unit-tested (see Step 1).
@@ -28,11 +38,19 @@ public sealed class PerceptionManager
     private static readonly int MaxSelectorNodes =
         RefResolveConfig.MaxSelectorNodes(System.Environment.GetEnvironmentVariable("FLAUI_MCP_SELECTOR_MAXNODES"));
 
-    public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache)
+    // SP3 Task 4b: ~35 existing test files construct PerceptionManager directly (new PerceptionManager(...),
+    // not via DI) and cannot pass a 4th argument without editing every one of them — forbidden ("no
+    // pre-existing test may be edited"). `classifier` is therefore OPTIONAL, defaulting to OsOnly (the
+    // same no-redaction-rules default Program.cs uses absent --redaction-rules) so every existing test
+    // constructor call keeps compiling unchanged. Production/DI always supplies the real singleton
+    // (Program.cs:76 AddSingleton(classifier)), so this default is exercised only by tests that don't
+    // care about classification.
+    public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache, SensitivityClassifier? classifier = null)
     {
         _windows = windows;
         _refs = refs;
         _cache = cache;
+        _classifier = classifier ?? SensitivityClassifier.OsOnly;
         // Phase 6: close signal → evict the window's refs, but MARSHALED onto the single query STA via
         // PostToQuerySta. RefRegistry is only otherwise mutated (BeginSnapshot/Register) on that STA, so
         // routing eviction through it too keeps ALL RefRegistry mutations serialized on one thread: an
@@ -460,7 +478,7 @@ public sealed class PerceptionManager
                     handle.Id, options.RootRef!, searchRoots, options.RootResolveMode);
             }
             var snapshotId = refs.BeginSnapshot(handle.Id);
-            var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id);
+            var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id, _classifier, procName);
             // Phase 9 §3: wakeable hint is a whole-WINDOW opacity signal, not a subtree one — only computed for
             // a full-window snapshot (RootRef null). win is the window root (same element the tree was built
             // from when isFullWindow); read its ClassName defensively (WindowManager.cs idiom).

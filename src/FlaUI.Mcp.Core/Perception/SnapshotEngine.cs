@@ -33,7 +33,8 @@ public static class SnapshotEngine
 
     public static SnapshotModel Build(
         AutomationElement root, IReadOnlyList<AutomationElement> popupRoots,
-        SnapshotOptions options, RefRegistry refs, string windowId)
+        SnapshotOptions options, RefRegistry refs, string windowId,
+        SensitivityClassifier? classifier = null, string? processName = null)
     {
         var items = new List<SnapshotItem>();
         var popupRids = new List<int[]>();
@@ -43,20 +44,22 @@ public static class SnapshotEngine
             if (prid != null) popupRids.Add(prid);
         }
         var rootBounds = Safe(() => root.BoundingRectangle, System.Drawing.Rectangle.Empty);
-        Visit(root, 0, Array.Empty<int>(), null, "", rootBounds);
+        Visit(root, 0, Array.Empty<int>(), null, "", rootBounds, classifier, processName);
         if (popupRoots.Count > 0)
         {
             items.Add(new OverlaysHeaderItem());
             for (int i = 0; i < popupRoots.Count; i++)
             {
                 var pb = Safe(() => popupRoots[i].BoundingRectangle, System.Drawing.Rectangle.Empty);
-                Visit(popupRoots[i], 0, new[] { -1 - i }, null, "  ", pb);
+                Visit(popupRoots[i], 0, new[] { -1 - i }, null, "  ", pb, classifier, processName);
             }
         }
         return new SnapshotModel(items);
 
+        // SP3 Task 4b: classifier/processName are threaded through but UNUSED here — Tasks 5-9 make the
+        // redaction decision. Unused PARAMETERS (unlike fields) do not trip CS0169/CS0414.
         void Visit(AutomationElement el, int depth, int[] indexPath, string? ancestorAid, string indent,
-            System.Drawing.Rectangle cullBounds)
+            System.Drawing.Rectangle cullBounds, SensitivityClassifier? nodeClassifier, string? nodeProcessName)
         {
             int[] rid = Safe(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? Array.Empty<int>();
             if (depth > 0)
@@ -108,7 +111,7 @@ public static class SnapshotEngine
                 var nextPath = new int[indexPath.Length + 1];
                 Array.Copy(indexPath, nextPath, indexPath.Length);
                 nextPath[^1] = i;
-                Visit(children[i], depth + 1, nextPath, nextAncestor, childIndent, cullBounds);
+                Visit(children[i], depth + 1, nextPath, nextAncestor, childIndent, cullBounds, nodeClassifier, nodeProcessName);
             }
         }
     }
