@@ -19,6 +19,12 @@ public class SnapshotModelPinTests : IClassFixture<TestAppFixture>
         if (n.Enabled) state.Add("enabled");
         if (n.Focusable) state.Add("focusable");
         if (n.Focused) state.Add("focused");
+        // "selected" was MISSING here while SnapshotEngine.FormatNode has always emitted it, so this
+        // reference implementation could not pin that flag at all. It stayed green only because nothing
+        // in the WPF fixture is ever Selected -- had one node been selected, Render would have emitted
+        // "selected", Legacy would not, and this test would already have been failing. Order matters:
+        // the state list is joined positionally, so "selected" must follow "focused" as it does there.
+        if (n.Selected) state.Add("selected");
         string shown = n.Sensitivity.Source == RedactionSource.Os ? "[REDACTED]" : n.Name;
         var sb = new System.Text.StringBuilder();
         sb.Append(n.Indent).Append('[').Append(n.Ref).Append("] ").Append(n.ControlType).Append(' ')
