@@ -421,7 +421,8 @@ public sealed class PerceptionManager
         WindowHandle handle, int tabIndex, bool restoreFocus, bool fromEnd, int maxLength, int timeoutMs) =>
         _windows.RunOnWindowActionAsync(handle,
             (win, _) => TerminalTabReader.Run(win, tabIndex, restoreFocus, fromEnd, maxLength,
-                buf => ReadText(buf, selectionOnly: false, maxLength, fromEnd, _classifier)),
+                buf => ReadText(buf, selectionOnly: false, maxLength, fromEnd, _classifier),
+                _classifier, SafeProcessName(win)),
             timeoutMs);
 
     /// <summary>Item 5: pure-read tab enumeration. Runs on the QUERY STA, not the transient action STA
@@ -429,7 +430,8 @@ public sealed class PerceptionManager
     /// the in-flight action cap. Same STA path BuildModelAsync uses (:416).</summary>
     public Task<(IReadOnlyList<TerminalTabReader.TabListing> Tabs, int ActiveTabIndex)>
         ListTerminalTabsAsync(WindowHandle handle) =>
-        _windows.RunWithWindowAndDesktopAsync(handle, (win, _) => TerminalTabReader.List(win));
+        _windows.RunWithWindowAndDesktopAsync(handle,
+            (win, _) => TerminalTabReader.List(win, _classifier, SafeProcessName(win)));
 
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
     private static string? SafeProcessName(AutomationElement el)
