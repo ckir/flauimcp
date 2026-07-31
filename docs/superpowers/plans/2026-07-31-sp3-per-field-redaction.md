@@ -1152,11 +1152,45 @@ and ships the leak under a green gate. Raw access is a **separately named** memb
 > a blind second pass, which is why it is credited rather than treated as noise. Tab titles routinely
 > carry working directories, SSH destinations and command strings.
 >
-> ⚠ **`NameOf` has FOUR call sites and they SPLIT — do not blanket-redact it.** `:118` and `:145` are
-> **egress**. `:133` and `:135` compute `activeTitle` / `activeTitleUnique` purely to match the tab to
-> restore focus to; they never leave the process and are **identity** — redacting them would break
-> focus-restore for exactly the tabs being protected, which is BC-1's failure mode in miniature. Use the
+> ⚠ **`NameOf` has FIVE call sites and they SPLIT — do not blanket-redact it.** `:118` and `:145` are
+> **egress**. `:133`, `:135` and `:207` compute `activeTitle` / `activeTitleUnique` / the fresh title list
+> purely to match the tab to restore focus to; they never leave the process and are **identity**. Use the
 > same `Read.Text` / `Read.RawForIdentity` split as the other dual-purpose sites.
+>
+> ⚠ **`:207` is `fresh.Select(NameOf)` — a METHOD-GROUP reference.** A `grep` for `NameOf\(` misses it and
+> reports four call sites. It cost one review round here; Task 12's Roslyn sweep resolves by symbol and
+> would have caught it, which is precisely why the sweep is not a `grep`.
+>
+> ### ⚠ DEF-4 — the restore-confidence oracle. **SP3 CREATES this; it does not exist today.**
+>
+> `:135`'s `activeTitleUnique` flows to `RestoreTarget.Resolve` (`:208`) → `d.Confidence` → `Result`
+> (`:190`) → **`restoreConfidence` on the wire at `ContentTools.cs:101`**. So a *title comparison* is
+> observable to the caller as a string.
+>
+> Today that is worthless — nothing redacts tab titles, so an agent that wants a title just reads it. The
+> moment SP3 hides some titles, the field becomes a side channel: set the active tab's title to a guess,
+> watch whether confidence drops from `high` to `reduced`, and learn that a hidden tab carries that exact
+> title. **Same defect class as DEF-3, and SP3 would introduce it — so fixing it is mandatory, not
+> optional scope.**
+>
+> **The fix is NOT to redact `:133`/`:135`/`:207`.** That was considered and rejected: every redacted tab
+> would then compare equal to every other (all read as the same token), so `activeTitleUnique` goes false
+> whenever two tabs are protected, ordinal fallback kicks in for exactly the tabs the operator asked to
+> protect, and the field *still* leaks — now "two or more tabs are redacted". That trades one leak for a
+> leak plus a regression.
+>
+> **The fix is to PARTITION THE IDENTITY SPACE BY `Sensitivity`.** Compare a tab's raw title only against
+> tabs of the *same* `Sensitivity`. An unprotected tab then structurally cannot collide with a protected
+> one, so the oracle closes; protected tabs still match each other on raw titles, so confident restore
+> survives. With no rules configured every tab is `Visible`, the partition is a no-op, and the default
+> path is byte-identical — which §4.4 requires.
+>
+> ⚠⚠ **DO NOT IMPLEMENT THE PARTITION BY FILTERING THE LIST.** `RestoreTarget.Resolve`
+> (`RestoreTarget.cs:14-31`) returns `SelectIndex` as an index **into `freshTitles`**, and the caller does
+> `fresh[idx]` at `:211`; `recordedOrdinal` is also bounds-checked against `freshTitles.Count` at `:28`.
+> Filtering the list desynchronises both and **selects the wrong tab** — a worse bug than the leak. Pass a
+> **parallel `IReadOnlyList<Sensitivity>` of the same length** and have `Resolve` skip non-matching
+> entries in place, keeping every index an index into the full list.
 >
 > The spec is frozen at `9c7588e`; this amendment is recorded here because the plan is the executable
 > artifact. Task 12 Step 5 ticks **thirteen** entries, not twelve.
@@ -1246,9 +1280,32 @@ hid real signature and injection work. Site by site:
 | `WatchPayloadBuilder.cs:34` | via the reader | change `IEventSourceReader` (`WatchPayloadBuilder.cs:11-13`) to expose `Sensitivity Sensitivity` and an already-redacted `Name`, instead of `bool IsPassword` + a RAW `Name`. ⚠ **`LiveEventSourceReader` (`WatchPump.cs:227+`) must obtain both by calling `ElementContent.Name`, NOT by classifying itself.** An earlier draft said "it holds the element, so it classifies" — which would read `el.Name` **outside the closed egress list and fail Task 12's sweep**, since that sweep is the whole guarantee. It reuses the `procName` already computed at `WatchPump.cs:207` for the denylist check, so this costs **zero** additional COM reads, and takes the classifier from the `WatchPump` constructor (Task 4b). `NullEventSourceReader` (`WatchPump.cs:283`) returns `Sensitivity.Visible`. |
 | `VerifyReader.cs:24-25` | `ElementContent.Text` | ⚠ `VerifyReader.FromElement` is **`public static`** with no classifier in scope. Add two parameters: `FromElement(AutomationElement el, SensitivityClassifier classifier, string? processName, bool readCapability = false)`. Find and update every caller first: `grep -rn "VerifyReader.FromElement" src test --include=*.cs` |
 
-| `TerminalTabReader.cs:118` (list) and `:145` (read) | `ElementContent.Name` | ⚠ **the 13th site (amendment above)**. `TerminalTabReader` is a `static` helper with no DI: **append** `SensitivityClassifier classifier` and `string? processName` to `ListTabs`/`Run` and thread them from `PerceptionManager.ListTerminalTabsAsync` / the `desktop_read_terminal_tab` path, which already hold both. `:118` and `:145` take `read.Text`; **`:133`/`:135` keep the RAW value** (`RawForIdentity`) — they only match the tab to restore focus to, and redacting them breaks focus-restore for the protected tab |
+| `TerminalTabReader.cs:118` (list) and `:145` (read) | `ElementContent.Name` | ⚠ **the 13th site (amendment above)**. `TerminalTabReader` is a `static` helper with no DI: **append** `SensitivityClassifier classifier` and `string? processName` to `ListTabs`/`Run` and thread them from `PerceptionManager.ListTerminalTabsAsync` / the `desktop_read_terminal_tab` path, which already hold both. `:118` and `:145` take `read.Text`; **`:133`/`:135`/`:207` keep the RAW value** (`RawForIdentity`). Then fix **DEF-4** (see the amendment): thread a parallel `IReadOnlyList<Sensitivity>` into `RestoreTarget.Resolve` and match only within the same `Sensitivity` — **a parallel mask, never a filtered list**, or `SelectIndex` desynchronises from `fresh` and restores the wrong tab |
 
-Keep each site's surrounding behaviour otherwise unchanged — this task is a refactor.
+Keep each site's surrounding behaviour otherwise unchanged — this task is otherwise a refactor. The one
+behaviour change is DEF-4, pinned below.
+
+- [ ] **Step 2b: Pin DEF-4 — headless, because `RestoreTarget.Resolve` is a PURE static function**
+
+No Desktop lease is needed: `Resolve` takes titles and returns a `Result`. Add to
+`test/FlaUI.Mcp.Tests/Perception/` — four facts, each one a distinct way the partition can be got wrong:
+
+1. **The oracle is closed.** A `Visible` active tab titled `"Guess"`, plus a `Rule`-redacted background tab
+   whose RAW title is also `"Guess"`, resolves with confidence **`high`** — the collision must not be seen,
+   because seeing it is the leak.
+2. **Restore still works for protected tabs.** Two `Rule`-redacted tabs with DISTINCT raw titles: the
+   active one resolves to its own index with confidence `high`.
+3. **A genuine same-partition collision still degrades honestly.** Two `Rule`-redacted tabs with the SAME
+   raw title fall back to ordinal with confidence `reduced` — the partition must not manufacture false
+   confidence.
+4. **⚠ INDEX ALIGNMENT — the fact that catches the filtered-list implementation.** Build a list where the
+   target sits at a full-list index that a filtered list would renumber (e.g. `[redacted, redacted,
+   visible-target]`, matching on the visible one). Assert `SelectIndex == 2`, the index into the FULL list.
+   **A filtered-list implementation returns 0 here and silently restores the wrong tab.** Without this
+   fact, facts 1–3 all pass on the broken implementation.
+
+⚠ **Do NOT pin DEF-4 only through the tool surface.** The oracle is a property of `Resolve`'s pure logic;
+testing it end-to-end would need a live Terminal and would still not distinguish fact 4's failure.
 
 - [ ] **Step 3: Build and run the headless gate**
 
