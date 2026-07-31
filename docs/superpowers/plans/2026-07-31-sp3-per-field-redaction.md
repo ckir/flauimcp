@@ -250,6 +250,16 @@ public class SensitivityClassifierTests
         Assert.False(c.Classify("app", () => "aid", () => throw new InvalidOperationException(), () => false).Redact);
     }
 
+    /// Spec §7.1 mandates a `global` handling test and an earlier draft of this plan had none.
+    [Fact]
+    public void A_global_rule_matches_regardless_of_process()
+    {
+        var c = Rules(new RedactionRule("g", null, true, "aid", null, null));
+        Assert.True(c.Classify("anything", () => "aid", () => "n", () => false).Redact);
+        Assert.True(c.Classify("other", () => "aid", () => "n", () => false).Redact);
+        Assert.False(c.Classify("anything", () => "different", () => "n", () => false).Redact);
+    }
+
     /// Cheapest-first: a false processName must short-circuit before any name thunk is pulled.
     [Fact]
     public void A_non_matching_process_never_evaluates_the_name_thunk()
@@ -729,8 +739,25 @@ public static class ServerStateFile
 {
     public const int CurrentStateVersion = 1;
 
-    public static string DefaultDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "flaui-mcp", "instances");
+    private static string Root => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "flaui-mcp");
+
+    public static string DefaultDirectory => Path.Combine(Root, "instances");
+
+    /// <summary>Durable, human-readable record of a startup refusal (spec §5.4). ⚠ There is no existing
+    /// `InstallPaths` type and no diagnostic-log helper in this repo — `DataDir`/`StateDir` live in a
+    /// PRIVATE record inside CliRouter (`CliRouter.cs:239`) and are not reachable from Program.cs. So
+    /// this writes its own file. Never throws: failing to log must not change the exit path.</summary>
+    public static void TryLogStartupError(string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(Root);
+            File.AppendAllText(Path.Combine(Root, "startup-errors.log"),
+                $"{DateTime.UtcNow:O} {message}{Environment.NewLine}");
+        }
+        catch { }
+    }
 
     public static void Write(string dir, int pid, DateTime startUtc, string? rulesPath, string? sha)
     {
@@ -856,8 +883,13 @@ if (startupOptions.RedactionRules is not null)
     {
         // The agent cannot read this: a server that refused to start has no tool surface. It is for the
         // HUMAN, out of band. Name both exits so recovery needs no guesswork (spec §5.4).
-        Console.Error.WriteLine($"flaui-mcp: refusing to start — {ex.Message}");
-        Console.Error.WriteLine("Fix the named rule, or remove --redaction-rules to start without rules.");
+        var msg = $"flaui-mcp: refusing to start — {ex.Message}\n" +
+                  "Fix the named rule, or remove --redaction-rules to start without rules.";
+        Console.Error.WriteLine(msg);
+        // Spec §5.4 requires this reach a durable log, NOT stderr alone: an MCP child that exits takes
+        // its whole tool surface with it, and the operator may never open stderr. This log is for the
+        // HUMAN, read out of band — the agent structurally cannot reach it.
+        FlaUI.Mcp.Server.Install.ServerStateFile.TryLogStartupError(msg);
         return 2;
     }
 }
@@ -995,9 +1027,23 @@ and in the state list built at `:134-138`, append **only** for a rule:
 `nodes.Count(n => n.Sensitivity.Source == RedactionSource.Os)`, so the shipped password counter keeps its
 meaning, and add a sibling `nodes.Count(n => n.Sensitivity.Redact)` for `redactedCount` (Task 10).
 
-- [ ] **Step 7: Build, fix every construction site, run the headless gate**
+- [ ] **Step 7: Build, fix every construction AND READ site, run the headless gate**
 
-Run: `dotnet build FlaUI.Mcp.slnx -c Release` — fix each compile error by passing a `Sensitivity`.
+⚠ **This step must leave the tree compiling, and an earlier draft did not.** Changing the record member
+breaks every *reader* of `n.IsPassword` too — `SnapshotDiff.cs:25` (Task 7), `WaitCoordinator.cs:88`
+(Task 9) and the family-A reads in `PerceptionManager.cs` (Task 6) all still name the old member. Those
+tasks change the *behaviour* at those sites; **this** step makes them **compile**, mechanically and with
+no behaviour change:
+
+```bash
+grep -rn "IsPassword" src test --include=*.cs
+```
+
+For each hit that reads a `SnapshotNode`, substitute the exact equivalent of today's semantics:
+`n.IsPassword` → `n.Sensitivity.Redact`. Do **not** add rule handling here — that is each later task's
+job. The commit at Step 8 must build clean and change no behaviour.
+
+Run: `dotnet build FlaUI.Mcp.slnx -c Release` — fix each remaining compile error by passing a `Sensitivity`.
 Then: `dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
 Expected: **808 passed / 0 skipped** (805 + 3). ⚠ **No existing test may be edited to accommodate this.**
 If one needs editing, the default path changed — stop and re-read spec §4.4.
@@ -1093,11 +1139,19 @@ public static class ElementContent
 
 - [ ] **Step 2: Route each family-A site through an accessor**
 
-Replace the hand-written branch at each site with the accessor, keeping the existing surrounding
-behaviour: `PerceptionManager.cs:317` (grid cell) → `ElementContent.Value`; `:354` (`ReadText`) →
-`ElementContent.Text`; `:599` (`find`) → `ElementContent.Name`, and pass `read.RawForIdentity` to the
-descriptor at `:606` (BC-1 — the descriptor keeps the RAW name); `WatchPayloadBuilder.cs:34` →
-`ElementContent.Name` via the reader; `VerifyReader.cs:24-25` → `ElementContent.Text`.
+⚠ **Each accessor needs a `SensitivityClassifier` and a `processName`, and two of these five call sites
+have neither in scope.** An earlier draft said "replace the branch, keeping surrounding behaviour", which
+hid real signature and injection work. Site by site:
+
+| Site | Accessor | How the classifier and processName get there |
+|---|---|---|
+| `PerceptionManager.cs:317` grid cell | `ElementContent.Value` | `PerceptionManager` takes the classifier as a **constructor dependency** (it is already a DI singleton, registered in `Program.cs`); `processName` comes from the operation root already resolved by `EnsureAllowed`/`SafeProcessName` on that path |
+| `PerceptionManager.cs:354` `ReadText` | `ElementContent.Text` | same; ⚠ `ReadText` is `private static` — add `SensitivityClassifier` and `string? processName` as parameters and pass them from both callers (`GetTextAsync`, `GetTextBySelectorAsync`) |
+| `PerceptionManager.cs:599` `find` | `ElementContent.Name` | same; pass `read.RawForIdentity` to the descriptor at `:606` — **BC-1, the descriptor keeps the RAW name** |
+| `WatchPayloadBuilder.cs:34` | via the reader | change `IEventSourceReader` (`WatchPayloadBuilder.cs:11-13`) to expose `Sensitivity Sensitivity` and an already-redacted `Name`, instead of `bool IsPassword` + a RAW `Name`. `LiveEventSourceReader` (`WatchPump.cs:227+`) holds the element, so it classifies — and it **reuses the `procName` already computed at `WatchPump.cs:207`** for the denylist check, so this costs **zero** additional COM reads. `NullEventSourceReader` (`WatchPump.cs:283`) returns `Sensitivity.Visible`. |
+| `VerifyReader.cs:24-25` | `ElementContent.Text` | ⚠ `VerifyReader.FromElement` is **`public static`** with no classifier in scope. Add two parameters: `FromElement(AutomationElement el, SensitivityClassifier classifier, string? processName, bool readCapability = false)`. Find and update every caller first: `grep -rn "VerifyReader.FromElement" src test --include=*.cs` |
+
+Keep each site's surrounding behaviour otherwise unchanged — this task is a refactor.
 
 - [ ] **Step 3: Build and run the headless gate**
 
@@ -1192,6 +1246,38 @@ reports, and banning it creates a permanent blind spot.
       `WaitCoordinator.cs:88` (`wait_for by=name`): skip the element when its `Sensitivity.Redact` is
       true, before the name predicate is evaluated.
 - [ ] **Step 4: Run — expect PASS, 6/6.**
+
+- [ ] **Step 4b: Pin BC-1 TARGETABILITY — spec §7.1 demands this be PROVEN, not asserted**
+
+⚠ **This is the exact hazard that retired ROADMAP item 7, and an earlier draft of this plan omitted it.**
+Because D2/D4 exclude redacted elements from name matching, a `namePattern` rule can hit an element with
+**no `AutomationId` whose Name was its only searchable identity**. It must remain targetable. Add a
+Desktop fact in `RedactionOracleTests.cs`:
+
+```csharp
+    /// BC-1: a rule-redacted element with NO AutomationId is still resolvable by ref and still
+    /// actionable. The descriptor keeps the RAW name (RefRegistry.cs:184-185 falls back to
+    /// Name+ControlType; :337 compares it), so only NAME SEARCH is withheld — which is the intent.
+    [SkippableFact, Trait("Category", "Desktop")]
+    public async Task A_rule_redacted_element_without_an_automationId_is_still_targetable_by_ref()
+    {
+        // arrange: a fixture element with no AutomationId, matched by a namePattern rule
+        var snap = await Snapshot(window);
+        var refId = RefOfRedactedElement(snap);          // present in the snapshot, name shows [REDACTED]
+        Assert.NotNull(refId);
+
+        // it is NOT findable by name (the oracle is closed) ...
+        Assert.Empty((await Find(window, name: RawName)).Matches);
+
+        // ... but the ref still resolves and still acts.
+        var set = await SetValue(window, refId!, "typed");
+        Assert.True(set.Ok);
+    }
+```
+
+Run: `dotnet test --filter "FullyQualifiedName~RedactionOracleTests"` (main thread). Expected: PASS.
+If this fails, **stop** — SP3 has reintroduced the defect that invalidated item 7.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -1212,6 +1298,10 @@ and an existing consumer keys off it. `redacted` is the one field a consumer sho
       ⚠ Call the **real tool method**; do not re-declare the anonymous projection locally — a locally
       re-declared projection cannot catch a field rename and produces a vacuous test.
 - [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2b: Pin the `SnapshotStats` tallies** — an earlier draft wired them and tested neither.
+      A headless fact over a hand-built `SnapshotModel` containing one OS-password node, one rule-redacted
+      node and one visible node asserts the shipped password counter counts **only** the OS one (its
+      meaning must not change) while `redactedCount` counts **both** redacted nodes.
 - [ ] **Step 3: Add the fields** to `GridCellInfo` / `TextReadResult` (`PerceptionManager.cs:868`, `:870`)
       and to the four `ContentTools` projections; add `redactedCount` to `SnapshotStats`.
 - [ ] **Step 4: Run — expect PASS**; headless gate green.
@@ -1233,6 +1323,16 @@ Exit codes (spec §5.5): `0` valid and live · `1` invalid, offending rule named
 running server loaded something else · `4` cannot determine (two distinct messages: access-denied vs
 `stateVersion` skew) · `5` valid, no server running.
 
+⚠ **Every dry-run output carries a BANNER** (spec §5.5) stating that results reflect the **file**, and
+that a running server enforces what it loaded at boot. An earlier draft of this plan printed results and
+exited with no banner — the banner is what stops an operator reading a passing dry-run as proof the
+server is enforcing it. Exact text:
+
+```
+NOTE: these results reflect the RULE FILE on disk. A running server enforces the rules it loaded at
+boot; restart it to apply changes. Exit code 0 means the running server is already enforcing this file.
+```
+
 ⚠ **The dry-run ALWAYS prints its results.** Withholding output on a hash mismatch forces a server
 restart per regex tweak, destroying the loop it exists to protect.
 ⚠ **Rule-matched nodes show their RAW name**; OS password fields stay `[REDACTED]`; **no values ever**.
@@ -1242,7 +1342,9 @@ The operator is a local human debugging their own rule — redacting there makes
 - [ ] **Step 1: Write the failing tests** in `CheckRedactionRulesCliTests.cs` covering: a valid file with
       no server → `5`; an invalid file → `1` naming the rule; a hash mismatch → `3` **with results still
       printed**; an `Unknown` instance → `4` with the access-denied message; a version-skew instance → `4`
-      with the upgrade message.
+      with the **upgrade** message (distinct text — sending an operator with a version skew to debug
+      permissions is the defect this separation exists to prevent); and **every** exit path emits the
+      banner above.
 - [ ] **Step 2: Run — expect FAIL.**
 - [ ] **Step 3: Implement the command and register the verb.**
 - [ ] **Step 4: Run — expect PASS**; headless gate green.
