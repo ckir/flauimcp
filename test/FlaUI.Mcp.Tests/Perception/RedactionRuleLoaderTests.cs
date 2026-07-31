@@ -79,4 +79,33 @@ public class RedactionRuleLoaderTests : IDisposable
             .Select(i => $$"""{ "name": "r{{i}}", "global": true, "automationId": "x" }"""));
         Assert.Contains("64", Rejects(Write($$"""{ "version": 1, "rules": [ {{items}} ] }""")).Message, StringComparison.Ordinal);
     }
+
+    /// Startup reads the rule file ONCE and both hashes and parses those same bytes, so parsing moved off
+    /// File.ReadAllText onto a byte overload. ReadAllText detected a BOM; System.Text.Json REJECTS a
+    /// leading BOM outright. Without BOM-detecting decode, every BOM'd rule file — what Notepad and many
+    /// editors produce by default on Windows — would become "could not parse" and refuse server startup.
+    [Fact]
+    public void A_rule_file_saved_with_a_utf8_bom_still_loads()
+    {
+        var p = Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".json");
+        File.WriteAllText(p, """{ "version": 1, "rules": [ { "name": "a", "global": true, "automationId": "x" } ] }""",
+                          new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        Assert.Equal("a", Assert.Single(RedactionRuleFile.Load(p)).Name);
+    }
+
+    /// The byte overload and the path overload must agree — startup uses Parse, the check-redaction-rules
+    /// CLI uses Load, and a divergence would make the CLI's verdict describe different rules than the
+    /// server actually enforces.
+    [Fact]
+    public void Parse_over_bytes_agrees_with_Load_over_the_same_file()
+    {
+        const string json = """
+        { "version": 1, "rules": [
+          { "name": "a", "processName": "devenv", "automationId": "tokenBox" },
+          { "name": "b", "processName": "chrome", "automationIdPattern": "^cc_" } ] }
+        """;
+        var p = Write(json);
+        Assert.Equal(Array.ConvertAll(RedactionRuleFile.Load(p), r => r.Name),
+                     Array.ConvertAll(RedactionRuleFile.Parse(File.ReadAllBytes(p), p), r => r.Name));
+    }
 }

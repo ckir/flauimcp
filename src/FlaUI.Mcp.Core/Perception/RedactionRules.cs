@@ -102,9 +102,29 @@ public static class RedactionRuleFile
     {
         if (!File.Exists(path))
             throw new RedactionConfigException($"Redaction rule file not found: '{path}'.");
+        return Parse(File.ReadAllBytes(path), path);
+    }
 
+    /// <summary>Parse rules from bytes the caller has ALREADY read. <paramref name="path"/> only names the
+    /// file in error messages.
+    ///
+    /// This overload exists so a caller that needs both the rules and the file's HASH can read once.
+    /// Reading twice — once to parse, once to hash — lets the file change in between, and the recorded
+    /// hash then describes content that was never loaded. That hash is exactly what check-redaction-rules
+    /// compares to decide whether a running server is enforcing the file on disk, so a second read makes
+    /// that diagnostic lie in BOTH directions: "in sync" when it is not, and "out of sync" when it is.</summary>
+    public static RedactionRule[] Parse(byte[] bytes, string path)
+    {
         RuleFileDto? dto;
-        try { dto = JsonSerializer.Deserialize<RuleFileDto>(File.ReadAllText(path)); }
+        try
+        {
+            // BOM-detecting decode, so a UTF-8 or UTF-16 BOM'd rule file behaves exactly as it did when
+            // this was File.ReadAllText. System.Text.Json rejects a leading BOM outright, so handing it
+            // raw bytes would turn a perfectly valid operator file into "could not parse".
+            using var reader = new StreamReader(new MemoryStream(bytes), System.Text.Encoding.UTF8,
+                                                detectEncodingFromByteOrderMarks: true);
+            dto = JsonSerializer.Deserialize<RuleFileDto>(reader.ReadToEnd());
+        }
         catch (Exception ex) { throw new RedactionConfigException($"Could not parse '{path}': {ex.Message}"); }
 
         if (dto is null) throw new RedactionConfigException($"Could not parse '{path}': empty document.");

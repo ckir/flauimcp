@@ -35,10 +35,13 @@ if (startupOptions.RedactionRules is not null)
 {
     try
     {
+        // ONE read: the bytes hashed are the bytes parsed. Reading twice (parse, then hash) lets the file
+        // change in between, and this hash is what check-redaction-rules compares to decide whether the
+        // running server is enforcing the file on disk.
+        byte[] ruleBytes = File.ReadAllBytes(startupOptions.RedactionRules);
+        rulesSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(ruleBytes));
         classifier = FlaUI.Mcp.Core.Perception.SensitivityClassifier.ForRules(
-            FlaUI.Mcp.Core.Perception.RedactionRuleFile.Load(startupOptions.RedactionRules));
-        rulesSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            File.ReadAllBytes(startupOptions.RedactionRules)));
+            FlaUI.Mcp.Core.Perception.RedactionRuleFile.Parse(ruleBytes, startupOptions.RedactionRules));
     }
     catch (FlaUI.Mcp.Core.Perception.RedactionConfigException ex)
     {
@@ -49,6 +52,23 @@ if (startupOptions.RedactionRules is not null)
         Console.Error.WriteLine(msg);
         // This must reach a durable log, NOT stderr alone: an MCP child that exits takes its whole tool
         // surface with it, and the operator may never open stderr.
+        FlaUI.Mcp.Server.Install.ServerStateFile.TryLogStartupError(msg);
+        return 2;
+    }
+    catch (Exception ex)
+    {
+        // The file could not be READ AT ALL — locked by the operator's editor, permissions, or deleted
+        // between launch and open. Without this catch the exception escapes, the server dies, and it
+        // takes the durable log with it: the one record the operator has to diagnose from.
+        //
+        // Deliberately a DIFFERENT message from the config branch above. Telling someone to "fix the
+        // named rule" when the real fault is a sharing violation sends them to edit a file that is
+        // perfectly valid — a recovery string must name a cause the reader can actually act on.
+        var msg = $"flaui-mcp: refusing to start — could not read the redaction rule file " +
+                  $"'{startupOptions.RedactionRules}': {ex.Message}\n" +
+                  "Check the path and that no other process holds the file open, or remove " +
+                  "--redaction-rules to start without rules.";
+        Console.Error.WriteLine(msg);
         FlaUI.Mcp.Server.Install.ServerStateFile.TryLogStartupError(msg);
         return 2;
     }
