@@ -1653,8 +1653,21 @@ git commit -m "test(sp3): the source sweep — every content read inside one of 
       (WebView2/CEF/Electron) and compare each node's owning process id against the window root's.
       **If they differ, the once-per-walk hoist is unsound** — resolve `processName` per HWND boundary
       (re-read when a node's `NativeWindowHandle` differs from the current root's) and re-run Task 5.
-      ⚠ Record the result either way; the same doubt applies to the shipped whole-window denylist, which
-      is **out of scope for SP3** but must be written up as a follow-up finding.
+      ⚠ Record the result either way.
+
+      ⚠⚠ **The same doubt applies to the SHIPPED whole-window denylist, and it is IN SCOPE.** An earlier
+      draft called it "out of scope for SP3, write it up as a follow-up finding". **That is OVERRULED —
+      pre-existing defects are always in scope** (standing operator instruction, 2026-07-31).
+
+      Why it matters: the shipped denylist decides *refuse the whole window* from the **root's** process.
+      If a window's nodes do not all belong to that process, then content from a **denied** process
+      embedded inside an **allowed** window is served — a live hole in today's security floor, predating
+      SP3, and the identical assumption SP3's per-walk hoist rests on.
+
+      If the measurement shows heterogeneity: **fix the denylist too, in this branch, in its OWN commit**
+      (kept separate from the SP3 feature commits so the pre-existing fix stays independently revertable),
+      and pin it. If it shows homogeneity: record the numbers and state plainly that both the hoist and the
+      shipped denylist rest on one measured assumption — so a future embedded-host change breaks both.
 - [ ] **Step 2: Zero-rule regression.** Time the 95-node WPF TestApp walk with no rule file against the
       pre-SP3 baseline. Expected: no regression. Record both numbers.
 - [ ] **Step 3: Worst-case rules.** Time the same walk with 64 global rules. Record the number.
