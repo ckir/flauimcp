@@ -40,4 +40,17 @@ public class RedactionEgressTests
         Assert.Contains("\"Username\"", text);
         Assert.DoesNotContain("[REDACTED]", text);
     }
+
+    /// Family B: the diff is a second egress surface for the node name. Pre-SP3 it redacted only on
+    /// Source == Os, so a RULE-redacted node put its real name on the wire through the diff even though
+    /// the plain snapshot render hid it. Identity keying (line 19) deliberately keeps the RAW name so a
+    /// redacted node still matches itself across baseline/current — that is BC-1 and must not change.
+    [Fact]
+    public void A_rule_redacted_node_is_redacted_in_a_diff()
+    {
+        var before = new SnapshotModel(new[] { Node("old", Sensitivity.Visible) });
+        var after = new SnapshotModel(new[] { Node("4111", new Sensitivity(true, RedactionSource.Rule, "card")) });
+        var d = SnapshotDiff.Compute("w1:1", before, "w1:2", after);
+        Assert.DoesNotContain("4111", System.Text.Json.JsonSerializer.Serialize(d));
+    }
 }

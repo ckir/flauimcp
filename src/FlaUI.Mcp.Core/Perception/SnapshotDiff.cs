@@ -18,11 +18,13 @@ public static class SnapshotDiff
 
     private static string Identity(SnapshotNode n) => IdentityKey(n.ControlType, n.AutomationId, n.RuntimeId, n.Name);
 
-    /// <summary>The Name as it may appear on the wire (added/removed/changed output): "[REDACTED]" for an
-    /// IsPassword element, matching the snapshot render (SnapshotEngine.cs:131) so a diff never becomes a
-    /// name-oracle that plain snapshot already redacts (INV-5). Identity keying keeps the RAW name (internal,
-    /// never serialized) so a password node still matches itself across baseline/current.</summary>
-    private static string ShownName(SnapshotNode n) => n.Sensitivity.Source == RedactionSource.Os ? "[REDACTED]" : n.Name;
+    /// <summary>The Name as it may appear on the wire (added/removed/changed output): "[REDACTED]" whenever
+    /// the classifier decided to withhold it — an OS password OR a configured redaction rule — matching the
+    /// snapshot render (SnapshotEngine.cs:147) so a diff never becomes a name-oracle that plain snapshot
+    /// already closes (INV-5). Identity keying keeps the RAW name (internal, never serialized) so a redacted
+    /// node still matches itself across baseline/current. Per spec §5.3 the diff emits NO provenance field —
+    /// stated explicitly so this reads as a decision, not an omission.</summary>
+    private static string ShownName(SnapshotNode n) => n.Sensitivity.Redact ? "[REDACTED]" : n.Name;
     private static DiffDescriptor Desc(SnapshotNode n) => new(n.Ref, n.ControlType.ToString(), n.AutomationId, ShownName(n));
     private static NodeState State(SnapshotNode n) => new(ShownName(n), n.Enabled, n.Focused, n.Selected);
 
