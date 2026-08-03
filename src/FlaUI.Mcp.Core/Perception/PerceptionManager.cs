@@ -349,7 +349,8 @@ public sealed class PerceptionManager
             string ct = "Unknown", aid = string.Empty;
             try { ct = cell.ControlType.ToString(); } catch { }
             try { aid = cell.Properties.AutomationId.ValueOrDefault ?? string.Empty; } catch { }
-            return new GridCellInfo(read.Text, ct, aid, read.Sensitivity.Source == RedactionSource.Os);
+            return new GridCellInfo(read.Text, ct, aid, read.Sensitivity.Source == RedactionSource.Os,
+                read.Sensitivity.Redact, ElementContent.RedactedBy(read.Sensitivity));
         }
         catch (System.UnauthorizedAccessException)
         { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
@@ -409,7 +410,8 @@ public sealed class PerceptionManager
                 }
                 return raw;
             });
-            return new TextReadResult(read.Text, truncated, read.Sensitivity.Source == RedactionSource.Os, truncatedFrom);
+            return new TextReadResult(read.Text, truncated, read.Sensitivity.Source == RedactionSource.Os, truncatedFrom,
+                read.Sensitivity.Redact, ElementContent.RedactedBy(read.Sensitivity));
         }
         catch (System.UnauthorizedAccessException)
         { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
@@ -824,11 +826,12 @@ public sealed class PerceptionManager
         return Tally(id, model);
     }
 
-    private static SnapshotStats Tally(string id, SnapshotModel m)
+    internal static SnapshotStats Tally(string id, SnapshotModel m)
     {
         var nodes = m.Nodes.ToList();
         return new SnapshotStats(id, nodes.Count, nodes.Count(SnapshotEngine.IsInteractiveNode),
             nodes.Count(n => n.IsOffscreen), nodes.Count(n => n.Sensitivity.Source == RedactionSource.Os),
+            nodes.Count(n => n.Sensitivity.Redact),
             nodes.GroupBy(n => n.ControlType.ToString()).ToDictionary(g => g.Key, g => g.Count()));
     }
 
@@ -928,6 +931,8 @@ public sealed record FocusedElementInfo(string Ref, string DescriptorLine, strin
 
 public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> PasswordRects, bool Minimized, bool Denied, string? DeniedProcess);
 
-public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword);
+public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword,
+    bool Redacted, string? RedactedBy);
 
-public sealed record TextReadResult(string Text, bool Truncated, bool IsPassword, string? TruncatedFrom = null);
+public sealed record TextReadResult(string Text, bool Truncated, bool IsPassword, string? TruncatedFrom = null,
+    bool Redacted = false, string? RedactedBy = null);

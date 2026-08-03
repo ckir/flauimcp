@@ -75,6 +75,12 @@ public static class ElementContent
                                             string? processName)
         => Classify(el, classifier, processName).Sensitivity;
 
+    /// <summary>Wire provenance for the `redactedBy` field: "os" for the OS IsPassword flag, "rule:&lt;name&gt;"
+    /// for an operator rule, null when nothing was withheld. Kept separate from `isPassword`, which keeps
+    /// its literal OS meaning for the consumers already reading it.</summary>
+    public static string? RedactedBy(Sensitivity s) => !s.Redact ? null
+        : s.Source == RedactionSource.Os ? "os" : $"rule:{s.RuleName}";
+
     /// <summary>DEFAULT PATH (spec §4.4): the rule thunks are constructed only INSIDE the HasRules branch.
     ///
     /// ⚠ They must NOT be parameters. C# evaluates arguments at the CALL SITE, so passing them in would

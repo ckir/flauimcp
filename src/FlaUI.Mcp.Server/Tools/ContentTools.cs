@@ -18,7 +18,7 @@ public sealed class ContentTools
     public ContentTools(PerceptionManager perception, WindowManager windows, ServerOptions options)
     { _perception = perception; _windows = windows; _options = options; }
 
-    [McpServerTool(ReadOnly = true), Description("Read one grid/table cell by (row,col) without snapshotting the whole grid. ref = a Grid/Table element; row/col are 0-based. Returns the cell value (Value pattern else Name), controlType, automationId, isPassword. GridCellOutOfRange if out of bounds; PatternUnsupported if not a grid. To ACT on a cell, re-snapshot with rootRef=<grid ref>.")]
+    [McpServerTool(ReadOnly = true), Description("Read one grid/table cell by (row,col) without snapshotting the whole grid. ref = a Grid/Table element; row/col are 0-based. Returns the cell value (Value pattern else Name), controlType, automationId, isPassword, redacted, redactedBy. GridCellOutOfRange if out of bounds; PatternUnsupported if not a grid. To ACT on a cell, re-snapshot with rootRef=<grid ref>.")]
     public Task<string> DesktopGetGridCell(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("0-based row index.")] int row,
@@ -33,10 +33,10 @@ public sealed class ContentTools
             {
                 sel.Validate();
                 var (c, resolved) = await _perception.GetGridCellBySelectorAsync(new WindowHandle(window), sel, row, col, timeoutMs);
-                return ToolResponse.Ok(new { value = c.Value, controlType = c.ControlType, automationId = c.AutomationId, isPassword = c.IsPassword, resolvedElement = resolved });
+                return ToolResponse.Ok(new { value = c.Value, controlType = c.ControlType, automationId = c.AutomationId, isPassword = c.IsPassword, redacted = c.Redacted, redactedBy = c.RedactedBy, resolvedElement = resolved });
             }
             var c2 = await _perception.GetGridCellAsync(new WindowHandle(window), @ref!, row, col, timeoutMs);
-            return ToolResponse.Ok(new { value = c2.Value, controlType = c2.ControlType, automationId = c2.AutomationId, isPassword = c2.IsPassword });
+            return ToolResponse.Ok(new { value = c2.Value, controlType = c2.ControlType, automationId = c2.AutomationId, isPassword = c2.IsPassword, redacted = c2.Redacted, redactedBy = c2.RedactedBy });
         });
 
     [McpServerTool(Destructive = true), Description("Select a grid/table cell by (row,col) via UIA SelectionItemPattern. ref = the Grid element; row/col 0-based. GridCellOutOfRange if out of bounds; ElementNotActionable if the cell is off-screen (scroll first); PatternUnsupported if the cell isn't selectable. Blocked in --read-only-mode.")]
@@ -62,7 +62,7 @@ public sealed class ContentTools
             return ToolResponse.Ok(new { ok = true, pathUsed = "pattern" });
         });
 
-    [McpServerTool(ReadOnly = true), Description("Read an element's text via UIA TextPattern. selectionOnly=true reads the current selection (empty if none). maxLength caps output (default 10000, 1..200000); truncated=true if the text exceeded it, and truncatedFrom tells which end was dropped (\"tail\" for the default head-keeping read, \"head\" for a fromEnd read, null when not truncated). fromEnd=true returns the LAST maxLength chars (the latest output, e.g. a terminal's most-recent lines) instead of the first. NOTE: TextPattern returns roughly the visible viewport — text scrolled above it is not recoverable. A password field returns text=\"[REDACTED]\", isPassword=true. Off-screen targets ARE readable. PatternUnsupported if no TextPattern.")]
+    [McpServerTool(ReadOnly = true), Description("Read an element's text via UIA TextPattern. selectionOnly=true reads the current selection (empty if none). maxLength caps output (default 10000, 1..200000); truncated=true if the text exceeded it, and truncatedFrom tells which end was dropped (\"tail\" for the default head-keeping read, \"head\" for a fromEnd read, null when not truncated). fromEnd=true returns the LAST maxLength chars (the latest output, e.g. a terminal's most-recent lines) instead of the first. NOTE: TextPattern returns roughly the visible viewport — text scrolled above it is not recoverable. A password field returns text=\"[REDACTED]\", isPassword=true; any redaction also sets redacted=true and redactedBy (\"os\" or \"rule:<name>\"). Off-screen targets ARE readable. PatternUnsupported if no TextPattern.")]
     public Task<string> DesktopGetText(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Element ref from a snapshot, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
@@ -78,10 +78,10 @@ public sealed class ContentTools
             {
                 sel.Validate();
                 var (t, resolved) = await _perception.GetTextBySelectorAsync(new WindowHandle(window), sel, selectionOnly, maxLength, fromEnd, timeoutMs);
-                return ToolResponse.Ok(new { text = t.Text, truncated = t.Truncated, truncatedFrom = t.TruncatedFrom, isPassword = t.IsPassword, resolvedElement = resolved });
+                return ToolResponse.Ok(new { text = t.Text, truncated = t.Truncated, truncatedFrom = t.TruncatedFrom, isPassword = t.IsPassword, redacted = t.Redacted, redactedBy = t.RedactedBy, resolvedElement = resolved });
             }
             var t2 = await _perception.GetTextAsync(new WindowHandle(window), @ref!, selectionOnly, maxLength, fromEnd, timeoutMs);
-            return ToolResponse.Ok(new { text = t2.Text, truncated = t2.Truncated, truncatedFrom = t2.TruncatedFrom, isPassword = t2.IsPassword });
+            return ToolResponse.Ok(new { text = t2.Text, truncated = t2.Truncated, truncatedFrom = t2.TruncatedFrom, isPassword = t2.IsPassword, redacted = t2.Redacted, redactedBy = t2.RedactedBy });
         });
 
     [McpServerTool(Destructive = true), Description("Read a background Windows Terminal tab in one call: selects the tab at tabIndex (0-based ordinal, over the Tab→List→TabItem structure), settles, reads its buffer, and restores the originally-active tab. tabIndex only (no ref/title — refs go stale on switch, titles are ambiguous); get it from desktop_list_terminal_tabs, NOT from a desktop_snapshot (a snapshot's ordinal can disagree: the walk drops off-screen, culled and too-deep nodes). The tab title names the launcher, not the program, so read every candidate tab before concluding the program you want is not running. fromEnd (default true) reads the latest output; maxLength caps it. Returns { text, truncated, truncatedFrom, tabTitle, restored, restoreConfidence, activeTabIndex } — restored=false + the now-active tab when restore couldn't complete confidently (e.g. the original tab was closed). Errors without switching on an out-of-range tabIndex; \"unrecognized terminal layout\" if the tree isn't a WT tab strip. Blocked in --read-only-mode.")]
