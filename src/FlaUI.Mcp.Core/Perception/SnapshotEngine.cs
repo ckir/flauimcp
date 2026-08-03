@@ -27,7 +27,14 @@ public static class SnapshotEngine
         RefRegistry refs,
         string windowId)
     {
-        var model = Build(root, popupRoots, options, refs, windowId);
+        // SP3 Rule 4b: pass the classifier EXPLICITLY rather than relying on Build's optional default.
+        // OsOnly is CORRECT here and is a stated decision, not an oversight: Walk has no src/ callers
+        // (verified) - it is a convenience wrapper over Build+Render kept for pre-existing tests, which
+        // §4.4 forbids editing. The whole point of 4b is that a SILENT fallback to OsOnly is invisible;
+        // naming it makes the choice reviewable.
+        // ⚠ If Walk ever becomes reachable from production, this OsOnly is a real leak - operator rules
+        // would stop applying to everything it renders. Thread a real classifier through at that point.
+        var model = Build(root, popupRoots, options, refs, windowId, SensitivityClassifier.OsOnly);
         return (Render(model, options), model.NodeCount);
     }
 
