@@ -85,7 +85,11 @@ public sealed class WaitCoordinator
     internal static bool Matches(SnapshotNode n, string by, string value) => by switch
     {
         "automationId" => string.Equals(n.AutomationId, value, System.StringComparison.Ordinal),
-        "name" => string.Equals(n.Sensitivity.Source == RedactionSource.Os ? "[REDACTED]" : n.Name, value, System.StringComparison.Ordinal),
+        // DEF-3: a redacted element is excluded from NAME matching entirely — not matched against the
+        // token, and not against its real name (confirming a guess IS the attack). Driven by the
+        // element's classification, never by the query string, so an element legitimately named
+        // "[REDACTED]" is unaffected. automationId/controlType stay matchable: BC-1 targetability.
+        "name" => !n.Sensitivity.Redact && string.Equals(n.Name, value, System.StringComparison.Ordinal),
         "controlType" => string.Equals(n.ControlType.ToString(), value, System.StringComparison.OrdinalIgnoreCase),
         _ => false
     };

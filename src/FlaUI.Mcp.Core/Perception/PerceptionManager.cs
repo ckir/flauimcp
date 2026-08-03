@@ -157,6 +157,11 @@ public sealed class PerceptionManager
         var spec = new FindQuerySpec(q);
         bool hasCtConstraint = FindQuerySpec.TryParseControlType(q.ControlType, out var wantedCt);
 
+        // SP3: the classifier needs the owning process name. Read it ONCE from the walk root rather than
+        // per visited node — the selector walk is scoped to a single window, so every descendant shares
+        // the process, and a per-node read would add a COM call to every node of a bounded BFS.
+        var procName = SafeProcessName(root);
+
         // A matched node carries its already-read primitives (read ONCE, reused for the descriptor
         // mint) — mirrors FindAsync's "Read each primitive ONCE; reuse for BOTH" idiom and closes the
         // TOCTOU where a live-updating control's Name/ControlType could differ between match and mint.
@@ -200,11 +205,16 @@ public sealed class PerceptionManager
             {
                 // INV-5: redact BEFORE the match decision, matching FindAsync (PerceptionManager.cs:281-292)
                 // — a selector must not be usable as a password-field name oracle.
-                bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
+                var sens = ElementContent.SensitivityOf(el, _classifier, procName);
                 string rawName = SafeRead(() => el.Name, "") ?? string.Empty;
-                string name = isPwd ? "[REDACTED]" : rawName;
+                string name = sens.Redact ? "[REDACTED]" : rawName;
                 bool enabled = SafeRead(() => el.IsEnabled, false);
-                if (spec.MatchesPostFilter(name, enabled))
+                // DEF-3: withhold a redacted element from NAME search only — matching it on the token made
+                // the selector a locator oracle for every password field. Driven by the ELEMENT's
+                // classification, never by the query string, so an element legitimately named "[REDACTED]"
+                // is unaffected. BC-1: automationId/controlType still reach it, so it stays targetable.
+                if (sens.Redact && spec.HasNameConstraint) { /* not a name-searchable hit */ }
+                else if (spec.MatchesPostFilter(name, enabled))
                 {
                     // Read the remaining descriptor primitives HERE (only on a match) and capture them
                     // with the element — no second read of the winner after the loop (no double-read,
@@ -620,7 +630,9 @@ public sealed class PerceptionManager
                 string rawName = read.RawForIdentity;   // raw -> descriptor (re-resolution key), BC-1
                 string name = read.Text;                // already redacted -> match + output
                 bool enabled = SafeRead(() => el.IsEnabled, false);
-                if (!spec.MatchesPostFilter(name, enabled)) continue; // match on the redacted name (no name-oracle)
+                // DEF-3: withhold a redacted element from NAME search only (BC-1: aid/controlType still reach it).
+                if (read.Sensitivity.Redact && spec.HasNameConstraint) continue;
+                if (!spec.MatchesPostFilter(name, enabled)) continue;
                 total++;
                 if (matches.Count >= max) continue; // keep counting total, stop collecting
 

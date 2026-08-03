@@ -21,13 +21,25 @@ public class WaitNameOracleTests
         Sensitivity: isPassword ? Sensitivity.OsPassword : Sensitivity.Visible, IsOffscreen: false,
         RuntimeId: System.Array.Empty<int>(), Patterns: System.Array.Empty<string>(), HelpText: "");
 
+    /// ⚠ SUPERSEDED IN PART BY SP3 / DEF-3 — read this before "restoring" the old assertion.
+    /// The second assertion used to be `Assert.True(Matches(pwd, "name", "[REDACTED]"))`, pinning the
+    /// TOKEN-SUBSTITUTION MECHANISM: a password node matched the literal "[REDACTED]". That mechanism was
+    /// itself the residual oracle — `wait_for(by:"name", value:"[REDACTED]")` returning satisfied:true
+    /// confirms a redacted element EXISTS at that spot, which is the same class of leak this test was
+    /// written to close, one level up. DEF-3 removes it: a redacted element is excluded from name matching
+    /// entirely rather than rebranded to a well-known string.
+    ///
+    /// This is the ONLY pre-existing test SP3 changed, and the change makes it STRICTER (True -> False:
+    /// strictly fewer things match). The §4.4 rule forbids weakening an assertion to let SP3 pass; nothing
+    /// here is weakened, and the test's stated intent — a password element's real name can never be
+    /// confirmed by name — is unchanged and still asserted on the line above.
     [Fact]
     public void A_password_elements_real_name_can_never_be_confirmed_by_name()
     {
         var pwd = Node("hunter2-NEVER-LEAK", isPassword: true);
 
         Assert.False(WaitCoordinator.Matches(pwd, "name", "hunter2-NEVER-LEAK"));
-        Assert.True(WaitCoordinator.Matches(pwd, "name", "[REDACTED]"));
+        Assert.False(WaitCoordinator.Matches(pwd, "name", "[REDACTED]"));
     }
 
     [Fact]
