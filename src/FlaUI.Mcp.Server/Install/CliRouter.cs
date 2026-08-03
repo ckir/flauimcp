@@ -227,6 +227,10 @@ public static class CliRouter
         outp.WriteLine("  check-redaction-rules <path>   Dry-run: validate a redaction-rule file and report whether");
         outp.WriteLine("                             a running server is actually enforcing it. Does not change");
         outp.WriteLine("                             anything; restart the server to apply an edited rule file.");
+        outp.WriteLine("          [--list-windows]   Also list candidate windows (pid, process, title).");
+        outp.WriteLine("          [--window <pid>]   Also walk that window and show which elements these rules");
+        outp.WriteLine("                             would withhold. A PID, not a wN handle: handles are minted");
+        outp.WriteLine("                             per server instance and do not survive a process boundary.");
         outp.WriteLine("  --version, -v              Print the version.");
         outp.WriteLine("  --help, -h                 Show this help.");
         outp.WriteLine();

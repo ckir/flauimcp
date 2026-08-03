@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using FlaUI.Mcp.Core.Perception;
+using FlaUI.Mcp.Core.Windows;
 
 namespace FlaUI.Mcp.Server.Install;
 
@@ -43,6 +44,10 @@ public static class CheckRedactionRulesCommand
 
         PrintBanner(outp);
         PrintResults(outp, path, rules);
+
+        // The LIVE half of the dry-run (spec §5.5). Both are opt-in flags: the default invocation stays a
+        // pure file check that never acquires UIA, so it remains usable in CI and over a pipe.
+        RunLive(outp, args, rules);
 
         var instances = ServerStateFile.ReadAll(instancesDir ?? ServerStateFile.DefaultDirectory);
 
@@ -93,6 +98,116 @@ public static class CheckRedactionRulesCommand
             var aid = r.AutomationId is not null ? $" automationId={r.AutomationId}" : "";
             outp.WriteLine($"  rule '{r.Name}': {scope}{aid}");
         }
+    }
+
+    /// <summary>The live half: `--list-windows` and `--window &lt;pid&gt;`. Silent and UIA-free when neither
+    /// flag is present.
+    ///
+    /// ⚠ ONE dispatcher and ONE WindowManager for both operations, deliberately. Window handles ("w1") are
+    /// minted PER WindowManager INSTANCE, so a handle printed by one instance is meaningless to another —
+    /// two managers in one invocation would print handles that the very next flag could not resolve.
+    ///
+    /// ⚠ And that is also why `--window` takes a **PID**, not a "w1" handle. This is a CLI: the operator
+    /// runs it once to list and again to walk, in two separate PROCESSES. A per-instance handle cannot
+    /// survive that boundary, so offering one would be an interface that works only in the single-invocation
+    /// case and fails confusingly in the normal one. A PID is stable across processes and is what
+    /// `--list-windows` prints.</summary>
+    private static void RunLive(TextWriter outp, string[] args, RedactionRule[] rules)
+    {
+        bool list = HasFlag(args, "--list-windows");
+        string? pidArg = OptionValue(args, "--window");
+        if (!list && pidArg is null) return;
+
+        using var dispatcher = new FlaUI.Mcp.Core.Threading.AutomationDispatcher();
+        using var windows = new WindowManager(dispatcher);
+
+        if (list)
+        {
+            // Reuses ListWindowsAsync deliberately, NOT a raw UIA walk: it is pure Win32
+            // (WindowManager.cs:74-76 — a UIA Title/ProcessId read blocks with no timeout on any
+            // momentarily-unresponsive window), so listing candidates can never hang this diagnostic on
+            // some unrelated frozen app.
+            var found = windows.ListWindowsAsync(includeBounds: false, includeHandles: true)
+                               .GetAwaiter().GetResult();
+            outp.WriteLine($"windows ({found.Count}):");
+            foreach (var w in found)
+                outp.WriteLine($"  pid={w.Pid} [{w.ProcessName}] {w.Title}");
+        }
+
+        if (pidArg is null) return;
+        if (!int.TryParse(pidArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pid))
+        {
+            outp.WriteLine($"--window expects a PID (as printed by --list-windows); got '{pidArg}'.");
+            return;
+        }
+        MatchWindow(outp, windows, pid, rules);
+    }
+
+    /// <summary>Walks ONE window and reports which elements these rules would actually withhold — the
+    /// question a dry-run exists to answer, which validating the file alone cannot.
+    ///
+    /// ⚠ OUTPUT POLICY (spec §5.5), and the two halves pull in opposite directions ON PURPOSE:
+    /// a RULE-matched element is printed with its RAW name, because the operator is a local human debugging
+    /// their own regex against their own screen and a redacted view makes rule refinement impossible; but an
+    /// OS-password element stays "[REDACTED]" regardless, because that secret is not the operator's rule to
+    /// debug. NO element VALUE is read on any path — only the name — so a password's contents cannot reach
+    /// this output even by accident.
+    ///
+    /// The raw name comes from <see cref="ElementContent.Read.RawForIdentity"/> rather than a direct
+    /// el.Name read, so this stays inside the closed egress-accessor set (spec §7.2) and needs no new
+    /// exemption from the source sweep.</summary>
+    private static void MatchWindow(TextWriter outp, WindowManager windows, int pid, RedactionRule[] rules)
+    {
+        var classifier = SensitivityClassifier.ForRules(rules);
+        int matched = 0, scanned = 0;
+        try
+        {
+            var handle = windows.OpenByPidAsync(pid).GetAwaiter().GetResult();
+            windows.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+            {
+                string? proc = SafeProcName(win);
+                foreach (var el in win.FindAllDescendants())
+                {
+                    scanned++;
+                    var read = ElementContent.Name(el, classifier, proc);
+                    if (!read.Sensitivity.Redact) continue;
+                    matched++;
+                    bool os = read.Sensitivity.Source == RedactionSource.Os;
+                    string shown = os ? ElementContent.RedactedToken : read.RawForIdentity;
+                    string why = os ? "os-password" : $"rule:{read.Sensitivity.RuleName}";
+                    string aid = SafeAid(el);
+                    outp.WriteLine($"  [{why}] name={shown}{(aid.Length > 0 ? $" automationId={aid}" : "")}");
+                }
+                return 0;
+            }).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            outp.WriteLine($"Could not walk the window of pid {pid}: {ex.Message}");
+            return;
+        }
+        outp.WriteLine($"would withhold {matched} of {scanned} element(s) in pid {pid}.");
+    }
+
+    private static string? SafeProcName(FlaUI.Core.AutomationElements.AutomationElement el)
+    {
+        try { return System.Diagnostics.Process.GetProcessById(el.Properties.ProcessId.ValueOrDefault).ProcessName; }
+        catch { return null; }
+    }
+
+    private static string SafeAid(FlaUI.Core.AutomationElements.AutomationElement el)
+    {
+        try { return el.Properties.AutomationId.ValueOrDefault ?? string.Empty; } catch { return string.Empty; }
+    }
+
+    private static bool HasFlag(string[] args, string flag) =>
+        args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
+
+    private static string? OptionValue(string[] args, string option)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+            if (string.Equals(args[i], option, StringComparison.OrdinalIgnoreCase)) return args[i + 1];
+        return null;
     }
 
     private static void PrintBanner(TextWriter outp)
