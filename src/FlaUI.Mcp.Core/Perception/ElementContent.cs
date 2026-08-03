@@ -66,6 +66,15 @@ public static class ElementContent
         return new Read(raw, s) { RawForIdentity = raw };
     }
 
+    /// <summary>DEF-1: the redaction DECISION for an element whose CONTENT is never read — the pixel path.
+    /// Screenshot masking needs to know whether to paint a rect black; it must never read the value it is
+    /// hiding. Routing it through the same <see cref="Classify"/> as every text site is the point: the pixel
+    /// path used to read <c>IsPassword</c> RAW inside a swallowing try/catch, so a provider that THREW got
+    /// its text redacted and its pixels CAPTURED. Classify fails CLOSED, so a throw now masks.</summary>
+    public static Sensitivity SensitivityOf(AutomationElement el, SensitivityClassifier classifier,
+                                            string? processName)
+        => Classify(el, classifier, processName).Sensitivity;
+
     /// <summary>DEFAULT PATH (spec §4.4): the rule thunks are constructed only INSIDE the HasRules branch.
     ///
     /// ⚠ They must NOT be parameters. C# evaluates arguments at the CALL SITE, so passing them in would

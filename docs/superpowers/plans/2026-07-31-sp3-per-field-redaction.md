@@ -1434,10 +1434,23 @@ git commit -m "feat(sp3): family B — diff redacts on the classifier's decision
 
 ## Task 8 — Family C: pixels, plus DEF-1 and DEF-2
 
-**DEF-1:** `PerceptionManager.cs:818` reads `d.Properties.IsPassword.ValueOrDefault` **raw** inside
-`try/catch{}` while all eleven text sites fail closed — so a throwing provider gets its text redacted and
-its **pixels captured**. **DEF-2:** `ScreenshotTools.cs:37` passes `Array.Empty<Rectangle>()`, so
-full-desktop capture masks nothing.
+**DEF-1:** `PerceptionManager.cs:840` (⚠ AMENDMENT 3: the plan was authored citing `:818`; the line drifted
+to **`:840`** by `4c37e81` — re-measured before execution) reads `d.Properties.IsPassword.ValueOrDefault`
+**raw** inside `try/catch{}` while all eleven text sites fail closed — so a throwing provider gets its text
+redacted and its **pixels captured**. **DEF-2:** `ScreenshotTools.cs:37` passes `Array.Empty<Rectangle>()`,
+so full-desktop capture masks nothing.
+
+⚠ **AMENDMENT 3 — the DEF-1 pin as planned is NOT achievable, and pretending otherwise would ship a
+vacuous oracle.** Step 1 below asks for a Desktop pin where "a fixture element whose `IsPassword` read
+throws yields a mask rect". No fixture can stage that: a conformant WPF `PasswordBox` answers `IsPassword`
+normally, so the PRE-FIX code already collects its rect and the pin passes red and green alike. This is the
+same limitation `PasswordRedactionTests.cs:38-43` already documents for the snapshot path. As executed:
+- the fail-CLOSED primitive stays pinned headlessly (`PerceptionManagerShouldFixTests.cs:11-13`);
+- the Desktop fact is labelled in-file as a **regression guard**, proving the rerouted pixel path still
+  finds a real password field — MEASURED passing pre-fix, so it is not presented as red→green;
+- **DEF-2 carries the true red→green**, and it is asserted through the TOOL (not the manager) for two
+  reasons: the tool is where `Array.Empty` lived, and a manager-level assertion could not compile against
+  the pre-fix tree. Measured pre-fix: `redactions: 0`. Post-fix: `> 0`.
 
 - [ ] **Step 1: Write the failing Desktop pins** in `test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs`
       with `[Trait("Category","Desktop")]`: a fixture element whose `IsPassword` read throws yields a mask

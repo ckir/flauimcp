@@ -837,7 +837,11 @@ public sealed class PerceptionManager
             var pw = new List<System.Drawing.Rectangle>();
             foreach (var rootEl in PopupFinder.SearchRoots(win, desktop))
             {
-                try { foreach (var d in rootEl.FindAllDescendants()) { try { if (d.Properties.IsPassword.ValueOrDefault) pw.Add(d.BoundingRectangle); } catch { } } } catch { }
+                // DEF-1: this read used to be RAW (`d.Properties.IsPassword.ValueOrDefault`) inside the inner
+                // catch, so a provider that THREW yielded no rect — text redacted, PIXELS CAPTURED, while all
+                // eleven text sites failed closed. SensitivityOf routes through the same classifier, which
+                // fails closed on a throw AND honours configured rules, not just the OS password flag.
+                try { foreach (var d in rootEl.FindAllDescendants()) { try { if (ElementContent.SensitivityOf(d, _classifier, procName).Redact) pw.Add(d.BoundingRectangle); } catch { } } } catch { }
             }
             return new CaptureGeometry(target.BoundingRectangle, pw, false, false, null);
         });
@@ -857,6 +861,31 @@ public sealed class PerceptionManager
         var win = geo.Bounds; // full window physical rect (target was `win` itself since @ref is null)
         var capture = TextCaptureGeometry.ComputeCaptureBounds(win, region);
         return new TextCaptureGeometry(false, null, false, capture, geo.PasswordRects, win.X, win.Y, win.Width, win.Height);
+    }
+
+    /// <summary>DEF-2: full-desktop capture passed Array.Empty&lt;Rectangle&gt;() and so masked NOTHING — the one
+    /// capture mode that photographs every window at once was the only mode with no redaction at all, while
+    /// window- and element-scoped capture both masked correctly. Collects the mask rects of every visible
+    /// non-denied window.
+    ///
+    /// A window that fails to resolve is SKIPPED rather than fatal: one unreadable window must not fail the
+    /// whole capture. That is not a hole — ScreenshotTools already REFUSES a full-desktop capture outright
+    /// when any denylisted credential window is visible, so this path only ever runs when none is.</summary>
+    public async Task<IReadOnlyList<System.Drawing.Rectangle>> AllPasswordRectsAsync()
+    {
+        var rects = new List<System.Drawing.Rectangle>();
+        var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
+        foreach (var w in windows)
+        {
+            if (w.Handle is null || PerceptionPolicy.IsDenied(w.ProcessName)) continue;
+            try
+            {
+                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null);
+                if (!geo.Denied && !geo.Minimized) rects.AddRange(geo.PasswordRects);
+            }
+            catch { } // a window that closed mid-enumeration, or one we cannot bind: skip it
+        }
+        return rects;
     }
 
     public async Task<bool> DenylistedWindowsVisibleAsync()

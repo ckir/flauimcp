@@ -34,7 +34,12 @@ public sealed class ScreenshotTools
                 if (present)
                     throw new ToolException(ToolErrorCode.TargetDenied, "A credential/denylisted window is currently visible; full-desktop capture is refused.", "capture a specific non-sensitive window: desktop_screenshot window=<handle>");
                 var vbounds = ScreenCapture.VirtualScreenBounds();
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, System.Array.Empty<System.Drawing.Rectangle>(), maxWidth));
+                // DEF-2: this passed Array.Empty<Rectangle>() — full-desktop capture masked NOTHING, even
+                // though window- and element-scoped capture both masked correctly. The refusal above only
+                // covers DENYLISTED windows; an ordinary window holding a password field was photographed
+                // in the clear.
+                var deskRects = await _perception.AllPasswordRectsAsync();
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, deskRects, maxWidth));
             }
             else
             {
