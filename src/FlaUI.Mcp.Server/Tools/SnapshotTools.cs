@@ -16,6 +16,9 @@ public sealed class SnapshotTools
 
     [McpServerTool(ReadOnly = true), Description("Walk a window's accessibility tree into an indented, ref-tagged snapshot. " +
         "Each line: [e23] Button \"OK\" @{x,y,w,h} {enabled, focusable} [Invoke]. Use the e-refs with later interaction tools. " +
+        "A redacted element shows \"[REDACTED]\" as its name; if an operator rule caused it the state also carries " +
+        "redacted:rule:<name> (OS password fields carry no marker). Redacted elements are not findable by name - " +
+        "target them by the e-ref or automationId. " +
         "If the window is an opaque Chromium/Electron app, the result includes wakeable:true — call desktop_wake_accessibility then re-snapshot to see its contents.")]
     public Task<string> DesktopSnapshot(
         [Description("Window handle, e.g. w1.")] string window,
@@ -92,7 +95,7 @@ public sealed class SnapshotTools
             return ToolResponse.Ok(new { stable = r.Stable, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId });
         });
 
-    [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/redacted/redactedCount) + a per-ControlType histogram, without the tree text. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
+    [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/redacted/redactedCount) + a per-ControlType histogram, without the tree text. redactedCount is ALL redacted nodes; redacted counts OS password nodes only (kept for back-compat) - they are different numbers. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
     public Task<string> DesktopSnapshotStats(
         [Description("Window handle. Provide this OR snapshotId.")] string? window = null,
         [Description("A prior snapshotId, e.g. w1:4. Provide this OR window.")] string? snapshotId = null)

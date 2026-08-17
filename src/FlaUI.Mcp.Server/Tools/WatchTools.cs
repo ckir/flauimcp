@@ -27,7 +27,8 @@ public sealed class WatchTools
         "Optional scope=<a live ref> narrows structure_changed to that element's subtree. Returns " +
         "{subscriptionId, window, events, scope?}. Each notification payload is " +
         "{subscriptionId, event, window, ref?, controlType?, name?, bounds?, coalescedCount, timestampUtc} " +
-        "(name is [REDACTED] for password fields; ref/name/bounds may be absent, e.g. window_closed). The " +
+        "(name is [REDACTED] for any redacted element - OS password field or operator rule; ref/name/bounds " +
+        "may be absent, e.g. window_closed). The " +
         "payload 'ref' is EPHEMERAL - minted into a small bounded pool, so it returns REF_NOT_FOUND if you wait " +
         "too long to act; re-desktop_snapshot for a durable ref. ReadOnly + lease-exempt. " +
         "IMPORTANT - many hosts (including Claude Code) do NOT surface these push notifications to the model: " +

@@ -92,6 +92,7 @@ Same plugin, registered with agy via `agy plugin install "{app}\plugin"` — agy
 |---|---|
 | `flaui-mcp` | Start the stdio MCP server. |
 | `--read-only-mode` | Start the server, blocking all state-changing tools. |
+| `--redaction-rules <path>` | Start the server with operator redaction rules from a JSON file. Absent ⇒ the feature is off. See **Redaction rules** below. |
 | `--unsafe-allow-elevation` | Allow synthetic input to elevated windows (default: hard-refused). |
 | `--overlay` | Launch flag: enable red intent overlay before mutative actions. |
 | `--overlay-ms=<ms>` | Launch flag: specify intent overlay duration in milliseconds. |
@@ -111,6 +112,9 @@ Same plugin, registered with agy via `agy plugin install "{app}\plugin"` — agy
 | `overlay on\|off` | Toggle the intent overlay. |
 | `autosound on\|off` | Toggle the spoken attention cue. |
 | `presence on\|off` | Toggle human presence sensing. |
+| `check-redaction-rules <path>` | Dry-run: validate a redaction-rule file and report whether a running server is enforcing it. Read-only; reads the file, never the desktop. |
+| `[--list-windows]` | Pass to `check-redaction-rules` to list bindable windows as `pid` + title. |
+| `[--window <pid>]` | Pass to `check-redaction-rules` to walk that **pid**'s window and print which elements the rules match. ⚠ Takes a **pid**, not a `wN` handle — handles are per-process and meaningless across two CLI invocations. |
 | `print-config` | Print the JSON configuration snippet to stdout. |
 | `status` | Print installation and registration status. |
 | `activation-payload` | Print the SessionStart hook payload as JSON. Invoked by the hook, not by hand. |
@@ -162,6 +166,64 @@ This mode blocks:
 - Destructive lifecycle actions (launch program, close window).
 
 Read-only mode guarantees the agent can only perceive the desktop.
+
+## Redaction rules
+
+Windows password fields are **always** redacted — no configuration, cannot be disabled. Redaction rules extend that to content the OS does not flag: an account number field, a customer name column, a licence key box.
+
+Start the server with `--redaction-rules <path>`. Omit the flag and the feature is off.
+
+```json
+{
+  "version": 1,
+  "rules": [
+    { "name": "acct-number", "processName": "Contoso.Billing", "automationId": "AccountNumber" },
+    { "name": "ssn-cells",   "processName": "Contoso.Billing", "automationIdPattern": "^Cell_SSN_\\d+$" },
+    { "name": "any-secret",  "global": true, "namePattern": "(?i)secret|token" }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | **Required.** Identifies the rule in diagnostics — and reaches the agent (see the warning below). |
+| `processName` | Restrict to one process (no `.exe`, case-insensitive). Required unless `global` is true. |
+| `global` | `true` ⇒ apply in every process. Use sparingly. |
+| `automationId` | Exact automation-id match. |
+| `automationIdPattern` | Regex over the automation id. |
+| `namePattern` | Regex over the element's raw name. |
+
+- `version` must be `1`.
+- **Maximum 64 rules.** More than that is a policy problem, not a configuration one.
+- Patterns compile as non-backtracking regexes, so a pathological pattern cannot hang the walk.
+- An invalid file **refuses server startup** rather than starting unprotected. A file saved from Notepad with a UTF-8 BOM loads fine.
+
+⚠ **Rule names reach the agent.** A redacted element reports `redactedBy: "rule:<name>"`, so the name itself is a disclosure. Name a rule for what it protects, not for the secret — `acme-prod-vault` is a poor rule name; `vault-field` is fine.
+
+### Validate before you rely on it
+
+```bash
+flaui-mcp check-redaction-rules C:\path\rules.json
+```
+
+It always prints its results — it never withholds output to signal a problem. The exit code tells you what it found:
+
+| Exit | Meaning |
+|---|---|
+| `0` | File is valid **and** a running server is enforcing this exact file (content hashes match). |
+| `1` | File is missing or invalid. The message names the offending rule. |
+| `3` | Valid, and a server is running — but on a **different** file. Restart the server to pick this one up. |
+| `4` | Valid, a server is running, but enforcement cannot be determined (version skew, or its state file is unreadable). |
+| `5` | Valid, no server running. |
+
+To see what the rules actually match on a live window:
+
+```bash
+flaui-mcp check-redaction-rules rules.json --list-windows      # pids + titles
+flaui-mcp check-redaction-rules rules.json --window 12345      # walk that pid
+```
+
+⚠ `--window` takes a **pid** from `--list-windows`, not a `wN` snapshot handle. A rule-matched element prints its **raw** name — you are debugging your own regex, and a redacted view would make that impossible. OS password fields stay `[REDACTED]` even here, and no element **value** is read on any path.
 
 ## Watch & audit the agent
 

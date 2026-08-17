@@ -64,8 +64,11 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   `controlType` / `enabledOnly` (optional subtree `scope`) **without** walking the whole tree — the cheap
   way to grab one control's ref. Returns `matches[{ref,automationId,name,controlType,bounds,…}]` +
   `totalMatches`/`isTruncated` (narrow the query if truncated). No match ⇒ empty list (not an error).
-  Refs are **additive** — a find does NOT invalidate a prior `desktop_snapshot`'s refs. Password fields
-  return `name:"[REDACTED]"` and are not findable by name.
+  Refs are **additive** — a find does NOT invalidate a prior `desktop_snapshot`'s refs.
+- **Redacted elements are not findable by NAME** — neither by their real name nor by `"[REDACTED]"`.
+  Covers OS password fields and anything an operator rule matches (`redacted:true`, `redactedBy:"os"` or
+  `"rule:<name>"`). They stay findable by `controlType`/`automationId`, keep real bounds, and their refs
+  resolve — so **target a redacted field by controlType or automationId, then act on the ref**.
 - `desktop_snapshot_diff wN <baselineSnapshotId> scope=<ref>` diffs only that element's subtree (cheap
   re-walk + in-memory baseline slice) — added/removed/changed since the baseline.
 

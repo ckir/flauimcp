@@ -58,12 +58,28 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 | `desktop_snapshot_stats` | ReadOnly | Control counts. **Params:** `snapshotId` (offline stats) OR `window`. |
 | `desktop_get_focused_element` | ReadOnly | Return UIA-focused element's ref and descriptor. |
 | `desktop_find` | ReadOnly | Query window for refs without full walk. **Params:** `timeoutMs`. |
-| `desktop_screenshot` | ReadOnly | PNG capture. Redacts passwords. **Params:** `window`, `ref`, `maxWidth` (default 1600). |
+| `desktop_screenshot` | ReadOnly | PNG capture. Masks redacted elements (see **Redaction on the wire**). **Params:** `window`, `ref`, `maxWidth` (default 1600). |
 | `desktop_get_bounds` | ReadOnly | Get absolute screen bounds, dpiScale, isOffscreen status. |
 | `desktop_wait_for` | ReadOnly | Poll until selector condition holds. **Params:** `by`, `value`, `until`, `equals`, `pollIntervalMs`, `timeoutMs`, `includeOffscreen`. |
 | `desktop_wait_for_stable` | ReadOnly | Poll until tree stops changing. **Params:** `by`, `value`, `includeText`, `quietMs`, `pollIntervalMs`, `timeoutMs`, `scopeRef`, `includeOffscreen`. |
 | `desktop_user_state` | ReadOnly | Report coarse human presence. Lease-exempt. |
 | `desktop_wait_for_foreground` | ReadOnly | Block until window gains foreground. **Params:** `timeoutMs`. Lease-exempt. |
+
+### Redaction on the wire
+
+Content is withheld for two independent reasons, and the payload tells you which:
+
+| Field | Where | Meaning |
+|---|---|---|
+| `redacted` | snapshot nodes, `desktop_get_text`, `desktop_get_grid_cell` | `true` ⇒ the content was withheld. **Use this**, not `isPassword`. |
+| `redactedBy` | same | `"os"` (UIA password field) or `"rule:<name>"` (operator rule). Absent when not redacted. |
+| `isPassword` | snapshot nodes | **Deprecated signal.** Kept with its original meaning — OS password fields **only** — so existing consumers do not change behaviour. It is `false` for rule-redacted elements. Read `redacted` instead. |
+| `redactedCount` | `desktop_snapshot_stats` | Count of **all** redacted nodes. |
+| `redacted` | `desktop_snapshot_stats` | ⚠ Counts **OS password nodes only**, unchanged for back-compat. Not the same number as `redactedCount`. |
+
+Withheld content reads `[REDACTED]`. This is uniform across the snapshot tree, diffs, text reads, grid cells, watch events and terminal tab titles; screenshots mask the pixels.
+
+⚠ **A redacted element cannot be found by NAME** — not by its real name, and not by `"[REDACTED]"`. Confirming a guessed name is itself a leak, so name search excludes it even though no value crosses the wire. It remains findable by `controlType` / `automationId`, keeps real bounds, and its ref resolves normally. **To act on a redacted field, target it by `automationId` or `controlType`, then use the ref** — typing into a password box still works.
 
 ### Content & Clipboard
 | Tool | Access | Description & Key Parameters |
