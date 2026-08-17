@@ -330,7 +330,7 @@ stamped** — v1.0.0 ships with no known defects.
 | 6 | JSON-shape tripwires | SP0 | ✅ merged (`015f23c`) |
 | 7 | redact descriptor `Name` for `IsPassword` | SP2 | ✅ RETIRED as invalid; the real guarantee is now pinned |
 | 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ⬜ not started |
-| 9 | per-field redaction | SP3 | 🔄 in flight on `sp3-per-field-redaction` — MEASURED (see the item-9 entry below) |
+| 9 | per-field redaction | SP3 | ✅ implemented + MEASURED + gated (see the item-9 entry below) — awaiting the final AGY-CAPSTONE before merge |
 | 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower |
 
 Also fixed en route, though never one of the ten: `value-and-find-paths-miss-desktop-level-popups`
@@ -447,6 +447,13 @@ into a subproject, and its file deleted per the repo convention that fixing a de
   elements the window enumeration already returned — so if `SearchRoots` said which path found each root,
   find could skip Path-2 roots outright and drop the dedup entirely. Verify that claim before relying on
   it; the trade is correctness (a duplicated ref) against latency, and correctness won.
+- **Item 9 — GATES GREEN at `a23c08e`.** Headless **848/0/0** (Release, 0 warnings) · Desktop **150/0/0** ·
+  PopupGrafting **1/0/0**, both Desktop halves with **0 skipped**, on a physical console under a lease.
+  Against the 140/0/0 Desktop baseline that is +10 facts from SP3; Task 13's three measurement classes are
+  excluded from the routine gate by `Category=Measurement` and run on demand. This pass was also the FIRST
+  execution of `fa71796` (the `Legacy` `selected` gap fix, committed at Task 5 and never run until now) —
+  green, as expected: it closes a hole for the future rather than changing behaviour today, because nothing
+  in the WPF fixture is ever `Selected`.
 - **Item 9 (per-field redaction, SP3) — MEASURED, three ways (Task 13).** Spec §4.4's "zero-cost default
   path" **survives** contact with a measurement. Process homogeneity **does not** — it is recorded below as
   an unproven assumption, not as a result. Common conditions for every figure: WPF TestApp, whole-window
