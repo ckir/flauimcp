@@ -187,13 +187,14 @@ Start the server with `--redaction-rules <path>`. Omit the flag and the feature 
 | Field | Meaning |
 |---|---|
 | `name` | **Required.** Identifies the rule in diagnostics — and reaches the agent (see the warning below). |
-| `processName` | Restrict to one process (no `.exe`, case-insensitive). Required unless `global` is true. |
-| `global` | `true` ⇒ apply in every process. Use sparingly. |
+| `processName` | Restrict to one process (no `.exe`, case-insensitive). **Required** unless `global` is true. |
+| `global` | `true` ⇒ apply in every process. Use sparingly. ⚠ **Mutually exclusive with `processName`** — a rule setting both is rejected. |
 | `automationId` | Exact automation-id match. |
 | `automationIdPattern` | Regex over the automation id. |
 | `namePattern` | Regex over the element's raw name. |
 
 - `version` must be `1`.
+- Rule names must be **unique** and non-empty.
 - **Maximum 64 rules.** More than that is a policy problem, not a configuration one.
 - Patterns compile as non-backtracking regexes, so a pathological pattern cannot hang the walk.
 - An invalid file **refuses server startup** rather than starting unprotected. A file saved from Notepad with a UTF-8 BOM loads fine.
