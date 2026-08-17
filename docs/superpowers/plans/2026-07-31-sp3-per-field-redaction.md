@@ -54,7 +54,7 @@ at its own boot.
 dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"
 
 # Desktop gate — MAIN THREAD ONLY, quiet machine, physical console, user-granted lease. ~12 min.
-dotnet test --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"
+dotnet test --filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"
 dotnet test --filter "FullyQualifiedName~PopupGrafting"
 ```
 
@@ -1807,7 +1807,7 @@ cannot recur.
 - [ ] **Step 4: Desktop gate — MAIN THREAD, quiet machine, physical console, user-granted lease.**
 
 ```bash
-dotnet test --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"
+dotnet test --filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"
 dotnet test --filter "FullyQualifiedName~PopupGrafting"
 ```
 

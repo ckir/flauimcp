@@ -213,7 +213,7 @@ function Invoke-DesktopSuite {
     # would abort before the guidance below ever printed -- suppressing the explanation of what the
     # gate does and does not cover at precisely the moment the operator needs it.
     try {
-        Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"'
+        Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"'
         Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~PopupGrafting"'
     }
     finally {

@@ -21,7 +21,13 @@ namespace FlaUI.Mcp.Tests.Perception;
 /// frame is one process and whose content is another (Settings, Windows Security). Browsers and Electron
 /// do the same. This walks every top-level window it can bind and reports the distinct owning process ids
 /// per window, so the answer is a measured number rather than an assumption either way.</summary>
+/// ⚠ TWO categories, both load-bearing. "Desktop" keeps it OUT of the headless gate (it needs a real
+/// desktop). "Measurement" keeps it out of the routine DESKTOP gate too: it measures and asserts no
+/// policy, so re-running it on every suite pass buys nothing and costs wall-clock. Run it on demand with
+/// --filter "Category=Measurement". Dropping "Desktop" would be a BUG — the headless gate would then
+/// claim it.
 [Trait("Category", "Desktop")]
+[Trait("Category", "Measurement")]
 public class ProcessHomogeneityMeasurementTests
 {
     private readonly ITestOutputHelper _out;

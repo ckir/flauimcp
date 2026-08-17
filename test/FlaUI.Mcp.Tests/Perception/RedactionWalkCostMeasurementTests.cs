@@ -30,7 +30,12 @@ namespace FlaUI.Mcp.Tests.Perception;
 /// same zero-rule arm in a worktree at the branch point 3b0ab8d, whose PerceptionManager has no classifier
 /// parameter at all. This file therefore uses ONLY the pre-SP3 API surface for that arm (the 3-arg ctor),
 /// so the identical harness compiles and runs in both trees.</summary>
+/// ⚠ TWO categories, both load-bearing. "Desktop" keeps it OUT of the headless gate (it needs a real
+/// desktop). "Measurement" keeps it out of the routine DESKTOP gate too — these facts measure and assert
+/// no policy, and the walk-cost arm alone costs ~1m40s against a ~12min suite. Run on demand with
+/// --filter "Category=Measurement". Dropping "Desktop" would be a BUG — the headless gate would claim it.
 [Trait("Category", "Desktop")]
+[Trait("Category", "Measurement")]
 public class RedactionWalkCostMeasurementTests : IClassFixture<TestAppFixture>
 {
     private readonly TestAppFixture _app;
