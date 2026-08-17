@@ -17,7 +17,8 @@ public sealed class SnapshotTools
     [McpServerTool(ReadOnly = true), Description("Walk a window's accessibility tree into an indented, ref-tagged snapshot. " +
         "Each line: [e23] Button \"OK\" @{x,y,w,h} {enabled, focusable} [Invoke]. Use the e-refs with later interaction tools. " +
         "A redacted element shows \"[REDACTED]\" as its name; if an operator rule caused it the state also carries " +
-        "redacted:rule:<name> (OS password fields carry no marker). Redacted elements are not findable by name - " +
+        "redacted:rule:<name>, or redacted:unreadable when its identity could not be read so it failed closed " +
+        "(OS password fields carry no marker). Redacted elements are not findable by name - " +
         "target them by the e-ref or automationId. " +
         "If the window is an opaque Chromium/Electron app, the result includes wakeable:true — call desktop_wake_accessibility then re-snapshot to see its contents.")]
     public Task<string> DesktopSnapshot(

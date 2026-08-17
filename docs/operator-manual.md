@@ -201,6 +201,8 @@ Start the server with `--redaction-rules <path>`. Omit the flag and the feature 
 
 ⚠ **Rule names reach the agent.** A redacted element reports `redactedBy: "rule:<name>"`, so the name itself is a disclosure. Name a rule for what it protects, not for the secret — `acme-prod-vault` is a poor rule name; `vault-field` is fine.
 
+**Rules fail closed.** If an element's identity cannot be read, no rule can be evaluated against it — so its content is withheld and reported as `redactedBy: "unreadable"` rather than emitted unmatched. Seeing `"unreadable"` means the app did not answer a property read, not that you wrote a bad rule.
+
 ### Validate before you rely on it
 
 ```bash

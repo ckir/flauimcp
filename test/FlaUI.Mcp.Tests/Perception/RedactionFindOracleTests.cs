@@ -124,6 +124,51 @@ public class RedactionFindOracleTests : IClassFixture<TestAppFixture>
         Assert.NotEmpty(r.Matches);
     }
 
+    /// <summary>FINAL AGY-CAPSTONE, finding L1 — a TRUE red→green pin, and the most serious defect found on
+    /// this branch. `EvaluateSelectorValueAsync` backs desktop_wait_for(until:"valueEquals"). Its redaction
+    /// gate was the OS IsPassword read ALONE, so an operator RULE never reached it: a rule-redacted element
+    /// fell through to the raw Value / Name / LegacyIAccessible reads and the tool became a CONFIRMATION
+    /// ORACLE against exactly the fields a rule was written to protect. No secret crosses the wire —
+    /// confirming a guess IS the attack, which that method's own comment already said about passwords.
+    ///
+    /// MEASURED against the pre-fix tree: this returned "NamedOnly", so a caller could confirm the name of
+    /// a redacted element by polling guesses. Post-fix it returns null, and because `equals` is required to
+    /// be non-null, valueEquals can never satisfy on a redacted element.
+    ///
+    /// ⚠ Found by an independent review AFTER the full headless suite, the full Desktop suite and the
+    /// Task-12 source sweep were all green — the sweep was silenced on this exact member by an allowlist
+    /// entry whose stated reason was false. Both halves are fixed; see RedactionSurfaceInventoryTests.</summary>
+    [Fact]
+    public async Task A_rule_redacted_elements_value_is_not_confirmable_through_wait_for()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var (p, h) = await Fixture(mgr);
+
+        var (found, value) = await p.EvaluateSelectorValueAsync(h, "name", Target);
+
+        // Found stays TRUE: withholding the value must not also make the element vanish, or a caller
+        // could distinguish "redacted" from "absent" and BC-1 targetability would break.
+        Assert.True(found);
+        Assert.Null(value);
+    }
+
+    /// <summary>The anti-over-redaction half (BC-2). Closing the oracle must not blind valueEquals to
+    /// ordinary elements — without this, an implementation that simply returned null for everything would
+    /// pass the fact above.</summary>
+    [Fact]
+    public async Task An_unredacted_elements_value_is_still_readable_through_wait_for()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var (p, h) = await Fixture(mgr);
+
+        var (found, value) = await p.EvaluateSelectorValueAsync(h, "name", "DupName");
+
+        Assert.True(found);
+        Assert.NotNull(value);
+    }
+
     /// BC-1 TARGETABILITY — plan Step 4b, which the plan requires be PROVEN, not asserted.
     /// The redacted element has NO AutomationId, so name search was its only lookup key. It must still
     /// be reachable by a NON-name query, carry a usable ref, and resolve through that ref — the

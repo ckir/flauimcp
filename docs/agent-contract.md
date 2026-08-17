@@ -72,7 +72,7 @@ Content is withheld for two independent reasons, and the payload tells you which
 | Field | Where | Meaning |
 |---|---|---|
 | `redacted` | snapshot nodes, `desktop_get_text`, `desktop_get_grid_cell` | `true` ⇒ the content was withheld. **Use this**, not `isPassword`. |
-| `redactedBy` | same | `"os"` (UIA password field) or `"rule:<name>"` (operator rule). Absent when not redacted. |
+| `redactedBy` | same | `"os"` (UIA password field), `"rule:<name>"` (operator rule), or `"unreadable"` (rules are configured but the element's identity could not be read, so it was withheld rather than guessed at). Absent when not redacted. |
 | `isPassword` | snapshot nodes | **Deprecated signal.** Kept with its original meaning — OS password fields **only** — so existing consumers do not change behaviour. It is `false` for rule-redacted elements. Read `redacted` instead. |
 | `redactedCount` | `desktop_snapshot_stats` | Count of **all** redacted nodes. |
 | `redacted` | `desktop_snapshot_stats` | ⚠ Counts **OS password nodes only**, unchanged for back-compat. Not the same number as `redactedCount`. |

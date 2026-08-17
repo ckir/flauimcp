@@ -779,7 +779,17 @@ public sealed class PerceptionManager
             // case RedactionPolicy.IsPasswordOrFailClosed exists for: it fails CLOSED on a throwing read
             // rather than trusting the control. Returning null (not "") also means valueEquals can never
             // satisfy on a password field, since `equals` is required to be non-null.
-            if (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault))
+            // ⚠ SP3 CAPSTONE FIX (finding L1). The gate below USED to be the IsPassword read alone, i.e.
+            // OS-ONLY — so an operator RULE never reached it. A rule-redacted element fell straight through
+            // to the raw Value / Name / LegacyIAccessible reads underneath, and wait_for(until:valueEquals)
+            // became a CONFIRMATION ORACLE against exactly the fields an operator configured a rule to
+            // protect. The comment above states that threat model correctly and then closed it for one of
+            // the two signals only; SP3 extended redaction across twelve other sites and missed this one.
+            //
+            // SensitivityOf is the right primitive here precisely because it decides WITHOUT reading the
+            // content it is protecting, and it still fails CLOSED on a throwing IsPassword read — so this
+            // is a strict superset of the OS-only gate it replaces, never a weakening.
+            if (ElementContent.SensitivityOf(el, _classifier, SafeProcessName(win)).Redact)
                 return (true, null);
 
             try { var vp = el.Patterns.Value.PatternOrDefault; if (vp is not null) return (true, vp.Value.ValueOrDefault); } catch { }

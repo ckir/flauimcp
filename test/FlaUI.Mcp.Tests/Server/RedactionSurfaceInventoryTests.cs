@@ -33,32 +33,46 @@ public class RedactionSurfaceInventoryTests
     // Do not add an entry without a reason that would survive an adversarial reviewer asking "why not?".
     private static readonly Dictionary<string, string> AllowedMembers = new(StringComparer.Ordinal)
     {
-        ["ElementContent.Name"] = "egress accessor — returns the already-redacted value",
-        ["ElementContent.Value"] = "egress accessor — returns the already-redacted value",
-        ["ElementContent.Text"] = "egress accessor — returns the already-redacted value",
-        ["ElementContent.Classify"] = "egress accessor — returns the already-redacted value",
-        ["ElementContent.SensitivityOf"] = "egress accessor — returns the already-redacted value",
-        ["ElementContent.Safe"] = "egress accessor — returns the already-redacted value",
-        ["RefRegistry.ResolveDescriptor"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["RefRegistry.ResolveStrict"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["RefRegistry.FastPathMatches"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["SnapshotEngine.Build"] = "egress accessor — returns the already-redacted value",
-        ["SnapshotEngine.FormatNode"] = "egress accessor — returns the already-redacted value",
-        ["SnapshotDiff.Identity"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["SnapshotDiff.IdentityKey"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["SnapshotDiff.Subtree"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["SnapshotDiff.ShownName"] = "egress accessor — returns the already-redacted value",
-        ["WaitCoordinator.Matches"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["WaitCoordinator.Signature"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["WatchPayloadBuilder.Build"] = "egress accessor — returns the already-redacted value",
-        ["LiveEventSourceReader.MintRef"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["PerceptionManager.FindAsync"] = "egress accessor — returns the already-redacted value",
-        ["PerceptionManager.ResolveSelectorOnSta"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["PerceptionManager.ReadText"] = "egress accessor — returns the already-redacted value",
-        ["PerceptionManager.ReadGridCell"] = "egress accessor — returns the already-redacted value",
-        ["PerceptionManager.EvaluateSelectorValueAsync"] = "egress accessor — returns the already-redacted value",
-        ["VerifyReader.FromElement"] = "identity reader — raw name for ref re-resolution (BC-1)",
-        ["TerminalTabReader.Title"] = "egress accessor — returns the already-redacted value",
+        // ⚠⚠ AUDITED ENTRY-BY-ENTRY AFTER THE FINAL AGY-CAPSTONE, AND THE AUDIT FOUND A REAL LEAK.
+        // Every reason below USED to be one of exactly two boilerplate strings, pasted across 26 members.
+        // That defeated the anti-gaming property above completely: the reason is only load-bearing if it
+        // is individually TRUE, and a pasted reason is not a justification, it is a shape.
+        //
+        // The cost was not theoretical. EvaluateSelectorValueAsync carried "returns the already-redacted
+        // value" while it in fact returned the RAW value for any rule-redacted element — so the sweep, the
+        // one mechanism built to make that impossible, was silenced ON THE EXACT MEMBER that was leaking,
+        // by a sentence that was false. Several others were merely wrong rather than dangerous
+        // (Safe is a try/catch wrapper, not an accessor; Signature is a stability hash, not ref
+        // re-resolution; VerifyReader.FromElement is an egress reader, not an identity reader).
+        //
+        // RULE FOR THE NEXT PERSON: if you cannot write a reason that is specifically true of THIS member,
+        // the member does not belong on this list — fix the member instead. Never paste a neighbour's.
+        ["ElementContent.Name"] = "EGRESS accessor: this IS the closed-list read; returns [REDACTED] whenever the decision says redact, raw only when it does not",
+        ["ElementContent.Value"] = "EGRESS accessor: as .Name, plus the empty-value Name fallback, which reuses the name a rule already read rather than opening a second read window",
+        ["ElementContent.Text"] = "EGRESS accessor: wraps a caller-supplied text read and withholds it on a redact decision",
+        ["ElementContent.Classify"] = "DECISION, not a read of content: reads raw identity + IsPassword solely to decide, and returns a Sensitivity. No caller can obtain content through it",
+        ["ElementContent.SensitivityOf"] = "DECISION only: Classify's result for a caller that never reads the content (the pixel path). Returns Sensitivity, never a value",
+        ["ElementContent.Safe"] = "NOT A READ: exception-swallowing wrappers used BY the accessors above. They add no egress of their own",
+        ["RefRegistry.ResolveDescriptor"] = "IDENTITY: raw name is the ref's identity when AutomationId is absent (BC-1). Used to re-find an element, never emitted",
+        ["RefRegistry.ResolveStrict"] = "IDENTITY: strict re-resolution by live RuntimeId + descriptor; the raw name never leaves the registry",
+        ["RefRegistry.FastPathMatches"] = "IDENTITY: descriptor equality check on the re-resolution fast path; compares, never returns, the raw name",
+        ["SnapshotEngine.Build"] = "CONSTRUCTION: builds SnapshotNode, which deliberately KEEPS the raw name for BC-1 identity and carries the Sensitivity beside it. Redaction is applied downstream, at FormatNode and at each DTO projection — so this member is safe only because those are on this list too",
+        ["SnapshotEngine.FormatNode"] = "EGRESS accessor: the tree's redaction point — emits ShownName ([REDACTED] on a redact decision) plus the redacted:rule:/redacted:unreadable marker",
+        ["SnapshotDiff.Identity"] = "IDENTITY: keys a node on its raw name so a redacted node still matches ITSELF across two snapshots (BC-1). The key is internal to the diff",
+        ["SnapshotDiff.IdentityKey"] = "IDENTITY: as .Identity — the composed key, never emitted",
+        ["SnapshotDiff.Subtree"] = "IDENTITY: scopes the diff by walking on identity keys; reads no content",
+        ["SnapshotDiff.ShownName"] = "EGRESS accessor: the diff's redaction point — reads Sensitivity.Redact, not Source == Os, so operator rules apply",
+        ["WaitCoordinator.Matches"] = "WAIT PREDICATE, DEF-3 gated: `by:name` is short-circuited by !n.Sensitivity.Redact, so the raw-name compare is REACHED ONLY for non-redacted nodes. automationId/controlType stay matchable for BC-1 targetability",
+        ["WaitCoordinator.Signature"] = "STABILITY HASH — explicitly NOT ref re-resolution (the old reason here was wrong). Includes the raw name under includeText so wait_for_stable can detect that a value CHANGED. Substituting the token would make two different secrets compare equal and report `stable` while content is actively changing, which breaks that tool's never-report-a-wrong-belief contract. The hash is internal and never reaches the wire: it reveals THAT something changed, never what. Reviewed and upheld as a deliberate trade at the final capstone",
+        ["WatchPayloadBuilder.Build"] = "EGRESS accessor: the watch payload's redaction point; emits [REDACTED] and preserves the null-vs-empty wire contract via the Absent flag",
+        ["LiveEventSourceReader.MintRef"] = "IDENTITY: mints a ref from the raw name; the payload's visible name comes from WatchPayloadBuilder.Build above, not from here",
+        ["PerceptionManager.FindAsync"] = "EGRESS accessor: match names are redacted at construction AND redacted elements are excluded from name-constrained queries (DEF-3)",
+        ["PerceptionManager.ResolveSelectorOnSta"] = "RESOLUTION: returns an ELEMENT, never its content. Rule-aware since Task 9 — the name predicate is classified, not compared raw",
+        ["PerceptionManager.ReadText"] = "EGRESS accessor: delegates to ElementContent.Text, so the withhold decision is made in one place",
+        ["PerceptionManager.ReadGridCell"] = "EGRESS accessor: delegates to ElementContent.Value for the cell's content",
+        ["PerceptionManager.EvaluateSelectorValueAsync"] = "EGRESS accessor: returns NULL — never the value — when the classifier says redact, so wait_for(until:valueEquals) cannot confirm a guess. ⚠ THIS ENTRY'S PREVIOUS REASON WAS FALSE: the gate was OS-only, so rule-redacted values were returned RAW. Fixed at the final capstone (finding L1); this reason is now true only because that fix landed",
+        ["VerifyReader.FromElement"] = "EGRESS accessor (the old reason called it an identity reader, which was wrong): reads text for post-action verification and reports Redacted so InputTools skips the compare rather than reading protected content",
+        ["TerminalTabReader.Title"] = "EGRESS accessor: the 13th site — a terminal tab title is content-bearing and is classified like any other name",
 
         // ---- SP3 reconciliation, Part C: the driver's classification of the sweep's remaining
         // findings. Reasons are verbatim from the driver — do not rephrase. ----

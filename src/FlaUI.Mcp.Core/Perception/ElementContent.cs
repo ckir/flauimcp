@@ -75,11 +75,20 @@ public static class ElementContent
                                             string? processName)
         => Classify(el, classifier, processName).Sensitivity;
 
-    /// <summary>Wire provenance for the `redactedBy` field: "os" for the OS IsPassword flag, "rule:&lt;name&gt;"
-    /// for an operator rule, null when nothing was withheld. Kept separate from `isPassword`, which keeps
-    /// its literal OS meaning for the consumers already reading it.</summary>
+    /// <summary>Wire provenance for the `redactedBy` field: "os" for the OS IsPassword flag,
+    /// "rule:&lt;name&gt;" for an operator rule, "unreadable" when rules are configured but the element's
+    /// identity could not be read (fail-closed, no rule was evaluated), null when nothing was withheld.
+    /// Kept separate from `isPassword`, which keeps its literal OS meaning for existing consumers.
+    ///
+    /// ⚠ "unreadable" is deliberately NOT spelled "rule:something" — inventing a rule name the operator
+    /// never wrote would send them hunting for a rule that does not exist.</summary>
     public static string? RedactedBy(Sensitivity s) => !s.Redact ? null
-        : s.Source == RedactionSource.Os ? "os" : $"rule:{s.RuleName}";
+        : s.Source switch
+        {
+            RedactionSource.Os => "os",
+            RedactionSource.Unreadable => "unreadable",
+            _ => $"rule:{s.RuleName}"
+        };
 
     /// <summary>DEFAULT PATH (spec §4.4): the rule thunks are constructed only INSIDE the HasRules branch.
     ///
@@ -110,11 +119,34 @@ public static class ElementContent
             return (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault)
                 ? Sensitivity.OsPassword : Sensitivity.Visible, alreadyReadName);
 
+        // ⚠ SP3 CAPSTONE FIX (finding L2) — the two signals used to disagree about failure.
+        // The IsPassword thunk below is passed UNWRAPPED on purpose: the classifier runs it through
+        // RedactionPolicy.IsPasswordOrFailClosed, so a THROWING password read redacts. The two identity
+        // thunks went through Safe(), which swallows a throw and yields "" — and "" matches no rule, so a
+        // throwing AutomationId/Name read meant NO RULE APPLIED and the content was emitted in the clear.
+        // OS passwords failed closed while operator rules failed OPEN, at the same instant, on the same
+        // element. Nothing failed to compile and no test noticed.
+        //
+        // `identityUnreadable` is set only by a thunk that was ACTUALLY INVOKED, which matters: the thunks
+        // are lazy, so a rule set that never consults AutomationId cannot be failed closed by a read that
+        // never happened. An EMPTY identity is NOT a failure — most elements legitimately have no
+        // AutomationId — so only a genuine throw trips this.
+        bool identityUnreadable = false;
+        string SafeIdentity(Func<string?> read)
+        {
+            try { return read() ?? string.Empty; }
+            catch { identityUnreadable = true; return string.Empty; }
+        }
+
         string? memoAid = null, memoName = alreadyReadName;
         var s = classifier.Classify(processName,
-            () => memoAid ??= Safe(() => el.Properties.AutomationId.ValueOrDefault),
-            () => memoName ??= Safe(() => el.Name),
+            () => memoAid ??= SafeIdentity(() => el.Properties.AutomationId.ValueOrDefault),
+            () => memoName ??= SafeIdentity(() => el.Name),
             () => el.Properties.IsPassword.ValueOrDefault);
+
+        // Only when no rule matched: a rule that DID match already redacts, and its name is better
+        // provenance than "unreadable".
+        if (!s.Redact && identityUnreadable) return (Sensitivity.UnreadableIdentity, memoName);
         return (s, memoName);
     }
 

@@ -151,6 +151,9 @@ public static class SnapshotEngine
         if (n.Focused) state.Add("focused");
         if (n.Selected) state.Add("selected");
         if (n.Sensitivity.Source == RedactionSource.Rule) state.Add($"redacted:rule:{n.Sensitivity.RuleName}");
+        // Fail-closed, identity unreadable (capstone L2). Marked so an operator can tell this apart from a
+        // rule they wrote; an OS password still carries no marker, only the [REDACTED] name.
+        else if (n.Sensitivity.Source == RedactionSource.Unreadable) state.Add("redacted:unreadable");
         string shownName = n.Sensitivity.Redact ? "[REDACTED]" : n.Name;
         var sb = new StringBuilder();
         sb.Append(n.Indent).Append('[').Append(n.Ref).Append("] ").Append(n.ControlType).Append(' ')

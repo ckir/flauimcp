@@ -66,9 +66,10 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   `totalMatches`/`isTruncated` (narrow the query if truncated). No match ⇒ empty list (not an error).
   Refs are **additive** — a find does NOT invalidate a prior `desktop_snapshot`'s refs.
 - **Redacted elements are not findable by NAME** — neither by their real name nor by `"[REDACTED]"`.
-  Covers OS password fields and anything an operator rule matches (`redacted:true`, `redactedBy:"os"` or
-  `"rule:<name>"`). They stay findable by `controlType`/`automationId`, keep real bounds, and their refs
-  resolve — so **target a redacted field by controlType or automationId, then act on the ref**.
+  Covers OS password fields and anything an operator rule matches (`redacted:true`, `redactedBy:"os"`,
+  `"rule:<name>"`, or `"unreadable"` = identity unreadable so it failed closed). They stay findable by
+  `controlType`/`automationId`, keep real bounds, and their refs resolve — so **target a redacted field by
+  controlType or automationId, then act on the ref**.
 - `desktop_snapshot_diff wN <baselineSnapshotId> scope=<ref>` diffs only that element's subtree (cheap
   re-walk + in-memory baseline slice) — added/removed/changed since the baseline.
 

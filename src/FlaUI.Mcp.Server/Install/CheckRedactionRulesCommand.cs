@@ -66,10 +66,34 @@ public static class CheckRedactionRulesCommand
         var skewed = instances.FirstOrDefault(i => i.StateVersion != ServerStateFile.CurrentStateVersion);
         if (skewed is not null)
         {
+            // ⚠ CAPSTONE ROUND 2 (finding Q-C, the "downgrade brick"). Exit 4 STAYS — it is the honest
+            // answer while a state file exists that this build cannot interpret. The tempting fix, ignoring
+            // a skewed file whose pid looks dead, would break acceptance constraint (b): if that pid is not
+            // really a process id and the newer server IS live, we would report "no server running" while a
+            // server is enforcing rules, which is the one thing this command must never say.
+            //
+            // What WAS wrong is the remedy text. A skewed file outlives its process (PruneDead cannot
+            // safely delete a NEWER version's file), so after a downgrade this message repeats forever
+            // while telling the operator to UPGRADE — advice that is backwards for the case that produces
+            // it most often, and that never names the file blocking the diagnostic.
+            int current = ServerStateFile.CurrentStateVersion;
+            string direction = skewed.StateVersion > current
+                ? "written by a NEWER server than this build"
+                : "left behind by an OLDER server";
             outp.WriteLine(
-                $"Cannot determine: a running instance wrote state version {skewed.StateVersion}, but this build " +
-                $"understands version {ServerStateFile.CurrentStateVersion.ToString(CultureInfo.InvariantCulture)}. " +
-                "Upgrade the CLI and the server to matching versions, then re-run.");
+                $"Cannot determine: an instance state file is {direction} — it declares state version " +
+                $"{skewed.StateVersion.ToString(CultureInfo.InvariantCulture)}, this build understands " +
+                $"{current.ToString(CultureInfo.InvariantCulture)}.");
+            outp.WriteLine($"  file: {skewed.FilePath}");
+            // ⚠ The NEWER branch must keep the word "upgrade": a newer state file means a newer server, and
+            // upgrading this CLI really is the remedy. That is pinned by
+            // CheckRedactionRulesCliTests.Version_skew_instance_exits_4_and_mentions_upgrading, whose
+            // fixture is version 999 — it caught this wording change, and it was right to. Only the OLDER
+            // branch, which that pin does not cover, drops the upgrade advice, because telling someone who
+            // deliberately downgraded to upgrade is backwards.
+            outp.WriteLine(skewed.StateVersion > current
+                ? "  Upgrade this CLI to the matching (newer) version, or delete that file if its server is no longer running."
+                : "  Delete that file if its server is no longer running, then re-run.");
             return 4;
         }
 

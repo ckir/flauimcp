@@ -56,7 +56,9 @@ The server defends against credential exfiltration at the perception layer:
 
   A redacted element appears as `[REDACTED]` everywhere content crosses the wire: the accessibility tree, diffs, text reads, grid cells, watch events and terminal tab titles. Its pixels are painted over with an opaque black rectangle during screenshots, covering popups, menus and full-desktop captures.
 
-  Each element carries `redacted` (bool) and `redactedBy` (`"os"` or `"rule:<name>"`); `desktop_snapshot_stats` reports `redactedCount`.
+  Each element carries `redacted` (bool) and `redactedBy` (`"os"`, `"rule:<name>"`, or `"unreadable"`); `desktop_snapshot_stats` reports `redactedCount`.
+
+  **Fail-closed, both signals.** A password read that throws is treated as a password. And when rules are configured but an element's *identity* cannot be read, no rule can be evaluated honestly — so the content is withheld and reported as `"unreadable"` rather than emitted. An unreadable element is never silently treated as unmatched.
 
   ⚠ **A redacted element is withheld from NAME search.** It is not locatable by its real name, nor by the `[REDACTED]` token — confirming a guessed name is itself the leak, even though no value crosses the wire. It stays enumerable by non-name queries (`controlType`, `automationId`), with a usable ref and real bounds, so it remains targetable and actionable.
 

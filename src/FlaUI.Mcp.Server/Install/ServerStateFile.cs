@@ -104,11 +104,44 @@ public static class ServerStateFile
 
     /// <summary>Delete ONLY instances positively proven dead. Never deletes an Unknown: a diagnostic
     /// that destroys the state it is diagnosing would degrade a healthy elevated server into a
-    /// permanent "no server running".</summary>
+    /// permanent "no server running".
+    ///
+    /// ⚠ SP3 CAPSTONE FIX (finding L4) — this deliberately does NOT go through <see cref="ReadAll"/>.
+    /// ReadAll reports a VERSION-SKEWED file as Unknown, which is the right answer for REPORTING (we
+    /// cannot judge a schema we do not know) but made skewed files immortal: Unknown is never pruned, so
+    /// the first StateVersion bump would strand every pre-upgrade file forever and pin
+    /// check-redaction-rules at exit 4 permanently, with no way out but manual deletion. Latent today
+    /// (CurrentStateVersion has only ever been 1) and designed-in, which is exactly when to fix it.
+    ///
+    /// ⚠⚠ SKEW IS ASYMMETRIC, and that asymmetry is the whole fix. A first attempt pruned ANY skewed file
+    /// whose process was dead; the existing pin
+    /// (ServerStateFileTests.Prune_removes_only_dead_instances_and_never_unknown_ones) correctly rejected
+    /// it, because its fixture is version 99 — NEWER than ours.
+    ///   · stateVersion &gt; CurrentStateVersion — written by a server NEWER than this build. We cannot
+    ///     interpret those fields; `pid` may not even mean a process id. NEVER touched, still Unknown.
+    ///   · stateVersion &lt; CurrentStateVersion — written by an OLDER build, i.e. by our own history, whose
+    ///     schema we know exactly. Safe to judge, and the only case that can accumulate.
+    ///
+    /// Acceptance constraint (b) is preserved verbatim: positive proof of death only, and an access-denied
+    /// read still returns Unknown and is still never pruned. The Pid guard is the second fail-safe — a past
+    /// schema without a usable pid deserializes to 0, and 0 means "cannot tell", so it is left alone.
+    ///
+    /// Inert today by construction (CurrentStateVersion has only ever been 1, so nothing is below it); it
+    /// starts working at the first bump, which is precisely the moment the old code would have stranded
+    /// every pre-upgrade file forever.</summary>
     public static void PruneDead(string dir)
     {
-        foreach (var i in ReadAll(dir))
-            if (i.Liveness == ServerLiveness.Dead)
-                try { File.Delete(i.FilePath); } catch { }
+        if (!Directory.Exists(dir)) return;
+        foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
+        {
+            StateDto? dto;
+            try { dto = JsonSerializer.Deserialize<StateDto>(File.ReadAllText(file)); }
+            catch { continue; }                          // unreadable/garbage: not ours to delete
+            if (dto is null) continue;
+            if (dto.StateVersion > CurrentStateVersion) continue;  // a NEWER server's file — hands off
+            if (dto.Pid <= 0) continue;                  // cannot tell whose process this is
+            if (Liveness(dto) == ServerLiveness.Dead)
+                try { File.Delete(file); } catch { }
+        }
     }
 }
