@@ -330,7 +330,7 @@ stamped** — v1.0.0 ships with no known defects.
 | 6 | JSON-shape tripwires | SP0 | ✅ merged (`015f23c`) |
 | 7 | redact descriptor `Name` for `IsPassword` | SP2 | ✅ RETIRED as invalid; the real guarantee is now pinned |
 | 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ⬜ not started |
-| 9 | per-field redaction | SP3 | ⬜ not started |
+| 9 | per-field redaction | SP3 | 🔄 in flight on `sp3-per-field-redaction` — MEASURED (see the item-9 entry below) |
 | 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower |
 
 Also fixed en route, though never one of the ten: `value-and-find-paths-miss-desktop-level-popups`
@@ -447,6 +447,56 @@ into a subproject, and its file deleted per the repo convention that fixing a de
   elements the window enumeration already returned — so if `SearchRoots` said which path found each root,
   find could skip Path-2 roots outright and drop the dedup entirely. Verify that claim before relying on
   it; the trade is correctness (a duplicated ref) against latency, and correctness won.
+- **Item 9 (per-field redaction, SP3) — MEASURED, three ways (Task 13).** Spec §4.4's "zero-cost default
+  path" **survives** contact with a measurement. Process homogeneity **does not** — it is recorded below as
+  an unproven assumption, not as a result. Common conditions for every figure: WPF TestApp, whole-window
+  walk, default `SnapshotOptions`, **79 nodes**, median of 12 samples after 3 warm-ups, one RDP-attached
+  machine. ⚠ The plan says "the 95-node walk", the item-3 entry above says 95, the `CacheRequest` entry
+  says 98. At default options it measures **79** — the measured number is recorded, not the inherited one.
+
+  **(a) Default path vs the PRE-SP3 baseline.** Baseline = the branch point `3b0ab8d`, built in a throwaway
+  worktree running an identical harness. Verified comparable first: `git diff 3b0ab8d..HEAD --
+  test/FlaUI.Mcp.TestApp/` is **empty**, so both trees walk the same UI, and both reported 79 nodes.
+  · pre-SP3 **median 2536.3 ms** (min 2502.2 · max 2960.2)
+  · SP3, no rules **median 2565.4 ms** (min 2474.9 · max 3058.6)
+  ⇒ **+29.1 ms (+1.1%) at the median, but −27.3 ms at the MINIMUM.** The sign flips with the statistic, and
+  no systematic cost can make the best-case sample *faster* — so this is run-to-run noise. **No measurable
+  regression on the default path.**
+
+  **(b) Worst-case rule set.** 64 **global** rules built deliberately **not to match** — that is the
+  ceiling, not a lenient case: `Classify` returns on the first match, so a matching set exits early and
+  would flatter the figure. Both arms interleaved in one process so drift cancels.
+  · no rules **median 2593.0 ms** · 64 rules **median 2614.0 ms** ⇒ **+21.0 ms · 1.008x.**
+  The delta sits *inside* the 64-rule arm's own spread (min 2539.5, max 3382.7). Consistent with the
+  `CacheRequest` entry above: the walk is ~90% cross-process property traffic, so rule evaluation is not a
+  visible term even at the ceiling.
+
+  ⚠ **Method note, learned the hard way.** The first (a) comparison read **+57 ms** and looked like a real
+  regression. It was the **harness shape** — the SP3 arm was interleaved with 64-rule walks and inherited
+  their allocation state, while the baseline ran back-to-back. Re-running the SP3 arm in the baseline's
+  exact shape removed it. Two rules fall out: measure the two arms in the *same* shape, and report median
+  **with** min/max — a lone mean would have let one 3382.7 ms outlier inflate (b) roughly fourfold.
+
+  **(c) Process homogeneity — SUPPORTED, NOT PROVEN. Tracked below as standing risk H1.** Measured twice
+  (2026-08-04 and 2026-08-17), 13 and 7 live windows, including a woken Chromium at 160 nodes:
+  **0 name-heterogeneous windows.** Measured by process **NAME**, not PID — both mechanisms that depend on
+  this key on the name, so PID heterogeneity alone proves nothing (a Chromium window spans several PIDs
+  that are all `msedge`, and both mechanisms stay correct there). Pinned by
+  `test/FlaUI.Mcp.Tests/Perception/ProcessHomogeneityMeasurementTests.cs`, which measures and asserts no
+  policy.
+- **H1 — the whole-window denylist and SP3's per-walk `processName` hoist rest on ONE unproven assumption.**
+  Promoted from a captured anomaly on 2026-08-17; owner **SP4 / post-v1.0 hardening**. Both mechanisms
+  decide from the **root** window's process: `PerceptionPolicy.IsDenied(procName)` refuses a whole window,
+  and SP3 reads `processName` once per walk and applies it to every node. If a window's nodes are **not**
+  all the root's process, content owned by a **denied** process embedded in an **allowed** window is served.
+  ⚠ **This predates SP3** — it is a property of the shipped denylist, not of the redaction feature.
+  The measurement above did not find heterogeneity, but **could not reach the two shapes that would produce
+  it**, so it is not evidence of absence: no WebView2 host was installed (`msedgewebview2` content inside a
+  differently-named host app), and the UWP `ApplicationFrameHost` / `SecHealthUI` windows exposed **0 nodes**
+  even after `desktop_wake_accessibility`, because they were suspended. A future embedded-host change
+  therefore breaks **both** mechanisms at once. To settle it, measure on a machine with a WebView2 host or a
+  running UWP app; if heterogeneous, fix the denylist in its own commit and resolve `processName` per HWND
+  boundary.
 
 ---
 
