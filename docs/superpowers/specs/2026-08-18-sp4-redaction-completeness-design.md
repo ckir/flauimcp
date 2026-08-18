@@ -1,6 +1,6 @@
 # SP4 - redaction completeness (design)
 
-Status: DESIGN. Approved section-by-section 2026-08-18; adversarial panel round 1 folded (section 12).
+Status: DESIGN. Approved section-by-section 2026-08-18; adversarial panel rounds 1-2 folded (section 12).
 Branch point: `a76092d` (SP3 merged).
 
 ## 0. The settled design, with no history
@@ -100,7 +100,7 @@ change.
 
 - **`desktop_screenshot` metadata gains `maskEscalations`** (integer, ALWAYS present, `0` when none).
   Before: `{bounds,dpiScale,scaleApplied,redactions}`. After:
-  `{bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalatedIds}`.
+  `{bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated}`.
   **Semantics, stated exactly:** `maskEscalations` counts ELEMENTS whose own rect was unusable and whose
   mask was therefore taken from an ancestor - NOT the number of levels climbed. One element climbing three
   levels counts as `1`.
@@ -303,7 +303,7 @@ AGY-CAPSTONE over the SP4 range until a round is GREEN, then AGY-TEST-AUDIT. Sam
    leaking withheld content.
 3. **The section 4.4 default path.** An install with NO rules configured must be byte-identical on every
    path this increment touches, EXCEPT the three deliberate wire changes: the A2 rename, the A5 re-meaning,
-   and A1's additive `maskEscalations` / `escalatedIds` metadata (which appear on every capture, including
+   and A1's additive `maskEscalations` / `escalated` metadata (which appear on every capture, including
    default-path ones).
 4. **No pre-existing test may be weakened.** A rename or a construction fix forced by a signature change
    is allowed; changing an assertion, an expected string or an expected count is not.
@@ -334,7 +334,7 @@ Dropped seat: Dependency Cynic - the increment introduces no new library or tool
 - `GetWindowText` empty/failure unspecified (section 4, fix step 4).
 - Parent-fetch failure unspecified (section 3, case table).
 - `maskEscalations` semantics ambiguous - now counts ELEMENTS, not levels (section 3, contracts).
-- A bare count is not a diagnostic - `escalatedIds` added, `automationId` only, never Name (section 3).
+- A bare count is not a diagnostic - `escalated` added (round 2 extended it to carry `controlType` too), never Name (section 3).
 - The A6 rule would have broken the build on four `[Description]` attributes (section 6, corrected).
 - The A6 rule is bypassable by concatenation - stated as catching accident, not intent (section 6).
 - A5's break is silent where A2's is loud - resolved out-of-band (section 4, operator decision).
