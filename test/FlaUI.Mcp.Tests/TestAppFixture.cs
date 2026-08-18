@@ -42,11 +42,19 @@ public sealed class TestAppFixture : IDisposable
         // MainWindowHandle is the right signal because it becomes non-zero only once a real top-level
         // window exists. Refresh() is required: Process caches it, so polling without it re-reads a stale 0
         // forever. The deadline keeps a genuinely failed launch a fast failure rather than a hang.
+        // ⚠ THE SIGNAL MUST MATCH WHAT THE CONSUMER REQUIRES, not merely "a window exists".
+        // WindowManager.EnumTopLevel reports a window only if IsWindowVisible AND its title is non-empty,
+        // and a WPF HWND is created BEFORE either is true — so polling MainWindowHandle alone can return
+        // while the window is still absent from every listing the suite makes. Waiting additionally for a
+        // non-empty MainWindowTitle covers the title half directly and, in practice, only becomes true once
+        // the window has been shown. Caught by a review seat asking whether the signal matched the need.
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (DateTime.UtcNow < deadline)
         {
             Process.Refresh();
-            if (Process.HasExited || Process.MainWindowHandle != IntPtr.Zero) break;
+            if (Process.HasExited) break;
+            if (Process.MainWindowHandle != IntPtr.Zero && !string.IsNullOrEmpty(Process.MainWindowTitle))
+                break;
             Thread.Sleep(25);
         }
         // ⚠ KEEP THE FULL 500ms SETTLE. The defect being fixed above was "does not WAIT for the window",
