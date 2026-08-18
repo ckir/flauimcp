@@ -158,6 +158,14 @@ public class CheckRedactionRulesCliTests : IDisposable
         Assert.Equal(1, code);                                        // still fails
         Assert.Contains("--window expects a PID", outp.ToString());   // says why
         Assert.Contains("No running server was found", outp.ToString()); // AND still answers
+
+        // CAPSTONE ROUND 5 (finding Q-k1): keeping the diagnostic created a CONTRADICTION - the line above
+        // is the one spec 5.5 ties to exit 5, while this invocation returns 1. Exit 1 is the correct code
+        // (the invocation WAS rejected), so the OUTPUT must stop over-promising: it has to say the state
+        // result is informational. Without this line a script sees output describing one state and a code
+        // meaning another, with no way to tell which to believe.
+        Assert.Contains("informational only", outp.ToString());
+        Assert.Contains("did NOT set this exit code", outp.ToString());
     }
 
     [Fact]

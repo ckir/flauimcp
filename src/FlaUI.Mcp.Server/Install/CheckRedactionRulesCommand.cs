@@ -58,7 +58,20 @@ public static class CheckRedactionRulesCommand
         // Every server-state path below converges here, so the argument error is applied ONCE rather than
         // being duplicated into five returns (where the next person to add a sixth would forget it).
         int stateCode = EvaluateServerState(outp, sha, instancesDir);
-        return liveArgsOk ? stateCode : 1;
+        if (liveArgsOk) return stateCode;
+
+        // ⚠ CAPSTONE ROUND 5 (finding Q-k1) — the Q-i2 fix created a CONTRADICTION. Keeping the diagnostic
+        // running was right, but it prints lines like "No running server was found.", which spec §5.5 ties
+        // to exit 5, and then this invocation returns 1. A reader (human or script) sees output describing
+        // one state and a code meaning another, and cannot tell which to believe without scraping text.
+        //
+        // Exit 1 is the correct code — the invocation WAS rejected — so the output is what must stop
+        // over-promising. Say plainly that the state result is informational and did not set the code.
+        outp.WriteLine();
+        outp.WriteLine("Exit 1: this invocation was rejected (see the --window error above), so it is NOT a " +
+                       "valid check of the running server. The server-state result printed above is " +
+                       "informational only and did NOT set this exit code.");
+        return 1;
     }
 
     /// <summary>The server-state half of the dry-run: exit 0/3/4/5 per spec §5.5. Split out so a malformed
