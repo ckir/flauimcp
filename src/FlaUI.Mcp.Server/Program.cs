@@ -25,6 +25,65 @@ if (CliRouter.IsInstallerVerb(args))
 // user integrity by design; elevation expands the blast radius of a compromised agent.
 ElevationGuard.WarnIfElevated(ElevationGuard.IsElevated(), Console.Error);
 
+// Redaction rules: ABSENT flag => feature off, server starts normally. Flag PRESENT but the file is
+// missing/malformed => refuse to start. An operator who authored a rule file is depending on a shield;
+// starting with an empty rule set silently voids protection they asked for.
+var startupOptions = ServerOptions.FromArgs(args);
+var classifier = FlaUI.Mcp.Core.Perception.SensitivityClassifier.OsOnly;
+string? rulesSha = null;
+if (startupOptions.RedactionRules is not null)
+{
+    try
+    {
+        // ONE read: the bytes hashed are the bytes parsed. Reading twice (parse, then hash) lets the file
+        // change in between, and this hash is what check-redaction-rules compares to decide whether the
+        // running server is enforcing the file on disk.
+        byte[] ruleBytes = File.ReadAllBytes(startupOptions.RedactionRules);
+        rulesSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(ruleBytes));
+        classifier = FlaUI.Mcp.Core.Perception.SensitivityClassifier.ForRules(
+            FlaUI.Mcp.Core.Perception.RedactionRuleFile.Parse(ruleBytes, startupOptions.RedactionRules));
+    }
+    catch (FlaUI.Mcp.Core.Perception.RedactionConfigException ex)
+    {
+        // The agent cannot read this: a server that refused to start has no tool surface. It is for the
+        // HUMAN, out of band. Name both exits so recovery needs no guesswork.
+        var msg = $"flaui-mcp: refusing to start — {ex.Message}\n" +
+                  "Fix the named rule, or remove --redaction-rules to start without rules.";
+        Console.Error.WriteLine(msg);
+        // This must reach a durable log, NOT stderr alone: an MCP child that exits takes its whole tool
+        // surface with it, and the operator may never open stderr.
+        FlaUI.Mcp.Server.Install.ServerStateFile.TryLogStartupError(msg);
+        return 2;
+    }
+    catch (Exception ex)
+    {
+        // The file could not be READ AT ALL — locked by the operator's editor, permissions, or deleted
+        // between launch and open. Without this catch the exception escapes, the server dies, and it
+        // takes the durable log with it: the one record the operator has to diagnose from.
+        //
+        // Deliberately a DIFFERENT message from the config branch above. Telling someone to "fix the
+        // named rule" when the real fault is a sharing violation sends them to edit a file that is
+        // perfectly valid — a recovery string must name a cause the reader can actually act on.
+        var msg = $"flaui-mcp: refusing to start — could not read the redaction rule file " +
+                  $"'{startupOptions.RedactionRules}': {ex.Message}\n" +
+                  "Check the path and that no other process holds the file open, or remove " +
+                  "--redaction-rules to start without rules.";
+        Console.Error.WriteLine(msg);
+        FlaUI.Mcp.Server.Install.ServerStateFile.TryLogStartupError(msg);
+        return 2;
+    }
+}
+
+// One file per instance; prune only positively-dead neighbours while we are here. A default-path
+// operator never runs the CLI, so nothing else would ever collect orphans.
+var stateDir = FlaUI.Mcp.Server.Install.ServerStateFile.DefaultDirectory;
+var self = System.Diagnostics.Process.GetCurrentProcess();
+FlaUI.Mcp.Server.Install.ServerStateFile.PruneDead(stateDir);
+FlaUI.Mcp.Server.Install.ServerStateFile.Write(stateDir, self.Id, self.StartTime.ToUniversalTime(),
+                                               startupOptions.RedactionRules, rulesSha);
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+    FlaUI.Mcp.Server.Install.ServerStateFile.Delete(stateDir, self.Id);
+
 var builder = Host.CreateApplicationBuilder(args);
 
 // MCP stdio: stdout is the JSON-RPC channel — a single framework log line on stdout corrupts the
@@ -33,7 +92,8 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 
-builder.Services.AddSingleton(ServerOptions.FromArgs(args));
+builder.Services.AddSingleton(startupOptions);
+builder.Services.AddSingleton(classifier);
 
 // v0.10.1 intent overlay: the real GDI renderer only when --overlay is on AND the delay is non-zero;
 // otherwise the zero-cost NullActionOverlay. Registered as a singleton so container disposal tears down

@@ -50,7 +50,19 @@ Agents often need to perceive the desktop without permission to act on it. Start
 The server defends against credential exfiltration at the perception layer:
 
 - **Credential stores:** Windows owned by known password managers are blocked outright. A snapshot or grid read returns `TargetDenied`.
-- **Redaction:** UI Automation password fields are always redacted. They appear as `[REDACTED]` in the accessibility tree and are painted over with an opaque black rectangle during screenshots, covering popups and menus.
+- **Redaction:** two signals, one decision.
+  1. **OS password fields** (UI Automation `IsPassword`) — always redacted, no configuration, cannot be turned off. A read that *throws* is treated as a password (fail closed).
+  2. **Operator redaction rules** — opt-in, `--redaction-rules <file>`. Match by process name, `automationId` (exact or regex), or name regex. See the operator manual.
+
+  A redacted element appears as `[REDACTED]` everywhere content crosses the wire: the accessibility tree, diffs, text reads, grid cells, watch events and terminal tab titles. Its pixels are painted over with an opaque black rectangle during screenshots, covering popups, menus and full-desktop captures.
+
+  Each element carries `redacted` (bool) and `redactedBy` (`"os"`, `"rule:<name>"`, or `"unreadable"`); `desktop_snapshot_stats` reports `redactedCount`.
+
+  **Fail-closed, both signals.** A password read that throws is treated as a password. And when rules are configured but an element's *identity* cannot be read, no rule can be evaluated honestly — so the content is withheld and reported as `"unreadable"` rather than emitted. An unreadable element is never silently treated as unmatched.
+
+  ⚠ **A redacted element is withheld from NAME search.** It is not locatable by its real name, nor by the `[REDACTED]` token — confirming a guessed name is itself the leak, even though no value crosses the wire. It stays enumerable by non-name queries (`controlType`, `automationId`), with a usable ref and real bounds, so it remains targetable and actionable.
+
+  ⚠ **Rule NAMES reach the agent** in `redactedBy`. Name a rule for what it protects, not for the secret: `acme-prod-vault` is a poor rule name.
 - **Full-desktop capture:** Capturing the entire virtual desktop is refused if any credential-store window is visible.
 - **Dead sessions:** Screenshots return `CaptureUnavailable` if the desktop is locked or RDP-disconnected, preventing a black capture.
 - **Elevation guard:** The server warns if started with Administrator rights. It is meant to run at the user integrity level.

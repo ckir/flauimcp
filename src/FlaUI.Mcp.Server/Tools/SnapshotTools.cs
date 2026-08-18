@@ -16,6 +16,10 @@ public sealed class SnapshotTools
 
     [McpServerTool(ReadOnly = true), Description("Walk a window's accessibility tree into an indented, ref-tagged snapshot. " +
         "Each line: [e23] Button \"OK\" @{x,y,w,h} {enabled, focusable} [Invoke]. Use the e-refs with later interaction tools. " +
+        "A redacted element shows \"[REDACTED]\" as its name; if an operator rule caused it the state also carries " +
+        "redacted:rule:<name>, or redacted:unreadable when its identity could not be read so it failed closed " +
+        "(OS password fields carry no marker). Redacted elements are not findable by name - " +
+        "target them by the e-ref or automationId. " +
         "If the window is an opaque Chromium/Electron app, the result includes wakeable:true — call desktop_wake_accessibility then re-snapshot to see its contents.")]
     public Task<string> DesktopSnapshot(
         [Description("Window handle, e.g. w1.")] string window,
@@ -92,7 +96,7 @@ public sealed class SnapshotTools
             return ToolResponse.Ok(new { stable = r.Stable, elapsedMs = r.ElapsedMs, snapshotId = r.SnapshotId });
         });
 
-    [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/redacted, FULL tree) + a per-ControlType histogram, without the tree text. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
+    [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/redacted/redactedCount) + a per-ControlType histogram, without the tree text. redactedCount is ALL redacted nodes; redacted counts OS password nodes only (kept for back-compat) - they are different numbers. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
     public Task<string> DesktopSnapshotStats(
         [Description("Window handle. Provide this OR snapshotId.")] string? window = null,
         [Description("A prior snapshotId, e.g. w1:4. Provide this OR window.")] string? snapshotId = null)
@@ -101,7 +105,7 @@ public sealed class SnapshotTools
             if (string.IsNullOrEmpty(window) == string.IsNullOrEmpty(snapshotId))
                 throw new ToolException(ToolErrorCode.InvalidArguments, "Provide exactly one of 'window' or 'snapshotId'.", "pass a window handle or a snapshotId");
             var s = string.IsNullOrEmpty(window) ? _perception.StatsBySnapshotId(snapshotId!) : await _perception.StatsByWindowAsync(new WindowHandle(window!));
-            return ToolResponse.Ok(new { snapshotId = s.SnapshotId, total = s.Total, interactive = s.Interactive, offscreen = s.Offscreen, redacted = s.Redacted, byControlType = s.ByControlType });
+            return ToolResponse.Ok(new { snapshotId = s.SnapshotId, total = s.Total, interactive = s.Interactive, offscreen = s.Offscreen, redacted = s.Redacted, redactedCount = s.RedactedCount, byControlType = s.ByControlType });
         });
 
     [McpServerTool(ReadOnly = true), Description("O(1) 'where am I': return the UIA-focused element's ref + descriptor line + owning window handle/title/pid. The ref is scoped to the returned window handle so you can act on it. AccessDeniedIntegrity on a secure/UAC desktop; NoFocusedElement when nothing is focused.")]

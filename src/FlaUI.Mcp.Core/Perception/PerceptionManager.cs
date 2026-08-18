@@ -12,10 +12,20 @@ public sealed class PerceptionManager
     private readonly WindowManager _windows;
     private readonly RefRegistry _refs;
     private readonly SnapshotCache _cache;
+    private readonly SensitivityClassifier _classifier;
 
     /// <summary>The DURABLE registry. Exposed so a wait can resolve a caller's ref against it while
     /// registering its own per-poll walk into a throwaway (BuildModelAsync's resolveRefs).</summary>
     internal RefRegistry Refs => _refs;
+
+    /// <summary>SP3 plumbing (Task 4b): reachable here for Tasks 5-9's redaction decisions. Not yet
+    /// consumed — this accessor exists so the backing field is READ (avoids CS0169/CS0414) and so
+    /// InputTools can reach the classifier without a second DI parameter (Classifier accessor, not a
+    /// new constructor param). PUBLIC, not internal: InputTools lives in FlaUI.Mcp.Server, a DIFFERENT
+    /// assembly from this Core type, and Core's [assembly: InternalsVisibleTo] (AssemblyInfo.cs:2) grants
+    /// access only to "FlaUI.Mcp.Tests" — an `internal` accessor here is invisible to Server and fails to
+    /// compile (verified: CS1061 across all four InputTools.cs call sites).</summary>
+    public SensitivityClassifier Classifier => _classifier;
 
     // Break-glass: FLAUI_MCP_REF_STRICT=off forces Lenient on state-changing paths too (disables INV-8).
     // The env->mode mapping lives in RefResolveConfig.WriteMode so it is unit-tested (see Step 1).
@@ -28,11 +38,19 @@ public sealed class PerceptionManager
     private static readonly int MaxSelectorNodes =
         RefResolveConfig.MaxSelectorNodes(System.Environment.GetEnvironmentVariable("FLAUI_MCP_SELECTOR_MAXNODES"));
 
-    public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache)
+    // SP3 Task 4b: ~35 existing test files construct PerceptionManager directly (new PerceptionManager(...),
+    // not via DI) and cannot pass a 4th argument without editing every one of them — forbidden ("no
+    // pre-existing test may be edited"). `classifier` is therefore OPTIONAL, defaulting to OsOnly (the
+    // same no-redaction-rules default Program.cs uses absent --redaction-rules) so every existing test
+    // constructor call keeps compiling unchanged. Production/DI always supplies the real singleton
+    // (Program.cs:76 AddSingleton(classifier)), so this default is exercised only by tests that don't
+    // care about classification.
+    public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache, SensitivityClassifier? classifier = null)
     {
         _windows = windows;
         _refs = refs;
         _cache = cache;
+        _classifier = classifier ?? SensitivityClassifier.OsOnly;
         // Phase 6: close signal → evict the window's refs, but MARSHALED onto the single query STA via
         // PostToQuerySta. RefRegistry is only otherwise mutated (BeginSnapshot/Register) on that STA, so
         // routing eviction through it too keeps ALL RefRegistry mutations serialized on one thread: an
@@ -139,6 +157,11 @@ public sealed class PerceptionManager
         var spec = new FindQuerySpec(q);
         bool hasCtConstraint = FindQuerySpec.TryParseControlType(q.ControlType, out var wantedCt);
 
+        // SP3: the classifier needs the owning process name. Read it ONCE from the walk root rather than
+        // per visited node — the selector walk is scoped to a single window, so every descendant shares
+        // the process, and a per-node read would add a COM call to every node of a bounded BFS.
+        var procName = SafeProcessName(root);
+
         // A matched node carries its already-read primitives (read ONCE, reused for the descriptor
         // mint) — mirrors FindAsync's "Read each primitive ONCE; reuse for BOTH" idiom and closes the
         // TOCTOU where a live-updating control's Name/ControlType could differ between match and mint.
@@ -182,11 +205,16 @@ public sealed class PerceptionManager
             {
                 // INV-5: redact BEFORE the match decision, matching FindAsync (PerceptionManager.cs:281-292)
                 // — a selector must not be usable as a password-field name oracle.
-                bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
+                var sens = ElementContent.SensitivityOf(el, _classifier, procName);
                 string rawName = SafeRead(() => el.Name, "") ?? string.Empty;
-                string name = isPwd ? "[REDACTED]" : rawName;
+                string name = sens.Redact ? "[REDACTED]" : rawName;
                 bool enabled = SafeRead(() => el.IsEnabled, false);
-                if (spec.MatchesPostFilter(name, enabled))
+                // DEF-3: withhold a redacted element from NAME search only — matching it on the token made
+                // the selector a locator oracle for every password field. Driven by the ELEMENT's
+                // classification, never by the query string, so an element legitimately named "[REDACTED]"
+                // is unaffected. BC-1: automationId/controlType still reach it, so it stays targetable.
+                if (sens.Redact && spec.HasNameConstraint) { /* not a name-searchable hit */ }
+                else if (spec.MatchesPostFilter(name, enabled))
                 {
                     // Read the remaining descriptor primitives HERE (only on a match) and capture them
                     // with the element — no second read of the winner after the loop (no double-read,
@@ -284,22 +312,26 @@ public sealed class PerceptionManager
     }
 
     // Replicate the snapshot security floor for targeted reads (they bypass SnapshotEngine).
-    private static void EnsureAllowed(AutomationElement el)
+    // Returns the process base name it ALREADY resolved, so a caller that needs it for rule-scoped
+    // redaction does not pay a second PID lookup.
+    private static string? EnsureAllowed(AutomationElement el)
     {
         var procName = SafeProcessName(el);
         if (PerceptionPolicy.IsDenied(procName))
             throw new ToolException(ToolErrorCode.TargetDenied,
                 $"Reading content from windows owned by '{procName}' is blocked (credential store).",
                 "target a different, non-sensitive element");
+        return procName;
     }
 
     // Verbatim-extracted read lambda from GetGridCellAsync (Phase 10 #2 T7): the shared body for both
     // the ref path (RunOnRefReadAsync) and the selector path (RunOnSelectorReadAsync) — byte-identical
     // logic, no behavior change; existing GetGridCellAsync tests are the oracle that the extraction
     // preserved behavior.
-    private static GridCellInfo ReadGridCell(AutomationElement el, int row, int col)
+    private static GridCellInfo ReadGridCell(AutomationElement el, int row, int col,
+                                             SensitivityClassifier classifier)
     {
-        EnsureAllowed(el);
+        var procName = EnsureAllowed(el);
         try
         {
             var gp = el.Patterns.Grid.PatternOrDefault
@@ -312,20 +344,13 @@ public sealed class PerceptionManager
             // Defensive UIA reads — a dynamically-realized cell from a faulty provider can throw
             // COMException on a property/pattern access; mirror EvaluateSelectorValueAsync's
             // try/catch-per-read so a flaky cell degrades gracefully, never leaks as INTERNAL.
-            bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => cell.Properties.IsPassword.ValueOrDefault);
-            string value;
-            if (isPwd) value = "[REDACTED]";
-            else
-            {
-                string? v = null;
-                try { v = cell.Patterns.Value.PatternOrDefault?.Value.ValueOrDefault; } catch { }
-                if (string.IsNullOrEmpty(v)) { try { v = cell.Name; } catch { } }
-                value = v ?? string.Empty;
-            }
+            // ElementContent.Value carries that same per-read tolerance internally.
+            var read = ElementContent.Value(cell, classifier, procName);
             string ct = "Unknown", aid = string.Empty;
             try { ct = cell.ControlType.ToString(); } catch { }
             try { aid = cell.Properties.AutomationId.ValueOrDefault ?? string.Empty; } catch { }
-            return new GridCellInfo(value, ct, aid, isPwd);
+            return new GridCellInfo(read.Text, ct, aid, read.Sensitivity.Source == RedactionSource.Os,
+                read.Sensitivity.Redact, ElementContent.RedactedBy(read.Sensitivity));
         }
         catch (System.UnauthorizedAccessException)
         { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
@@ -334,63 +359,70 @@ public sealed class PerceptionManager
     }
 
     public Task<GridCellInfo> GetGridCellAsync(WindowHandle handle, string @ref, int row, int col, int timeoutMs) =>
-        RunOnRefReadAsync(handle, @ref, el => ReadGridCell(el, row, col), timeoutMs);
+        RunOnRefReadAsync(handle, @ref, el => ReadGridCell(el, row, col, _classifier), timeoutMs);
 
     /// <summary>Selector twin of GetGridCellAsync (Phase 10 #2 T7): identical ReadGridCell body, resolved
     /// via the bounded selector walk (RunOnSelectorReadAsync — Lenient, no offscreen guard, mirrors the
     /// ref read path) instead of a ref lookup.</summary>
     public Task<(GridCellInfo Value, string ResolvedRef)> GetGridCellBySelectorAsync(WindowHandle handle, Selector sel, int row, int col, int timeoutMs) =>
-        RunOnSelectorReadAsync(handle, sel, el => ReadGridCell(el, row, col), timeoutMs);
+        RunOnSelectorReadAsync(handle, sel, el => ReadGridCell(el, row, col, _classifier), timeoutMs);
 
     // Verbatim-extracted read lambda from GetTextAsync (Phase 10 #2 T7): byte-identical logic (password
     // short-circuit, TextPattern read, truncation) shared by the ref and selector read paths.
-    private static TextReadResult ReadText(AutomationElement el, bool selectionOnly, int maxLength, bool fromEnd)
+    private static TextReadResult ReadText(AutomationElement el, bool selectionOnly, int maxLength, bool fromEnd,
+                                           SensitivityClassifier classifier)
     {
-        EnsureAllowed(el);
-        // Password short-circuit FIRST — never ask the provider for a secret's text/selection.
-        // Read IsPassword defensively (a COMException here must not bypass clean handling and
-        // surface as INTERNAL); if it can't be read it's a flaky non-password field → proceed.
-        bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
-        if (isPwd) return new TextReadResult("[REDACTED]", false, true);
+        var procName = EnsureAllowed(el);
+        // Truncation is decided INSIDE the read thunk (it depends on the text that came back), so it is
+        // captured out through locals. When the value is redacted the thunk never runs and both stay at
+        // their defaults — matching the old short-circuit, which returned (truncated:false, from:null).
+        bool truncated = false;
+        string? truncatedFrom = null;
         try
         {
-            var tp = el.Patterns.Text.PatternOrDefault
-                ?? throw new ToolException(ToolErrorCode.PatternUnsupported, "Element does not support the Text pattern.", "pick a text/document element");
-            int cap = System.Math.Clamp(maxLength, 1, 200000);
-            string raw;
-            if (selectionOnly)
+            // The password short-circuit lives in ElementContent now: it classifies BEFORE the thunk, so
+            // the provider is still never asked for a secret's text or selection.
+            var read = ElementContent.Text(el, classifier, procName, () =>
             {
-                try
+                var tp = el.Patterns.Text.PatternOrDefault
+                    ?? throw new ToolException(ToolErrorCode.PatternUnsupported, "Element does not support the Text pattern.", "pick a text/document element");
+                int cap = System.Math.Clamp(maxLength, 1, 200000);
+                string raw;
+                if (selectionOnly)
                 {
-                    var sel = tp.GetSelection();
-                    // fromEnd on a selection: fetch the whole selection (-1) so the tail is real, not the head.
-                    raw = (sel is { Length: > 0 }) ? sel[0].GetText(fromEnd ? -1 : cap + 1) : string.Empty;
+                    try
+                    {
+                        var sel = tp.GetSelection();
+                        // fromEnd on a selection: fetch the whole selection (-1) so the tail is real, not the head.
+                        raw = (sel is { Length: > 0 }) ? sel[0].GetText(fromEnd ? -1 : cap + 1) : string.Empty;
+                    }
+                    catch { raw = string.Empty; } // GetSelection is brittle (throws when no selection)
                 }
-                catch { raw = string.Empty; } // GetSelection is brittle (throws when no selection)
-            }
-            // fromEnd needs the FULL text (GetText(-1)) because GetText(cap+1) returns the HEAD; the head
-            // read keeps the cheap cap+1 fetch (spec §5.4: default byte-identical to today).
-            else raw = tp.DocumentRange.GetText(fromEnd ? -1 : cap + 1);
+                // fromEnd needs the FULL text (GetText(-1)) because GetText(cap+1) returns the HEAD; the head
+                // read keeps the cheap cap+1 fetch (spec §5.4: default byte-identical to today).
+                else raw = tp.DocumentRange.GetText(fromEnd ? -1 : cap + 1);
 
-            bool truncated = raw.Length > cap;
-            string? truncatedFrom = null;
-            if (truncated)
-            {
-                if (fromEnd) { raw = TextTail.Slice(raw, cap); truncatedFrom = "head"; } // kept tail, dropped head
-                else         { raw = raw.Substring(0, cap);     truncatedFrom = "tail"; } // kept head, dropped tail
-            }
-            return new TextReadResult(raw, truncated, false, truncatedFrom);
+                truncated = raw.Length > cap;
+                if (truncated)
+                {
+                    if (fromEnd) { raw = TextTail.Slice(raw, cap); truncatedFrom = "head"; } // kept tail, dropped head
+                    else         { raw = raw.Substring(0, cap);     truncatedFrom = "tail"; } // kept head, dropped tail
+                }
+                return raw;
+            });
+            return new TextReadResult(read.Text, truncated, read.Sensitivity.Source == RedactionSource.Os, truncatedFrom,
+                read.Sensitivity.Redact, ElementContent.RedactedBy(read.Sensitivity));
         }
         catch (System.UnauthorizedAccessException)
         { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
     }
 
     public Task<TextReadResult> GetTextAsync(WindowHandle handle, string @ref, bool selectionOnly, int maxLength, bool fromEnd, int timeoutMs) =>
-        RunOnRefReadAsync(handle, @ref, el => ReadText(el, selectionOnly, maxLength, fromEnd), timeoutMs);
+        RunOnRefReadAsync(handle, @ref, el => ReadText(el, selectionOnly, maxLength, fromEnd, _classifier), timeoutMs);
 
     /// <summary>Selector twin of GetTextAsync: identical ReadText body, resolved via the bounded selector walk.</summary>
     public Task<(TextReadResult Value, string ResolvedRef)> GetTextBySelectorAsync(WindowHandle handle, Selector sel, bool selectionOnly, int maxLength, bool fromEnd, int timeoutMs) =>
-        RunOnSelectorReadAsync(handle, sel, el => ReadText(el, selectionOnly, maxLength, fromEnd), timeoutMs);
+        RunOnSelectorReadAsync(handle, sel, el => ReadText(el, selectionOnly, maxLength, fromEnd, _classifier), timeoutMs);
 
     /// <summary>Composite terminal-tab read (spec §5.5): select tabIndex → settle → read the sibling
     /// buffer (fromEnd/maxLength) → restore the originally-active tab on both the success and error paths
@@ -401,7 +433,8 @@ public sealed class PerceptionManager
         WindowHandle handle, int tabIndex, bool restoreFocus, bool fromEnd, int maxLength, int timeoutMs) =>
         _windows.RunOnWindowActionAsync(handle,
             (win, _) => TerminalTabReader.Run(win, tabIndex, restoreFocus, fromEnd, maxLength,
-                buf => ReadText(buf, selectionOnly: false, maxLength, fromEnd)),
+                buf => ReadText(buf, selectionOnly: false, maxLength, fromEnd, _classifier),
+                _classifier, SafeProcessName(win)),
             timeoutMs);
 
     /// <summary>Item 5: pure-read tab enumeration. Runs on the QUERY STA, not the transient action STA
@@ -409,17 +442,18 @@ public sealed class PerceptionManager
     /// the in-flight action cap. Same STA path BuildModelAsync uses (:416).</summary>
     public Task<(IReadOnlyList<TerminalTabReader.TabListing> Tabs, int ActiveTabIndex)>
         ListTerminalTabsAsync(WindowHandle handle) =>
-        _windows.RunWithWindowAndDesktopAsync(handle, (win, _) => TerminalTabReader.List(win));
+        _windows.RunWithWindowAndDesktopAsync(handle,
+            (win, _) => TerminalTabReader.List(win, _classifier, SafeProcessName(win)));
 
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
-    private static string? SafeProcessName(AutomationElement el)
-    {
-        int pid;
-        try { pid = el.Properties.ProcessId.ValueOrDefault; } catch { pid = -1; }
-        if (pid < 0) return null;
-        try { using var p = System.Diagnostics.Process.GetProcessById(pid); return p.ProcessName; }
-        catch { return null; }
-    }
+    /// <summary>Delegates to <see cref="ProcessIdentity"/>, which is the ONE implementation.
+    ///
+    /// ⚠ This used to be a full private copy, and WatchPump carried a second one commented "mirrors
+    /// PerceptionManager.SafeProcessName". They drifted: a capstone fix taught this one to recover a pid of
+    /// 0 through the window handle and the copy did not follow, so the watch path began dropping events for
+    /// windows this path served. Two implementations of one decision is the defect class that has now bitten
+    /// this branch three separate times — do not re-inline it.</summary>
+    private static string? SafeProcessName(AutomationElement el) => ProcessIdentity.OfElement(el);
 
     /// <summary><paramref name="resolveRefs"/> is the registry the ROOT REF resolves against; refs minted
     /// by the walk always register into <paramref name="refs"/>. They are the same registry for every
@@ -460,7 +494,7 @@ public sealed class PerceptionManager
                     handle.Id, options.RootRef!, searchRoots, options.RootResolveMode);
             }
             var snapshotId = refs.BeginSnapshot(handle.Id);
-            var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id);
+            var model = SnapshotEngine.Build(root, popups, options, refs, handle.Id, _classifier, procName);
             // Phase 9 §3: wakeable hint is a whole-WINDOW opacity signal, not a subtree one — only computed for
             // a full-window snapshot (RootRef null). win is the window root (same element the tree was built
             // from when isFullWindow); read its ClassName defensively (WindowManager.cs idiom).
@@ -591,14 +625,16 @@ public sealed class PerceptionManager
                 // Otherwise find is a name-oracle snapshot never exposes (find name="guess" -> hit => leak).
                 // Matching on the redacted name makes password fields unfindable-by-name, matching the
                 // snapshot render (SnapshotEngine.cs:131 shows password Name as "[REDACTED]").
-                bool isPwd = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
-                // el.Name returns NULL for unnamed containers (SafeRead's "" fallback fires only on an
-                // EXCEPTION, not a null return) - coalesce so the name is never null downstream (would
-                // NRE the "contains" post-filter) and the FindMatch wire contract stays "empty, never null".
-                string rawName = SafeRead(() => el.Name, "") ?? string.Empty; // raw -> descriptor (re-resolution key)
-                string name = isPwd ? "[REDACTED]" : rawName;         // redacted -> match + output
+                // ElementContent.Name coalesces a NULL el.Name (unnamed containers) to "" internally, so
+                // the name is never null downstream (would NRE the "contains" post-filter) and the
+                // FindMatch wire contract stays "empty, never null".
+                var read = ElementContent.Name(el, _classifier, procName);
+                string rawName = read.RawForIdentity;   // raw -> descriptor (re-resolution key), BC-1
+                string name = read.Text;                // already redacted -> match + output
                 bool enabled = SafeRead(() => el.IsEnabled, false);
-                if (!spec.MatchesPostFilter(name, enabled)) continue; // match on the redacted name (no name-oracle)
+                // DEF-3: withhold a redacted element from NAME search only (BC-1: aid/controlType still reach it).
+                if (read.Sensitivity.Redact && spec.HasNameConstraint) continue;
+                if (!spec.MatchesPostFilter(name, enabled)) continue;
                 total++;
                 if (matches.Count >= max) continue; // keep counting total, stop collecting
 
@@ -743,7 +779,17 @@ public sealed class PerceptionManager
             // case RedactionPolicy.IsPasswordOrFailClosed exists for: it fails CLOSED on a throwing read
             // rather than trusting the control. Returning null (not "") also means valueEquals can never
             // satisfy on a password field, since `equals` is required to be non-null.
-            if (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault))
+            // ⚠ SP3 CAPSTONE FIX (finding L1). The gate below USED to be the IsPassword read alone, i.e.
+            // OS-ONLY — so an operator RULE never reached it. A rule-redacted element fell straight through
+            // to the raw Value / Name / LegacyIAccessible reads underneath, and wait_for(until:valueEquals)
+            // became a CONFIRMATION ORACLE against exactly the fields an operator configured a rule to
+            // protect. The comment above states that threat model correctly and then closed it for one of
+            // the two signals only; SP3 extended redaction across twelve other sites and missed this one.
+            //
+            // SensitivityOf is the right primitive here precisely because it decides WITHOUT reading the
+            // content it is protecting, and it still fails CLOSED on a throwing IsPassword read — so this
+            // is a strict superset of the OS-only gate it replaces, never a weakening.
+            if (ElementContent.SensitivityOf(el, _classifier, SafeProcessName(win)).Redact)
                 return (true, null);
 
             try { var vp = el.Patterns.Value.PatternOrDefault; if (vp is not null) return (true, vp.Value.ValueOrDefault); } catch { }
@@ -790,11 +836,12 @@ public sealed class PerceptionManager
         return Tally(id, model);
     }
 
-    private static SnapshotStats Tally(string id, SnapshotModel m)
+    internal static SnapshotStats Tally(string id, SnapshotModel m)
     {
         var nodes = m.Nodes.ToList();
         return new SnapshotStats(id, nodes.Count, nodes.Count(SnapshotEngine.IsInteractiveNode),
-            nodes.Count(n => n.IsOffscreen), nodes.Count(n => n.IsPassword),
+            nodes.Count(n => n.IsOffscreen), nodes.Count(n => n.Sensitivity.Source == RedactionSource.Os),
+            nodes.Count(n => n.Sensitivity.Redact),
             nodes.GroupBy(n => n.ControlType.ToString()).ToDictionary(g => g.Key, g => g.Count()));
     }
 
@@ -815,7 +862,11 @@ public sealed class PerceptionManager
             var pw = new List<System.Drawing.Rectangle>();
             foreach (var rootEl in PopupFinder.SearchRoots(win, desktop))
             {
-                try { foreach (var d in rootEl.FindAllDescendants()) { try { if (d.Properties.IsPassword.ValueOrDefault) pw.Add(d.BoundingRectangle); } catch { } } } catch { }
+                // DEF-1: this read used to be RAW (`d.Properties.IsPassword.ValueOrDefault`) inside the inner
+                // catch, so a provider that THREW yielded no rect — text redacted, PIXELS CAPTURED, while all
+                // eleven text sites failed closed. SensitivityOf routes through the same classifier, which
+                // fails closed on a throw AND honours configured rules, not just the OS password flag.
+                try { foreach (var d in rootEl.FindAllDescendants()) { try { if (ElementContent.SensitivityOf(d, _classifier, procName).Redact) pw.Add(d.BoundingRectangle); } catch { } } } catch { }
             }
             return new CaptureGeometry(target.BoundingRectangle, pw, false, false, null);
         });
@@ -835,6 +886,31 @@ public sealed class PerceptionManager
         var win = geo.Bounds; // full window physical rect (target was `win` itself since @ref is null)
         var capture = TextCaptureGeometry.ComputeCaptureBounds(win, region);
         return new TextCaptureGeometry(false, null, false, capture, geo.PasswordRects, win.X, win.Y, win.Width, win.Height);
+    }
+
+    /// <summary>DEF-2: full-desktop capture passed Array.Empty&lt;Rectangle&gt;() and so masked NOTHING — the one
+    /// capture mode that photographs every window at once was the only mode with no redaction at all, while
+    /// window- and element-scoped capture both masked correctly. Collects the mask rects of every visible
+    /// non-denied window.
+    ///
+    /// A window that fails to resolve is SKIPPED rather than fatal: one unreadable window must not fail the
+    /// whole capture. That is not a hole — ScreenshotTools already REFUSES a full-desktop capture outright
+    /// when any denylisted credential window is visible, so this path only ever runs when none is.</summary>
+    public async Task<IReadOnlyList<System.Drawing.Rectangle>> AllPasswordRectsAsync()
+    {
+        var rects = new List<System.Drawing.Rectangle>();
+        var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
+        foreach (var w in windows)
+        {
+            if (w.Handle is null || PerceptionPolicy.IsDenied(w.ProcessName)) continue;
+            try
+            {
+                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null);
+                if (!geo.Denied && !geo.Minimized) rects.AddRange(geo.PasswordRects);
+            }
+            catch { } // a window that closed mid-enumeration, or one we cannot bind: skip it
+        }
+        return rects;
     }
 
     public async Task<bool> DenylistedWindowsVisibleAsync()
@@ -865,6 +941,8 @@ public sealed record FocusedElementInfo(string Ref, string DescriptorLine, strin
 
 public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> PasswordRects, bool Minimized, bool Denied, string? DeniedProcess);
 
-public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword);
+public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword,
+    bool Redacted, string? RedactedBy);
 
-public sealed record TextReadResult(string Text, bool Truncated, bool IsPassword, string? TruncatedFrom = null);
+public sealed record TextReadResult(string Text, bool Truncated, bool IsPassword, string? TruncatedFrom = null,
+    bool Redacted = false, string? RedactedBy = null);

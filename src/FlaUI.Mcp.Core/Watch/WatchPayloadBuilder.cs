@@ -1,16 +1,18 @@
 using System.Globalization;
+using FlaUI.Mcp.Core.Perception;
 
 namespace FlaUI.Mcp.Core.Watch;
 
 /// <summary>Abstracts the STA-side reads needed to build a payload from an already-resolved source element,
-/// so the builder is headless-testable with a fake. The live implementation (Task 8) reads on the query STA
-/// and is fail-soft per read. IsPassword MUST be fail-closed (RedactionPolicy.IsPasswordOrFailClosed).</summary>
+/// so the builder is headless-testable with a fake. The live implementation reads on the query STA and is
+/// fail-soft per read. The redaction decision MUST be fail-closed (it comes from ElementContent, which
+/// routes through RedactionPolicy.IsPasswordOrFailClosed).</summary>
 public interface IEventSourceReader
 {
     bool HasSource { get; }        // false for window_closed (no live source to read)
-    bool IsPassword { get; }       // INV-5 (fail-closed in the live impl)
+    Sensitivity Sensitivity { get; } // INV-5: the egress decision (OS-fail-closed in the live impl)
     string? ControlType { get; }
-    string? Name { get; }          // RAW; the builder redacts when IsPassword
+    string? Name { get; }          // ALREADY REDACTED by the reader (spec §7.2); the builder re-applies
     int[]? Bounds { get; }         // [x,y,w,h] or null (element may be gone by delivery)
     string? MintRef();             // mint an event ref (bounded layer, §16.5) or null
 }
@@ -31,7 +33,10 @@ public static class WatchPayloadBuilder
             @ref = reader.MintRef();
             controlType = reader.ControlType;
             bounds = reader.Bounds;
-            name = reader.IsPassword ? "[REDACTED]" : reader.Name; // INV-5
+            // The reader already returns a redacted name; re-applying the token here is DEFENSE IN DEPTH —
+            // the builder cannot verify the reader honoured §7.2, and this is also what keeps INV-5
+            // pinnable headlessly with a fake reader (WatchPayloadBuilderTests).
+            name = reader.Sensitivity.Redact ? ElementContent.RedactedToken : reader.Name; // INV-5
         }
         return new DesktopEventPayload(
             meta.SubscriptionId, WatchEventKinds.ToWire(meta.Kind), windowId,

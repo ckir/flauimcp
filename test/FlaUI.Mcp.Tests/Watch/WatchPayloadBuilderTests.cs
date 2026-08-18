@@ -1,5 +1,6 @@
 // test/FlaUI.Mcp.Tests/Watch/WatchPayloadBuilderTests.cs
 using System;
+using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Watch;
 using Xunit;
 
@@ -10,7 +11,7 @@ public class WatchPayloadBuilderTests
     private sealed class FakeReader : IEventSourceReader
     {
         public bool HasSource { get; init; } = true;
-        public bool IsPassword { get; init; }
+        public Sensitivity Sensitivity { get; init; } = Sensitivity.Visible;
         public string? ControlTypeValue { get; init; }
         public string? NameValue { get; init; }
         public int[]? BoundsValue { get; init; }
@@ -44,7 +45,7 @@ public class WatchPayloadBuilderTests
     [Fact]
     public void Password_source_redacts_name_INV5()
     {
-        var reader = new FakeReader { IsPassword = true, ControlTypeValue = "Edit",
+        var reader = new FakeReader { Sensitivity = Sensitivity.OsPassword, ControlTypeValue = "Edit",
             NameValue = "hunter2-NEVER-LEAK", RefValue = "e1" };
         var p = WatchPayloadBuilder.Build(Meta(WatchEventKind.FocusChanged), "w1", 1, reader);
         Assert.Equal("[REDACTED]", p.Name);

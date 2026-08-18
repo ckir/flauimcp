@@ -28,8 +28,13 @@ public static class TerminalTabReader
     private static ControlType Ct(AutomationElement e)
     { try { return e.ControlType; } catch { return ControlType.Custom; } }
 
-    private static string NameOf(AutomationElement e)
-    { try { return e.Name ?? ""; } catch { return ""; } }
+    /// <summary>The tab's title, classified ONCE. Read.Text is the EGRESS value (already redacted) and
+    /// goes on the wire; Read.RawForIdentity is the raw value and is used ONLY to match a tab for restore,
+    /// never emitted (BC-1). Splitting them here is the whole point: this file's five title reads divide
+    /// into two egress and three identity, and blanket-redacting all five would break restore.</summary>
+    private static ElementContent.Read Title(AutomationElement e, SensitivityClassifier classifier,
+                                             string? processName)
+        => ElementContent.Name(e, classifier, processName);
 
     /// <summary>Locate the tab strip and its immediate container. WT nests the strip (and the buffer) under
     /// an intermediate content-wrapper Pane, so on current builds the strip is a GRANDCHILD of the window;
@@ -106,7 +111,8 @@ public static class TerminalTabReader
     ///
     /// ActiveTabIndex is -1 when NO tab reported itself selected, which conflates "nothing selected"
     /// with "selection state unreadable". Deliberate: see TabListing.</summary>
-    public static (IReadOnlyList<TabListing> Tabs, int ActiveTabIndex) List(AutomationElement win)
+    public static (IReadOnlyList<TabListing> Tabs, int ActiveTabIndex) List(
+        AutomationElement win, SensitivityClassifier classifier, string? processName)
     {
         var tabs = EnumerateTabs(win);
         var listing = new List<TabListing>(tabs.Count);
@@ -115,7 +121,8 @@ public static class TerminalTabReader
         {
             bool selected = IsSelected(tabs[i]);
             if (selected && active < 0) active = i;
-            listing.Add(new TabListing(i, NameOf(tabs[i]), selected));
+            // EGRESS: TabListing.Title reaches the wire as `title` (ContentTools.cs:114).
+            listing.Add(new TabListing(i, Title(tabs[i], classifier, processName).Text, selected));
         }
         return (listing, active);
     }
@@ -126,13 +133,23 @@ public static class TerminalTabReader
     /// success path; (b) Restore() NEVER throws — it degrades to Restored:false; (c) restore runs EXACTLY
     /// once — on the success path via the normal return, or on the error path via the catch, never both.</summary>
     public static Result Run(AutomationElement win, int tabIndex, bool restoreFocus, bool fromEnd, int maxLength,
-        System.Func<AutomationElement, TextReadResult> readText)
+        System.Func<AutomationElement, TextReadResult> readText,
+        SensitivityClassifier classifier, string? processName)
     {
         var tabs = EnumerateTabs(win);
         int activeIndex = tabs.FindIndex(IsSelected);
-        string activeTitle = activeIndex >= 0 ? NameOf(tabs[activeIndex]) : "";
+        // Classify every tab ONCE up front: the egress title, the raw identity title and the sensitivity
+        // all come out of the same read, so they cannot disagree with each other.
+        var upFront = tabs.Select(t => Title(t, classifier, processName)).ToList();
+        string activeTitle = activeIndex >= 0 ? upFront[activeIndex].RawForIdentity : ""; // IDENTITY: raw
+        var activeSensitivity = activeIndex >= 0 ? upFront[activeIndex].Sensitivity : Sensitivity.Visible;
+        // DEF-4: uniqueness is computed WITHIN the sensitivity partition. Counting across ALL tabs would
+        // let a visible tab's title collide with a protected tab's and drop restoreConfidence from "high"
+        // to "reduced" — an observable oracle for the protected tab's hidden title. Partitioning only
+        // inside RestoreTarget.Resolve would leave this line as the same oracle, one step earlier.
         bool activeTitleUnique = activeIndex >= 0
-            && tabs.Count(t => string.Equals(NameOf(t), activeTitle, System.StringComparison.Ordinal)) == 1;
+            && upFront.Count(t => t.Sensitivity == activeSensitivity
+                                  && string.Equals(t.RawForIdentity, activeTitle, System.StringComparison.Ordinal)) == 1;
 
         if (tabIndex < 0 || tabIndex >= tabs.Count)
             throw new ToolException(ToolErrorCode.InvalidArguments,
@@ -142,7 +159,9 @@ public static class TerminalTabReader
                 // exists. This recovery used to send the caller to the one path guaranteed to disagree.
                 "call desktop_list_terminal_tabs to read the valid indexes for this window");
 
-        string targetTitle = NameOf(tabs[tabIndex]);
+        // EGRESS: Result.TabTitle reaches the wire as `tabTitle` (ContentTools.cs:101). Reuses the
+        // up-front classification — no second COM read.
+        string targetTitle = upFront[tabIndex].Text;
         bool restoreNeeded = restoreFocus && activeIndex >= 0; // nothing active => nothing to restore
 
         try
@@ -204,8 +223,11 @@ public static class TerminalTabReader
             try
             {
                 var fresh = EnumerateTabs(win);
-                var titles = fresh.Select(NameOf).ToList();
-                var d = RestoreTarget.Resolve(activeTitle, activeIndex, activeTitleUnique, titles);
+                var reads = fresh.Select(f => Title(f, classifier, processName)).ToList();
+                var titles = reads.Select(r => r.RawForIdentity).ToList();   // IDENTITY: raw, never emitted
+                var sens = reads.Select(r => r.Sensitivity).ToList();        // DEF-4: the PARALLEL mask
+                var d = RestoreTarget.Resolve(activeTitle, activeIndex, activeTitleUnique, titles,
+                                              sens, activeSensitivity);
                 if (d.SelectIndex is int idx)
                 {
                     Select(fresh[idx]);

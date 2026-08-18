@@ -54,7 +54,7 @@ at its own boot.
 dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"
 
 # Desktop gate — MAIN THREAD ONLY, quiet machine, physical console, user-granted lease. ~12 min.
-dotnet test --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"
+dotnet test --filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"
 dotnet test --filter "FullyQualifiedName~PopupGrafting"
 ```
 
@@ -1122,8 +1122,34 @@ Do **not** add rule handling here. The commit at Step 8 must build clean and cha
 
 Run: `dotnet build FlaUI.Mcp.slnx -c Release` — fix each remaining compile error by passing a `Sensitivity`.
 Then: `dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: **808 passed / 0 skipped** (805 + 3). ⚠ **No existing test may be edited to accommodate this.**
-If one needs editing, the default path changed — stop and re-read spec §4.4.
+Expected: **818 passed / 0 skipped** (815 + 3).
+
+### ⚠ AMENDMENT — the "no existing test may be edited" rule needs a distinction, or this task deadlocks
+
+An earlier draft said flatly *"No existing test may be edited to accommodate this."* **That is impossible
+as written, and following it literally deadlocks the task.** `SnapshotNode` is a positional record, so
+changing its member changes its CONSTRUCTOR, and **three existing test files already construct or read it**
+(verified at HEAD):
+
+| Site | What it does | Mechanical replacement |
+|---|---|---|
+| `test/…/Perception/WaitNameOracleTests.cs:21` | constructs, `IsPassword: isPassword` (a `bool` parameter) | `Sensitivity: isPassword ? Sensitivity.OsPassword : Sensitivity.Visible` |
+| `test/…/Perception/PasswordRedactionTests.cs:52` | constructs, `IsPassword: true` | `Sensitivity: Sensitivity.OsPassword` |
+| `test/…/Perception/SnapshotModelPinTests.cs:22` | **reads**, `n.IsPassword ? "[REDACTED]" : n.Name` | `n.Sensitivity.Source == RedactionSource.Os ? …` |
+
+**The rule's real intent (spec §4.4) is about ASSERTIONS, not signatures.** Restate it as two rules:
+
+- ✅ **ALLOWED — a mechanical CONSTRUCTION/READ fix** forced by the changed signature, using the exact
+  equivalences in the table above. These preserve today's semantics precisely and change no assertion.
+- ❌ **FORBIDDEN — editing any existing test's ASSERTION, expected string, or expected count** to make it
+  agree with SP3. That is the default-path regression §4.4 exists to prevent. If an assertion needs
+  changing, **STOP** — the rendering changed and it must not have.
+
+⚠ Map reads to **`Source == Os`**, not `.Redact` — see the boxed warning above. The three sites in the
+table are the COMPLETE set at HEAD; if `grep -rn "IsPassword" test --include=*.cs` shows a fourth
+*`SnapshotNode`* site, that is new since this was written — report it rather than adapting. (Other
+`IsPassword` hits in `test/` are unrelated: they belong to `TextReadResult`, `GridCellInfo`,
+`RedactionPolicy` and the watch `FakeReader`, none of which this task changes.)
 
 - [ ] **Step 8: Commit**
 
@@ -1141,7 +1167,114 @@ classification was *computed*, not *applied* — a developer who forgets writes 
 and ships the leak under a green gate. Raw access is a **separately named** member.
 
 **Files:** Create `src/FlaUI.Mcp.Core/Perception/ElementContent.cs`; modify `PerceptionManager.cs:317`,
-`:354`, `:599`; `Watch/WatchPayloadBuilder.cs:34`; `Interaction/VerifyReader.cs:24-25`.
+`:354`, `:599`; `Watch/WatchPayloadBuilder.cs:34`; `Interaction/VerifyReader.cs:24-25`;
+`Perception/TerminalTabReader.cs:118`, `:145` (**the 13th site — see the amendment below**).
+
+> **AMENDMENT (2026-07-31, operator-approved).** Spec §3.1 enumerates **twelve** egress sites. It is
+> **incomplete**: `TerminalTabReader.cs:31-32` (`NameOf`) reads a tab's raw `.Name`, and it reaches the
+> wire at **two** exits — `ContentTools.cs:114` (`title`, via `TabListing.Title` built at
+> `TerminalTabReader.cs:118`) and `ContentTools.cs:101` (`tabTitle`, via the `Result.TabTitle` built from
+> `:145`). Nothing in that file touches `RedactionPolicy`. Found INDEPENDENTLY by the Task 1 census and by
+> a blind second pass, which is why it is credited rather than treated as noise. Tab titles routinely
+> carry working directories, SSH destinations and command strings.
+>
+> ⚠ **`NameOf` has FIVE call sites and they SPLIT — do not blanket-redact it.** `:118` and `:145` are
+> **egress**. `:133`, `:135` and `:207` compute `activeTitle` / `activeTitleUnique` / the fresh title list
+> purely to match the tab to restore focus to; they never leave the process and are **identity**. Use the
+> same `Read.Text` / `Read.RawForIdentity` split as the other dual-purpose sites.
+>
+> ⚠ **`:207` is `fresh.Select(NameOf)` — a METHOD-GROUP reference.** A `grep` for `NameOf\(` misses it and
+> reports four call sites. It cost one review round here; Task 12's Roslyn sweep resolves by symbol and
+> would have caught it, which is precisely why the sweep is not a `grep`.
+>
+> ### ⚠ DEF-4 — the restore-confidence oracle. **SP3 CREATES this; it does not exist today.**
+>
+> `:135`'s `activeTitleUnique` flows to `RestoreTarget.Resolve` (`:208`) → `d.Confidence` → `Result`
+> (`:190`) → **`restoreConfidence` on the wire at `ContentTools.cs:101`**. So a *title comparison* is
+> observable to the caller as a string.
+>
+> Today that is worthless — nothing redacts tab titles, so an agent that wants a title just reads it. The
+> moment SP3 hides some titles, the field becomes a side channel: set the active tab's title to a guess,
+> watch whether confidence drops from `high` to `reduced`, and learn that a hidden tab carries that exact
+> title. **Same defect class as DEF-3, and SP3 would introduce it — so fixing it is mandatory, not
+> optional scope.**
+>
+> **The fix is NOT to redact `:133`/`:135`/`:207`.** That was considered and rejected: every redacted tab
+> would then compare equal to every other (all read as the same token), so `activeTitleUnique` goes false
+> whenever two tabs are protected, ordinal fallback kicks in for exactly the tabs the operator asked to
+> protect, and the field *still* leaks — now "two or more tabs are redacted". That trades one leak for a
+> leak plus a regression.
+>
+> **The fix is to PARTITION THE IDENTITY SPACE BY `Sensitivity`.** Compare a tab's raw title only against
+> tabs of the *same* `Sensitivity`. An unprotected tab then structurally cannot collide with a protected
+> one, so the oracle closes; protected tabs still match each other on raw titles, so confident restore
+> survives. With no rules configured every tab is `Visible`, the partition is a no-op, and the default
+> path is byte-identical — which §4.4 requires.
+>
+> ⚠⚠ **DO NOT IMPLEMENT THE PARTITION BY FILTERING THE LIST.** `RestoreTarget.Resolve`
+> (`RestoreTarget.cs:14-31`) returns `SelectIndex` as an index **into `freshTitles`**, and the caller does
+> `fresh[idx]` at `:211`; `recordedOrdinal` is also bounds-checked against `freshTitles.Count` at `:28`.
+> Filtering the list desynchronises both and **selects the wrong tab** — a worse bug than the leak. Pass a
+> **parallel `IReadOnlyList<Sensitivity>` of the same length** and have `Resolve` skip non-matching
+> entries in place, keeping every index an index into the full list.
+>
+> The spec is frozen at `9c7588e`; this amendment is recorded here because the plan is the executable
+> artifact. Task 12 Step 5 ticks **thirteen** entries, not twelve.
+
+> ### AMENDMENT 2 (2026-07-31) — citations re-measured at `1fd5ebe`, and four plan defects
+>
+> The task above was authored against `9c7588e`. Tasks 1–5 + 4b moved lines and **already did some of the
+> threading this task budgeted for**. Measured at `1fd5ebe`:
+>
+> | Plan said | Actually at `1fd5ebe` |
+> |---|---|
+> | `PerceptionManager.cs:317` grid cell | `ReadGridCell` is `private static` at `:318`; the `IsPassword` read is `:333`; the return is `:346`; callers `:355`, `:361` |
+> | `PerceptionManager.cs:354` `ReadText` | signature `:365`; the `IsPassword` read is `:371`; callers `:407`, `:411`, `:422` |
+> | `PerceptionManager.cs:599` `find` | `IsPassword` `:612`; `rawName` `:616`; `name` `:617`; descriptor `:639`; `FindMatch` `:642`. `procName` is **already in scope** from `:506` |
+> | `VerifyReader.cs:24-25` + "add two parameters, find every caller" | **Already done by Task 4b.** `FromElement` at `:22-23` already takes `SensitivityClassifier classifier, string? processName`, and all four callers (`InputTools.cs:182`, `:232`, `:301`, `:326`) already pass them. The only site to change is the `IsPassword` read at `:25`. **No signature change, no caller sweep.** |
+> | `WatchPump` "takes the classifier from the constructor (Task 4b)" | Confirmed: field `:29`, property `:34`, ctor `:54`, assignment `:62`. `procName` at `:217`. `LiveEventSourceReader` `:240`, its `IsPassword` `:254-255`, `Name` `:257`, `rawName` `:277`. `ClosedReader.IsPassword` `:293` |
+> | `TerminalTabReader.ListTabs` | **The method is named `List`** (`:109`). `Run` is `:128`. `NameOf` `:31-32`. Egress `:118`, `:145`. Identity `:133`, `:135`, `:207` — all five confirmed present and unchanged |
+> | `RestoreTarget.cs:14-31`, `:28`; `ContentTools.cs:101`, `:114` | all confirmed exact |
+>
+> **DEFECT A — `ElementContent.Text` must NOT wrap `readText` in `Safe`.** The pasted code does. But
+> `PerceptionManager.ReadText` *throws* `ToolException(PatternUnsupported)` from inside that read when the
+> element has no TextPattern (`:375-376`), and lets `UnauthorizedAccessException` propagate to a handler at
+> `:402-403`. `Safe` would swallow both and return `""` — turning two documented, tested errors into a
+> silent empty string. **The thunk owns its own failure policy; `Text` calls it directly.** `Name` and
+> `Value` keep `Safe` (they mirror `SafeRead`/`try{}catch{}` already in place at those sites).
+>
+> **DEFECT B — the watch builder must RE-APPLY the token, not just pass the reader's string through.**
+> The plan makes `IEventSourceReader.Name` already-redacted and deletes the builder's redaction. That
+> makes the existing headless pin `WatchPayloadBuilderTests.Password_source_redacts_name_INV5`
+> (`:44-52`) **vacuous** — it would assert the fake's own literal. `LiveEventSourceReader` is
+> `private sealed` and needs a live element, so there is no headless replacement: INV-5's only headless
+> pin would be lost. Instead: the reader returns the already-redacted name (per §7.2) **and** the builder
+> keeps `name = reader.Sensitivity.Redact ? "[REDACTED]" : reader.Name;`. The builder cannot verify the
+> reader honoured the contract, so re-application is defense-in-depth — and it is what keeps INV-5
+> pinnable with a fake.
+>
+> **DEFECT C — `RestoreTarget.Resolve`'s new partition parameters must be OPTIONAL.** Five existing tests
+> in `RestoreTargetTests.cs` (`:12`, `:22`, `:32`, `:42`, `:52`) call the 4-arg form, and §4.4 forbids
+> editing an existing test to accommodate SP3. A null mask means "no partition" — today's behaviour,
+> byte-identical. ⚠ This re-opens Task 4b's optional-parameter hole (a `src/` caller that omits it silently
+> gets no partition, with no compile error); it is covered by the same three-part sweep rule, and there is
+> exactly ONE `src/` caller (`TerminalTabReader.cs:208`), pinned by DEF-4 fact 4.
+>
+> **DEFECT D — `activeTitleUnique` (`:134-135`) must be partitioned too.** It counts matches across ALL
+> tabs. Partitioning only inside `Resolve` leaves the uniqueness computation itself cross-partition, so a
+> visible tab still suppresses a protected tab's confidence — the same oracle, one step earlier.
+>
+> **Also:** `EnsureAllowed` (`:305-312`) already computes `SafeProcessName(el)` and discards it — **change
+> it to return `string?`** so the grid and text paths get `processName` with zero extra COM reads.
+>
+> **Test edits — the Task 5 precedent applies.** Fixing a construction or a fake's member list so it
+> compiles against a changed type is ALLOWED. Editing an assertion to accommodate SP3 is FORBIDDEN.
+> ⚠ And the vacuous-pin trap: a mechanical `IsPassword = true` → `Sensitivity` fix maps to
+> **`Sensitivity.OsPassword`**, NEVER to a rule sensitivity.
+>
+> **This task ships as THREE commits** — 6a `ElementContent` + the three `PerceptionManager` sites;
+> 6b watch + verify; 6c the 13th site + DEF-4. The headless expectation in Step 3 is **820**, not 808
+> (that figure predates Tasks 4b/5 and the two pre-existing-defect fixes); 6c adds 4, ending at **824**.
 
 - [ ] **Step 1: Implement `ElementContent.cs`**
 
@@ -1228,7 +1361,32 @@ hid real signature and injection work. Site by site:
 | `WatchPayloadBuilder.cs:34` | via the reader | change `IEventSourceReader` (`WatchPayloadBuilder.cs:11-13`) to expose `Sensitivity Sensitivity` and an already-redacted `Name`, instead of `bool IsPassword` + a RAW `Name`. ⚠ **`LiveEventSourceReader` (`WatchPump.cs:227+`) must obtain both by calling `ElementContent.Name`, NOT by classifying itself.** An earlier draft said "it holds the element, so it classifies" — which would read `el.Name` **outside the closed egress list and fail Task 12's sweep**, since that sweep is the whole guarantee. It reuses the `procName` already computed at `WatchPump.cs:207` for the denylist check, so this costs **zero** additional COM reads, and takes the classifier from the `WatchPump` constructor (Task 4b). `NullEventSourceReader` (`WatchPump.cs:283`) returns `Sensitivity.Visible`. |
 | `VerifyReader.cs:24-25` | `ElementContent.Text` | ⚠ `VerifyReader.FromElement` is **`public static`** with no classifier in scope. Add two parameters: `FromElement(AutomationElement el, SensitivityClassifier classifier, string? processName, bool readCapability = false)`. Find and update every caller first: `grep -rn "VerifyReader.FromElement" src test --include=*.cs` |
 
-Keep each site's surrounding behaviour otherwise unchanged — this task is a refactor.
+| `TerminalTabReader.cs:118` (list) and `:145` (read) | `ElementContent.Name` | ⚠ **the 13th site (amendment above)**. `TerminalTabReader` is a `static` helper with no DI: **append** `SensitivityClassifier classifier` and `string? processName` to `ListTabs`/`Run` and thread them from `PerceptionManager.ListTerminalTabsAsync` / the `desktop_read_terminal_tab` path, which already hold both. `:118` and `:145` take `read.Text`; **`:133`/`:135`/`:207` keep the RAW value** (`RawForIdentity`). Then fix **DEF-4** (see the amendment): thread a parallel `IReadOnlyList<Sensitivity>` into `RestoreTarget.Resolve` and match only within the same `Sensitivity` — **a parallel mask, never a filtered list**, or `SelectIndex` desynchronises from `fresh` and restores the wrong tab |
+
+Keep each site's surrounding behaviour otherwise unchanged — this task is otherwise a refactor. The one
+behaviour change is DEF-4, pinned below.
+
+- [ ] **Step 2b: Pin DEF-4 — headless, because `RestoreTarget.Resolve` is a PURE static function**
+
+No Desktop lease is needed: `Resolve` takes titles and returns a `Result`. Add to
+`test/FlaUI.Mcp.Tests/Perception/` — four facts, each one a distinct way the partition can be got wrong:
+
+1. **The oracle is closed.** A `Visible` active tab titled `"Guess"`, plus a `Rule`-redacted background tab
+   whose RAW title is also `"Guess"`, resolves with confidence **`high`** — the collision must not be seen,
+   because seeing it is the leak.
+2. **Restore still works for protected tabs.** Two `Rule`-redacted tabs with DISTINCT raw titles: the
+   active one resolves to its own index with confidence `high`.
+3. **A genuine same-partition collision still degrades honestly.** Two `Rule`-redacted tabs with the SAME
+   raw title fall back to ordinal with confidence `reduced` — the partition must not manufacture false
+   confidence.
+4. **⚠ INDEX ALIGNMENT — the fact that catches the filtered-list implementation.** Build a list where the
+   target sits at a full-list index that a filtered list would renumber (e.g. `[redacted, redacted,
+   visible-target]`, matching on the visible one). Assert `SelectIndex == 2`, the index into the FULL list.
+   **A filtered-list implementation returns 0 here and silently restores the wrong tab.** Without this
+   fact, facts 1–3 all pass on the broken implementation.
+
+⚠ **Do NOT pin DEF-4 only through the tool surface.** The oracle is a property of `Resolve`'s pure logic;
+testing it end-to-end would need a live Terminal and would still not distinguish fact 4's failure.
 
 - [ ] **Step 3: Build and run the headless gate**
 
@@ -1276,10 +1434,23 @@ git commit -m "feat(sp3): family B — diff redacts on the classifier's decision
 
 ## Task 8 — Family C: pixels, plus DEF-1 and DEF-2
 
-**DEF-1:** `PerceptionManager.cs:818` reads `d.Properties.IsPassword.ValueOrDefault` **raw** inside
-`try/catch{}` while all eleven text sites fail closed — so a throwing provider gets its text redacted and
-its **pixels captured**. **DEF-2:** `ScreenshotTools.cs:37` passes `Array.Empty<Rectangle>()`, so
-full-desktop capture masks nothing.
+**DEF-1:** `PerceptionManager.cs:840` (⚠ AMENDMENT 3: the plan was authored citing `:818`; the line drifted
+to **`:840`** by `4c37e81` — re-measured before execution) reads `d.Properties.IsPassword.ValueOrDefault`
+**raw** inside `try/catch{}` while all eleven text sites fail closed — so a throwing provider gets its text
+redacted and its **pixels captured**. **DEF-2:** `ScreenshotTools.cs:37` passes `Array.Empty<Rectangle>()`,
+so full-desktop capture masks nothing.
+
+⚠ **AMENDMENT 3 — the DEF-1 pin as planned is NOT achievable, and pretending otherwise would ship a
+vacuous oracle.** Step 1 below asks for a Desktop pin where "a fixture element whose `IsPassword` read
+throws yields a mask rect". No fixture can stage that: a conformant WPF `PasswordBox` answers `IsPassword`
+normally, so the PRE-FIX code already collects its rect and the pin passes red and green alike. This is the
+same limitation `PasswordRedactionTests.cs:38-43` already documents for the snapshot path. As executed:
+- the fail-CLOSED primitive stays pinned headlessly (`PerceptionManagerShouldFixTests.cs:11-13`);
+- the Desktop fact is labelled in-file as a **regression guard**, proving the rerouted pixel path still
+  finds a real password field — MEASURED passing pre-fix, so it is not presented as red→green;
+- **DEF-2 carries the true red→green**, and it is asserted through the TOOL (not the manager) for two
+  reasons: the tool is where `Array.Empty` lived, and a manager-level assertion could not compile against
+  the pre-fix tree. Measured pre-fix: `redactions: 0`. Post-fix: `> 0`.
 
 - [ ] **Step 1: Write the failing Desktop pins** in `test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs`
       with `[Trait("Category","Desktop")]`: a fixture element whose `IsPassword` read throws yields a mask
@@ -1457,6 +1628,64 @@ The sweep asserts, over `src/**/*.cs` parsed with Roslyn:
    `GetProp(el, PropertyId id)` helper would otherwise become a universal raw accessor.
 4. Generic accessors (`GetCurrentPropertyValue`, `TryGetCurrentPropertyValue`) are resolved by **static
    field reference**; an unresolvable argument **fails** and needs an explicit reasoned suppression.
+
+4b. ⚠ **NEW (Task 4b fallout) — every `src/` call passing a classifier must actually pass one.** Task 4b
+   had to make `classifier` an OPTIONAL parameter (`SensitivityClassifier? classifier = null`) at three
+   sites — `PerceptionManager`'s constructor, `WatchPump`'s constructor and **`SnapshotEngine.Build`** —
+   because ~35 pre-existing test files construct these directly and required parameters would have forced
+   editing all of them, which §4.4 forbids.
+
+   That is the right call for the tests and a **hole in the guarantee for production**: a `src/` caller
+   that omits the argument silently gets `OsOnly`, every operator rule stops applying at that site, and
+   **nothing fails to compile**. That is precisely the forget-and-ship failure the closed-list design
+   exists to abolish, and the type system can no longer catch it.
+
+   So the sweep closes it: **assert that every call site in `src/` to `SnapshotEngine.Build`, and every
+   `new PerceptionManager(...)` / `new WatchPump(...)` in `src/`, passes a `classifier` argument
+   explicitly.** Omitting it is a FAILURE naming the call site. `test/` is exempt — that asymmetry is the
+   whole point, and it is why this belongs in the sweep rather than in the signature.
+
+   ⚠ The DI registrations in `Program.cs` are **exempt and must be**: the container resolves the
+   registered singleton in preference to the parameter default, so `AddSingleton<PerceptionManager>()`
+   supplies the real classifier without naming it. Do not "fix" those by hand-constructing.
+
+   ⚠ **"Is the argument present?" is NOT SUFFICIENT — it is bypassable, and the bypass is easy.** A `src/`
+   method can declare its OWN `SensitivityClassifier? classifier = null` parameter, omit it at its own call
+   site, and forward that null down to `SnapshotEngine.Build`. The leaf call then *has* an argument, the
+   syntactic check passes, and the value is null at runtime. So the rule has **three** parts:
+
+   (i) every `src/` call site passes the argument explicitly;
+   (ii) **no `src/` member other than the three sanctioned ones may DECLARE a `SensitivityClassifier`
+        parameter with a `= null` default** — the sanctioned three are `PerceptionManager`'s constructor,
+        `WatchPump`'s constructor and `SnapshotEngine.Build`, and they are optional only to keep ~35
+        pre-existing test constructions compiling. Any fourth is the forwarding bypass;
+   (iii) no `src/` call site passes a **literal `null`** as the classifier argument.
+
+   ⚠ **MUTATION-VERIFY all three** (Step 4): delete the `classifier` argument from one `src/` call to
+   `SnapshotEngine.Build`; add a fourth `src/` method declaring `SensitivityClassifier? c = null`; pass a
+   literal `null` at one call site. Confirm the sweep fails naming each, then revert all three and rebuild
+   (⚠ `--no-build` runs deleted tests from a stale DLL).
+
+4c. ⚠ **PIN THE DI ASSUMPTION — do not leave it as anyone's reasoning.** The exemption in 4b rests on the
+   claim that Microsoft DI injects a *registered* service into a constructor parameter that carries a
+   default, rather than using the default. If that claim is false, production runs with **no operator rules
+   at all** and the entire feature is inert while every test still passes.
+
+   Add a **headless** fact (it needs no window — just a `ServiceCollection`): register a
+   `SensitivityClassifier` built from one recognisable rule, register `PerceptionManager` and its
+   dependencies, resolve `PerceptionManager` from the provider, and assert its `Classifier` **is the
+   registered instance** — `Assert.Same(registered, resolved.Classifier)` — and specifically **not**
+   `SensitivityClassifier.OsOnly`. `Assert.Same`, not `Assert.True(HasRules)`: identity is the claim.
+
+   This converts a load-bearing assumption into a regression test, and it fails loudly if a future DI
+   version changes the resolution rule.
+
+   ⚠ **REJECTED alternative — a `[CallerFilePath]` runtime guard** that throws when the caller's path does
+   not contain `"test"`. It was proposed and refused for three reasons: the discriminator is a substring
+   match on a file path, so any `src/` path containing the letters `test` (`Latest…`, `TestApp…`) silently
+   *skips* the guard — a false negative in the failure-open direction; it throws at construction time
+   rather than at build time, so a rarely-constructed type ships broken; and `[CallerFilePath]` bakes
+   build-machine absolute paths into the binary. Do not reintroduce it.
 5. The repo root is located by walking up from `AppContext.BaseDirectory` to the first directory
    containing **`FlaUI.Mcp.slnx`**, and **fails loudly** if not found — a sweep that silently matches
    zero files is the false-GREEN this whole task exists to prevent.
@@ -1472,7 +1701,8 @@ The sweep asserts, over `src/**/*.cs` parsed with Roslyn:
       confirm the sweep fails naming it; add a `dynamic` local and confirm it fails; add a
       `GetProp(el, PropertyId)` passthrough and confirm it fails. **Delete all three, rebuild** (⚠
       `--no-build` runs deleted tests from a stale DLL), re-run green.
-- [ ] **Step 5: Retire the legacy inventory.** Tick each of the twelve §3.1 entries — an entry is ticked
+- [ ] **Step 5: Retire the legacy inventory.** Tick each of the **thirteen** entries — §3.1's twelve plus
+      `TerminalTabReader` (the amendment in Task 6) — an entry is ticked
       when the member no longer contains the legacy literal AND appears in the census classification.
       ⚠ **Do NOT verify a tick by "the member contains a `Classify` call"** — a dead call whose result is
       discarded would mark a still-leaking site migrated. When the list is empty, **delete it**.
@@ -1491,8 +1721,21 @@ git commit -m "test(sp3): the source sweep — every content read inside one of 
       (WebView2/CEF/Electron) and compare each node's owning process id against the window root's.
       **If they differ, the once-per-walk hoist is unsound** — resolve `processName` per HWND boundary
       (re-read when a node's `NativeWindowHandle` differs from the current root's) and re-run Task 5.
-      ⚠ Record the result either way; the same doubt applies to the shipped whole-window denylist, which
-      is **out of scope for SP3** but must be written up as a follow-up finding.
+      ⚠ Record the result either way.
+
+      ⚠⚠ **The same doubt applies to the SHIPPED whole-window denylist, and it is IN SCOPE.** An earlier
+      draft called it "out of scope for SP3, write it up as a follow-up finding". **That is OVERRULED —
+      pre-existing defects are always in scope** (standing operator instruction, 2026-07-31).
+
+      Why it matters: the shipped denylist decides *refuse the whole window* from the **root's** process.
+      If a window's nodes do not all belong to that process, then content from a **denied** process
+      embedded inside an **allowed** window is served — a live hole in today's security floor, predating
+      SP3, and the identical assumption SP3's per-walk hoist rests on.
+
+      If the measurement shows heterogeneity: **fix the denylist too, in this branch, in its OWN commit**
+      (kept separate from the SP3 feature commits so the pre-existing fix stays independently revertable),
+      and pin it. If it shows homogeneity: record the numbers and state plainly that both the hoist and the
+      shipped denylist rest on one measured assumption — so a future embedded-host change breaks both.
 - [ ] **Step 2: Zero-rule regression.** Time the 95-node WPF TestApp walk with no rule file against the
       pre-SP3 baseline. Expected: no regression. Record both numbers.
 - [ ] **Step 3: Worst-case rules.** Time the same walk with 64 global rules. Record the number.
@@ -1564,15 +1807,26 @@ cannot recur.
 - [ ] **Step 4: Desktop gate — MAIN THREAD, quiet machine, physical console, user-granted lease.**
 
 ```bash
-dotnet test --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"
+dotnet test --filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"
 dotnet test --filter "FullyQualifiedName~PopupGrafting"
 ```
 
 Expected: **0 failed, 0 skipped.** ⚠ A green is green **at a SHA** — re-run after the last fix, not before.
 
-- [ ] **Step 5: Default-path regression check.** Confirm **no existing test was edited** to accommodate
-      SP3: `git diff 9c7588e --stat -- test/` should show new files and new facts only. An edited
-      pre-existing assertion means the default path changed — spec §4.4 forbids it.
+- [ ] **Step 5: Default-path regression check.** Run `git diff 3b0ab8d -- test/` (`3b0ab8d` is the branch
+      point; use the diff, not just `--stat`, because the distinction below is invisible in a stat).
+
+      Expect new files and new facts — **plus exactly three mechanically-edited pre-existing files**, all
+      forced by `SnapshotNode`'s changed constructor and all listed in Task 5's amendment:
+      `WaitNameOracleTests.cs`, `PasswordRedactionTests.cs`, `SnapshotModelPinTests.cs`.
+
+      **Read each of those three diffs by eye.** Every hunk must be a `IsPassword: …` → `Sensitivity: …`
+      construction change or the `n.IsPassword` → `n.Sensitivity.Source == RedactionSource.Os` read
+      change. **Any hunk that touches an `Assert`, an expected string, or an expected count is a
+      default-path regression** — spec §4.4 forbids it, and the task is not done until it is reverted and
+      the production code fixed instead.
+
+      A fourth edited pre-existing test file is a finding: name it and justify it, or revert it.
 - [ ] **Step 6: Update `ROADMAP.md`** — mark item 9 done, and commit.
 
 ---

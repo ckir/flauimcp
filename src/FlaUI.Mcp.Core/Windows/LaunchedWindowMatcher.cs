@@ -12,7 +12,12 @@ public static class LaunchedWindowMatcher
 {
     /// <param name="expectedProcessName">Launched exe base name without extension, e.g. "notepad".</param>
     /// <param name="windowProcessName">Process name of the candidate window's owning process, e.g. "Notepad".</param>
-    public static bool IsExpectedApp(string expectedProcessName, string windowProcessName) =>
+    /// <summary>⚠ <paramref name="windowProcessName"/> is NULLABLE because the window listing now reports
+    /// null for a process it could not identify, rather than the placeholder "unknown" it used to invent.
+    /// The behaviour here is unchanged and already correct: string.Equals(expected, null) is false, so an
+    /// unidentifiable window is never claimed to BE the app we just launched — which is the right answer,
+    /// since we cannot confirm it.</summary>
+    public static bool IsExpectedApp(string expectedProcessName, string? windowProcessName) =>
         !string.IsNullOrEmpty(expectedProcessName)
         && string.Equals(expectedProcessName, windowProcessName, StringComparison.OrdinalIgnoreCase);
 }

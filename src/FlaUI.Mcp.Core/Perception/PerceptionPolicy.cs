@@ -27,7 +27,24 @@ public static class PerceptionPolicy
         "passwordsafe", "pwsafe",
     };
 
-    /// <summary>True if a window owned by this process must not be snapshotted.</summary>
+    /// <summary>True if a window owned by this process must not be snapshotted.
+    ///
+    /// ⚠⚠ AN UNIDENTIFIABLE PROCESS IS DENIED. This used to read
+    /// `!string.IsNullOrWhiteSpace(processName) &amp;&amp; DeniedProcesses.Contains(...)`, so `IsDenied(null)`
+    /// was FALSE — a window whose owning process could not be named was ALLOWED, including one that might
+    /// be a credential store. That is the security floor failing open on the exact input it cannot judge,
+    /// and it predates the redaction feature entirely (found at capstone round 5, finding Q-j2, while
+    /// verifying the same null-handling bug in the rules path).
+    ///
+    /// "I could not identify this process" is not evidence that it is safe. The denylist exists to refuse
+    /// things it recognises as dangerous, and an unreadable name means recognition did not happen — so the
+    /// honest answer is refusal, not permission.
+    ///
+    /// ⚠ Affordable ONLY because the null rate is genuinely low: PerceptionManager.SafeProcessName resolves
+    /// elevated and protected processes (measured: wininit, services, csrss, lsass, MsMpEng from a
+    /// NON-elevated caller) and falls back to the window's HWND when the UIA ProcessId read throws. After
+    /// that, null means the process is gone or unidentifiable — a window there is nothing to automate
+    /// anyway. If that ever stops being true, fix the identification, do NOT relax this back to fail-open.</summary>
     public static bool IsDenied(string? processName) =>
-        !string.IsNullOrWhiteSpace(processName) && DeniedProcesses.Contains(processName.Trim());
+        string.IsNullOrWhiteSpace(processName) || DeniedProcesses.Contains(processName.Trim());
 }

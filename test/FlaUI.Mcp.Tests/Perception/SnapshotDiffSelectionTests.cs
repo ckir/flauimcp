@@ -12,10 +12,10 @@ namespace FlaUI.Mcp.Tests.Perception;
 public class SnapshotDiffSelectionTests
 {
     // Mirrors DiffRedactionTests' N(...) positional ctor, but exposes Selected. Positional order:
-    // ref, depth, indent, ct, aid, name, rect, enabled, focusable, focused, selected, isPassword, offscreen, rid, patterns, help.
+    // ref, depth, indent, ct, aid, name, rect, enabled, focusable, focused, selected, sensitivity, offscreen, rid, patterns, help.
     private static SnapshotNode Node(string @ref, string aid, bool selected, params int[] rid)
         => new(@ref, 0, "", ControlType.ListItem, aid, aid, System.Drawing.Rectangle.Empty,
-               true, false, false, selected, false, false, rid, System.Array.Empty<string>(), "");
+               true, false, false, selected, Sensitivity.Visible, false, rid, System.Array.Empty<string>(), "");
 
     private static SnapshotModel Model(params SnapshotItem[] nodes) => new(nodes);
 

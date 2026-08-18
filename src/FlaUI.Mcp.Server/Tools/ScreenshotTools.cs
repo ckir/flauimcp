@@ -14,7 +14,7 @@ public sealed class ScreenshotTools
     private readonly PerceptionManager _perception;
     public ScreenshotTools(PerceptionManager perception) => _perception = perception;
 
-    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions}. Password fields are redacted at capture time (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
+    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions}. Redacted elements (OS password fields, or an operator rule) are masked at capture time, full-desktop included (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
     public Task<CallToolResult> DesktopScreenshot(
         [Description("Window handle, e.g. w1. Omit (and omit ref) for the full virtual desktop.")] string? window = null,
         [Description("Element ref to capture (requires window).")] string? @ref = null,
@@ -34,7 +34,12 @@ public sealed class ScreenshotTools
                 if (present)
                     throw new ToolException(ToolErrorCode.TargetDenied, "A credential/denylisted window is currently visible; full-desktop capture is refused.", "capture a specific non-sensitive window: desktop_screenshot window=<handle>");
                 var vbounds = ScreenCapture.VirtualScreenBounds();
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, System.Array.Empty<System.Drawing.Rectangle>(), maxWidth));
+                // DEF-2: this passed Array.Empty<Rectangle>() — full-desktop capture masked NOTHING, even
+                // though window- and element-scoped capture both masked correctly. The refusal above only
+                // covers DENYLISTED windows; an ordinary window holding a password field was photographed
+                // in the clear.
+                var deskRects = await _perception.AllPasswordRectsAsync();
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, deskRects, maxWidth));
             }
             else
             {

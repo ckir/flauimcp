@@ -64,6 +64,11 @@ public sealed class FindQuerySpec
     /// never satisfy a name constraint (INV-5 - no name-oracle). The element name may be NULL (UIA
     /// returns null for unnamed containers - Panes/Groups); a null name is treated as empty so no
     /// matcher throws (it simply can't satisfy a non-empty name constraint).</summary>
+    /// <summary>DEF-3: whether this query constrains the NAME at all. A redacted element is excluded from
+    /// name matching, but MUST still be reachable by automationId/controlType (BC-1 targetability), so the
+    /// exclusion is gated on this.</summary>
+    public bool HasNameConstraint => _q.Name is not null;
+
     public bool MatchesPostFilter(string? name, bool enabled)
     {
         if (_q.EnabledOnly && !enabled) return false;

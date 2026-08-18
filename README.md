@@ -12,6 +12,8 @@ A Model Context Protocol (MCP) server that lets an AI agent control the Windows 
 
 FlaUI.Mcp translates MCP commands into native UI Automation reads, pattern-based interactions, and synthetic OS-level input. It gives non-deterministic agents supervised access to Windows applications behind strict safety guardrails.
 
+Password fields are always redacted from everything the agent sees — the accessibility tree, text reads, diffs, and screenshot pixels. Operators can extend that to their own sensitive fields with [redaction rules](docs/operator-manual.md#redaction-rules).
+
 ## Quickstart
 
 1. Download `flaui-mcp-setup.exe` from the [latest release](https://github.com/ckir/flauimcp/releases/latest).

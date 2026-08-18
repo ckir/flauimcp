@@ -27,7 +27,7 @@ dotnet test -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Cate
 
 # 2. Desktop/UIA tests — you MUST run these locally, on an UNLOCKED, connected session
 #    (CI can't: GitHub-hosted runners have no interactive desktop):
-dotnet test --filter "Category=Desktop&Category!=KnownDefect&FullyQualifiedName!~PopupGrafting"
+dotnet test --filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"
 dotnet test --filter "FullyQualifiedName~PopupGrafting"                     # synthetic input
 
 # KnownDefect is excluded above because those tests fail BY DESIGN — each is a repro for a filed,

@@ -217,9 +217,15 @@ regex evaluations per walk (20 rules over a 500-node tree = 10 000 matches). Two
 
    ⚠ **This also casts doubt on the shipped whole-window denylist** (§3.2), which rests on the same
    homogeneity claim: a credential-store renderer embedded in an allowed host would not be caught by a
-   process-name check on the host window. **Out of scope for SP3** — it is pre-existing, it is a
+   process-name check on the host window. ~~**Out of scope for SP3** — it is pre-existing, it is a
    different subsystem, and widening SP3 to fix it is how a security subproject becomes unshippable.
-   The plan records it as a finding for a follow-up item, with the measurement result attached.
+   The plan records it as a finding for a follow-up item, with the measurement result attached.~~
+
+   ⚠ **OVERRULED 2026-07-31 by standing operator instruction: pre-existing defects are ALWAYS in scope.**
+   The struck-through reasoning above was mine and the unshippability concern was real — the operator
+   weighed it and decided anyway. **If Task 13's measurement shows heterogeneity, the shipped denylist is
+   fixed in the SP3 branch, in its own commit.** See the plan's Task 13 Step 1. This is the one §8 entry
+   that changed; the rest of §8 lists design choices, not deferred defects.
 2. **`MaxRules = 64`**, enforced at config load (§5.4). A deployment needing more has a policy problem,
    not a configuration problem.
 

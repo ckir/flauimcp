@@ -6,7 +6,7 @@ namespace FlaUI.Mcp.Server.Install;
 public static class CliRouter
 {
     private static readonly HashSet<string> Verbs =
-        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "status", "unlock", "lock", "overlay", "autosound", "presence", ActivationPayload.Verb, "--version", "-v", "--help", "-h" };
+        new(StringComparer.OrdinalIgnoreCase) { "install", "uninstall", "print-config", "status", "unlock", "lock", "overlay", "autosound", "presence", "check-redaction-rules", ActivationPayload.Verb, "--version", "-v", "--help", "-h" };
 
     public static bool IsInstallerVerb(string[] args) => args.Length > 0 && Verbs.Contains(args[0]);
 
@@ -179,6 +179,9 @@ public static class CliRouter
                 outp.WriteLine(Lease.LeaseWriter.Revoke());
                 return 0;
 
+            case "check-redaction-rules":
+                return CheckRedactionRulesCommand.Run(args, outp);
+
             case "--help":
             case "-h":
                 PrintHelp(outp);
@@ -221,6 +224,13 @@ public static class CliRouter
         outp.WriteLine("  status                     Report what is actually deployed: whether the agy seed");
         outp.WriteLine("                             driving skill landed, and the outcome of the last install");
         outp.WriteLine("                             (Setup runs the install hidden, so nothing is shown then).");
+        outp.WriteLine("  check-redaction-rules <path>   Dry-run: validate a redaction-rule file and report whether");
+        outp.WriteLine("                             a running server is actually enforcing it. Does not change");
+        outp.WriteLine("                             anything; restart the server to apply an edited rule file.");
+        outp.WriteLine("          [--list-windows]   Also list candidate windows (pid, process, title).");
+        outp.WriteLine("          [--window <pid>]   Also walk that window and show which elements these rules");
+        outp.WriteLine("                             would withhold. A PID, not a wN handle: handles are minted");
+        outp.WriteLine("                             per server instance and do not survive a process boundary.");
         outp.WriteLine("  --version, -v              Print the version.");
         outp.WriteLine("  --help, -h                 Show this help.");
         outp.WriteLine();

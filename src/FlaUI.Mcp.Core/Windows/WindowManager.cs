@@ -13,7 +13,11 @@ namespace FlaUI.Mcp.Core.Windows;
 
 public sealed record WindowBounds(int X, int Y, int W, int H);
 public sealed record WindowInfo(
-    string Title, string ProcessName, int Pid, bool IsForeground,
+    // ⚠ ProcessName is NULLABLE on purpose: null means the owning process could not be determined, and
+    // PerceptionPolicy.IsDenied fails CLOSED on it. Do NOT substitute a placeholder here to make a
+    // consumer tidier — that is precisely the defect this nullability replaced. Render a display string
+    // at the projection (see WindowTools.DesktopListWindows) instead.
+    string Title, string? ProcessName, int Pid, bool IsForeground,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WindowBounds? Bounds = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ZOrder = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Handle = null,
@@ -317,10 +321,19 @@ public sealed class WindowManager : IDisposable, IHwndSource
         catch { /* process already gone; next RunOnWindow surfaces WindowHandleStale */ }
     }
 
-    private static string SafeProcessName(int pid)
-    {
-        try { return Process.GetProcessById(pid).ProcessName; } catch { return "unknown"; }
-    }
+    /// <summary>NULL when the owning process cannot be determined — never a placeholder.
+    ///
+    /// ⚠⚠ THIS USED TO RETURN THE LITERAL STRING "unknown", AND THAT SENTINEL WAS A LEAK. "unknown" is not
+    /// in PerceptionPolicy.DeniedProcesses, so DenylistedWindowsVisibleAsync asked IsDenied("unknown"),
+    /// got FALSE, and ScreenshotTools let a FULL-DESKTOP CAPTURE proceed — photographing a credential-store
+    /// window whose process merely could not be resolved. The fail-closed handling of an unknown process
+    /// never reached this path, because the placeholder had already disguised "I could not determine" as a
+    /// determined answer before any policy saw it.
+    ///
+    /// A policy must never be able to mistake "could not determine" for a value. Display-facing callers
+    /// render their own "unknown" at the projection; policy-facing callers get the truth.</summary>
+    private static string? SafeProcessName(int pid)
+        => FlaUI.Mcp.Core.Perception.ProcessIdentity.OfPid(pid);
 
     // ── Win32 top-level window enumeration ────────────────────────────────────────────────
     // A UIA Title/ProcessId read (the old GetDesktop().FindAllChildren() path) on the query STA

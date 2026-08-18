@@ -26,6 +26,12 @@ public sealed class WatchPump : IAsyncDisposable
     private readonly WatchRegistry _registry;
     private readonly IEventSink _sink;
     private readonly WatchDrainBuffer _drainBuffer;
+    private readonly SensitivityClassifier _classifier;
+
+    /// <summary>SP3 plumbing (Task 4b): reachable here for a later task's redaction decisions in the
+    /// payload build. Not yet consumed — this accessor exists so the backing field is READ (avoids
+    /// CS0169/CS0414).</summary>
+    internal SensitivityClassifier Classifier => _classifier;
 
     // Worker-confined (single-threaded): the pump constructs and OWNS its coalescer (§11 — shared with nothing).
     private readonly EventCoalescer _coalescer = new(256, DebounceMs);
@@ -40,9 +46,12 @@ public sealed class WatchPump : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
+    // SP3 Task 4b: mirrors PerceptionManager's ctor — DesktopWatchTests.cs constructs WatchPump directly
+    // (not via DI) without a classifier arg. Optional/defaulted so that pre-existing test call keeps
+    // compiling unedited; production/DI always supplies the real singleton (Program.cs AddSingleton(classifier)).
     public WatchPump(
         Channel<EventEnvelope> channel, WindowManager windowManager, RefRegistry refs,
-        WatchRegistry registry, IEventSink sink, WatchDrainBuffer drainBuffer)
+        WatchRegistry registry, IEventSink sink, WatchDrainBuffer drainBuffer, SensitivityClassifier? classifier = null)
     {
         _channel = channel;
         _windowManager = windowManager;
@@ -50,6 +59,7 @@ public sealed class WatchPump : IAsyncDisposable
         _registry = registry;
         _sink = sink;
         _drainBuffer = drainBuffer;
+        _classifier = classifier ?? SensitivityClassifier.OsOnly;
     }
 
     public Task StartAsync(CancellationToken ct = default)
@@ -202,27 +212,33 @@ public sealed class WatchPump : IAsyncDisposable
                         : _refs.Resolve(windowId, scopeRef!, PopupFinder.SearchRoots(win, desktop)))
                     : source as AutomationElement; // focus_changed / window_opened: the event source
 
+                string? procName = null;
                 if (target is not null)
                 {
-                    var procName = SafeProcessName(target); // §10 defense-in-depth (process-coarse)
+                    procName = SafeProcessName(target); // §10 defense-in-depth (process-coarse)
                     if (PerceptionPolicy.IsDenied(procName)) return (DesktopEventPayload?)null;
                 }
 
-                var reader = new LiveEventSourceReader(target, _refs, windowId);
+                var reader = new LiveEventSourceReader(target, _refs, windowId, _classifier, procName);
                 return (DesktopEventPayload?)WatchPayloadBuilder.Build(meta, windowId, coalescedCount, reader);
             });
     }
 
-    // Owning process base name from an element's PID (mirrors PerceptionManager.SafeProcessName). Null (not a
-    // throw) on a dead PID -> IsDenied(null)=false, so a raced-away source never spuriously blocks.
+    // Owning process base name. ONE implementation, shared with PerceptionManager - this was a private COPY
+    // that drifted from it, which is how the watch path ended up rejecting only pid < 0 while the snapshot
+    // path had learned to recover a pid of 0 via the window handle.
+    //
+    // ⚠⚠ THE COMMENT HERE USED TO SAY: "Null (not a throw) on a dead PID -> IsDenied(null)=false, so a
+    // raced-away source never spuriously blocks." That is NO LONGER TRUE and the change was deliberate:
+    // IsDenied(null) is now TRUE, because a window whose process cannot be named might be a credential
+    // store and the floor must not read "I could not identify this" as permission. So an unidentifiable
+    // source IS now dropped here rather than emitted.
+    //
+    // That trade is affordable only because the shared helper drives the null rate down (handle fallback,
+    // pid 0 handled). If watch events ever start disappearing for healthy windows, fix IDENTIFICATION in
+    // ProcessIdentity - do NOT restore the fail-open by special-casing null back to allowed.
     private static string? SafeProcessName(AutomationElement el)
-    {
-        int pid;
-        try { pid = el.Properties.ProcessId.ValueOrDefault; } catch { pid = -1; }
-        if (pid < 0) return null;
-        try { using var p = Process.GetProcessById(pid); return p.ProcessName; }
-        catch { return null; }
-    }
+        => FlaUI.Mcp.Core.Perception.ProcessIdentity.OfElement(el);
 
     // Live STA-side reader over an already-resolved element (query STA). Fail-soft per read; IsPassword is
     // fail-closed (INV-5). Mints the event ref into the bounded event-ref layer (§16.5) from a descriptor built
@@ -232,19 +248,37 @@ public sealed class WatchPump : IAsyncDisposable
         private readonly AutomationElement? _el;
         private readonly RefRegistry _refs;
         private readonly string _windowId;
+        private readonly SensitivityClassifier _classifier;
+        private readonly string? _processName;
+        private ElementContent.Read? _content;
 
-        public LiveEventSourceReader(AutomationElement? el, RefRegistry refs, string windowId)
+        public LiveEventSourceReader(AutomationElement? el, RefRegistry refs, string windowId,
+                                     SensitivityClassifier classifier, string? processName)
         {
             _el = el;
             _refs = refs;
             _windowId = windowId;
+            _classifier = classifier;
+            _processName = processName;
         }
 
+        // ONE classification per event, memoized. The builder reads Sensitivity and Name separately and
+        // MintRef needs the RAW name; classifying three times would triple the COM reads AND could
+        // DISAGREE with itself if the element changes mid-build.
+        private ElementContent.Read Content =>
+            _content ??= ElementContent.Name(_el!, _classifier, _processName);
+
         public bool HasSource => _el is not null;
-        public bool IsPassword => _el is not null &&
-            RedactionPolicy.IsPasswordOrFailClosed(() => _el.Properties.IsPassword.ValueOrDefault);
+        public Sensitivity Sensitivity => _el is null ? Sensitivity.Visible : Content.Sensitivity;
         public string? ControlType => _el is null ? null : Safe(() => _el.ControlType.ToString(), null);
-        public string? Name => _el is null ? null : Safe(() => _el.Name, null);
+
+        // Null-vs-"" is a wire contract here: an unnamed or unreadable source has always emitted a NULL
+        // name. ElementContent coalesces both to "", so Absent restores the distinction. A REDACTED name
+        // still wins over absence — matching the old builder, which emitted the token regardless of Name.
+        public string? Name => _el is null ? null
+            : Content.Sensitivity.Redact ? Content.Text
+            : Content.Absent ? null
+            : Content.Text;
 
         public int[]? Bounds
         {
@@ -264,7 +298,7 @@ public sealed class WatchPump : IAsyncDisposable
                 int[] rid = Safe(() => _el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? Array.Empty<int>();
                 var ct = Safe(() => _el.ControlType, FlaUI.Core.Definitions.ControlType.Custom);
                 string aid = Safe(() => _el.AutomationId, "") ?? string.Empty;
-                string rawName = Safe(() => _el.Name, "") ?? string.Empty; // RAW -> descriptor (never redacted)
+                string rawName = Content.RawForIdentity; // RAW -> descriptor (never redacted), BC-1
                 var descriptor = new ElementDescriptor(rid, ct, aid, rawName,
                     SnapshotEngine.NearestAncestorAutomationId(_el), Array.Empty<int>(), false);
                 return _refs.RegisterEventRef(_windowId, descriptor, cached: _el);
@@ -280,7 +314,7 @@ public sealed class WatchPump : IAsyncDisposable
     {
         public static readonly ClosedReader Instance = new();
         public bool HasSource => false;
-        public bool IsPassword => false;
+        public Sensitivity Sensitivity => Sensitivity.Visible;
         public string? ControlType => null;
         public string? Name => null;
         public int[]? Bounds => null;

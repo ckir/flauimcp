@@ -27,13 +27,21 @@ public static class SnapshotEngine
         RefRegistry refs,
         string windowId)
     {
-        var model = Build(root, popupRoots, options, refs, windowId);
+        // SP3 Rule 4b: pass the classifier EXPLICITLY rather than relying on Build's optional default.
+        // OsOnly is CORRECT here and is a stated decision, not an oversight: Walk has no src/ callers
+        // (verified) - it is a convenience wrapper over Build+Render kept for pre-existing tests, which
+        // §4.4 forbids editing. The whole point of 4b is that a SILENT fallback to OsOnly is invisible;
+        // naming it makes the choice reviewable.
+        // ⚠ If Walk ever becomes reachable from production, this OsOnly is a real leak - operator rules
+        // would stop applying to everything it renders. Thread a real classifier through at that point.
+        var model = Build(root, popupRoots, options, refs, windowId, SensitivityClassifier.OsOnly);
         return (Render(model, options), model.NodeCount);
     }
 
     public static SnapshotModel Build(
         AutomationElement root, IReadOnlyList<AutomationElement> popupRoots,
-        SnapshotOptions options, RefRegistry refs, string windowId)
+        SnapshotOptions options, RefRegistry refs, string windowId,
+        SensitivityClassifier? classifier = null, string? processName = null)
     {
         var items = new List<SnapshotItem>();
         var popupRids = new List<int[]>();
@@ -43,20 +51,22 @@ public static class SnapshotEngine
             if (prid != null) popupRids.Add(prid);
         }
         var rootBounds = Safe(() => root.BoundingRectangle, System.Drawing.Rectangle.Empty);
-        Visit(root, 0, Array.Empty<int>(), null, "", rootBounds);
+        Visit(root, 0, Array.Empty<int>(), null, "", rootBounds, classifier, processName);
         if (popupRoots.Count > 0)
         {
             items.Add(new OverlaysHeaderItem());
             for (int i = 0; i < popupRoots.Count; i++)
             {
                 var pb = Safe(() => popupRoots[i].BoundingRectangle, System.Drawing.Rectangle.Empty);
-                Visit(popupRoots[i], 0, new[] { -1 - i }, null, "  ", pb);
+                Visit(popupRoots[i], 0, new[] { -1 - i }, null, "  ", pb, classifier, processName);
             }
         }
         return new SnapshotModel(items);
 
+        // SP3 Task 4b: classifier/processName are threaded through but UNUSED here — Tasks 5-9 make the
+        // redaction decision. Unused PARAMETERS (unlike fields) do not trip CS0169/CS0414.
         void Visit(AutomationElement el, int depth, int[] indexPath, string? ancestorAid, string indent,
-            System.Drawing.Rectangle cullBounds)
+            System.Drawing.Rectangle cullBounds, SensitivityClassifier? nodeClassifier, string? nodeProcessName)
         {
             int[] rid = Safe(() => el.Properties.RuntimeId.ValueOrDefault, (int[]?)null) ?? Array.Empty<int>();
             if (depth > 0)
@@ -68,9 +78,14 @@ public static class SnapshotEngine
                 var rect0 = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
                 if (rect0.Width <= 0 || rect0.Height <= 0 || !rect0.IntersectsWith(cullBounds)) return;
             }
-            string aid = Safe(() => el.AutomationId, "");
+            // ⚠ CAPSTONE ROUND 3 (finding S1). These two reads are the ones a redaction RULE matches on, so
+            // a swallowed throw here is not cosmetic: "" matches no rule, the element is emitted Visible,
+            // and its content reaches the wire. The L2 fix closed exactly this hole in
+            // ElementContent.Classify — but THIS walk never calls that method (see the classifier call
+            // below), so the snapshot tree, the largest wire surface of all, was still failing OPEN.
+            string aid = Safe(() => el.AutomationId, "", out bool aidThrew);
             ControlType ct = Safe(() => el.ControlType, ControlType.Custom);
-            string name = Safe(() => el.Name, "");
+            string name = Safe(() => el.Name, "", out bool nameThrew);
             bool include = depth == 0 || !options.InteractiveOnly || IsInteresting(el, ct, name);
             string childIndent = indent;
             if (include)
@@ -80,20 +95,50 @@ public static class SnapshotEngine
                 bool focusable = Safe(() => el.Properties.IsKeyboardFocusable.ValueOrDefault, false);
                 bool focused = Safe(() => el.Properties.HasKeyboardFocus.ValueOrDefault, false);
                 bool selected = Safe(() => el.Patterns.SelectionItem.PatternOrDefault?.IsSelected.ValueOrDefault ?? false, false);
-                bool isPassword = RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault);
+                Sensitivity sensitivity = nodeClassifier is not null && nodeClassifier.HasRules
+                    ? nodeClassifier.Classify(nodeProcessName, () => aid, () => name,
+                                          () => el.Properties.IsPassword.ValueOrDefault)
+                    : (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault)
+                        ? Sensitivity.OsPassword : Sensitivity.Visible);
+                // FAIL CLOSED when a rule COULD have matched but the identity it matches on was unreadable.
+                // Gated on HasRules, so the default path (spec §4.4) is byte-identical to before: with no
+                // rules there is no rule to fail closed for, and OS passwords are already fail-closed above.
+                //
+                // ⚠ Broader than ElementContent.Classify's version, because this walk reads BOTH identities
+                // EAGERLY for every node and so cannot tell which one a rule would have consulted. It
+                // therefore withholds on either — the conservative direction.
+                //
+                // ⚠⚠ BUT IT GATES ON CouldMatchProcess, NOT HasRules, and that distinction is the fix for a
+                // real over-redaction found at capstone round 4. RedactionRule.Matches short-circuits on the
+                // process predicate BEFORE invoking an identity thunk, so ElementContent's lazy version is
+                // immune by construction: a rule scoped to another app never runs the thunk that would have
+                // thrown. This eager walk has already done the read, so gating on HasRules would redact a
+                // benign control in a COMPLETELY UNRELATED process the moment an operator configured any
+                // rule for some other app — the operator would see [REDACTED] on Notepad because they wrote
+                // a rule for their billing system. Over-redaction is the dominant risk this whole type
+                // exists to keep debuggable.
+                if (!sensitivity.Redact && nodeClassifier is not null
+                    && nodeClassifier.CouldMatchProcess(nodeProcessName)
+                    && (aidThrew || nameThrew))
+                    sensitivity = Sensitivity.UnreadableIdentity;
+                // Q-j2, the other unknowable: the PROCESS itself could not be identified while a
+                // process-scoped rule exists, so no rule can be evaluated honestly for this node.
+                if (!sensitivity.Redact && nodeClassifier is not null
+                    && nodeClassifier.CannotEvaluateFor(nodeProcessName))
+                    sensitivity = Sensitivity.UnreadableIdentity;
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 var patterns = SupportedPatterns(el);
                 string help = Safe(() => el.HelpText, "");
-                // The RAW name is deliberate and LOAD-BEARING: RefRegistry falls back to
-                // Name+ControlType when AutomationId is absent (RefRegistry.cs:181-182) and the cached
-                // fast path compares it (:334), so redacting it here would make an IsPassword element
-                // with no AutomationId permanently REF_STALE_UNRESOLVABLE. Redaction happens at every
-                // WIRE surface instead (render :133, match WaitCoordinator.cs:88, diff SnapshotDiff.cs:25,
-                // find FindQuery.cs:63, watch WatchPayloadBuilder.cs:34) and Key() never echoes it (:206-209).
+                // The RAW name is deliberate and LOAD-BEARING: RefRegistry.ResolveDescriptor falls back to
+                // Name+ControlType when AutomationId is absent, and RefRegistry.FastPathMatches compares
+                // it on the cached fast path, so redacting it here would make a sensitive element with no
+                // AutomationId permanently REF_STALE_UNRESOLVABLE. Redaction happens at every WIRE surface
+                // instead (SnapshotEngine.Render, WaitCoordinator.Matches, SnapshotDiff.ShownName,
+                // FindQuery, WatchPayloadBuilder) and RefRegistry.Key never echoes it.
                 var descriptor = new ElementDescriptor(rid, ct, aid, name, ancestorAid, indexPath, focused);
                 var @ref = refs.Register(windowId, descriptor, el);
                 items.Add(new SnapshotNode(@ref, depth, indent, ct, aid, name, rect, enabled, focusable,
-                    focused, selected, isPassword, offscreen, rid, patterns, help));
+                    focused, selected, sensitivity, offscreen, rid, patterns, help));
                 childIndent = indent + "  ";
             }
             var nextAncestor = string.IsNullOrEmpty(aid) ? ancestorAid : aid;
@@ -108,7 +153,7 @@ public static class SnapshotEngine
                 var nextPath = new int[indexPath.Length + 1];
                 Array.Copy(indexPath, nextPath, indexPath.Length);
                 nextPath[^1] = i;
-                Visit(children[i], depth + 1, nextPath, nextAncestor, childIndent, cullBounds);
+                Visit(children[i], depth + 1, nextPath, nextAncestor, childIndent, cullBounds, nodeClassifier, nodeProcessName);
             }
         }
     }
@@ -136,7 +181,11 @@ public static class SnapshotEngine
         if (n.Focusable) state.Add("focusable");
         if (n.Focused) state.Add("focused");
         if (n.Selected) state.Add("selected");
-        string shownName = n.IsPassword ? "[REDACTED]" : n.Name;
+        if (n.Sensitivity.Source == RedactionSource.Rule) state.Add($"redacted:rule:{n.Sensitivity.RuleName}");
+        // Fail-closed, identity unreadable (capstone L2). Marked so an operator can tell this apart from a
+        // rule they wrote; an OS password still carries no marker, only the [REDACTED] name.
+        else if (n.Sensitivity.Source == RedactionSource.Unreadable) state.Add("redacted:unreadable");
+        string shownName = n.Sensitivity.Redact ? "[REDACTED]" : n.Name;
         var sb = new StringBuilder();
         sb.Append(n.Indent).Append('[').Append(n.Ref).Append("] ").Append(n.ControlType).Append(' ')
           .Append('"').Append(shownName).Append('"')
@@ -198,6 +247,15 @@ public static class SnapshotEngine
     private static T Safe<T>(Func<T> read, T fallback)
     {
         try { return read(); } catch { return fallback; }
+    }
+
+    /// <summary>As <see cref="Safe{T}(Func{T}, T)"/>, but reports whether the read THREW. Used only for the
+    /// two IDENTITY reads a redaction rule can match on, so the walk can fail closed instead of matching
+    /// rules against a fallback value the element never actually had. See the L2 note at the call site.</summary>
+    private static T Safe<T>(Func<T> read, T fallback, out bool threw)
+    {
+        try { threw = false; return read(); }
+        catch { threw = true; return fallback; }
     }
 
     /// <summary>Walk parents to the first ancestor carrying a non-empty AutomationId (the "nearest

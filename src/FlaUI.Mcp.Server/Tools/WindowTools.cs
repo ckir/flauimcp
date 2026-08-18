@@ -1,3 +1,4 @@
+using System.Linq;
 using System.ComponentModel;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Interaction;
@@ -24,7 +25,14 @@ public sealed class WindowTools
     public Task<string> DesktopListWindows(
         [Description("Add Bounds + ZOrder to each window (default false).")] bool includeBounds = false,
         [Description("Add a reusable handle (wN) to each window, so you can act/read without desktop_open_window (default false).")] bool includeHandles = false)
-        => ToolResponse.Guard(async () => ToolResponse.Ok(await _windows.ListWindowsAsync(includeBounds, includeHandles)));
+        => ToolResponse.Guard(async () =>
+        {
+            var windows = await _windows.ListWindowsAsync(includeBounds, includeHandles);
+            // WindowInfo.ProcessName is nullable so POLICY sees "could not determine" as null and fails
+            // closed. The WIRE keeps its old shape: render the display placeholder here, at the projection,
+            // where nothing decides anything. Agent-visible output is byte-identical to before.
+            return ToolResponse.Ok(windows.Select(w => w with { ProcessName = w.ProcessName ?? "unknown" }));
+        });
 
     // Read-only of the environment: resolves a handle only (no focus/render/launch). Marked ReadOnly
     // rather than renamed — rename would break the shipped v0.1.x tool name.
