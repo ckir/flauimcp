@@ -24,8 +24,8 @@ implementation does. All five were consulted with the agy peer and ruled on by t
 | D1 | Ancestor-walk mechanism (spec §11.5a) | Raw-view `TreeWalker` (`el.Automation.TreeWalkerFactory.GetRawViewWalker()`), matching the existing idiom at `SnapshotEngine.cs:265-278` | Task 4 |
 | D2 | Does any in-repo consumer read `stats.redacted`? (spec §11.5b) | **Re-grepped against live code: four sites, all listed in Task 2.** No consumer outside them. The unrelated `Redacted` members on `VerifyRead`, `GridCellInfo` and `TextReadResult` are a DIFFERENT field and must NOT be renamed | Task 2 |
 | D3 | A search root whose descendant enumeration throws | Strict on `roots[0]` (the window) — REFUSE; lenient on popup roots — skip. Mirrors `PerceptionManager.cs:583-596` and `:745-760`, which already draw this exact line | Task 4 |
-| D4 | Does the refusal reach full-desktop capture? | **Yes.** Without it A1 is inert on the one capture mode DEF-2 just fixed | Task 6 |
-| D5 | Does the refusal reach the `desktop_find_text` OCR path? | **Yes.** That path captures the same pixels and OCRs them, so suppressing the refusal would read back in plaintext exactly what the screenshot refused to show | Task 6 |
+| D4 | Does the refusal reach full-desktop capture? | **Yes.** Without it A1 is inert on the one capture mode DEF-2 just fixed | Task 5b |
+| D5 | Does the refusal reach the `desktop_find_text` OCR path? | **Yes.** That path captures the same pixels and OCRs them, so suppressing the refusal would read back in plaintext exactly what the screenshot refused to show | Task 5b |
 
 ---
 
@@ -38,6 +38,10 @@ implementation does. All five were consulted with the agy peer and ruled on by t
 | `src/FlaUI.Mcp.Core/Perception/MaskEscalation.cs` | The pure escalation decision + the wire DTO for one escalating element. No UIA. |
 | `src/FlaUI.Mcp.Core/Perception/AncestorRectSource.cs` | The production adapter: walks real ancestors on the raw view, memoizes per capture. The only UIA in the A1 path. |
 | `test/FlaUI.Mcp.Tests/Perception/MaskEscalationTests.cs` | Headless pins for every row of the spec's A1 case table. |
+
+⚠ **No new headless test file constructs a `WindowManager`.** Measured: every file that does carries
+`[Trait("Category", "Desktop")]`, and the headless filter is what CI runs. A5's facts are therefore Desktop
+facts, in Task 10.
 
 **Modified:**
 
@@ -79,7 +83,7 @@ implementation does. All five were consulted with the agy peer and ruled on by t
    Expected: `Passed!  - Failed: 0, Passed: <N>, Skipped: 0`. `N` is 870 at the branch point and grows as
    this plan adds facts; a DROP in `N` means a test was deleted, which rule 3 forbids.
 6. **Do not run the Desktop suite between tasks.** It needs a physical console and an input lease and takes
-   ~12 minutes; it runs once, at Task 11, and once more at the final gate.
+   ~12 minutes; it runs once, at Task 10, and once more at the final gate.
 
 ---
 
@@ -168,55 +172,34 @@ turns `SourceTree_EnforcesRedactionSurfaceInvariants` red.
         });
 ```
 
-- [ ] **Step 3: Write the headless fact for the Win32 half**
+- [ ] **Step 3: NO test in this task — and why not**
 
-Append to `test/FlaUI.Mcp.Tests/Windows/` a new file `test/FlaUI.Mcp.Tests/Windows/WindowTitleTests.cs`:
+A5's pins are Desktop facts and they land in Task 10. **Do not add a headless test here.**
 
-```csharp
-using System;
-using FlaUI.Mcp.Core.Threading;
-using FlaUI.Mcp.Core.Windows;
-using Xunit;
+⚠ **This was the plan's own first draft and it was wrong, so the reasoning is recorded rather than the
+conclusion alone.** The draft added a headless `WindowTitleTests` asserting `mgr.WindowTitle(IntPtr.Zero)`
+returns null. MEASURED against the repo: **every** file containing `new WindowManager` carries
+`[Trait("Category", "Desktop")]`, and the only non-Desktop file touching UIA infrastructure
+(`test/FlaUI.Mcp.Tests/Threading/AutomationDispatcherTests.cs`) constructs an `AutomationDispatcher` and
+nothing more. A headless test constructing a `WindowManager` would be the first in this repo — and the
+headless filter is what runs on the **GitHub CI runner**, so if that constructor needs a desktop the cost
+is a red CI on `master`, discovered after the fact.
 
-namespace FlaUI.Mcp.Tests.Windows;
-
-/// <summary>SP4/A5. `window.title` on desktop_get_focused_element is now the OWNING WINDOW's caption,
-/// read via Win32 GetWindowText, with the window ROOT's UIA Name as a fallback. The Desktop half of this
-/// fact (RedactionOracleTests.Focused_element_reports_the_WINDOW_title_not_the_element_name) proves the
-/// value is the window's title and not the focused element's Name.
-///
-/// This half pins the empty-caption path's FIRST step: WindowTitle must ANSWER, not throw, when the
-/// caption cannot be read — because the fallback below it only runs if this returns empty.
-///
-/// ⚠ HONEST LIMIT, recorded rather than implied: this does not exercise the UIA fallback or its catch.
-/// Both need a live window whose caption is empty and whose provider throws, which no fixture can stage —
-/// the AB-1 limitation. Logged as accepted boundary AB-6 in docs/coverage-debt.md.</summary>
-public class WindowTitleTests
-{
-    [Fact]
-    public void An_unreadable_caption_answers_null_rather_than_throwing()
-    {
-        using var dispatcher = new AutomationDispatcher();
-        using var mgr = new WindowManager(dispatcher);
-
-        Assert.Null(mgr.WindowTitle(IntPtr.Zero));
-    }
-}
-```
+The assertion is worth keeping; it just belongs in the Desktop suite. It moves to Task 10 Step 2.
 
 - [ ] **Step 4: Run the headless gate**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: `Passed!  - Failed: 0` with the total up by 1.
+Expected: `Passed!  - Failed: 0`, total unchanged (this task adds no test).
 
 Note the sweep test (`SourceTree_EnforcesRedactionSurfaceInvariants`) must still be GREEN here: the
 allowlist entry for this member is still in place and still suppresses the read. Its TEXT is now false and
-gets rewritten in Task 10 — that is the correct order, and rewriting it earlier changes nothing mechanically.
+gets rewritten in Task 9 — that is the correct order, and rewriting it earlier changes nothing mechanically.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/FlaUI.Mcp.Core/Windows/WindowManager.cs test/FlaUI.Mcp.Tests/Windows/WindowTitleTests.cs
+git add src/FlaUI.Mcp.Core/Windows/WindowManager.cs
 git commit -m "fix(sp4): A5 - window.title is the WINDOW's title, not the focused element's Name
 
 ResolveFocusedWindowAsync read focused.Properties.Name and published it as
@@ -598,7 +581,13 @@ public static class MaskEscalation
     /// <summary>TERMINATION BOUND, not a tuning knob. An uncapped ancestor climb on a provider with a
     /// structural cycle never returns, and this runs on the single query STA — a hang there wedges every
     /// SUBSEQUENT query, not merely this capture. Exhausting the cap is treated exactly as reaching the
-    /// window root: REFUSE. Do not remove this for being "unreachable in practice".</summary>
+    /// window root: REFUSE. Do not remove this for being "unreachable in practice".
+    ///
+    /// 32 is BELOW the snapshot walk's default maxDepth of 40, which looks like an over-refusal risk and is
+    /// not one — worth writing down, because the next reader will re-derive the worry. Cap-exhaustion and
+    /// root-reaching produce the IDENTICAL outcome, so the cap can only refuse a capture that would
+    /// otherwise have succeeded in one shape: a usable ancestor above level 32 with all 32 below it
+    /// unusable. Any tree in that state is already pathological.</summary>
     public const int MaxAncestorLevels = 32;
 
     /// <summary>A rect is usable only with positive area. A provider unable to report bounds may return
@@ -634,7 +623,7 @@ public static class MaskEscalation
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
-Expected: `Passed!  - Failed: 0, Passed: 7`.
+Expected: `Passed!  - Failed: 0, Passed: 8`.
 
 - [ ] **Step 5: Prove the pins are non-vacuous (three temporary LOGIC MUTANTS)**
 
@@ -656,7 +645,7 @@ cap, change `level <= MaxAncestorLevels` to `level <= MaxAncestorLevels + 1` and
 - [ ] **Step 6: Run the headless gate and commit**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: `Passed!  - Failed: 0`, total up by 7.
+Expected: `Passed!  - Failed: 0`, total up by 8.
 
 ```bash
 git add src/FlaUI.Mcp.Core/Perception/MaskEscalation.cs test/FlaUI.Mcp.Tests/Perception/MaskEscalationTests.cs
@@ -676,7 +665,7 @@ is stated in the type's own doc rather than implied.
 The depth cap is termination, not tuning: an uncapped climb on a cyclic
 provider tree hangs the single query STA, which wedges every LATER query.
 
-All 7 pins proven non-vacuous by logic mutants (drop the escalate branch, drop
+All 8 pins proven non-vacuous by logic mutants (drop the escalate branch, drop
 the refusal branch, weaken the zero-area rule, widen the cap).
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
@@ -761,43 +750,76 @@ namespace FlaUI.Mcp.Core.Perception;
 /// rectangle. A node this walk sees that the enumeration did not is harmlessly skipped when its rect is
 /// unusable, and harmlessly used as a mask when it is not.
 ///
-/// ⚠ MEMOIZATION IS REQUIRED, and the CORRECTNESS half is the stronger argument. If one container's bounds
-/// read is broken, every one of its redact-worthy children escalates through the SAME chain. Without a
-/// cache, two siblings failing at different moments read a SCROLLING container's bounds at different times
-/// and produce two MISALIGNED masks of one region. The cost half — repeating identical cross-process parent
-/// lookups once per child — is real but weaker: the OS caches structural tree queries, so the latency
-/// penalty may be small. It is required because it is nearly free, not because a storm is proven.
+/// ⚠⚠ THE WALK IS BOUNDED AT THE ROOT, AND THAT BOUND IS THE WHOLE FEATURE. An earlier draft of this type
+/// climbed with GetParent and no stop condition. That draft was WRONG in the most dangerous possible way:
+/// GetParent SUCCEEDS at the window root, and the window root HAS valid bounds — so escalation would have
+/// returned the root's rect, masked the entire window, and handed back a SUCCESSFUL all-black screenshot.
+/// That is precisely the outcome A1 exists to prevent, because an agent hallucinates an all-black image's
+/// contents or loops on it, where a refusal forces a strategy change. It would never have thrown
+/// RedactionUnmaskable at all, and the headless tests would still have passed — they inject a fake whose
+/// chain ends in null, so they described a root boundary the real walk did not have. A green suite over a
+/// dead guarantee.
+///
+/// The bound is the root's RuntimeId, read ONCE at construction. An ancestor whose RuntimeId matches it is
+/// reported as "no rect at this level", so reaching the root is indistinguishable from running out of
+/// ancestors — which is exactly what MaskEscalation.Resolve turns into a refusal.
+///
+/// ⚠ If the root's own RuntimeId cannot be read, the walk CANNOT be bounded safely, so every ancestor
+/// request answers null and the element refuses. Fail closed: an unbounded climb would sail past the root
+/// into the desktop, and masking the desktop is a worse answer than refusing one capture.
+///
+/// ⚠ MEMOIZATION: the honest justification is COHERENCE, not cost. If one container's bounds read is
+/// broken, every one of its redact-worthy children escalates through the SAME chain; without a cache, two
+/// siblings failing at different moments read a SCROLLING container's bounds at different times and produce
+/// two MISALIGNED masks of one region. The cache locks one rect for the whole pass.
+/// It does NOT save cross-process traffic, and the earlier draft's claim that it did was wrong: the key is
+/// the ancestor's RuntimeId, which must be READ before the cache can be consulted, so N siblings still cost
+/// N RuntimeId reads. The cache trades one COM read for another of the same order and buys coherence with
+/// the difference. Stated plainly because "it's an optimisation" would be false.
 ///
 /// ⚠ THE CACHE KEY IS NOT THE ELEMENT OBJECT. Keying a dictionary on AutomationElement invokes its
-/// GetHashCode, which fetches RuntimeId cross-process — so a cache added to REMOVE COM traffic would
-/// generate a burst of it, inverting the optimisation. The key is the RuntimeId read ONCE, explicitly, per
-/// fetched ancestor: one VISIBLE read in place of one hidden one. An ancestor whose RuntimeId cannot be
-/// read is resolved uncached rather than skipped — losing the cache must never lose the mask.
+/// GetHashCode, which fetches RuntimeId cross-process anyway — but INVISIBLY, and once per lookup rather
+/// than once per ancestor. Reading it explicitly keeps the cost where a reader can see it.
 ///
-/// One instance per capture. Never share one across captures: the whole point is that a rect is frozen for
-/// the duration of one pass and re-read on the next.</summary>
+/// One instance per SEARCH ROOT (the window, or one popup), not one per capture: ancestor chains never
+/// cross a root boundary, so a per-root cache is exactly as coherent and its bound is unambiguous. Never
+/// reuse an instance across captures — a rect is frozen for one pass and must be re-read on the next.</summary>
 public sealed class AncestorRectSource
 {
     private readonly Dictionary<string, Rectangle?> _byRuntimeId = new(StringComparer.Ordinal);
+    private readonly string? _rootId;
+
+    /// <summary><paramref name="root"/> is the search root this source is bounded by — the window element,
+    /// or the popup element, whichever subtree is being scanned.</summary>
+    public AncestorRectSource(AutomationElement root) => _rootId = IdOf(root);
 
     /// <summary>The lazy accessor <see cref="MaskEscalation.Resolve"/> consumes, bound to ONE element.
     /// Level 1 is that element's parent. Returns null for "no rect at this level", which deliberately
-    /// covers all four failure shapes: the parent fetch threw, there is no further ancestor, the bounds
-    /// read threw, or the bounds came back empty.
+    /// covers every failure shape: the parent fetch threw, the bounds read threw, the bounds came back
+    /// empty, there is no further ancestor, OR the walk reached the root it is bounded by.
     ///
     /// The cursor only ever moves FORWARD. Resolve requests levels strictly in ascending order, so each
-    /// ancestor of this element is fetched at most once even before the shared cache is consulted.</summary>
+    /// ancestor of this element is fetched at most once, before the shared cache is consulted at all.</summary>
     public Func<int, Rectangle?> For(AutomationElement element)
     {
+        // Unbounded is not an option — see the root-bound warning on this type. With no readable root id
+        // there is nothing to stop the climb at, so every level answers "unusable" and the element refuses.
+        if (_rootId is null) return _ => null;
+
         AutomationElement? cursor = element;
         int reached = 0;
+        bool exhausted = false;
         return level =>
         {
+            if (exhausted) return null;
             while (reached < level)
             {
                 cursor = Parent(cursor);
                 reached++;
-                if (cursor is null) return null;
+                if (cursor is null) { exhausted = true; return null; }
+                // Reaching the root is NOT a usable level. Masking the root is the all-black screenshot
+                // this whole mechanism exists to refuse instead of returning.
+                if (string.Equals(IdOf(cursor), _rootId, StringComparison.Ordinal)) { exhausted = true; return null; }
             }
             return cursor is null ? null : RectOf(cursor);
         };
@@ -813,24 +835,62 @@ public sealed class AncestorRectSource
         catch { return null; }
     }
 
-    private Rectangle? RectOf(AutomationElement el)
+    private static string? IdOf(AutomationElement el)
     {
-        string? key = null;
         try
         {
             var rid = el.Properties.RuntimeId.ValueOrDefault;
-            if (rid is not null && rid.Length > 0) key = string.Join(",", rid);
+            return rid is not null && rid.Length > 0 ? string.Join(",", rid) : null;
         }
-        catch { }
+        catch { return null; }
+    }
 
+    private Rectangle? RectOf(AutomationElement el)
+    {
+        string? key = IdOf(el);
         if (key is not null && _byRuntimeId.TryGetValue(key, out var cached)) return cached;
 
         Rectangle? rect = null;
         try { rect = el.BoundingRectangle; } catch { }
         if (key is not null) _byRuntimeId[key] = rect;
-        return rect;
+        return rect;  // an ancestor whose RuntimeId is unreadable resolves UNCACHED rather than being
+                      // skipped — losing the cache must never lose the mask
     }
 }
+```
+
+⚠ **Add one headless fact to `MaskEscalationTests.cs` for the bound, because the fake ancestor source is
+exactly what hid this defect.** Append to that file:
+
+```csharp
+    /// <summary>REGRESSION PIN for the defect an adversarial panel caught in this plan's first draft: the
+    /// ancestor walk had NO root bound, and since GetParent succeeds at the window root and the root HAS
+    /// valid bounds, escalation would have masked the whole window and returned a SUCCESSFUL all-black
+    /// screenshot instead of refusing. Every headless fact still passed, because the fake source's chain
+    /// ends in null and so described a boundary the real walk did not have.
+    ///
+    /// This fact pins the CONTRACT that made the fake lie: a source that reports the root as usable turns
+    /// what should be a refusal into a mask, so the SOURCE owes the decision a null at the root.
+    ///
+    /// ⚠ It does NOT pin AncestorRectSource's actual bound. That needs a live element which fails to report
+    /// bounds while its ancestors do not, and no fixture can stage one — the AB-1 limitation. The bound is
+    /// therefore ledgered as accepted boundary AB-7, with this fact named as its compensation and its limit
+    /// stated: if the root check were deleted from AncestorRectSource, no test goes red.</summary>
+    [Fact]
+    public void A_source_that_reports_the_root_as_usable_would_mask_instead_of_refusing()
+    {
+        var asked = new List<int>();
+
+        // A source that keeps answering - i.e. one that failed to stop at the root.
+        var unbounded = MaskEscalation.Resolve(null, level => { asked.Add(level); return Other; });
+
+        Assert.False(unbounded.Refused);   // this is the WRONG outcome, and it is what an unbounded walk gives
+        Assert.True(unbounded.Escalated);
+
+        // The bounded contract: the source must report the root as "no rect at this level".
+        var bounded = MaskEscalation.Resolve(null, Source(new List<int>()));
+        Assert.True(bounded.Refused);
+    }
 ```
 
 ⚠ **Sweep note, so it is not a surprise:** this type reads `RuntimeId` and `BoundingRectangle`, both of
@@ -860,6 +920,15 @@ Update the two early-return construction sites, `:853` and `:858`, to pass an em
 A default parameter value was rejected: a new mask-reporting field that silently defaults to "nothing to
 report" is exactly the shape that lets a future construction site forget it.
 
+**The complete consumer set of `CaptureGeometry`, so the widening is not a surprise anywhere.** Three
+construction sites, all in this one method (`:853`, `:858`, `:871`), and three readers:
+`ScreenshotTools.cs:46` (updated in Task 5a), `PerceptionManager.ResolveTextCaptureGeometryAsync:881`, and
+`RedactionOracleTests.cs:45`. **The last two need no edit and that is deliberate, not an oversight**:
+`ResolveTextCaptureGeometryAsync` projects `geo` into a `TextCaptureGeometry` and drops `Escalated` on the
+floor, which is correct — `desktop_find_text` returns OCR matches, not capture metadata, so it has nowhere
+to report an escalation and no consumer expecting one. It still inherits the REFUSAL, which is the part
+that matters, via Task 5b.
+
 - [ ] **Step 5: Replace the mask collection**
 
 Replace `PerceptionManager.cs:862-871` (from `var pw = ...` through the `return new CaptureGeometry(...)`)
@@ -868,10 +937,15 @@ with:
 ```csharp
             var pw = new List<System.Drawing.Rectangle>();
             var escalated = new List<MaskEscalationEntry>();
-            var ancestors = new AncestorRectSource();
             var roots = PopupFinder.SearchRoots(win, desktop);
             for (int rootIndex = 0; rootIndex < roots.Count; rootIndex++)
             {
+                // ⚠ ONE SOURCE PER ROOT, and it is CONSTRUCTED FROM THAT ROOT. The root is what bounds the
+                // ancestor climb: without it the walk sails through the window into the desktop, masks
+                // everything, and returns a successful all-black image instead of refusing. Ancestor chains
+                // never cross a root boundary, so a per-root cache is exactly as coherent as a per-capture
+                // one and its bound is unambiguous.
+                var ancestors = new AncestorRectSource(roots[rootIndex]);
                 AutomationElement[] descendants;
                 if (rootIndex == 0)
                 {
@@ -914,11 +988,17 @@ with:
                     if (resolution.Refused)
                         // Escalating to the root and masking IT would return a SUCCESSFUL all-black image,
                         // which is worse than an error: an agent hallucinates its contents or loops on it.
+                        //
                         // The message names automationId and controlType, NEVER the Name — that is the
-                        // identity the mask exists to hide.
+                        // identity the mask exists to hide. It ALSO names the window handle and process,
+                        // because this same method backs the FULL-DESKTOP capture: without them an operator
+                        // whose whole-desktop screenshot just refused sees `controlType='Edit',
+                        // automationId=''` for a desktop of a dozen windows and has nothing to act on. The
+                        // window is not withheld content — desktop_list_windows publishes handle, process
+                        // and title already.
                         throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                            $"A redact-worthy element could not be masked (automationId='{aid}', controlType='{ct}'): neither it nor any ancestor reported usable bounds.",
-                            "capture a different window, or retry once the UI has settled");
+                            $"A redact-worthy element in window '{handle.Id}' (process '{procName}') could not be masked (automationId='{aid}', controlType='{ct}'): neither it nor any ancestor reported usable bounds.",
+                            "capture that window alone to confirm, or retry once the UI has settled");
 
                     pw.Add(resolution.Rect);
                     if (resolution.Escalated) escalated.Add(new MaskEscalationEntry(aid, ct));
@@ -932,7 +1012,7 @@ with:
 XAML) a single unreadable rect degrades gracefully — a local container is masked and a usable screenshot
 still comes back. On FLAT trees (classic Win32 dialogs, where controls are direct children of the window)
 the parent IS the root, so ONE unreadable rect refuses the whole capture on the FIRST escalation step. That
-disparity is intended — refusing beats leaking — and Task 12 documents it, because "screenshots of this one
+disparity is intended — refusing beats leaking — and Task 11 documents it, because "screenshots of this one
 old app always fail" is otherwise an unexplainable report.
 
 - [ ] **Step 6: Build and run the headless gate**
@@ -979,7 +1059,15 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 5: A1 — the screenshot metadata
+## Task 5: A1 — the metadata and the refusal's reach (ONE task, two halves)
+
+⚠ **5a and 5b are one compile unit, one gate and one commit.** An earlier draft split them into separate
+numbered tasks and told the executor that the first would not compile — which contradicts standing rule 5
+(run the headless gate after every task) and leaves no way to verify the first half's edits before moving
+on. They are two decisions but one change: 5a consumes `DesktopMaskSet`, 5b defines it. Do not run a gate
+between them; do not commit between them.
+
+### Task 5a — the screenshot metadata
 
 **Files:**
 - Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:17,52`
@@ -1052,9 +1140,9 @@ with:
 
 Add `using System.Linq;` and `using System.Collections.Generic;` to the top of the file if either is absent.
 
-⚠ `AllPasswordRectsAsync` does not yet return `.Rects` / `.Escalated` — that is Task 6. **This task will not
-compile on its own.** Do Task 5 and Task 6 as one working session and run the gate after Task 6. They are
-separated here because they are two distinct decisions, not because they land independently.
+⚠ `AllPasswordRectsAsync` does not yet return `.Rects` / `.Escalated` — 5b adds that. **Do not build or
+gate here.** Continue straight into 5b; the tree is expected to be non-compiling in between, which is why
+this is one task rather than two.
 
 - [ ] **Step 3: Update the tool description**
 
@@ -1067,16 +1155,12 @@ Replace `ScreenshotTools.cs:17`, which currently reads:
 with:
 
 ```csharp
-    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated}. Redacted elements (OS password fields, or an operator rule) are masked at capture time, full-desktop included (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). If a redacted element cannot report usable bounds its mask is taken from an ancestor: maskEscalations counts those ELEMENTS (not levels climbed) and escalated lists their {automationId,controlType} so you can tell which control has a broken provider. If no ancestor is usable either, the capture is REFUSED with RedactionUnmaskable rather than returning an all-black image - retry once the UI settles, or capture a different window. output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
+    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated}. Redacted elements (OS password fields, or an operator rule) are masked at capture time, full-desktop included (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). If a redacted element cannot report usable bounds its mask is taken from an ancestor: maskEscalations counts those ELEMENTS (not levels climbed) and escalated lists their {automationId,controlType} so you can tell which control has a broken provider. If no ancestor is usable either, the capture is REFUSED with RedactionUnmaskable rather than returning an all-black image - retry once the UI settles, or capture a different window. NOTE redactions counts rects PAINTED, so when several elements escalate to the SAME ancestor it exceeds the number of distinct black regions you can see; compare it against maskEscalations rather than reading it as a control count. output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
 ```
 
-- [ ] **Step 4: Commit — deferred**
+- [ ] **Step 4: Continue into 5b — no build, no gate, no commit here**
 
-Do not commit yet. Task 6 completes the compile unit; both commit together at the end of Task 6.
-
----
-
-## Task 6: A1 — propagate the refusal to full-desktop capture and OCR
+### Task 5b — propagate the refusal to full-desktop capture and OCR
 
 **Files:**
 - Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:891-914`
@@ -1231,7 +1315,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 7: A6 — refactor the four `[Description]` attributes
+## Task 6: A6 — refactor the four `[Description]` attributes
 
 **Files:**
 - Modify: `src/FlaUI.Mcp.Server/Tools/SnapshotTools.cs:19`
@@ -1239,7 +1323,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Modify: `src/FlaUI.Mcp.Server/Tools/WatchTools.cs:30`
 - Modify: `src/FlaUI.Mcp.Server/Tools/ContentTools.cs:65`
 
-⚠ **This task comes BEFORE the rule that needs it (Task 9).** Activating the rule first turns the build red
+⚠ **This task comes BEFORE the rule that needs it (Task 8).** Activating the rule first turns the build red
 on these four attributes, and that red looks like a regression when it is only sequencing. A guard may only
 be tightened after the thing it guards is already correct.
 
@@ -1347,7 +1431,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 8: A6 — the three executable literals
+## Task 7: A6 — the three executable literals
 
 **Files:**
 - Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:210`
@@ -1394,7 +1478,7 @@ If any line differs, STOP and report `STATE_MISMATCH`.
 Leave every `[REDACTED]` occurrence in a `//` or `///` comment ALONE. There are twelve, and they are
 documentation: `PerceptionManager.cs:214,627,650,772`, `FindQuery.cs:21,63`, `WaitCoordinator.cs:78,91`,
 `SnapshotEngine.cs:117,186`, `SnapshotDiff.cs:21`, `CheckRedactionRulesCommand.cs:213`. Roslyn treats them
-as trivia, so the Task 9 rule never sees them.
+as trivia, so the Task 8 rule never sees them.
 
 - [ ] **Step 3: Run the headless gate**
 
@@ -1422,7 +1506,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 9: A6 — the allowlist-independent sweep rule
+## Task 8: A6 — the allowlist-independent sweep rule
 
 **Files:**
 - Modify: `test/FlaUI.Mcp.Tests/Server/RedactionSurfaceInventoryTests.cs`
@@ -1630,8 +1714,8 @@ Expected: `Passed!  - Failed: 0`. `SourceTree_EnforcesRedactionSurfaceInvariants
 and 8 removed all seven `src/` literals, which is why this rule can be switched on now and could not have
 been switched on earlier.
 
-If it is RED and names the four `[Description]` attributes, Task 7 was not applied. If it names the three
-egress sites, Task 8 was not applied. Neither is a reason to weaken the rule.
+If it is RED and names the four `[Description]` attributes, Task 6 was not applied. If it names the three
+egress sites, Task 7 was not applied. Neither is a reason to weaken the rule.
 
 - [ ] **Step 6: Prove the anti-DOA pin is non-vacuous (temporary LOGIC MUTANT)**
 
@@ -1696,7 +1780,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 10: A5 — rewrite the sweep allowlist entry
+## Task 9: A5 — rewrite the sweep allowlist entry
 
 **Files:**
 - Modify: `test/FlaUI.Mcp.Tests/Server/RedactionSurfaceInventoryTests.cs:85`
@@ -1770,7 +1854,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 11: Desktop pins for A1 and A5
+## Task 10: Desktop pins for A1 and A5
 
 **Files:**
 - Modify: `test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs`
@@ -1791,9 +1875,31 @@ Confirm all four:
 
 If any differs, STOP and report `STATE_MISMATCH`.
 
-- [ ] **Step 2: Write the two Desktop facts**
+- [ ] **Step 2: Write the three Desktop facts**
 
-Insert both methods into `RedactionOracleTests` immediately before the closing brace at `:74`:
+Insert all three methods into `RedactionOracleTests` immediately before the closing brace at `:74`. The
+third is the `WindowTitle` assertion moved here from Task 1, because a headless test constructing a
+`WindowManager` would be the first in this repo and the headless filter is what CI runs.
+
+```csharp
+
+    /// <summary>SP4/A5. `window.title` is now the OWNING WINDOW's caption via Win32 GetWindowText, with the
+    /// window ROOT's UIA Name as a fallback. This pins the empty-caption path's FIRST step: WindowTitle
+    /// must ANSWER rather than throw when the caption cannot be read, because the fallback below it runs
+    /// only if this returns empty.
+    ///
+    /// ⚠ HONEST LIMIT, recorded rather than implied: this exercises neither the UIA fallback nor its catch.
+    /// Both need a live window with an empty caption whose provider throws on demand, which no fixture can
+    /// stage — the AB-1 limitation. Ledgered as AB-6 in docs/coverage-debt.md.</summary>
+    [Fact]
+    public async Task An_unreadable_window_caption_answers_null_rather_than_throwing()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        await mgr.OpenByPidAsync(_app.Process.Id); // bind the fixture, as the sibling facts do
+
+        Assert.Null(mgr.WindowTitle(System.IntPtr.Zero));
+    }
 
 ```csharp
 
@@ -1853,10 +1959,10 @@ Insert both methods into `RedactionOracleTests` immediately before the closing b
 Confirm `using FlaUI.Core.AutomationElements;` is present at the top of the file for `AsWindow()` /
 `FindFirstDescendant`; add it if not.
 
-- [ ] **Step 3: Run only the two new facts first**
+- [ ] **Step 3: Run only the new facts first**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~RedactionOracleTests"`
-Expected: `Passed!  - Failed: 0, Passed: 4`.
+Expected: `Passed!  - Failed: 0, Passed: 5`.
 
 ⚠ If `Focused_element_reports_the_WINDOW_title_not_the_element_name` fails with an empty or unexpected
 title, check `qwinsta` for a physical console session before suspecting the code — `SetForegroundWindow` is
@@ -1867,15 +1973,15 @@ denied to a process with no recent user input, and the fixture window may not ha
 | Mutant | Edit | Test that must go red |
 |---|---|---|
 | Revert A5 | in `WindowManager.ResolveFocusedWindowAsync`, replace the `WindowTitle(hwnd) ?? ""` line with `string title = ""; try { title = focused.Properties.Name.ValueOrDefault ?? ""; } catch { }` and delete the fallback block | `Focused_element_reports_the_WINDOW_title_not_the_element_name` |
-| Force an escalation | in `MaskEscalation.Resolve`, change the first line to `if (false)` so every element escalates | `An_ordinary_window_capture_reports_no_mask_escalations` |
+| Report a phantom escalation | in `ScreenshotTools`, change `maskEscalations = escalated.Count` to `maskEscalations = escalated.Count + 1` | `An_ordinary_window_capture_reports_no_mask_escalations` |
 
 Run each as: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~RedactionOracleTests"`
 
-⚠ The second mutant makes every redact-worthy element escalate one level; the fixture's password field has
-a real parent, so the capture SUCCEEDS with `maskEscalations: 1`. That is what turns the assertion red —
-confirm the failure message reports `1`, not a refusal. If it refuses instead, the fixture's password field
-is a direct child of the window root and the mutant proved the flat-tree case rather than the counter;
-either way the test went red for a real reason, but say which in the report.
+⚠ **The second mutant is deliberately the boring one.** The obvious mutant — making
+`MaskEscalation.Resolve` treat every own-rect as unusable — goes red for EITHER of two reasons depending on
+whether the fixture's password field happens to be a direct child of the window root (escalate-and-succeed
+vs escalate-to-root-and-refuse). A mutant that can go red two ways proves something broke, not that this
+assertion is load-bearing. Incrementing the reported counter can only fail one way.
 
 **REVERT BOTH MUTANTS** and re-run to confirm green.
 
@@ -1889,7 +1995,7 @@ dotnet test FlaUI.Mcp.slnx -c Release --filter "Category=Desktop&Category!=Known
 dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~PopupGrafting"
 ```
 
-Expected: first `Passed!  - Failed: 0, Passed: 155, Skipped: 0` (153 at the branch point plus the 2 added
+Expected: first `Passed!  - Failed: 0, Passed: 156, Skipped: 0` (153 at the branch point plus the 3 added
 here); second `Passed!  - Failed: 0, Passed: 1, Skipped: 0`.
 
 - [ ] **Step 6: Commit**
@@ -1909,10 +2015,17 @@ A1: an ordinary healthy window reports maskEscalations 0 and an EMPTY
 escalated array - present, not absent, because a diagnostic that only appears
 on failure teaches consumers to ignore its absence.
 
-Both proven non-vacuous by mutant: reverting the title read, and forcing every
-element to escalate.
+Also moved here from the source task: the WindowTitle assertion. It was
+drafted as a HEADLESS fact, and measurement said no headless test in this repo
+constructs a WindowManager - the headless filter is what CI runs, so that draft
+risked a red CI on master to save a Desktop slot.
 
-Desktop gate green on a physical console: 155/0/0 plus PopupGrafting 1/0/0,
+Both behaviour pins proven non-vacuous by mutant: reverting the title read, and
+reporting a phantom escalation. The obvious escalation mutant was rejected as
+non-deterministic - it can go red two ways depending on the fixture's tree
+shape.
+
+Desktop gate green on a physical console: 156/0/0 plus PopupGrafting 1/0/0,
 0 skipped on both halves.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
@@ -1920,7 +2033,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 12: dispositions, documentation, and the ledgers
+## Task 11: dispositions, documentation, and the ledgers
 
 **Files:**
 - Modify: `docs/coverage-debt.md`
@@ -1983,6 +2096,22 @@ pinned on the desktop by
 `RedactionOracleTests.Focused_element_reports_the_WINDOW_title_not_the_element_name`.
 ⚠ **Honest limit:** if the fallback block or its `catch` were deleted, no test goes red on a machine whose
 windows all have captions.
+
+### AB-7 — `AncestorRectSource`'s root bound  *(SP4/A1)*
+**Behaviour:** the ancestor climb stops at the search root and reports it as "no rect at this level", so
+reaching the root becomes a REFUSAL rather than a mask of the whole window.
+**Why not covered:** needs a live element that fails to report bounds while its ancestors succeed. No
+fixture can stage one — the AB-1 limitation.
+**Compensation + anchor:** the decision's half of the contract is pinned headlessly by
+`MaskEscalationTests.A_source_that_reports_the_root_as_usable_would_mask_instead_of_refusing`, which
+asserts that a source still answering at the root turns a refusal into a mask — i.e. it states exactly what
+the source owes the decision.
+⚠ **Honest limit, and it is the sharp one:** if the root check were deleted from `AncestorRectSource`, no
+test goes red. **This is not hypothetical — it is what happened.** The plan's first draft had no root bound
+at all, every headless fact passed, and the guarantee was dead: `GetParent` succeeds at the window root and
+the root has valid bounds, so escalation would have returned a successful all-black screenshot. It was
+caught by an adversarial panel, not by the suite. Treat this entry as a standing warning about what a
+faked ancestor source can hide.
 ```
 
 Add the AB-3 re-validation stamp by appending one line to that entry:
@@ -1995,7 +2124,19 @@ A1's injectable-seam pattern was NOT extended to `ProcessIdentity.OfElement` —
 
 - [ ] **Step 3: Update `docs/agent-contract.md`**
 
-Replace line 58:
+⚠ **STATE-VERIFY EVERY ROW BY ITS FULL OLD TEXT, NOT BY ITS LINE NUMBER OR ITS FIRST CELL.** This file has
+**two** rows whose first cell is `` `redacted` ``: line 74 documents the per-element field on snapshot
+nodes / `desktop_get_text` / `desktop_get_grid_cell`, and line 78 documents the `desktop_snapshot_stats`
+counter. Only line 78 changes. Rewriting line 74 would break the documentation of a field this increment
+does not touch — and the two rows read almost identically at a glance.
+
+Replace line 58, which currently reads:
+
+```markdown
+| `desktop_snapshot_stats` | ReadOnly | Control counts. **Params:** `snapshotId` (offline stats) OR `window`. |
+```
+
+with:
 
 ```markdown
 | `desktop_snapshot_stats` | ReadOnly | Control counts. **Params:** `snapshotId` (offline stats) OR `window`. |
@@ -2007,19 +2148,39 @@ with:
 | `desktop_snapshot_stats` | ReadOnly | Control counts. **Params:** `snapshotId` (offline stats) OR `window`. ⚠ The `redacted` field is now `osPasswordCount` (v1.0.0 BREAKING). |
 ```
 
-Replace line 59:
+Replace line 59, which currently reads:
+
+```markdown
+| `desktop_get_focused_element` | ReadOnly | Return UIA-focused element's ref and descriptor. |
+```
+
+with:
 
 ```markdown
 | `desktop_get_focused_element` | ReadOnly | Return UIA-focused element's ref and descriptor. ⚠ `window.title` is the OWNING WINDOW's title. Before v1.0.0 it carried the focused ELEMENT's name — a silent BREAKING change, see the CHANGELOG. The element's name is in `descriptor`. |
 ```
 
-Replace line 61:
+Replace line 61, which currently reads:
+
+```markdown
+| `desktop_screenshot` | ReadOnly | PNG capture. Masks redacted elements (see **Redaction on the wire**). **Params:** `window`, `ref`, `maxWidth` (default 1600). |
+```
+
+with:
 
 ```markdown
 | `desktop_screenshot` | ReadOnly | PNG capture. Masks redacted elements (see **Redaction on the wire**). **Params:** `window`, `ref`, `maxWidth` (default 1600). Metadata carries `maskEscalations` + `escalated`; can fail `RedactionUnmaskable`. |
 ```
 
-Replace line 78:
+Replace line 78. Before editing, confirm the line you are about to replace ENDS with
+"Not the same number as `redactedCount`." - that clause is what distinguishes it from the OTHER `redacted`
+row at line 74. It currently reads:
+
+```markdown
+| `redacted` | `desktop_snapshot_stats` | ⚠ Counts **OS password nodes only**, unchanged for back-compat. Not the same number as `redactedCount`. |
+```
+
+with:
 
 ```markdown
 | `osPasswordCount` | `desktop_snapshot_stats` | Count of OS password nodes **only**. A different number from `redactedCount`. Called `redacted` before v1.0.0. |
@@ -2095,8 +2256,12 @@ Replace line 333:
 | 9 | per-field redaction | SP3 | ✅ shipped — merged `ef17ed9` (`--no-ff`) |
 ```
 
-Replace lines 328, 332 and 334 to move A1/A5/A2/A6 out of SP4's "not started" bucket, by appending a new row
-after line 334:
+⚠ **Do NOT touch lines 328, 332 or 334.** They are items 4, 8 and 10 - snapshot/diff value-change
+detection, `PrintWindow`, and `WM_RENDERFORMAT` - none of which this increment touches. An earlier draft of
+this step read "replace lines 328, 332 and 334", which was simply wrong and would have rewritten three
+unrelated roadmap items.
+
+APPEND one new row after line 334:
 
 ```markdown
 | 11 | redaction completeness (A1 pixel-mask fail-open · A5 focused-window title · A2 stats rename · A6 token constant) | SP4 | 🔄 in progress — spec `docs/superpowers/specs/2026-08-18-sp4-redaction-completeness-design.md`, plan `docs/superpowers/plans/2026-08-19-sp4-redaction-completeness.md` |
@@ -2104,6 +2269,10 @@ after line 334:
 
 ⚠ Do NOT renumber items 1-10. The numbering is cited by name across several specs, and the file's own
 header records that reconstructing it once already cost an audit.
+
+⚠ The table is introduced by a sentence reading "**the 2 filed defects + ALL 8 opportunistic items = 10**".
+An 11th row contradicts it, so amend that sentence in the SAME edit - replace `= 10` with
+`= 10, plus item 11 added by SP4` - rather than leaving the prose and the table disagreeing.
 
 Append to the H1 entry (after line 509, the "resolve `processName` per HWND boundary" line):
 
@@ -2120,17 +2289,28 @@ A3 into `docs/coverage-debt.md` (Step 2), A4 into the CHANGELOG (Step 4). The `o
 exactly two outcomes, PROMOTE-then-delete or DELETE-with-a-reason, and there is no parked state, so the
 lines are removed now that their tracking homes exist.
 
+⚠ **Do NOT truncate the file with `>`.** The `open-issues` skill that owns this file states, with a
+measurement behind it, that its header is written with `>>` and NEVER `>`, precisely because two sessions
+open on the same repository will destroy each other's entries. Delete the six entry LINES and leave
+everything else alone:
+
 ```bash
-printf '%s\n\n' '# Untriaged anomalies (local, never committed)' > .clavity/local-anomalies.md
+R=$(git rev-parse --show-toplevel)
+F="$R/.clavity/local-anomalies.md"
+grep -v '^- \[' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
 ```
 
-Then confirm: `cat .clavity/local-anomalies.md` shows only the header. The file is gitignored, so this does
-not appear in the commit.
+Then confirm with `cat "$F"`: the header remains and no `- [` entry line does. The file is gitignored, so
+this does not appear in the commit.
+
+⚠ If any entry line survives, it was captured by ANOTHER session after this plan was written and is NOT one
+of the six dispositioned here. Leave it, and report it - deleting an untriaged anomaly because it was in
+the way is the exact failure the no-parked-state rule exists to prevent.
 
 - [ ] **Step 7: Run the headless gate**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: `Passed!  - Failed: 0`, total unchanged from Task 11's headless count. This step changes no code;
+Expected: `Passed!  - Failed: 0`, total unchanged from Task 10's headless count. This step changes no code;
 it runs to prove that.
 
 - [ ] **Step 8: Commit**
@@ -2175,9 +2355,9 @@ Not a task — the branch-completion sequence, run once at the end, in this orde
 - [ ] **G1 — build clean.** `dotnet build FlaUI.Mcp.slnx -c Release` → `0 Warning(s)`, `0 Error(s)`.
 - [ ] **G2 — headless green.**
       `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-      → `Failed: 0, Skipped: 0`, total = 870 + 13 new headless facts = **883**.
+      → `Failed: 0, Skipped: 0`, total = 870 + 11 new headless facts (8 in Task 3, 3 in Task 8) = **881**.
 - [ ] **G3 — Desktop green, both halves, `0 skipped`, one SHA, physical console + lease.**
-      `--filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"` → **155**;
+      `--filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"` → **156** (153 + the 3 facts in Task 10);
       `--filter "FullyQualifiedName~PopupGrafting"` → **1**.
 - [ ] **G4 — AGY-CAPSTONE** over the whole SP4 range, rounds until one is GREEN. Verify every finding by
       measurement before folding, and verify the peer's SUGGESTED FIX the same way — a correct finding
@@ -2230,19 +2410,99 @@ spelled once and used identically everywhere after.
 
 **5. Gaps I am flagging rather than closing, with where each resolves.**
 
-- **Tasks 5 and 6 do not compile independently.** Task 5 consumes `DesktopMaskSet`, which Task 6 introduces.
-  Stated at the end of Task 5; they must be executed as one session. Splitting them further would have
-  produced two commits where one is a known-broken tree.
+- **Task 5 has a non-compiling interior**, between 5a and 5b. That is why they are ONE task with one gate
+  and one commit rather than two: an earlier draft split them into separate numbered tasks and told the
+  executor the first would not build, which contradicts the standing rule that every task ends at a green
+  gate and leaves no way to verify 5a's edits before moving on.
 - **The A5 root-`Name` fallback and its `catch` are not covered by any test**, and cannot be without a
-  window that has no caption and a provider that throws. Recorded as accepted boundary AB-6 in Task 12,
+  window that has no caption and a provider that throws. Recorded as accepted boundary AB-6 in Task 11,
   with its compensation and its honest limit, rather than left implied.
 - **A1's `Refused` path has no Desktop fact** — staging an element that cannot report bounds needs a
   provider that lies, which no fixture can do. It is fully pinned headlessly in Task 3 (three of the seven
-  facts), and Task 11 pins the default path on real UIA. This is the AB-1 limitation and is not new.
+  facts), and Task 10 pins the default path on real UIA. This is the AB-1 limitation and is not new.
 - **The RULE 5 interpolated-string gap** (`$"...{...}[REDACTED]..."` is not a `LiteralExpressionSyntax`) is
   stated in the rule's own comment. No such site exists in `src/` today; if one is ever added, the rule is
   silent on it. Not closed because closing it means walking `InterpolatedStringTextSyntax` too, which buys
   nothing against a guard the spec already declares bypassable by construction.
-- **The exact Desktop pass count in G3 (155) is an arithmetic projection** from 153 at the branch point plus
-  the 2 facts added in Task 11. If the actual number differs, do not adjust the expectation to match the
+- **The exact Desktop pass count in G3 (156) is an arithmetic projection** from 153 at the branch point plus
+  the 3 facts added in Task 10. If the actual number differs, do not adjust the expectation to match the
   result — find out which test appeared or vanished first.
+
+
+---
+
+## Adversarial panel - round 1 ledger (folded; do NOT re-raise)
+
+Solo panel (Axiom Breaker, Cascade Analyst, Literal Implementer, Protocol Pedant, Mechanism Gamer,
+Blindspot Auditor, State Corruptor, Resource Vampire, Boundary Smuggler, Dependency Cynic, Activation
+Auditor) plus an agy escalation round. Every use-when trigger in the palette fired on an artifact this
+wide; none was dropped.
+
+**Folded - from the solo round:**
+- A new headless test constructed a `WindowManager`; measured, no headless test in this repo does, and the
+  headless filter is what CI runs. Moved to the Desktop suite (Task 10).
+- The ROADMAP step said "replace lines 328, 332 and 334" - three unrelated roadmap items. Now an append,
+  with the table's "= 10" prose amended in the same edit.
+- The `docs/agent-contract.md` edits had no old-text quotes, and that file has TWO rows whose first cell is
+  `redacted`. All four edits now quote the line they replace.
+- Gate G2's expected total was arithmetically wrong (883 -> 881); G3's moved to 156.
+- `redactions` over-counts once several elements escalate to one ancestor rect. Documented in the tool
+  description rather than silently changed.
+- The refusal message named an element but not a window, which is useless on a full-desktop capture. It now
+  names the window handle and process too.
+- Task 10's escalation mutant could go red two ways depending on fixture tree shape. Replaced with a
+  deterministic counter mutant.
+- Task 11 truncated the anomalies file with `>`, the exact pattern its owning skill forbids. Now a
+  line-targeted deletion that preserves anything a concurrent session captured.
+- `MaxAncestorLevels = 32` versus a snapshot `maxDepth` of 40 was examined and CLEARED - cap-exhaustion and
+  root-reaching produce the identical REFUSE - and the reasoning written into the constant's doc so the
+  next reader does not re-derive the worry.
+
+**Folded - from the agy escalation, and one of these was fatal:**
+- WARNING, CRITICAL: **the ancestor walk had NO ROOT BOUND.** `GetParent` succeeds at the window root and
+  the root has valid bounds, so escalation would have returned the root's rect, masked the whole window,
+  and handed back a *successful all-black screenshot* - the precise outcome A1 exists to refuse. Every
+  headless fact would still have passed, because the injected fake's chain ends in null and so described a
+  boundary the real walk did not have: a green suite over a dead guarantee. `AncestorRectSource` is now
+  constructed FROM its search root, bounded by that root's RuntimeId, and fails closed when the root's id
+  is unreadable. Ledgered as AB-7 with its honest limit.
+- **Task 5 and Task 6 were split into an unbuildable sequence**, contradicting the standing rule that every
+  task ends at a green gate. Merged into one task with two halves, one gate, one commit.
+- **Memoization saves no cross-process traffic.** The cache key is the ancestor's RuntimeId, which must be
+  READ before the cache can be consulted - so N siblings still cost N RuntimeId reads. The earlier draft
+  claimed a cost win. The doc comment now states the honest justification: it buys COHERENCE (one rect per
+  ancestor for the whole pass), trading one COM read for another of the same order.
+- `ResolveTextCaptureGeometryAsync` consumes the widened `CaptureGeometry` and was missing from the
+  enumeration. Added, with why it needs no edit.
+
+**Verified and NOT folded, recorded so it is not re-raised:**
+- The peer's RULE 5 finding described the rule as checking `val == RedactionToken` and therefore bypassable
+  by concatenation. It checks `.Contains(...)`, not equality. The interpolated-string gap it also named is
+  real and was ALREADY disclosed in the rule's own comment and in the audit before the round ran.
+- The peer's `AncestorRectSource.cs:812` / `:821` and `MaskEscalationTests.cs:439` citations are
+  FABRICATED - those files do not exist on disk; they are code blocks inside this plan. The substance of
+  the root-bound finding was verified against the plan's own text and stands on its own.
+- The peer's answer to the dispatcher question was CORRECT and its citation real: `StaThreadContext.cs:29`
+  uses `tcs.SetException(ex)`, so a `ToolException` thrown on the STA reaches `ToolResponse.GuardImage`
+  unwrapped with its `Code` intact.
+
+**PANEL VERDICT - round 1: REJECT-then-fold. One CRITICAL (no root bound) would have shipped a dead
+guarantee under a green suite; 13 findings folded in total.**
+
+### OPEN - for the operator, not resolved here
+
+**A benign element that dies mid-scan now refuses the whole capture.** Traced: a dead element makes
+`SensitivityOf` fail closed to `Redact = true` (it already did that before SP4), its `BoundingRectangle`
+throws, `GetParent` on a dead element throws, no ancestor resolves, and A1 refuses. Before SP4 the same
+element was silently skipped and the capture succeeded.
+
+This IS what the spec's case table specifies - "obtaining the PARENT itself throws -> REFUSE ... a dying
+subtree must not silently drop out of the mask set" - so the plan implements it faithfully. But the spec's
+own cost narrative described the accepted cost as *occasional black boxes over benign content*, which is
+over-masking, not refusal. The refusal case is harsher than what was signed off, and popups and tooltips
+die mid-scan during ordinary UI transitions.
+
+Unverified, and worth stating plainly: whether `GetParent` on a stale UIA element actually throws, or still
+answers from a cached parent, was ASSERTED by the peer and NOT measured. If it answers, this concern
+largely evaporates. Measuring it costs one Desktop experiment and would settle the question before Task 4
+is written.
