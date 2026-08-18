@@ -135,8 +135,29 @@ public class CheckRedactionRulesCliTests : IDisposable
 
         Assert.Equal(1, code);
         Assert.Contains("--window expects a PID", outp.ToString());
-        // ...and it must NOT have gone on to answer the question it was never able to ask.
-        Assert.DoesNotContain("No running server was found", outp.ToString());
+    }
+
+    /// <summary>CAPSTONE ROUND 4, finding Q-i2 — a defect my own S5 fix introduced, which is why the fold
+    /// audit exists. The first version returned 1 IMMEDIATELY on a malformed `--window`, which skipped the
+    /// server-state evaluation entirely: a typo in an OPTIONAL diagnostic flag suppressed the command's
+    /// PRIMARY job (telling the operator whether a running server is enforcing this rule file). The
+    /// operator would lose the answer they came for because of a slip in a flag they did not need.
+    ///
+    /// Both properties must hold together, which is why they are asserted in one fact: the command still
+    /// FAILS (exit 1 — a rejected argument must never report success), and it still ANSWERS.</summary>
+    [Fact]
+    public void A_malformed_window_argument_does_not_suppress_the_server_state_diagnostic()
+    {
+        var rules = ValidRuleFile();
+        var instances = NewInstancesDir();   // empty ⇒ the state answer is "no running server"
+        var outp = new StringWriter();
+
+        var code = CheckRedactionRulesCommand.Run(
+            new[] { "check-redaction-rules", rules, "--window", "not-a-pid" }, outp, instances);
+
+        Assert.Equal(1, code);                                        // still fails
+        Assert.Contains("--window expects a PID", outp.ToString());   // says why
+        Assert.Contains("No running server was found", outp.ToString()); // AND still answers
     }
 
     [Fact]

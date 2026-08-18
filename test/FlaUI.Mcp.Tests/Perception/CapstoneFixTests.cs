@@ -101,6 +101,58 @@ public class CapstoneFixTests
         Assert.DoesNotContain("redacted:", visible);
     }
 
+    /// <summary>ROUND 4, finding Q-h2 — an over-redaction my own S1 fix introduced.
+    ///
+    /// The eager snapshot walk fails closed on an unreadable identity, but it must only do so when a rule
+    /// COULD apply to that process. Gating on HasRules meant that configuring any rule for app A caused a
+    /// benign control in unrelated app B to be withheld the moment one of its property reads threw — the
+    /// operator sees [REDACTED] on Notepad because they wrote a rule for their billing system.
+    ///
+    /// `RedactionRule.Matches` short-circuits on the process predicate before touching an identity thunk,
+    /// so the LAZY path was already immune; only the eager walk needed this. Pinned at the classifier,
+    /// which is where the predicate now lives and where it is directly testable.</summary>
+    [Fact]
+    public void A_process_scoped_rule_cannot_apply_to_an_unrelated_process()
+    {
+        var scoped = SensitivityClassifier.ForRules(new[]
+        {
+            new RedactionRule("billing", processName: "Contoso.Billing", global: false,
+                              automationId: "Acct", automationIdPattern: null, namePattern: null)
+        });
+
+        Assert.True(scoped.HasRules);                            // rules DO exist...
+        Assert.False(scoped.CouldMatchProcess("notepad"));        // ...but none can apply here
+        Assert.True(scoped.CouldMatchProcess("Contoso.Billing")); // and they do apply there
+        Assert.True(scoped.CouldMatchProcess("CONTOSO.BILLING")); // process match is case-insensitive
+    }
+
+    /// <summary>The other direction: a GLOBAL rule opts into a machine-wide blast radius by design, so it
+    /// could match anywhere and the eager walk must fail closed everywhere. Without this fact an
+    /// implementation that simply answered "false" would pass the fact above.</summary>
+    [Fact]
+    public void A_global_rule_could_apply_to_any_process()
+    {
+        var global = SensitivityClassifier.ForRules(new[]
+        {
+            new RedactionRule("any-secret", processName: null, global: true,
+                              automationId: null, automationIdPattern: null, namePattern: "(?i)secret")
+        });
+
+        Assert.True(global.CouldMatchProcess("notepad"));
+        Assert.True(global.CouldMatchProcess("anything-at-all"));
+        Assert.True(global.CouldMatchProcess(null));
+    }
+
+    /// <summary>No rules ⇒ nothing could ever match, so the eager fail-closed can never fire on the
+    /// default path (spec §4.4). This is the invariant Q-h1 asked about, pinned rather than reasoned.</summary>
+    [Fact]
+    public void With_no_rules_nothing_could_match_any_process()
+    {
+        Assert.False(SensitivityClassifier.OsOnly.HasRules);
+        Assert.False(SensitivityClassifier.OsOnly.CouldMatchProcess("notepad"));
+        Assert.False(SensitivityClassifier.OsOnly.CouldMatchProcess(null));
+    }
+
     // ---------------- L4: version-skewed state files must not become immortal ----------------
 
     private static string TempDir()

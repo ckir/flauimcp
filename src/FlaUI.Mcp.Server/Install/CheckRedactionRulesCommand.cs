@@ -47,10 +47,24 @@ public static class CheckRedactionRulesCommand
 
         // The LIVE half of the dry-run (spec §5.5). Both are opt-in flags: the default invocation stays a
         // pure file check that never acquires UIA, so it remains usable in CI and over a pipe.
-        // A malformed live-half argument fails the command (exit 1, the usage/validation class) rather than
-        // letting the server-state evaluation below decide the exit code — see RunLive's note (finding S5).
-        if (!RunLive(outp, args, rules)) return 1;
+        // A malformed live-half argument must FAIL the command (finding S5) without SUPPRESSING it
+        // (finding Q-i2, which my first S5 fix caused): returning here immediately meant a typo in an
+        // optional diagnostic flag skipped the server-state evaluation entirely — the command's primary
+        // job. The operator would lose the answer they actually came for because of a slip in a flag they
+        // did not need. So the diagnostic still runs and still prints; only the exit CODE is overridden,
+        // at the end, where every path converges.
+        bool liveArgsOk = RunLive(outp, args, rules);
 
+        // Every server-state path below converges here, so the argument error is applied ONCE rather than
+        // being duplicated into five returns (where the next person to add a sixth would forget it).
+        int stateCode = EvaluateServerState(outp, sha, instancesDir);
+        return liveArgsOk ? stateCode : 1;
+    }
+
+    /// <summary>The server-state half of the dry-run: exit 0/3/4/5 per spec §5.5. Split out so a malformed
+    /// live-half argument can override the exit code without suppressing this diagnostic (finding Q-i2).</summary>
+    private static int EvaluateServerState(TextWriter outp, string sha, string? instancesDir)
+    {
         var instances = ServerStateFile.ReadAll(instancesDir ?? ServerStateFile.DefaultDirectory);
 
         var live = instances.Where(i => i.Liveness == ServerLiveness.Live).ToList();

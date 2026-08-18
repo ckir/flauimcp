@@ -104,13 +104,21 @@ public static class SnapshotEngine
                 // Gated on HasRules, so the default path (spec §4.4) is byte-identical to before: with no
                 // rules there is no rule to fail closed for, and OS passwords are already fail-closed above.
                 //
-                // ⚠ Deliberately BROADER than ElementContent.Classify's version, and the difference is a
-                // property of this walk, not an oversight: there the thunks are lazy, so only a read a rule
-                // actually asked for can trip it. Here both identity reads happen EAGERLY for every node
-                // (the walk needs them anyway), so this cannot tell whether a rule would have consulted the
-                // one that threw. It therefore withholds on either — the conservative direction, and it
-                // fires only when a UIA read genuinely throws AND an operator has configured rules.
-                if (!sensitivity.Redact && nodeClassifier is not null && nodeClassifier.HasRules
+                // ⚠ Broader than ElementContent.Classify's version, because this walk reads BOTH identities
+                // EAGERLY for every node and so cannot tell which one a rule would have consulted. It
+                // therefore withholds on either — the conservative direction.
+                //
+                // ⚠⚠ BUT IT GATES ON CouldMatchProcess, NOT HasRules, and that distinction is the fix for a
+                // real over-redaction found at capstone round 4. RedactionRule.Matches short-circuits on the
+                // process predicate BEFORE invoking an identity thunk, so ElementContent's lazy version is
+                // immune by construction: a rule scoped to another app never runs the thunk that would have
+                // thrown. This eager walk has already done the read, so gating on HasRules would redact a
+                // benign control in a COMPLETELY UNRELATED process the moment an operator configured any
+                // rule for some other app — the operator would see [REDACTED] on Notepad because they wrote
+                // a rule for their billing system. Over-redaction is the dominant risk this whole type
+                // exists to keep debuggable.
+                if (!sensitivity.Redact && nodeClassifier is not null
+                    && nodeClassifier.CouldMatchProcess(nodeProcessName)
                     && (aidThrew || nameThrew))
                     sensitivity = Sensitivity.UnreadableIdentity;
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);

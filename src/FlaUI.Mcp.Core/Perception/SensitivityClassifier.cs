@@ -23,6 +23,20 @@ public sealed class SensitivityClassifier
 
     public bool HasRules => _rules.Length > 0;
 
+    /// <summary>Could ANY configured rule apply to this process at all? Answers the process predicate
+    /// ALONE — no identity is read and no element is touched.
+    ///
+    /// ⚠ Exists for callers that classify EAGERLY. <see cref="RedactionRule.Matches"/> short-circuits on
+    /// the process check before it ever invokes an identity thunk, so a LAZY caller is naturally immune to
+    /// a rule that cannot apply here: the thunk never runs, so a read that would have thrown never does.
+    /// An eager caller has already done the read by then, and gating its fail-closed on
+    /// <see cref="HasRules"/> would withhold content in a completely unrelated process merely because the
+    /// operator configured a rule for some OTHER app. Over-redaction is the dominant risk this type exists
+    /// to keep debuggable — so eager callers gate on this, never on HasRules.</summary>
+    public bool CouldMatchProcess(string? processName) =>
+        _rules.Any(r => r.Global ||
+                        string.Equals(r.ProcessName, processName, StringComparison.OrdinalIgnoreCase));
+
     public Sensitivity Classify(string? processName, Func<string?> automationId, Func<string?> rawName,
                                 Func<bool> readIsPassword)
     {
