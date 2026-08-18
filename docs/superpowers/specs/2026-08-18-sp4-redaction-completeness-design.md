@@ -1,6 +1,6 @@
 # SP4 - redaction completeness (design)
 
-Status: DESIGN. Approved section-by-section 2026-08-18; adversarial panel rounds 1-3 folded (section 12).
+Status: DESIGN. Approved section-by-section 2026-08-18; adversarial panel rounds 1-4 folded (section 12); PANEL CLOSED.
 Branch point: `a76092d` (SP3 merged).
 
 ## 0. The settled design, with no history
@@ -159,6 +159,14 @@ Two bounds are REQUIRED, not optional:
   redact-worthy children escalates through the SAME chain. Without memoization the walk repeats identical
   cross-process parent lookups once per child and masks the identical parent rect N times, turning an O(N)
   pass into O(N x depth).
+  ⚠ **The cache key must NOT be the element object itself** (panel round 4, State Corruptor, raised as its
+  own weakest assumption). Keying a dictionary on `AutomationElement` invokes its `GetHashCode`, which
+  fetches `RuntimeId` cross-process - so a cache added to REMOVE COM traffic would generate a burst of it,
+  inverting the optimisation. Key on an already-materialised identity instead.
+  ⚠ Memoization also has a correctness benefit beyond cost, and it is the stronger argument: without it,
+  two siblings failing at different moments query the same ancestor's bounds at different times, so a
+  scrolling container gets two MISALIGNED masks. A per-capture cache locks one coherent rect for the whole
+  pass.
   ⚠ *Severity, honestly:* the peer named this itself as the weakest part of its own answer - the OS caches
   structural tree queries, so the real latency penalty may be small. Memoization is required because it is
   nearly free and the capture path is already ~90% property traffic, NOT because a storm is proven.
@@ -194,10 +202,33 @@ wrong.
 2. **No new field for the element name.** `GetFocusedElementAsync` already returns `descriptor` (rendered
    through `SnapshotEngine.Render`, therefore classified) AND `ref` (`SnapshotTools.cs:116`), which is the
    machine-readable, directly actionable identifier. The raw Name was redundant as well as leaky.
-3. **The sweep allowlist entry for `ResolveFocusedWindowAsync` is DELETED, not reworded** - after the fix
-   the member performs no UIA content read and needs no exemption.
+3. **The sweep allowlist entry for `ResolveFocusedWindowAsync` is REWRITTEN, not deleted.**
+
+   ⚠ An earlier draft said DELETED, "because after the fix the member performs no UIA content read". That
+   was **self-contradictory the moment fix step 4 was added** (panel round 4, Literal Implementer -
+   CRITICAL): the fallback below reads the window root's `Name`, which IS a UIA content read. Following
+   section 8a literally would have turned the build red at the allowlist-deletion step, with no way to
+   land the work incrementally.
+
+   The entry stays, with a reason that is true and narrow:
+   *"identity reader - reads the WINDOW ROOT's Name, which IS the window's title, and only as a fallback
+   when the Win32 caption is empty. NOT the focused element's Name, which is what the false version of
+   this reason described."*
+
+   ⚠⚠ **This reason has the same SHAPE as the false one it replaces, and that similarity is a hazard, not
+   a coincidence.** The removed text read *"window TITLE via Properties.Name, not element content"* and
+   was false because the element being read was the FOCUSED ELEMENT. The new text is true because the
+   element being read is the WINDOW ROOT. The distinction is the whole justification, so a future reviewer
+   must check WHICH element the member reads before honouring this exemption - not merely that a
+   plausible sentence is present. Two reasons in this file have already turned out false.
 4. **Empty or failed `GetWindowText` falls back to the WINDOW ROOT element's `Name`** (panel round 3,
    Dependency Cynic - CRITICAL). Only if that is also empty does `title` become an empty string.
+
+   ⚠ **That fallback MUST be exception-guarded** (panel round 4, Cascade Analyst - HIGH). Reading
+   `Name` off the root is a cross-process COM call, and on an unresponsive or tearing-down window it
+   throws. Unguarded, a harmless captionless window would crash `desktop_get_focused_element` outright -
+   reintroducing precisely the unhandled-UIA failure mode that moving to `GetWindowText` was meant to
+   escape. A throw here degrades to an empty title, exactly as an empty read does.
 
    *Why the fallback exists:* some frameworks draw their own title bar, leaving the Win32 caption empty
    while the visible title exists only in the UIA tree. Returning empty there would silently blind the
@@ -340,13 +371,19 @@ backwards (panel round 3, Mechanism Gamer). Every item below is gated on the one
    token.
 3. **Test rules second.** Add A6's allowlist-independent sweep rule only now - activating it before step 2
    breaks the build on those attributes.
-4. **Allowlist deletions LAST.** Remove the `ResolveFocusedWindowAsync` entry only after step 1 has
-   removed the UIA content read it exempts. Deleting it first makes the EXISTING sweep fail the build on
-   a member that is still, at that moment, legitimately reading content.
+4. **Allowlist REWRITES last** - and note this step changed at panel round 4. It was "delete the
+   `ResolveFocusedWindowAsync` entry"; that is now a REWRITE, because fix step 4 keeps a UIA read on that
+   member (the window-root fallback). **Deleting it at any point in this sequence turns the build red**,
+   which is exactly what an implementer following the old wording would have discovered the hard way.
 
 The general rule behind all four: **a guard may only be tightened after the thing it guards is already
 correct.** Tightening first produces a red build that looks like a regression and is actually just
 sequencing.
+
+⚠ **And the corollary round 4 exposed:** before tightening a guard, re-read what the guarded code does
+AFTER all of this increment's other folds, not as it was when the guard change was first written. The
+delete-the-entry instruction was correct when authored and became wrong two folds later, in the same
+document, without anyone editing that sentence.
 
 ## 9. Gates
 
@@ -451,3 +488,29 @@ rather than a thin round.
   looks like a regression and is only sequencing.
 - **Peer transparency, recorded:** it did not examine A3/A4 or re-verify A2's rename this round, and named
   its own COM-storm severity as its weakest claim. Both stated without being pressed.
+
+### Round 4, FINAL (rotation seats: State Corruptor, Boundary Smuggler) - folded
+
+- **CRITICAL, and it was a contradiction ROUND 3 introduced:** fix step 3 said DELETE the
+  `ResolveFocusedWindowAsync` allowlist entry "because the member performs no UIA content read", while fix
+  step 4 - added one round earlier - makes it read the window root's `Name`, which IS a UIA content read.
+  Following section 8a literally would turn the build red at the deletion step with no incremental
+  landing. The entry is now REWRITTEN rather than deleted, with a reason that is true and narrow, plus an
+  explicit warning that this reason has the same SHAPE as the false one it replaces and must be checked
+  against WHICH element is read.
+  *The sentence was correct when written and became wrong two folds later without being edited.* Section
+  8a now carries that as a standing corollary.
+- **HIGH: the new UIA fallback was unguarded.** Reading `Name` off the root is a cross-process COM call
+  that throws on an unresponsive or tearing-down window - so a harmless captionless window could crash
+  `desktop_get_focused_element`, reintroducing the exact failure mode A5 moved to `GetWindowText` to
+  escape. Now degrades to an empty title.
+- **Memoization cache key trap**, raised by the seat as its OWN weakest assumption and folded on that
+  basis: keying the cache on `AutomationElement` invokes `GetHashCode`, which fetches `RuntimeId`
+  cross-process - a cache added to remove COM traffic would generate it instead.
+- **Cleared, with reasoning worth keeping:** memoization is neutral-to-BENEFICIAL for staleness (it stops
+  two siblings failing at different moments from producing two misaligned masks of one scrolling
+  container); and `escalated` leaks nothing, because `desktop_find` already publishes `automationId` and
+  `controlType` globally for redacted elements, so the screenshot path surfaces nothing the query path
+  does not.
+- **Peer transparency:** it again skipped A3/A4 and A2, and named its memoization-key assumption as its
+  weakest point - which turned out to be the most actionable item in the round.
