@@ -224,16 +224,21 @@ public sealed class WatchPump : IAsyncDisposable
             });
     }
 
-    // Owning process base name from an element's PID (mirrors PerceptionManager.SafeProcessName). Null (not a
-    // throw) on a dead PID -> IsDenied(null)=false, so a raced-away source never spuriously blocks.
+    // Owning process base name. ONE implementation, shared with PerceptionManager - this was a private COPY
+    // that drifted from it, which is how the watch path ended up rejecting only pid < 0 while the snapshot
+    // path had learned to recover a pid of 0 via the window handle.
+    //
+    // ⚠⚠ THE COMMENT HERE USED TO SAY: "Null (not a throw) on a dead PID -> IsDenied(null)=false, so a
+    // raced-away source never spuriously blocks." That is NO LONGER TRUE and the change was deliberate:
+    // IsDenied(null) is now TRUE, because a window whose process cannot be named might be a credential
+    // store and the floor must not read "I could not identify this" as permission. So an unidentifiable
+    // source IS now dropped here rather than emitted.
+    //
+    // That trade is affordable only because the shared helper drives the null rate down (handle fallback,
+    // pid 0 handled). If watch events ever start disappearing for healthy windows, fix IDENTIFICATION in
+    // ProcessIdentity - do NOT restore the fail-open by special-casing null back to allowed.
     private static string? SafeProcessName(AutomationElement el)
-    {
-        int pid;
-        try { pid = el.Properties.ProcessId.ValueOrDefault; } catch { pid = -1; }
-        if (pid < 0) return null;
-        try { using var p = Process.GetProcessById(pid); return p.ProcessName; }
-        catch { return null; }
-    }
+        => FlaUI.Mcp.Core.Perception.ProcessIdentity.OfElement(el);
 
     // Live STA-side reader over an already-resolved element (query STA). Fail-soft per read; IsPassword is
     // fail-closed (INV-5). Mints the event ref into the bounded event-ref layer (§16.5) from a descriptor built
