@@ -333,9 +333,7 @@ public sealed class WindowManager : IDisposable, IHwndSource
     /// A policy must never be able to mistake "could not determine" for a value. Display-facing callers
     /// render their own "unknown" at the projection; policy-facing callers get the truth.</summary>
     private static string? SafeProcessName(int pid)
-    {
-        try { return Process.GetProcessById(pid).ProcessName; } catch { return null; }
-    }
+        => FlaUI.Mcp.Core.Perception.ProcessIdentity.OfPid(pid);
 
     // ── Win32 top-level window enumeration ────────────────────────────────────────────────
     // A UIA Title/ProcessId read (the old GetDesktop().FindAllChildren() path) on the query STA

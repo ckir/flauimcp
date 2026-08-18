@@ -47,8 +47,24 @@ internal static class ProcessIdentity
             }
             catch { /* no usable handle either: fall through to null, which fails CLOSED */ }
         }
-        if (pid <= 0) return null;
+        return OfPid(pid);
+    }
 
+    /// <summary>The owning process's base name for a PID we already have, or null when it cannot be
+    /// determined. Null NEVER means "safe" — every policy consumer fails closed on it.
+    ///
+    /// ⚠ EXISTS BECAUSE I CLAIMED IT COULD NOT. Reviewing round 7, I argued that
+    /// WindowManager.SafeProcessName(int) had to stay a separate resolver "by necessity, since one has an
+    /// element and one only has a pid". The peer refuted it in one line: differing INPUTS do not require
+    /// duplicating the RESOLUTION — expose the pid-based half and let the element-based half call it. The
+    /// necessity was manufactured and the duplication voluntary, which is exactly the excuse that let two
+    /// copies of this logic drift far enough to start dropping watch events.
+    ///
+    /// pid &lt;= 0 is rejected rather than looked up: 0 is the Idle process and negative is our own
+    /// "unreadable" marker, and GetProcessById would throw on both, turning a knowable answer into null.</summary>
+    public static string? OfPid(int pid)
+    {
+        if (pid <= 0) return null;
         try { using var p = System.Diagnostics.Process.GetProcessById(pid); return p.ProcessName; }
         catch { return null; }
     }
