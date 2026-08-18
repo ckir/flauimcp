@@ -1,6 +1,6 @@
 # SP4 - redaction completeness (design)
 
-Status: DESIGN. Approved section-by-section 2026-08-18; adversarial panel rounds 1-2 folded (section 12).
+Status: DESIGN. Approved section-by-section 2026-08-18; adversarial panel rounds 1-3 folded (section 12).
 Branch point: `a76092d` (SP3 merged).
 
 ## 0. The settled design, with no history
@@ -72,6 +72,7 @@ of the feature. **It is a real usability cost on a common transition, not a free
 | parent rect also unusable | escalate again, up the ancestor chain |
 | **obtaining the PARENT itself throws** | treat as "no usable ancestor remains" - REFUSE, exactly as reaching the root does. A dying subtree must not silently drop out of the mask set. |
 | escalation reaches the window root | **REFUSE**: `ToolException(RedactionUnmaskable)`. No image is returned. |
+| **the walk hits its depth cap without reaching a usable ancestor** | REFUSE, identically. Guards against a provider with a structural cycle hanging the single query STA. |
 | element is not redact-worthy | unchanged; no rect collected, no escalation |
 | no redact-worthy elements at all | unchanged; `maskEscalations` = 0 |
 
@@ -138,12 +139,34 @@ already dominated by property traffic - while the alternative (aborting inside t
 parent fetch throws) moves the refusal decision OUT of the function and breaks the seam it exists to
 create.
 
-Signature shape: `Decide(Rect? own, Func<int, Rect?> ancestorAt, int rootDepth)`. The accessor returns
-the rect at a given ancestor level, or **null for any failure - including the PARENT FETCH itself
-throwing**, which is what makes the case-table's parent-fetch-refusal reachable without the function
-knowing anything about UIA. Evaluation stays lazy: level `n+1` is only requested if level `n` was
-unusable. Tests inject a fake accessor and never touch UIA; production injects the adapter that walks
-the real tree.
+**Requirements on that input, NOT a signature** (panel round 3, Axiom Breaker - an earlier draft pinned a
+concrete `Func<int, Rect?>` delegate here; that was over-specification, and worse, it would have FORBIDDEN
+the memoized walker the cost requirement below now demands. The spec mandates the properties; the plan
+picks the shape):
+
+1. **Lazy.** Ancestor level `n+1` is requested only if level `n` was unusable. No pre-fetch.
+2. **Failure is indistinguishable from absence.** Any failure to obtain an ancestor rect - including the
+   PARENT FETCH itself throwing - presents to the decision as "no rect at this level". That is what makes
+   the case table's parent-fetch refusal reachable without the decision knowing anything about UIA.
+3. **Injectable.** Tests supply a fake ancestor source and never touch UIA; production supplies the
+   adapter that walks the real tree.
+
+### Cost and termination (panel round 3, Resource Vampire)
+
+Two bounds are REQUIRED, not optional:
+
+- **Memoize resolved ancestors per capture.** If a container's bounds read is broken, every one of its
+  redact-worthy children escalates through the SAME chain. Without memoization the walk repeats identical
+  cross-process parent lookups once per child and masks the identical parent rect N times, turning an O(N)
+  pass into O(N x depth).
+  ⚠ *Severity, honestly:* the peer named this itself as the weakest part of its own answer - the OS caches
+  structural tree queries, so the real latency penalty may be small. Memoization is required because it is
+  nearly free and the capture path is already ~90% property traffic, NOT because a storm is proven.
+- **Cap the walk.** An uncapped ancestor climb on a provider with a structural cycle never terminates, and
+  this runs on the single query STA - a hang there wedges every subsequent query, not just this capture.
+  The walk therefore stops at a fixed maximum depth and treats exhaustion exactly as reaching the root:
+  REFUSE. This bound is about termination, not tuning; it must not be removed for being "unreachable in
+  practice".
 
 WARNING - consequence for the ledger: A1 therefore does **not** join the accepted-boundary list, and
 `docs/coverage-debt.md` entry **AB-3**'s compensation must be re-validated during this increment, per that
@@ -173,8 +196,25 @@ wrong.
    machine-readable, directly actionable identifier. The raw Name was redundant as well as leaky.
 3. **The sweep allowlist entry for `ResolveFocusedWindowAsync` is DELETED, not reworded** - after the fix
    the member performs no UIA content read and needs no exemption.
-4. **Empty or failed `GetWindowText`** yields an empty string. A window legitimately without a caption is
-   a normal state, not an error, and must not fail the call.
+4. **Empty or failed `GetWindowText` falls back to the WINDOW ROOT element's `Name`** (panel round 3,
+   Dependency Cynic - CRITICAL). Only if that is also empty does `title` become an empty string.
+
+   *Why the fallback exists:* some frameworks draw their own title bar, leaving the Win32 caption empty
+   while the visible title exists only in the UIA tree. Returning empty there would silently blind the
+   agent to those windows' titles - trading one information loss for another.
+
+   ⚠ *Why the root's Name is NOT a return to the defect this section fixes:* the bug is that we read the
+   FOCUSED ELEMENT's Name and called it a title. The WINDOW ROOT's Name **is** the window's title - it is
+   the correct source, merely a slower one. The fallback is ordered second precisely because a UIA read on
+   the query STA can block on an unresponsive window while `GetWindowText` cannot.
+
+   ⚠ *Measured, and it narrows the peer's claim:* the peer asserted UWP/WinUI HWND captions are
+   "completely empty". On this machine `GetWindowTextW` returned real captions for `SystemSettings`,
+   `ApplicationFrameHost` and `SecHealthUI`. So the Win32 path works for hosted UWP at least. Note also a
+   SELECTION EFFECT that makes this hard to sample: `EnumTopLevel` skips captionless windows
+   (`WindowManager.cs:394`), so `desktop_list_windows` can never show one - absence of empty titles there
+   is not evidence they do not exist. The fallback is therefore a safety net for custom-chrome apps, not
+   the primary path.
 
 ### Contract, and the fact that this break is SILENT
 
@@ -289,6 +329,25 @@ new test must be the one that goes red. A suite returning non-zero is not suffic
 | A2 | existing mutually-discriminating counter assertion, renamed | swap the two counters |
 | A6 | the new sweep rule, AFTER the attribute refactor | plant a bare token literal in `src/` and confirm the sweep fails; confirm a literal inside a COMMENT does not fail it |
 
+## 8a. Implementation ORDER - a constraint, not a preference
+
+The spec says WHAT; this says in what sequence, because two of these items make the build fail if done
+backwards (panel round 3, Mechanism Gamer). Every item below is gated on the one before it.
+
+1. **Source fixes first.** A5's `GetWindowText` change and A1's escalation land before any guard is
+   touched.
+2. **The A6 attribute refactor**, converting the four `[Description]` attributes to const-concatenate the
+   token.
+3. **Test rules second.** Add A6's allowlist-independent sweep rule only now - activating it before step 2
+   breaks the build on those attributes.
+4. **Allowlist deletions LAST.** Remove the `ResolveFocusedWindowAsync` entry only after step 1 has
+   removed the UIA content read it exempts. Deleting it first makes the EXISTING sweep fail the build on
+   a member that is still, at that moment, legitimately reading content.
+
+The general rule behind all four: **a guard may only be tightened after the thing it guards is already
+correct.** Tightening first produces a red build that looks like a regression and is actually just
+sequencing.
+
 ## 9. Gates
 
 Headless + Desktop + PopupGrafting all green at one SHA (`0 skipped` on both Desktop halves), then
@@ -368,3 +427,27 @@ rather than a thin round.
 - **HIGH: `automationId` alone is a blindspot.** Many elements have none - this repo's own fixture
   depends on it - so the diagnostic degraded to `["", "", ""]` on exactly the legacy/flat-tree UIs where
   A1 refuses hardest. `escalated` now carries `controlType` too; both are non-content by BC-1.
+
+### Round 3 (rotation seats: Resource Vampire, Dependency Cynic) - folded; do NOT re-raise
+
+- **CRITICAL: relying solely on `GetWindowText` can blind the agent** where a framework draws its own
+  title bar and the visible title exists only in the UIA tree. Folded as a fallback to the WINDOW ROOT's
+  Name (not the focused element's - the root's Name IS the title).
+  ⚠ The peer's claim was TOO STRONG and is narrowed in section 4: `GetWindowTextW` returned real captions
+  for `SystemSettings`, `ApplicationFrameHost` and `SecHealthUI` on this machine. Also recorded there: a
+  SELECTION EFFECT (`EnumTopLevel` skips captionless windows) means the listing cannot be used as evidence
+  either way.
+- **HIGH: the ancestor walk needs two bounds.** Memoize resolved ancestors per capture (N children of one
+  broken container otherwise repeat the same chain N times); and CAP the walk, because a cyclic provider
+  tree would hang the single query STA - a hang there wedges every later query, not just this capture.
+  The peer named the COM-storm half as the weakest part of its own answer (OS caching may absorb it); the
+  cap is required for TERMINATION regardless.
+- **MEDIUM, and it caught a contradiction I introduced in round 2:** the concrete
+  `Func<int, Rect?>` signature was over-specification that would have FORBIDDEN the memoized walker the
+  cost requirement now demands. Replaced with three properties (lazy, failure-as-absence, injectable) and
+  the shape left to the plan. The exact mutant wording in section 8 was likewise trimmed toward intent.
+- **MEDIUM: implementation ORDER is a constraint** - now section 8a. A guard may only be tightened after
+  the thing it guards is already correct; doing either A5's or A6's guard first produces a red build that
+  looks like a regression and is only sequencing.
+- **Peer transparency, recorded:** it did not examine A3/A4 or re-verify A2's rename this round, and named
+  its own COM-storm severity as its weakest claim. Both stated without being pressed.
