@@ -104,24 +104,46 @@ change.
   **Semantics, stated exactly:** `maskEscalations` counts ELEMENTS whose own rect was unusable and whose
   mask was therefore taken from an ancestor - NOT the number of levels climbed. One element climbing three
   levels counts as `1`.
-- **`escalatedIds`** (array of strings, always present, empty when none): the `automationId` of each
-  escalating element. **Rationale, and why this is safe:** a bare count is not a diagnostic - an operator
-  seeing a giant black box and `maskEscalations: 2` cannot tell which control has the broken provider.
-  `automationId` is already treated as NON-content by this codebase (a redacted element stays findable by
-  `automationId`, and `FindMatch` already publishes it), so emitting it leaks nothing that redaction
-  withholds. **The element's Name is NEVER emitted here** - that would leak the identity of the very thing
-  the mask exists to hide. An element with no `automationId` contributes an empty string.
+- **`escalated`** (array of objects, always present, empty when none). One entry per escalating element:
+  `{ automationId, controlType }`.
+  **Why a diagnostic at all:** a bare count is not one - an operator seeing a giant black box and
+  `maskEscalations: 2` cannot tell which control has the broken provider.
+  **Why these two fields, and why they are safe:** both are already treated as NON-content by this
+  codebase. A redacted element deliberately stays findable by `automationId` AND by `controlType`
+  (BC-1 targetability), and `FindMatch` already publishes both for redacted elements. Emitting them
+  leaks nothing redaction withholds.
+  ⚠ **`controlType` is present because `automationId` ALONE is a blindspot** (panel round 2, Blindspot
+  Auditor - HIGH). Many elements legitimately have no `automationId` - this repo's own fixture depends on
+  that fact - so an id-only diagnostic degrades to `["", "", ""]` on exactly the legacy and flat-tree UIs
+  where A1's refusal path fires hardest. An element with no `automationId` contributes an empty string
+  for that field and still reports its `controlType`.
+  **The element's Name is NEVER emitted here** - that would leak the identity of the very thing the mask
+  exists to hide.
 - **NEW `ToolErrorCode.RedactionUnmaskable`.** Rejected alternative: reuse `CaptureUnavailable` (already
   used for a locked/disconnected desktop). Rejected because a script would then have to scrape text to
   distinguish "desktop unavailable" from "cannot mask safely" - the same output-contradicts-code defect
   SP3 fixed in `check-redaction-rules`. Adding an enum member is additive and free pre-1.0.
-  The refusal message names the `automationId`s that could not be masked, never their Names.
+  The refusal message names the `automationId` and `controlType` of what could not be masked, never Names.
 
 ### Testability seam
 
-The escalation DECISION is extracted into a pure function - inputs: the element's own rect-or-null plus
-its ancestor rects-or-null in order; output: a mask rect, or a refusal signal. It touches no UIA and is
-headless-unit-testable. The UIA-touching code shrinks to "read a rect, hand it to the decision".
+The escalation DECISION is extracted into a pure function; the UIA-touching code shrinks to "read a rect,
+hand it to the decision".
+
+⚠ **Its ancestor input is a LAZY ACCESSOR, not a materialized list** (panel round 2, Axiom Breaker -
+HIGH). An earlier draft said "the element's own rect-or-null plus its ancestor rects-or-null in order",
+which is a real contradiction: supplying a complete ordered list forces the caller to pre-fetch EVERY
+ancestor of EVERY redact-worthy element before the decision runs - a cross-process COM cost on a path
+already dominated by property traffic - while the alternative (aborting inside the UIA code when a
+parent fetch throws) moves the refusal decision OUT of the function and breaks the seam it exists to
+create.
+
+Signature shape: `Decide(Rect? own, Func<int, Rect?> ancestorAt, int rootDepth)`. The accessor returns
+the rect at a given ancestor level, or **null for any failure - including the PARENT FETCH itself
+throwing**, which is what makes the case-table's parent-fetch-refusal reachable without the function
+knowing anything about UIA. Evaluation stays lazy: level `n+1` is only requested if level `n` was
+unusable. Tests inject a fake accessor and never touch UIA; production injects the adapter that walks
+the real tree.
 
 WARNING - consequence for the ledger: A1 therefore does **not** join the accepted-boundary list, and
 `docs/coverage-debt.md` entry **AB-3**'s compensation must be re-validated during this increment, per that
@@ -212,15 +234,26 @@ attributes in `ContentTools.cs`, `FindTools.cs`, `SnapshotTools.cs` and `WatchTo
 literal, and an attribute argument is EXECUTABLE assembly metadata, not prose.** A naive text rule would
 flag them and break the build on day one.
 
-**Therefore the rule is AST-aware, and the attributes are refactored:**
+**Therefore the rule is AST-aware, allowlist-INDEPENDENT, and the attributes are refactored:**
 
 1. The sweep rule ignores comment/trivia occurrences. The existing sweep is already Roslyn-based
    (`Microsoft.CodeAnalysis.CSharp` is referenced by the test project), so this is available rather than
    new machinery.
-2. The four `[Description]` attributes are refactored to concatenate `ElementContent.RedactedToken`.
+2. ⚠⚠ **The rule MUST NOT run through the existing `AllowedMembers` suppression** (panel round 2,
+   Activation Auditor - CRITICAL, and verified). The existing walker suppresses findings on sanctioned
+   members: `if (_allowed.ContainsKey(CurrentKey)) continue;` at `RedactionSurfaceInventoryTests.cs:454`
+   and `... return;` at `:567`. **All the sites this rule targets are already allowlisted members** -
+   `SnapshotEngine.FormatNode` (`:60`), `SnapshotDiff.ShownName` (`:64`), `PerceptionManager.FindAsync`
+   (`:69`), `PerceptionManager.ResolveSelectorOnSta` (`:70`). A rule reusing that infrastructure would be
+   **silently dead on arrival on exactly the sites it exists to catch.**
+   The two concerns are orthogonal and must stay separate: the allowlist exempts a member from the
+   CONTENT-READ rules (it is a sanctioned egress accessor); it says nothing about whether that member may
+   hard-code the token string. The new rule therefore evaluates every `src/` syntax node regardless of
+   `AllowedMembers`, with its own exemption set containing exactly one entry: `ElementContent`.
+3. The four `[Description]` attributes are refactored to concatenate `ElementContent.RedactedToken`.
    Valid because it is a `const string`, and a `const + const` concatenation is a compile-time constant,
    which is what an attribute argument requires.
-3. Only then does "no bare token literal in `src/` outside `ElementContent`" hold as a rule.
+4. Only then does "no bare token literal in `src/` outside `ElementContent`" hold as a rule.
 
 **Honest value, and the limit of the guard:** existing egress tests assert the literal, so a typo at one
 site would already fail some test - this removes a coupling, it does not close a leak. And the rule is
@@ -247,8 +280,10 @@ new test must be the one that goes red. A suite returning non-zero is not suffic
 |---|---|---|
 | A1 | headless unit tests over the pure escalation function: precise mask, one escalation, escalation-to-root refusal, parent-fetch failure refusal, zero-size treated as unusable | drop the escalate branch; drop the root-refusal branch |
 | A1 | `maskEscalations` counts ELEMENTS not levels: one element climbing two levels reports `1` | make the counter increment per level |
-| A1 | `escalatedIds` carries `automationId` and NEVER the element Name | swap the field to emit Name |
-| A1 | Desktop fact: an ordinary capture reports `maskEscalations == 0` and empty `escalatedIds` | hard-code the counter to a constant |
+| A1 | `escalated` carries `automationId` + `controlType` and NEVER the element Name | swap either field to emit Name |
+| A1 | an escalating element with NO `automationId` still reports its `controlType` | drop controlType from the entry |
+| A1 | Desktop fact: an ordinary capture reports `maskEscalations == 0` and empty `escalated` | hard-code the counter to a constant |
+| A6 | ⚠ the new rule FIRES on an allowlisted member - plant a bare token literal inside `SnapshotDiff.ShownName` (which IS in `AllowedMembers`) and confirm the sweep fails | route the new rule through the `_allowed.ContainsKey` suppression; the test must go red |
 | A5 | Desktop fact: focus an element whose Name differs from the window title; assert `window.title` equals the WINDOW title and NOT the element name | revert the source to the UIA `Name` read |
 | A5 | a window with no caption yields an empty `title`, not an error | make the empty case throw |
 | A2 | existing mutually-discriminating counter assertion, renamed | swap the two counters |
@@ -313,3 +348,23 @@ Dropped seat: Dependency Cynic - the increment introduces no new library or tool
 
 **Not adopted:** the peer's "16 sites" count for the token literal was not verified and is not carried;
 the material claim (attributes are executable metadata) was verified and folded.
+
+### Round 2 (rotation seat: Activation Auditor) - folded; do NOT re-raise
+
+Two seats reported NO NEW FINDINGS (Cascade Analyst, Protocol Pedant), which is the protocol working
+rather than a thin round.
+
+- **CRITICAL, and the best finding of the review: the A6 rule would have been DEAD ON ARRIVAL.** The
+  existing sweep suppresses on allowlist membership (`:454`, `:567`), and every site A6 targets is an
+  allowlisted member. Verified by reading both suppression sites and all four entries. Section 6 now
+  requires the rule to be allowlist-INDEPENDENT, with its own one-entry exemption set, plus a test that
+  plants a literal inside an allowlisted member specifically to prove the rule still fires there.
+  *Why the seat caught it:* Activation Auditor was rotated in precisely because round 1 found a trigger
+  problem; it hunts guards that cannot fire, and found one.
+- **HIGH: the pure-function seam contradicted lazy evaluation.** "Ancestor rects-or-null in order" forces
+  either a pre-fetch of every ancestor of every redact-worthy element (a COM cost on the hottest path) or
+  a refusal decided inside the UIA code, which breaks the seam. Resolved with a lazy accessor
+  (`Func<int, Rect?>`) whose null return covers a throwing parent fetch.
+- **HIGH: `automationId` alone is a blindspot.** Many elements have none - this repo's own fixture
+  depends on it - so the diagnostic degraded to `["", "", ""]` on exactly the legacy/flat-tree UIs where
+  A1 refuses hardest. `escalated` now carries `controlType` too; both are non-content by BC-1.
