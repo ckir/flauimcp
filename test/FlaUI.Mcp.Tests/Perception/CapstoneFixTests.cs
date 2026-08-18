@@ -250,6 +250,30 @@ public class CapstoneFixTests
         Assert.True(FlaUI.Mcp.Core.Windows.LaunchedWindowMatcher.IsExpectedApp("notepad", "notepad"));
     }
 
+    /// <summary>ROUND 8 — pins a behaviour change I made while claiming not to.
+    ///
+    /// `Process.GetProcessById(0)` does NOT throw: it returns the System Idle Process, name "Idle". So the
+    /// pre-consolidation resolver reported a pid-0 window as process "Idle", and `IsDenied("Idle")` is
+    /// false — it was SERVED. With the `pid &lt;= 0` guard it resolves to null, which is DENIED.
+    ///
+    /// Both I and the reviewing peer asserted that GetProcessById(0) throws. It does not. The claim was
+    /// only settled by running it, which is why this fact exists: null here is a DECISION about an
+    /// unattributable window, not an incidental consequence of an exception someone assumed.</summary>
+    [Fact]
+    public void A_pid_of_zero_is_unattributable_not_the_Idle_process()
+    {
+        // The framework fact the old code accidentally depended on — asserted so that if a future runtime
+        // changes it, this reads as a deliberate decision rather than a coincidence that stopped holding.
+        Assert.Equal("Idle", System.Diagnostics.Process.GetProcessById(0).ProcessName);
+
+        // ...and the decision: we do not attribute a window to the Idle process, which owns no windows.
+        Assert.Null(FlaUI.Mcp.Core.Perception.ProcessIdentity.OfPid(0));
+        Assert.Null(FlaUI.Mcp.Core.Perception.ProcessIdentity.OfPid(-1));
+
+        // A real pid still resolves — this must not have become "deny everything".
+        Assert.NotNull(FlaUI.Mcp.Core.Perception.ProcessIdentity.OfPid(System.Environment.ProcessId));
+    }
+
     // ---------------- L4: version-skewed state files must not become immortal ----------------
 
     private static string TempDir()

@@ -60,8 +60,21 @@ internal static class ProcessIdentity
     /// necessity was manufactured and the duplication voluntary, which is exactly the excuse that let two
     /// copies of this logic drift far enough to start dropping watch events.
     ///
-    /// pid &lt;= 0 is rejected rather than looked up: 0 is the Idle process and negative is our own
-    /// "unreadable" marker, and GetProcessById would throw on both, turning a knowable answer into null.</summary>
+    /// ⚠⚠ pid &lt;= 0 IS REJECTED, AND THIS IS A REAL BEHAVIOUR CHANGE — not merely a guard against a throw.
+    /// MEASURED: `Process.GetProcessById(0)` does NOT throw. It returns the System Idle Process, whose
+    /// ProcessName is "Idle". So before this guard existed, a window reporting pid 0 was listed with the
+    /// process name "Idle", and `PerceptionPolicy.IsDenied("Idle")` is FALSE — it was served. It is now
+    /// null, and null is DENIED.
+    ///
+    /// That is the correct answer: pid 0 is the Idle process, which owns no windows, so "Idle" was never a
+    /// true attribution — it was a plausible-looking string standing in for "this pid is not real", which
+    /// is the same shape as the "unknown" sentinel this type exists to have removed. But it IS a
+    /// behaviour change, and the commit that introduced it described itself as only removing duplication.
+    /// It was caught by a review seat asking whether the delegation altered the listing, and by MEASURING
+    /// the answer rather than accepting that GetProcessById(0) throws — which both I and the reviewing
+    /// peer had assumed, and which is false.
+    ///
+    /// A negative pid is our own "could not read" marker and never reaches a lookup.</summary>
     public static string? OfPid(int pid)
     {
         if (pid <= 0) return null;
