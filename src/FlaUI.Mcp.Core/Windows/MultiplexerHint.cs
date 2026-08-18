@@ -22,7 +22,13 @@ public static class MultiplexerHint
         "Multiplexed terminal — this shows ONLY the active tab; a WT window is NOT evidence a program is " +
         "absent/headless. Snapshot to enumerate tabs, or use desktop_read_terminal_tab; see skill driving-flaui-mcp.";
 
-    /// <summary>The hint for a recognized multiplexer process, else null (omitted from JSON).</summary>
-    public static string? For(string processName)
-        => Multiplexers.Contains(processName) ? TerminalHint : null;
+    /// <summary>The hint for a recognized multiplexer process, else null (omitted from JSON).
+    ///
+    /// ⚠ The null guard is LOAD-BEARING, not defensive padding. Multiplexers uses StringComparer.Ordinal,
+    /// and that comparer's GetHashCode(null) THROWS — so HashSet.Contains(null) raises
+    /// ArgumentNullException rather than returning false. Without this guard, making the caller's process
+    /// name nullable would crash desktop_list_windows outright for every window whose process could not be
+    /// resolved. (A design consult asserted Contains(null) "returns false"; it does not.)</summary>
+    public static string? For(string? processName)
+        => processName is not null && Multiplexers.Contains(processName) ? TerminalHint : null;
 }

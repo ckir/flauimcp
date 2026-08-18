@@ -200,6 +200,56 @@ public class CapstoneFixTests
         Assert.False(SensitivityClassifier.OsOnly.CouldMatchProcess(null));
     }
 
+    // ---------------- round 6: the sentinel that hid an unidentifiable process ----------------
+
+    /// <summary>ROUND 6 — the placeholder was a LEAK. `WindowManager.SafeProcessName(int)` returned the
+    /// literal string "unknown" when it could not resolve a process. "unknown" is not in the denylist, so
+    /// `DenylistedWindowsVisibleAsync` asked `IsDenied("unknown")`, got false, and a FULL-DESKTOP CAPTURE
+    /// proceeded over a credential-store window whose process merely could not be named. The fail-closed
+    /// handling never reached that path because the placeholder had already disguised "could not
+    /// determine" as a determined answer.
+    ///
+    /// The sentinel is gone; the listing reports null and policy fails closed. This pins the policy end of
+    /// that: an unidentifiable process must be DENIED, whatever spelling it arrives in.</summary>
+    [Fact]
+    public void An_unidentifiable_process_is_denied_but_a_plausible_placeholder_is_not_special()
+    {
+        Assert.True(PerceptionPolicy.IsDenied(null));   // the real answer now
+        Assert.True(PerceptionPolicy.IsDenied(""));
+
+        // ⚠ And "unknown" is NOT quietly treated as unidentifiable: it is an ordinary string, so a process
+        // genuinely called that is served normally. The fix removed the placeholder at its SOURCE rather
+        // than teaching policy to recognise one — otherwise the next placeholder reopens the hole.
+        Assert.False(PerceptionPolicy.IsDenied("unknown"));
+    }
+
+    /// <summary>⚠ THIS PINS A CRASH I ALMOST SHIPPED. Making the listing's process name nullable feeds null
+    /// into `MultiplexerHint.For`, whose `Multiplexers` set uses `StringComparer.Ordinal` — and that
+    /// comparer's `GetHashCode(null)` THROWS, so `HashSet.Contains(null)` raises ArgumentNullException
+    /// rather than returning false.
+    ///
+    /// A design consult asserted it "returns false, cleanly omitting the terminal hint". It does not.
+    /// Believing that would have crashed desktop_list_windows for every window with an unresolvable
+    /// process — turning a redaction fix into an outage on the most-called tool in the server.</summary>
+    [Fact]
+    public void The_multiplexer_hint_survives_an_unidentifiable_process()
+    {
+        var ex = Record.Exception(() => FlaUI.Mcp.Core.Windows.MultiplexerHint.For(null));
+        Assert.Null(ex);                                                            // must not throw
+        Assert.Null(FlaUI.Mcp.Core.Windows.MultiplexerHint.For(null));              // and no hint
+        Assert.NotNull(FlaUI.Mcp.Core.Windows.MultiplexerHint.For("WindowsTerminal")); // still recognises
+    }
+
+    /// <summary>A window whose process cannot be identified must never be claimed to BE the app just
+    /// launched — we cannot confirm it. Behaviour was already correct; pinned because the signature became
+    /// nullable and a future "helpful" null-coalesce here would silently match the wrong window.</summary>
+    [Fact]
+    public void An_unidentifiable_window_is_not_the_app_we_launched()
+    {
+        Assert.False(FlaUI.Mcp.Core.Windows.LaunchedWindowMatcher.IsExpectedApp("notepad", null));
+        Assert.True(FlaUI.Mcp.Core.Windows.LaunchedWindowMatcher.IsExpectedApp("notepad", "notepad"));
+    }
+
     // ---------------- L4: version-skewed state files must not become immortal ----------------
 
     private static string TempDir()

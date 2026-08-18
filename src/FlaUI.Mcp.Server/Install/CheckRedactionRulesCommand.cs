@@ -191,7 +191,7 @@ public static class CheckRedactionRulesCommand
                                .GetAwaiter().GetResult();
             outp.WriteLine($"windows ({found.Count}):");
             foreach (var w in found)
-                outp.WriteLine($"  pid={w.Pid} [{w.ProcessName}] {w.Title}");
+                outp.WriteLine($"  pid={w.Pid} [{w.ProcessName ?? "unknown"}] {w.Title}");
         }
 
         if (pidArg is null) return true;
