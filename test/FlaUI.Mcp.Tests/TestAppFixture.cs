@@ -49,7 +49,16 @@ public sealed class TestAppFixture : IDisposable
             if (Process.HasExited || Process.MainWindowHandle != IntPtr.Zero) break;
             Thread.Sleep(25);
         }
-        Thread.Sleep(100); // brief settle: the handle exists, let the first paint/UIA tree land
+        // ⚠ KEEP THE FULL 500ms SETTLE. The defect being fixed above was "does not WAIT for the window",
+        // not "sleeps too long" — and shortening this to 100ms immediately broke a different test.
+        // PopupRootCoverageTests right-clicks at a COORDINATE, and its own arrange-failure message names
+        // the hazard: "a sibling TestApp window stacked at the same default position can swallow it". The
+        // extra ~400ms is what lets the PREVIOUS class's dying TestApp window leave the screen before the
+        // next class clicks at that same default position. Returning sooner is not a virtue here.
+        //
+        // So: the handle poll makes window presence DETERMINISTIC, and this preserves the original timing
+        // envelope. Both are needed; neither replaces the other.
+        Thread.Sleep(500);
     }
 
     public void Dispose()
