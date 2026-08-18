@@ -153,6 +153,53 @@ public class CapstoneFixTests
         Assert.False(SensitivityClassifier.OsOnly.CouldMatchProcess(null));
     }
 
+    /// <summary>ROUND 5, finding Q-j2 — the PROCESS identity was the third unknowable, and it fell open.
+    /// `RedactionRule.Matches` asks `!Global &amp;&amp; !string.Equals(ProcessName, processName)`, and
+    /// `string.Equals("Contoso.Billing", null)` is FALSE — so an unidentifiable process made every
+    /// process-scoped rule silently NOT match, and the content went out in the clear. Unknown was being
+    /// read as "does not apply".</summary>
+    [Fact]
+    public void An_unknown_process_cannot_rule_out_a_process_scoped_rule()
+    {
+        var scoped = SensitivityClassifier.ForRules(new[]
+        {
+            new RedactionRule("billing", processName: "Contoso.Billing", global: false,
+                              automationId: "Acct", automationIdPattern: null, namePattern: null)
+        });
+
+        Assert.True(scoped.CannotEvaluateFor(null));   // unknowable, so it must withhold
+        Assert.True(scoped.CannotEvaluateFor(""));
+        Assert.True(scoped.CannotEvaluateFor("   "));
+        Assert.True(scoped.CouldMatchProcess(null));   // and the eager walk sees it as "could match"
+
+        Assert.False(scoped.CannotEvaluateFor("notepad")); // a KNOWN name is answerable, not unknowable
+    }
+
+    /// <summary>The anti-over-redaction half. A GLOBAL rule applies regardless of process, so an unknown
+    /// process name makes nothing unknowable and must NOT trigger a fail-closed — withholding there would
+    /// cost real content for zero security gain. Without this fact, an implementation that simply returned
+    /// true whenever the name was empty would pass the fact above.</summary>
+    [Fact]
+    public void An_unknown_process_is_not_unknowable_when_every_rule_is_global()
+    {
+        var global = SensitivityClassifier.ForRules(new[]
+        {
+            new RedactionRule("any-secret", processName: null, global: true,
+                              automationId: null, automationIdPattern: null, namePattern: "(?i)secret")
+        });
+
+        Assert.False(global.CannotEvaluateFor(null));
+        Assert.True(global.CouldMatchProcess(null));  // still could match — because it is GLOBAL, not unknown
+    }
+
+    /// <summary>Default path: no rules ⇒ nothing is unknowable, so an unknown process changes nothing.</summary>
+    [Fact]
+    public void With_no_rules_an_unknown_process_is_not_unknowable()
+    {
+        Assert.False(SensitivityClassifier.OsOnly.CannotEvaluateFor(null));
+        Assert.False(SensitivityClassifier.OsOnly.CouldMatchProcess(null));
+    }
+
     // ---------------- L4: version-skewed state files must not become immortal ----------------
 
     private static string TempDir()

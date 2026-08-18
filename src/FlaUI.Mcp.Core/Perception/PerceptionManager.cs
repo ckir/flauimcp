@@ -446,11 +446,43 @@ public sealed class PerceptionManager
             (win, _) => TerminalTabReader.List(win, _classifier, SafeProcessName(win)));
 
     // Resolve the owning process base name (no ".exe") from a UIA element's pid, for the denylist.
+    /// <summary>The process name behind BOTH process-scoped redaction rules and the shipped credential
+    /// denylist. A null answer is now a FAIL-CLOSED signal to both, so keeping the null rate genuinely low
+    /// is what stops that from over-redacting (capstone round 5, finding Q-j2).
+    ///
+    /// ⚠ MEASURED before writing this, because a peer design proposed replacing the whole lookup with
+    /// OpenProcess + QueryFullProcessImageName plus a Toolhelp32 fallback: from a NON-elevated caller,
+    /// `Process.GetProcessById(pid).ProcessName` already resolves wininit, services, csrss, lsass and
+    /// Defender's MsMpEng. Elevated and protected processes are therefore ALREADY covered, and that
+    /// pipeline would have been hundreds of lines of P/Invoke buying nothing. Do not "restore" it.
+    /// The same proposal would also have pierced ApplicationFrameHost to name the hosted app — rejected,
+    /// because it silently BREAKS an operator rule written against "ApplicationFrameHost" and fails OPEN.
+    ///
+    /// The HWND fallback below is the one piece worth having: it costs four lines, reuses a P/Invoke this
+    /// assembly already declares, and recovers the pid when the UIA ProcessId property read THROWS on a
+    /// window that still has a perfectly good native handle. After it, a null means the process is
+    /// genuinely gone or unidentifiable — the case where failing closed is cheap and correct.</summary>
     private static string? SafeProcessName(AutomationElement el)
     {
         int pid;
         try { pid = el.Properties.ProcessId.ValueOrDefault; } catch { pid = -1; }
-        if (pid < 0) return null;
+
+        // pid 0 is the Idle process and is never a real window owner, so treat it as "not answered" and
+        // fall back rather than looking it up.
+        if (pid <= 0)
+        {
+            try
+            {
+                nint hwnd = el.Properties.NativeWindowHandle.ValueOrDefault;
+                if (hwnd != 0 &&
+                    FlaUI.Mcp.Core.Interaction.Win32Interop.GetWindowThreadProcessId(hwnd, out uint upid) != 0 &&
+                    upid != 0)
+                    pid = (int)upid;
+            }
+            catch { /* no handle either: fall through to null, which now fails CLOSED */ }
+        }
+        if (pid <= 0) return null;
+
         try { using var p = System.Diagnostics.Process.GetProcessById(pid); return p.ProcessName; }
         catch { return null; }
     }

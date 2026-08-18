@@ -121,6 +121,11 @@ public static class SnapshotEngine
                     && nodeClassifier.CouldMatchProcess(nodeProcessName)
                     && (aidThrew || nameThrew))
                     sensitivity = Sensitivity.UnreadableIdentity;
+                // Q-j2, the other unknowable: the PROCESS itself could not be identified while a
+                // process-scoped rule exists, so no rule can be evaluated honestly for this node.
+                if (!sensitivity.Redact && nodeClassifier is not null
+                    && nodeClassifier.CannotEvaluateFor(nodeProcessName))
+                    sensitivity = Sensitivity.UnreadableIdentity;
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 var patterns = SupportedPatterns(el);
                 string help = Safe(() => el.HelpText, "");

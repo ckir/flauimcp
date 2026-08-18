@@ -34,8 +34,25 @@ public sealed class SensitivityClassifier
     /// operator configured a rule for some OTHER app. Over-redaction is the dominant risk this type exists
     /// to keep debuggable — so eager callers gate on this, never on HasRules.</summary>
     public bool CouldMatchProcess(string? processName) =>
+        CannotEvaluateFor(processName) ||
         _rules.Any(r => r.Global ||
                         string.Equals(r.ProcessName, processName, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>TRUE when the process could not be identified AND at least one rule is process-scoped, so
+    /// whether that rule applies is UNKNOWABLE rather than answerable.
+    ///
+    /// ⚠ CAPSTONE ROUND 5 (finding Q-j2). This is a genuine leak, not a nicety.
+    /// <see cref="RedactionRule.Matches"/> asks `!Global &amp;&amp; !string.Equals(ProcessName, processName)`,
+    /// and `string.Equals("SecretApp", null)` is FALSE — so a null process name made every process-scoped
+    /// rule silently NOT match and the content went out in the clear. Unknown was being treated as "does
+    /// not apply", which is the fail-OPEN reading of an unanswered question.
+    ///
+    /// Global-only rule sets are unaffected: a global rule applies regardless of process, so nothing is
+    /// unknowable and no fail-closed is needed. That is why this asks for a process-SCOPED rule, not just
+    /// for any rule — otherwise a machine-wide rule set would start withholding on every unnamed
+    /// process for no security gain.</summary>
+    public bool CannotEvaluateFor(string? processName) =>
+        string.IsNullOrWhiteSpace(processName) && _rules.Any(r => !r.Global);
 
     public Sensitivity Classify(string? processName, Func<string?> automationId, Func<string?> rawName,
                                 Func<bool> readIsPassword)

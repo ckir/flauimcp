@@ -147,6 +147,12 @@ public static class ElementContent
         // Only when no rule matched: a rule that DID match already redacts, and its name is better
         // provenance than "unreadable".
         if (!s.Redact && identityUnreadable) return (Sensitivity.UnreadableIdentity, memoName);
+
+        // Q-j2: the PROCESS identity is unknown and a process-scoped rule exists, so whether that rule
+        // applies is unknowable. Withhold rather than let "unknown" read as "does not apply".
+        if (!s.Redact && classifier.CannotEvaluateFor(processName))
+            return (Sensitivity.UnreadableIdentity, memoName);
+
         return (s, memoName);
     }
 
