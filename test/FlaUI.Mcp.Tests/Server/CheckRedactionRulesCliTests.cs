@@ -115,6 +115,30 @@ public class CheckRedactionRulesCliTests : IDisposable
         Assert.Contains(ruleName, outp.ToString());
     }
 
+    /// <summary>CAPSTONE ROUND 3, finding S5. `RunLive` used to return void, so a malformed `--window`
+    /// printed its complaint and then fell through to the server-state evaluation — meaning
+    /// `--window abc` could report the argument was bad and STILL exit 0 whenever no server was running in
+    /// a way that produced a worse code. A command that rejects an argument must never report success; a
+    /// script checking only the exit code would read that as a clean pass.
+    ///
+    /// The instances dir is empty here, so the fall-through code would have been 5. Asserting `1` pins that
+    /// the argument error DECIDES the exit, rather than merely being printed alongside someone else's.</summary>
+    [Fact]
+    public void A_malformed_window_argument_fails_the_command_rather_than_being_printed_and_ignored()
+    {
+        var rules = ValidRuleFile();
+        var instances = NewInstancesDir();
+        var outp = new StringWriter();
+
+        var code = CheckRedactionRulesCommand.Run(
+            new[] { "check-redaction-rules", rules, "--window", "not-a-pid" }, outp, instances);
+
+        Assert.Equal(1, code);
+        Assert.Contains("--window expects a PID", outp.ToString());
+        // ...and it must NOT have gone on to answer the question it was never able to ask.
+        Assert.DoesNotContain("No running server was found", outp.ToString());
+    }
+
     [Fact]
     public void Version_skew_instance_exits_4_and_mentions_upgrading()
     {

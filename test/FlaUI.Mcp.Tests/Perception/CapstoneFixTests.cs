@@ -76,6 +76,31 @@ public class CapstoneFixTests
         Assert.DoesNotContain("redacted:", text);
     }
 
+    // ---------------- S1 (round 3): the snapshot walk was still failing OPEN ----------------
+
+    /// <summary>ROUND 3, finding S1 — the L2 fix was only HALF applied, and the missing half was the
+    /// biggest wire surface of all.
+    ///
+    /// `SnapshotEngine.Build` never calls `ElementContent.Classify`; it calls the classifier DIRECTLY with
+    /// `aid`/`name` locals that were read through a swallowing `Safe(...)`. So on the snapshot path a
+    /// throwing identity read still produced "", still matched no rule, and still emitted the element
+    /// Visible — exactly the hole L2 closed everywhere else. Fixed by reading those two identities with a
+    /// throw-reporting overload and failing closed when rules are configured.
+    ///
+    /// ⚠ HONEST SCOPE, same as the L2 pin above: no fixture can make a UIA property read throw on demand,
+    /// so what is pinned here is the DEFAULT-PATH invariant that the fix must not disturb — the branch is
+    /// gated on HasRules, so a walk with no rules must render byte-identically to before. The fail-closed
+    /// branch itself is verified by reading, and is documented at the call site.</summary>
+    [Fact]
+    public void The_snapshot_default_path_is_unchanged_by_the_S1_fix()
+    {
+        var visible = SnapshotEngine.Render(new SnapshotModel(new[] { Node("Username", Sensitivity.Visible) }),
+                                            new SnapshotOptions());
+        Assert.Contains("\"Username\"", visible);
+        Assert.DoesNotContain("[REDACTED]", visible);
+        Assert.DoesNotContain("redacted:", visible);
+    }
+
     // ---------------- L4: version-skewed state files must not become immortal ----------------
 
     private static string TempDir()

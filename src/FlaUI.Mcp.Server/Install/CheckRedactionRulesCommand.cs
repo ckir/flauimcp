@@ -47,7 +47,9 @@ public static class CheckRedactionRulesCommand
 
         // The LIVE half of the dry-run (spec §5.5). Both are opt-in flags: the default invocation stays a
         // pure file check that never acquires UIA, so it remains usable in CI and over a pipe.
-        RunLive(outp, args, rules);
+        // A malformed live-half argument fails the command (exit 1, the usage/validation class) rather than
+        // letting the server-state evaluation below decide the exit code — see RunLive's note (finding S5).
+        if (!RunLive(outp, args, rules)) return 1;
 
         var instances = ServerStateFile.ReadAll(instancesDir ?? ServerStateFile.DefaultDirectory);
 
@@ -136,11 +138,18 @@ public static class CheckRedactionRulesCommand
     /// survive that boundary, so offering one would be an interface that works only in the single-invocation
     /// case and fails confusingly in the normal one. A PID is stable across processes and is what
     /// `--list-windows` prints.</summary>
-    private static void RunLive(TextWriter outp, string[] args, RedactionRule[] rules)
+    /// <summary>Returns FALSE when an argument was malformed, so the caller can fail the whole command.
+    ///
+    /// ⚠ CAPSTONE ROUND 3 (finding S5). This used to return void: a malformed `--window` printed its
+    /// complaint and then fell through to the server-state evaluation, so `check-redaction-rules rules.json
+    /// --window abc` could print "expects a PID" and still EXIT 0 whenever a server happened to be running
+    /// with a matching hash. A command that rejects an argument must never report success — a script
+    /// checking only the exit code would read that as a clean pass.</summary>
+    private static bool RunLive(TextWriter outp, string[] args, RedactionRule[] rules)
     {
         bool list = HasFlag(args, "--list-windows");
         string? pidArg = OptionValue(args, "--window");
-        if (!list && pidArg is null) return;
+        if (!list && pidArg is null) return true;
 
         using var dispatcher = new FlaUI.Mcp.Core.Threading.AutomationDispatcher();
         using var windows = new WindowManager(dispatcher);
@@ -158,13 +167,14 @@ public static class CheckRedactionRulesCommand
                 outp.WriteLine($"  pid={w.Pid} [{w.ProcessName}] {w.Title}");
         }
 
-        if (pidArg is null) return;
+        if (pidArg is null) return true;
         if (!int.TryParse(pidArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pid))
         {
             outp.WriteLine($"--window expects a PID (as printed by --list-windows); got '{pidArg}'.");
-            return;
+            return false;
         }
         MatchWindow(outp, windows, pid, rules);
+        return true;
     }
 
     /// <summary>Walks ONE window and reports which elements these rules would actually withhold — the

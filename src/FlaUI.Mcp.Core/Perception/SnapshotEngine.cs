@@ -78,9 +78,14 @@ public static class SnapshotEngine
                 var rect0 = Safe(() => el.BoundingRectangle, System.Drawing.Rectangle.Empty);
                 if (rect0.Width <= 0 || rect0.Height <= 0 || !rect0.IntersectsWith(cullBounds)) return;
             }
-            string aid = Safe(() => el.AutomationId, "");
+            // ⚠ CAPSTONE ROUND 3 (finding S1). These two reads are the ones a redaction RULE matches on, so
+            // a swallowed throw here is not cosmetic: "" matches no rule, the element is emitted Visible,
+            // and its content reaches the wire. The L2 fix closed exactly this hole in
+            // ElementContent.Classify — but THIS walk never calls that method (see the classifier call
+            // below), so the snapshot tree, the largest wire surface of all, was still failing OPEN.
+            string aid = Safe(() => el.AutomationId, "", out bool aidThrew);
             ControlType ct = Safe(() => el.ControlType, ControlType.Custom);
-            string name = Safe(() => el.Name, "");
+            string name = Safe(() => el.Name, "", out bool nameThrew);
             bool include = depth == 0 || !options.InteractiveOnly || IsInteresting(el, ct, name);
             string childIndent = indent;
             if (include)
@@ -95,6 +100,19 @@ public static class SnapshotEngine
                                           () => el.Properties.IsPassword.ValueOrDefault)
                     : (RedactionPolicy.IsPasswordOrFailClosed(() => el.Properties.IsPassword.ValueOrDefault)
                         ? Sensitivity.OsPassword : Sensitivity.Visible);
+                // FAIL CLOSED when a rule COULD have matched but the identity it matches on was unreadable.
+                // Gated on HasRules, so the default path (spec §4.4) is byte-identical to before: with no
+                // rules there is no rule to fail closed for, and OS passwords are already fail-closed above.
+                //
+                // ⚠ Deliberately BROADER than ElementContent.Classify's version, and the difference is a
+                // property of this walk, not an oversight: there the thunks are lazy, so only a read a rule
+                // actually asked for can trip it. Here both identity reads happen EAGERLY for every node
+                // (the walk needs them anyway), so this cannot tell whether a rule would have consulted the
+                // one that threw. It therefore withholds on either — the conservative direction, and it
+                // fires only when a UIA read genuinely throws AND an operator has configured rules.
+                if (!sensitivity.Redact && nodeClassifier is not null && nodeClassifier.HasRules
+                    && (aidThrew || nameThrew))
+                    sensitivity = Sensitivity.UnreadableIdentity;
                 bool offscreen = Safe(() => el.Properties.IsOffscreen.ValueOrDefault, false);
                 var patterns = SupportedPatterns(el);
                 string help = Safe(() => el.HelpText, "");
@@ -216,6 +234,15 @@ public static class SnapshotEngine
     private static T Safe<T>(Func<T> read, T fallback)
     {
         try { return read(); } catch { return fallback; }
+    }
+
+    /// <summary>As <see cref="Safe{T}(Func{T}, T)"/>, but reports whether the read THREW. Used only for the
+    /// two IDENTITY reads a redaction rule can match on, so the walk can fail closed instead of matching
+    /// rules against a fallback value the element never actually had. See the L2 note at the call site.</summary>
+    private static T Safe<T>(Func<T> read, T fallback, out bool threw)
+    {
+        try { threw = false; return read(); }
+        catch { threw = true; return fallback; }
     }
 
     /// <summary>Walk parents to the first ancestor carrying a non-empty AutomationId (the "nearest
