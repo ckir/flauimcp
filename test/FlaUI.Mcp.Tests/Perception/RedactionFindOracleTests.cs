@@ -49,10 +49,26 @@ public class RedactionFindOracleTests : IClassFixture<TestAppFixture>
         => (new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache(), RedactNamedOnly()),
             await mgr.OpenByPidAsync(_app.Process.Id));
 
-    /// DEF-3 HALF 1 on the find path — a rule-redacted element must not be locatable by its REAL name.
-    /// Confirming a guessed name IS the attack, even though no value crosses the wire.
+    /// <summary>⚠ HONEST LABEL, corrected by the AGY-TEST-AUDIT: this is a TOTAL-REDACTION-FAILURE guard,
+    /// NOT a DEF-3 red→green pin. It was previously captioned as the latter, which overstated it.
+    ///
+    /// VERIFIED against the pre-fix tree: this fact PASSED there too, so it cannot distinguish fixed from
+    /// unfixed. The reason is that pre-fix, the managed post-filter compared the query against the
+    /// ALREADY-REDACTED name (PerceptionManager's pre-fix comment says so explicitly), so searching
+    /// "NamedOnly" was compared against "[REDACTED]", missed, and returned empty — the same empty this
+    /// asserts today.
+    ///
+    /// ⚠ AND SWITCHING TO "contains" WOULD NOT FIX THAT — the audit suggested it and the suggestion is
+    /// wrong: `"[REDACTED]".Contains("NamedOnly")` is false pre-fix as well. NO real-name query can go red
+    /// pre-fix, because pre-fix already withheld the real name from matching. The redirection is inherent
+    /// to the direction of the test, not to the query mode.
+    ///
+    /// What it DOES guard, and why it stays: if redaction ever failed outright — the raw name reaching the
+    /// post-filter unredacted — this goes red. That is a real regression target, just a different (and
+    /// larger) one than DEF-3. The genuine DEF-3 red→green evidence is the TOKEN fact below, which uses
+    /// "contains" deliberately so it reaches the post-filter at all.</summary>
     [Fact]
-    public async Task A_rule_redacted_element_is_not_findable_by_its_real_name()
+    public async Task A_rule_redacted_elements_real_name_never_reaches_the_match_predicate()
     {
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
