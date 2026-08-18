@@ -78,7 +78,9 @@ facts, in Task 10.
    signature change is allowed. Changing an assertion, an expected string, or an expected count is not.
 4. **The build must stay at 0 warnings.** `dotnet build FlaUI.Mcp.slnx -c Release` must report
    `0 Warning(s)` and `0 Error(s)`.
-5. **Headless gate after every task:**
+5. **Headless gate after every task** — where "task" means a numbered `## Task N`. Task 5 is ONE task with
+   two interior halves (5a, 5b); its gate runs at the end of 5b, and the tree is expected not to compile in
+   between. No other task has an interior.
    `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
    Expected: `Passed!  - Failed: 0, Passed: <N>, Skipped: 0`. `N` is 870 at the branch point and grows as
    this plan adds facts; a DROP in `N` means a test was deleted, which rule 3 forbids.
@@ -787,11 +789,29 @@ namespace FlaUI.Mcp.Core.Perception;
 public sealed class AncestorRectSource
 {
     private readonly Dictionary<string, Rectangle?> _byRuntimeId = new(StringComparer.Ordinal);
+    private readonly AutomationElement _root;
     private readonly string? _rootId;
+    private readonly bool _rootIsWindow;
 
     /// <summary><paramref name="root"/> is the search root this source is bounded by — the window element,
-    /// or the popup element, whichever subtree is being scanned.</summary>
-    public AncestorRectSource(AutomationElement root) => _rootId = IdOf(root);
+    /// or the popup element, whichever subtree is being scanned. <paramref name="rootIsWindow"/> decides
+    /// what happens WHEN the climb reaches it, and the two answers are genuinely different:
+    ///
+    /// • **The window root (true): REFUSE.** Masking it blacks out the entire capture, and a successful
+    ///   all-black image is worse than an error — an agent hallucinates its contents or loops on it.
+    /// • **A popup root (false): MASK IT, then stop.** Masking a popup blacks out the popup and leaves the
+    ///   rest of the capture intact, which is ordinary over-masking and the direction this feature
+    ///   deliberately degrades in. Refusing there would be strictly worse AND stricter than the spec, whose
+    ///   rule names the WINDOW root specifically.
+    ///
+    /// ⚠ That distinction is not academic. PopupFinder returns Path-2 popups — WPF/.NET popup hosts that
+    /// are direct CHILDREN of the window (PopupFinder.cs:63-78) — as their own search roots, while
+    /// roots[0].FindAllDescendants() already covers those same subtrees. So every Path-2 popup's contents
+    /// are scanned TWICE. With a refuse-at-every-root bound, pass 0 masks such an element successfully via
+    /// the popup and pass 1 then REFUSES the identical element: the redundant scan would crash a capture
+    /// the first pass had already handled correctly.</summary>
+    public AncestorRectSource(AutomationElement root, bool rootIsWindow)
+    { _root = root; _rootId = IdOf(root); _rootIsWindow = rootIsWindow; }
 
     /// <summary>The lazy accessor <see cref="MaskEscalation.Resolve"/> consumes, bound to ONE element.
     /// Level 1 is that element's parent. Returns null for "no rect at this level", which deliberately
@@ -817,9 +837,23 @@ public sealed class AncestorRectSource
                 cursor = Parent(cursor);
                 reached++;
                 if (cursor is null) { exhausted = true; return null; }
-                // Reaching the root is NOT a usable level. Masking the root is the all-black screenshot
-                // this whole mechanism exists to refuse instead of returning.
-                if (string.Equals(IdOf(cursor), _rootId, StringComparison.Ordinal)) { exhausted = true; return null; }
+
+                // ⚠ THE IDENTITY CHECK FAILS CLOSED, and it must. An ancestor whose RuntimeId cannot be
+                // read cannot be PROVEN to be inside this root — and IdOf swallows the throw and answers
+                // null, which does not equal a non-null _rootId. If an unreadable id merely "did not match"
+                // the bound, one transient COM failure on the root itself would let the climb sail past it
+                // into the DESKTOP, read the desktop's perfectly valid bounds, and return a successful
+                // all-black screenshot of the entire monitor. Stopping instead costs one refusal; the
+                // alternative costs the guarantee.
+                string? id = IdOf(cursor);
+                if (id is null) { exhausted = true; return null; }
+
+                if (string.Equals(id, _rootId, StringComparison.Ordinal))
+                {
+                    exhausted = true;
+                    // The window root is not a usable mask (all-black capture); a popup root is.
+                    return _rootIsWindow ? null : RectOf(_root);
+                }
             }
             return cursor is null ? null : RectOf(cursor);
         };
@@ -945,7 +979,7 @@ with:
                 // everything, and returns a successful all-black image instead of refusing. Ancestor chains
                 // never cross a root boundary, so a per-root cache is exactly as coherent as a per-capture
                 // one and its bound is unambiguous.
-                var ancestors = new AncestorRectSource(roots[rootIndex]);
+                var ancestors = new AncestorRectSource(roots[rootIndex], rootIsWindow: rootIndex == 0);
                 AutomationElement[] descendants;
                 if (rootIndex == 0)
                 {
@@ -1060,6 +1094,13 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ---
 
 ## Task 5: A1 — the metadata and the refusal's reach (ONE task, two halves)
+
+⚠ **RESUMING AFTER A HALT INSIDE THIS TASK.** Because 5a leaves the tree non-compiling, an executor that
+stops between the halves comes back to a STATE-VERIFY in 5a that expects the ORIGINAL text and now finds
+5a's own output. **That is NOT a `STATE_MISMATCH` — do not abort on it.** If `ScreenshotTools.cs` already
+declares `IReadOnlyList<MaskEscalationEntry> escalated;` and reads `desk.Escalated`, 5a is already applied:
+skip to 5b. Reporting a mismatch there would strand the repository in the one non-compiling gap this plan
+contains, with no automated way out.
 
 ⚠ **5a and 5b are one compile unit, one gate and one commit.** An earlier draft split them into separate
 numbered tasks and told the executor that the first would not compile — which contradicts standing rule 5
@@ -1663,6 +1704,7 @@ at `:234`:
         // The sweep only scans src/, so this reference in test/ is not self-flagging.
         private static readonly string RedactionToken = FlaUI.Mcp.Core.Perception.ElementContent.RedactedToken;
         private const string TokenDefiningType = "ElementContent";
+        private const string TokenDefiningFile = "src/FlaUI.Mcp.Core/Perception/ElementContent.cs";
 ```
 
 **4e.** Add the visitor override. Put it immediately after `VisitMemberAccessExpression` (which ends at
@@ -1693,8 +1735,17 @@ at `:234`:
         //    embedded in a $"..." is not seen. No such site exists in src/ today.
         public override void VisitLiteralExpression(LiteralExpressionSyntax node)
         {
+            // The exemption is keyed on the type name AND its file. CurrentType holds only the SHORT
+            // class name, so a type-name-only exemption is defeated by declaring a second
+            // `class ElementContent` anywhere in src/ and putting the literal inside it — which satisfies
+            // the letter of the guard while leaving a hole in it. Requiring the defining file closes that
+            // without a semantic model.
+            bool inTokenDefiningType =
+                string.Equals(CurrentType, TokenDefiningType, StringComparison.Ordinal)
+                && _relPath.EndsWith(TokenDefiningFile, StringComparison.Ordinal);
+
             if (node.IsKind(SyntaxKind.StringLiteralExpression)
-                && !string.Equals(CurrentType, TokenDefiningType, StringComparison.Ordinal)
+                && !inTokenDefiningType
                 && node.Token.ValueText.Contains(RedactionToken, StringComparison.Ordinal))
             {
                 int line = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
@@ -2106,6 +2157,9 @@ fixture can stage one — the AB-1 limitation.
 `MaskEscalationTests.A_source_that_reports_the_root_as_usable_would_mask_instead_of_refusing`, which
 asserts that a source still answering at the root turns a refusal into a mask — i.e. it states exactly what
 the source owes the decision.
+**Second uncovered half:** whether the root is treated as REFUSE (window) or as a usable mask (popup) is
+an adapter decision too. The decision function only ever sees "a rect" or "no rect", so both branches look
+identical from the headless side.
 ⚠ **Honest limit, and it is the sharp one:** if the root check were deleted from `AncestorRectSource`, no
 test goes red. **This is not hypothetical — it is what happened.** The plan's first draft had no root bound
 at all, every headless fact passed, and the guarantee was dead: `GetParent` succeeds at the window root and
@@ -2294,18 +2348,29 @@ measurement behind it, that its header is written with `>>` and NEVER `>`, preci
 open on the same repository will destroy each other's entries. Delete the six entry LINES and leave
 everything else alone:
 
+⚠ **COUNT BEFORE YOU DELETE.** An earlier draft ran `grep -v '^- \['` and then told the executor to leave
+any surviving entry alone — which is incoherent, because that command strips EVERY entry line, so nothing
+can survive to be noticed. It would have silently destroyed anything a concurrent session captured while
+reporting success.
+
 ```bash
 R=$(git rev-parse --show-toplevel)
 F="$R/.clavity/local-anomalies.md"
+grep -c '^- \[' "$F"
+```
+
+Expected: exactly `6`. **If it is not 6, STOP and report the count** — another session captured an anomaly
+after this plan was written, it is NOT one of the six dispositioned here, and deleting an untriaged
+anomaly because it was in the way is the exact failure the no-parked-state rule exists to prevent.
+
+Only once the count is 6:
+
+```bash
 grep -v '^- \[' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
 ```
 
-Then confirm with `cat "$F"`: the header remains and no `- [` entry line does. The file is gitignored, so
+Then confirm with `cat "$F"`: the header remains, and no `- [` entry line does. The file is gitignored, so
 this does not appear in the commit.
-
-⚠ If any entry line survives, it was captured by ANOTHER session after this plan was written and is NOT one
-of the six dispositioned here. Leave it, and report it - deleting an untriaged anomaly because it was in
-the way is the exact failure the no-parked-state rule exists to prevent.
 
 - [ ] **Step 7: Run the headless gate**
 
@@ -2506,3 +2571,41 @@ Unverified, and worth stating plainly: whether `GetParent` on a stale UIA elemen
 answers from a cached parent, was ASSERTED by the peer and NOT measured. If it answers, this concern
 largely evaporates. Measuring it costs one Desktop experiment and would settle the question before Task 4
 is written.
+
+
+### Round 2 (rotation seat: Fix-Edge Hunter) - folded; do NOT re-raise
+
+Round 2 existed because a fix spawns its own edges, and it did: the first two findings are consequences of
+round 1's own root-bound fix.
+
+- **CRITICAL: the root bound made a POPUP container unmaskable.** Bounding every search root identically
+  meant an element inside a popup that escalated to the popup itself hit the bound and REFUSED - when
+  masking the popup is perfectly safe, blacks out only the floating popup, and leaves the rest of the
+  capture intact. Worse, it is stricter than the spec, whose rule names the WINDOW root specifically. The
+  bound now forks: window root -> REFUSE, popup root -> mask it and stop.
+- **CRITICAL, and it defeated the bound entirely: `IdOf` failed OPEN during the climb.** The check compared
+  each ancestor's RuntimeId against the root's, and `IdOf` swallows a throw and answers null - which does
+  not equal a non-null root id. One transient COM failure reading the ROOT's id mid-climb and the walk
+  sails past it into the DESKTOP, reads the desktop's valid bounds, and returns a successful all-black
+  screenshot of the whole monitor. An unreadable ancestor id now STOPS the walk: an ancestor that cannot be
+  proven inside the root is not climbed past.
+- **Path-2 popups are scanned TWICE.** VERIFIED at `PopupFinder.cs:63-78`: popups that are direct CHILDREN
+  of the window are returned as their own search roots, while `roots[0].FindAllDescendants()` already
+  covers those same subtrees. Under a refuse-at-every-root bound, pass 0 would mask an element via the
+  popup and pass 1 would then REFUSE the identical element. The window/popup fork above removes the
+  contradiction; the double scan itself predates SP4 and is left alone.
+- **Halting between 5a and 5b was an inescapable trap.** On resume, 5a's STATE-VERIFY expects the original
+  text, finds 5a's own output, and reports STATE_MISMATCH - stranding the repo in the one non-compiling gap
+  the plan contains. Task 5 now carries an explicit resume rule.
+- **The anomalies step contradicted itself.** It told the executor to leave any surviving entry alone while
+  handing them `grep -v '^- \['`, which strips every entry line so none can survive. Now it COUNTS first
+  and stops if the count is not exactly 6.
+- **RULE 5's exemption matched the SHORT class name**, so declaring a second `class ElementContent`
+  anywhere in `src/` and putting the literal inside it bypasses the guard while satisfying its letter. The
+  exemption is now keyed on the type name AND its defining file path.
+- **Standing rule 5 said "gate after every task" while Task 5 says not to.** The rule now defines "task" as
+  a numbered `## Task N` and states that Task 5's halves are interior.
+
+**PANEL VERDICT - round 2: REJECT-then-fold. Two CRITICALs, both introduced BY round 1's fix - one made
+popups unmaskable, the other let a single transient COM failure defeat the bound and mask the whole
+desktop. 7 findings folded.**
