@@ -38,7 +38,7 @@ public sealed class ScreenshotTools
                 // though window- and element-scoped capture both masked correctly. The refusal above only
                 // covers DENYLISTED windows; an ordinary window holding a password field was photographed
                 // in the clear.
-                var deskRects = await _perception.AllPasswordRectsAsync();
+                var deskRects = await _perception.AllMaskRectsAsync();
                 result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, deskRects, maxWidth));
             }
             else
@@ -46,7 +46,7 @@ public sealed class ScreenshotTools
                 var geo = await _perception.ResolveWindowCaptureGeometryAsync(new WindowHandle(window!), @ref);
                 if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"Capturing windows owned by '{geo.DeniedProcess}' is blocked.", "capture a non-sensitive window");
                 if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.PasswordRects, maxWidth));
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth));
             }
             var dpi = DpiHelper.ScaleForPoint(result.X, result.Y);
             return ToolResponse.Image(result.Png, new { bounds = new { x = result.X, y = result.Y, w = result.W, h = result.H }, dpiScale = dpi, scaleApplied = result.ScaleApplied, redactions = result.Redactions });

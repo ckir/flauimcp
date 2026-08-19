@@ -1346,7 +1346,7 @@ Rename the member on both records and at every use site:
 | `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:884,888` | the two `geo.PasswordRects` reads in `ResolveTextCaptureGeometryAsync` |
 | `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:899` | `AllPasswordRectsAsync` → `AllMaskRectsAsync` |
 | `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:41,49` | the call and the `geo.PasswordRects` read |
-| `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:106` | `geo.PasswordRects` passed to `CaptureRectangle` |
+| `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62,106` | the TWO `geo.PasswordRects` reads. ⚠ This row said `:106` alone for fifteen rounds; `:62` (`DesktopFindText`, the non-polling OCR tool) is a second call site and the build does not compile without it |
 | `test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs:49` | `Assert.NotEmpty(geo.PasswordRects)` |
 
 ⚠ The test edit is a RENAME ONLY — `Assert.NotEmpty` and its subject are unchanged, so standing rule 3 is
@@ -1410,7 +1410,7 @@ with:
             catch (System.Exception ex)
             {
                 throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                    $"Could not read the capture bounds of window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType().Name})",
+                    $"Could not read the capture bounds of window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
                     "retry once the UI has settled, or capture a different window");
             }
 
@@ -1510,7 +1510,7 @@ with:
                     catch (System.Exception ex)
                     {
                         throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                            $"Could not enumerate window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType().Name})",
+                            $"Could not enumerate window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
                             "retry once the UI has settled, or capture a different window");
                     }
                 }
@@ -1591,10 +1591,32 @@ with:
                                               and not System.OperationCanceledException)
             {
                 throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                    $"Could not determine the redacted regions of window '{handle.Id}' (process '{procName}'): {ex.GetType().Name}",
+                    $"Could not determine the redacted regions of window '{handle.Id}' (process '{procName}'): {ex.GetType()}",
                     "retry once the UI has settled, or capture a different window");
             }
 ```
+
+⚠⚠ **THE THREE DIAGNOSTICS INTERPOLATE `ex.GetType()`, NOT `ex.GetType().Name`, AND THE REASON IS THE
+SOURCE SWEEP.** Round 6 replaced `ex.Message` here with a bounded type name — correct, and its reasoning
+stands. But `.Name` is `.Name`, and RULE 1 of `RedactionSurfaceInventoryTests` flags EVERY `.Name` member
+access **syntactically**: `CheckNameOrValue` has no semantic model and cannot tell `System.Type.Name` from
+an element's. `PerceptionManager.ResolveWindowCaptureGeometryAsync` is not in `AllowedMembers`, so the
+plan's own code turned the plan's own oracle RED — MEASURED: `Failed: 1, Passed: 885` with exactly three
+RULE-1 violations, one per site. Nine review rounds read this block and none of them ran the sweep.
+
+`$"{ex.GetType()}"` renders the namespace-qualified name (measured:
+`System.Runtime.InteropServices.COMException` rather than `COMException`). It is still bounded, still
+carries no element content, and so still satisfies round 6's actual decision, which was *type name instead
+of message* — not *short name instead of full name*.
+
+⚠ The three rejected alternatives are recorded because each will look attractive to someone later:
+allowlisting the whole member would blind RULE 1 across a 200-line UIA traversal whose loop reads
+`d.AutomationId` and `d.ControlType` — disproportionate, and it would hide a future genuine `.Name` read in
+the one method whose job is masking; teaching the sweep a `.GetType()` shape exemption is defensible and
+mirrors `IsCapabilityOrWriteShape`, but it edits the file whose exact line numbers **Tasks 8 and 9 pin in
+their STATE-VERIFY blocks** (`:85`, `:151-153`, `:230-234`, `:454`, `:567`), so it must not be done without
+re-pointing those anchors in the same commit; a `Diag.TypeName` helper has the same anchor problem for a
+smaller win. Operator decided; agy consulted and agreed.
 
 ⚠ **Escalation depth is NOT uniform, and the implementer must not be surprised by it.** The walk enumerates
 `FindAllDescendants()`, so an element's parent may BE the window root. On deep trees (WPF, Electron, modern

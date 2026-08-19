@@ -10,7 +10,7 @@ namespace FlaUI.Mcp.Core.Perception;
 /// ScreenshotTools does (TargetDenied / ElementNotActionable).</summary>
 public sealed record TextCaptureGeometry(
     bool Denied, string? DeniedProcess, bool Minimized,
-    System.Drawing.Rectangle CaptureBounds, System.Collections.Generic.IReadOnlyList<System.Drawing.Rectangle> PasswordRects,
+    System.Drawing.Rectangle CaptureBounds, System.Collections.Generic.IReadOnlyList<System.Drawing.Rectangle> MaskRects,
     int WindowLeft, int WindowTop, int WindowWidth, int WindowHeight)
 {
     /// <summary>Given the FULL window physical rect and an optional [xPct,yPct,wPct,hPct] region (fractions in

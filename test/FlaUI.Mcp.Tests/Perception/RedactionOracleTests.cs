@@ -46,7 +46,7 @@ public class RedactionOracleTests : IClassFixture<TestAppFixture>
 
         Assert.False(geo.Denied);
         Assert.False(geo.Minimized);
-        Assert.NotEmpty(geo.PasswordRects);
+        Assert.NotEmpty(geo.MaskRects);
     }
 
     /// <summary>DEF-2 — a TRUE red→green pin. It goes through the TOOL rather than the manager, which is

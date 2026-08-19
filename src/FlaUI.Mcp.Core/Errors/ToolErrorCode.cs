@@ -33,5 +33,6 @@ public enum ToolErrorCode
     SinkInterlocked,
     ClipboardHoldsNonText,
     TooManyWatches,
-    OcrUnavailable
+    OcrUnavailable,
+    RedactionUnmaskable
 }
