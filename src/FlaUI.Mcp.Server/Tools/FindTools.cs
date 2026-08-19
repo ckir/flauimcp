@@ -19,7 +19,7 @@ public sealed class FindTools
         "hasFocus,isSelected}] in tree order (capped at max, default 20) plus totalMatches + isTruncated (narrow your " +
         "query if truncated). No match => empty list (not an error). Refs are additive: a find does NOT " +
         "invalidate a prior desktop_snapshot's refs. REDACTED elements (OS password fields, or an operator " +
-        "rule) return name=\"[REDACTED]\" and are NOT findable by name - not by their real name nor by the " +
+        "rule) return name=\"" + ElementContent.RedactedToken + "\" and are NOT findable by name - not by their real name nor by the " +
         "token. Find them by controlType/automationId instead: they keep real bounds and a working ref, so " +
         "you can still act on them.")]
     public Task<string> DesktopFind(
