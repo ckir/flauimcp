@@ -774,7 +774,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Create: `src/FlaUI.Mcp.Core/Perception/AncestorRectSource.cs`
 - Modify: `src/FlaUI.Mcp.Core/Errors/ToolErrorCode.cs`
-- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:848-872,942`
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:848` (signature), `:862-871` (body), `:942` (record)
 
 - [ ] **Step 1: STATE-VERIFY**
 
@@ -1085,11 +1085,16 @@ exactly what hid this defect.** Append to that file:
         Assert.True(r.Refused);
     }
 
-    /// <summary>The outside-the-capture drop is a LEAK if the yardstick is ever empty: nothing
-    /// IntersectsWith an empty rectangle, so every escalated mask would be dropped and the capture would
-    /// come back unmasked. The production call site guarantees a non-empty yardstick (it falls back to the
-    /// unclipped capture rect), and this fact pins what the decision does if that guarantee is ever broken,
-    /// so the failure is a refusal rather than a silent leak.</summary>
+    /// <summary>Nothing IntersectsWith a degenerate rectangle, so a degenerate yardstick would discard
+    /// every candidate. The decision REFUSES there rather than returning an unmasked capture.
+    ///
+    /// ⚠ This is REACHABLE in production, and a review round was right to ask. For a window- or
+    /// element-scoped capture the caller falls back to the UNCLIPPED capture rect when the renderable
+    /// intersection is degenerate — and that rect is itself degenerate for a zero-size window, which
+    /// arrives here. (The full-desktop sweep is the path that returns early instead, because a window with
+    /// no renderable overlap contributes no pixels to a virtual-screen capture.) Were this branch ever
+    /// unreachable it would be a false-GREEN, so if a future change makes the caller always pre-filter,
+    /// delete this fact rather than leaving it asserting a guard nothing can reach.</summary>
     [Theory]
     [InlineData(0, 0, 0, 0)]        // Rectangle.Empty
     [InlineData(100, 50, 0, 30)]    // ⚠ NOT IsEmpty: Rectangle.Intersect compares with `>=`, so two rects
@@ -1181,6 +1186,28 @@ construction sites, all in this one method (`:853`, `:858`, `:871`), and three r
 floor, which is correct — `desktop_find_text` returns OCR matches, not capture metadata, so it has nowhere
 to report an escalation and no consumer expecting one. It still inherits the REFUSAL, which is the part
 that matters, via Task 5b.
+
+- [ ] **Step 4b: Add the `skipIfOffscreen` parameter**
+
+Replace the signature line at `PerceptionManager.cs:848`, which currently reads:
+
+```csharp
+    public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref) =>
+```
+
+with:
+
+```csharp
+    /// <param name="skipIfOffscreen">TRUE only for the full-desktop mask sweep, where a window with no
+    /// renderable overlap contributes no pixels and may be skipped. FALSE for a caller that NAMED this
+    /// window and will photograph its rect regardless — suppressing that window's masks would hand back an
+    /// unmasked image of the named target, which is the one thing this feature must not do.</param>
+    public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref,
+                                                                   bool skipIfOffscreen = false) =>
+```
+
+The default is `false`, so every existing call site keeps the safe behaviour with no edit; only the
+full-desktop sweep opts in, in Task 5b.
 
 - [ ] **Step 5: Replace the mask collection**
 
@@ -1591,7 +1618,8 @@ Replace `PerceptionManager.cs:899-914` with:
             if (w.Handle is null || PerceptionPolicy.IsDenied(w.ProcessName)) continue;
             try
             {
-                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null);
+                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null,
+                                                                  skipIfOffscreen: true);
                 if (!geo.Denied && !geo.Minimized)
                 {
                     rects.AddRange(geo.PasswordRects);
@@ -1920,11 +1948,15 @@ Add these three `[Fact]` methods INSIDE the `RedactionSurfaceInventoryTests` cla
     // ============================== RULE 5 pins (SP4/A6) ==============================
 
     /// Parse a snippet and run the REAL visitor with the REAL allowlist over it.
-    private static List<string> Rule5Over(string source)
+    ///
+    /// ⚠ <paramref name="relPath"/> is NOT decoration. RULE 5's exemption is keyed on the type name AND its
+    /// defining FILE, so a snippet declaring `ElementContent` at some other path is correctly FLAGGED. A
+    /// caller checking the exemption must pass the real defining path; everything else uses the default.
+    private static List<string> Rule5Over(string source, string relPath = "src/Fake.cs")
     {
-        var tree = CSharpSyntaxTree.ParseText(source, path: "src/Fake.cs");
+        var tree = CSharpSyntaxTree.ParseText(source, path: relPath);
         Assert.Empty(tree.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error));
-        var visitor = new SweepVisitor("src/Fake.cs", "Fake", AllowedMembers);
+        var visitor = new SweepVisitor(relPath, "Fake", AllowedMembers);
         visitor.Visit(tree.GetRoot());
         return visitor.Rule5;
     }
@@ -1969,18 +2001,30 @@ public static class Documented
         Assert.Empty(hits);
     }
 
-    /// <summary>The exemption set has exactly one entry: the type that DEFINES the token. Anywhere else in
-    /// src/, a literal copy of it is the coupling this rule removes.</summary>
+    /// <summary>The exemption set has exactly one entry: the type that DEFINES the token, IN ITS OWN FILE.
+    /// Anywhere else in src/, a literal copy of it is the coupling this rule removes.
+    ///
+    /// ⚠ The third assertion is the anti-gaming half, and it is why the exemption is keyed on the file and
+    /// not just the type name: `CurrentType` holds only the SHORT class name, so declaring a second
+    /// `class ElementContent` anywhere in src/ and putting the literal inside it would otherwise satisfy
+    /// the letter of the guard while leaving a hole in it.</summary>
     [Fact]
-    public void Rule5_exempts_only_the_type_that_defines_the_token()
+    public void Rule5_exempts_only_the_type_that_defines_the_token_in_its_own_file()
     {
-        Assert.Empty(Rule5Over(@"
+        const string decl = @"
 namespace X;
-public static class ElementContent { public const string RedactedToken = ""[REDACTED]""; }"));
+public static class ElementContent { public const string RedactedToken = ""[REDACTED]""; }";
 
+        // The real definition, at its real path: exempt.
+        Assert.Empty(Rule5Over(decl, "src/FlaUI.Mcp.Core/Perception/ElementContent.cs"));
+
+        // Any other type: flagged.
         Assert.Single(Rule5Over(@"
 namespace X;
 public static class SomethingElse { public const string Copy = ""[REDACTED]""; }"));
+
+        // ⚠ THE SAME TYPE NAME AT A DIFFERENT PATH: flagged. An impostor cannot borrow the exemption.
+        Assert.Single(Rule5Over(decl, "src/FlaUI.Mcp.Server/Tools/Impostor.cs"));
     }
 ```
 
@@ -3142,3 +3186,41 @@ had reread since round 1. 5 findings folded.**
 **PANEL VERDICT - round 6: REJECT-then-fold. Two CRITICALs - one that made the plan unexecutable, one that
 codified a leak in a test - plus a fatal over-refusal, a critical-exception misclassification, and two
 finds that the peer and the driver made independently. 6 findings folded.**
+
+
+### Round 7 (rotation seat: Executability Auditor) - folded; do NOT re-raise
+
+- **CRITICAL, an executability HALT: `Rule5_exempts_only_the_type_that_defines_the_token` could not pass.**
+  Round 2 hardened RULE 5's exemption to require the defining FILE as well as the type name; the test
+  written in round 1 still ran its `ElementContent` snippet through the helper's hardcoded `src/Fake.cs`,
+  so the snippet was correctly FLAGGED and `Assert.Empty` failed. Five rounds passed without anyone
+  noticing that a round-2 fix had broken a round-1 test. The helper now takes a path, the exemption case
+  passes the real defining path, and a THIRD assertion was added for the impostor case - the same type name
+  at a different path must still be flagged, which is the property the file-keying exists for and which no
+  test previously covered.
+- **HIGH: the off-screen early return was right for one caller and wrong for the other.** Round 6 added it
+  to stop an invisible off-screen window fatally failing a full-desktop capture. But a caller that NAMES a
+  window will photograph its rect regardless of what is rendered there, so suppressing that window's masks
+  hands back an unmasked image of the named target. The two callers now get two answers via an explicit
+  `skipIfOffscreen` parameter, defaulting to the safe one: the full-desktop sweep skips, a named target
+  falls back to the unclipped yardstick and computes masks normally. The parameter exists because the
+  method cannot infer its caller, and guessing was wrong in BOTH directions across two rounds.
+- **MEDIUM: the degenerate-yardstick fact had become a false-GREEN.** Round 6's early return intercepted
+  degenerate yardsticks before `Resolve` could ever see one, so the test asserted a guard nothing could
+  reach. The `skipIfOffscreen` fork restores reachability (a zero-size NAMED window falls through to it),
+  and the fact now documents exactly when it is reached plus the instruction to DELETE it rather than keep
+  it if a future change makes it unreachable again.
+- **Driver's own find this round, by running the check the rotation seat was asked to run:** Task 1's
+  STATE-VERIFY cited `WindowManager.cs:611-628` while the method ends at 627 - line 628 is blank - so a
+  literal comparison would have reported a false STATE_MISMATCH on the very FIRST task. Corrected, and all
+  six STATE-VERIFY quotes are now verified against disk BY MEASUREMENT (extract from the plan, diff against
+  the file): WindowManager 611-627, PerceptionManager 861-871 and 899-914, SnapshotStats 6-16,
+  ScreenshotTools 51-52, FindTextTools 103-104, plus the CaptureGeometry line. That is the measured version
+  of a claim round 6 could only assert.
+- **Confirmed clean by the peer, recorded as a positive result:** Task 4's STATE-VERIFY matches the file
+  exactly (it re-read `PerceptionManager.cs` to check), and `MaskEscalationEntry` is defined before use.
+  Axiom Breaker, Cascade Analyst and Boundary Smuggler all reported no new findings.
+
+**PANEL VERDICT - round 7: REJECT-then-fold. One executability HALT that five rounds had missed, one
+caller-dependent correctness fork, one false-GREEN, and one false STATE_MISMATCH on the first task.
+4 findings folded.**
