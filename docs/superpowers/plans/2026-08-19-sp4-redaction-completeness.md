@@ -750,7 +750,7 @@ public static class MaskEscalation
 
     /// <summary>A rect is usable only with positive area. A provider unable to report bounds may return
     /// zeros rather than throw, and a zero-area rect paints nothing — a silent leak, not a mask.</summary>
-    public static bool IsUsable(Rectangle? r) => r is not null && r.Value.Width > 0 && r.Value.Height > 0;
+    public static bool HasArea(Rectangle? r) => r is not null && r.Value.Width > 0 && r.Value.Height > 0;
 
     /// <summary>Resolve one redact-worthy element to the rect that should be painted black.
     ///
@@ -787,12 +787,12 @@ public static class MaskEscalation
     public static MaskResolution Resolve(Rectangle? ownRect, Func<int, Rectangle?> ancestorRect,
                                          Rectangle captureYardstick)
     {
-        if (IsUsable(ownRect)) return new MaskResolution(ownRect.Value, Escalated: false, Refused: false);
+        if (HasArea(ownRect)) return new MaskResolution(ownRect.Value, Escalated: false, Refused: false);
 
         for (int level = 1; level <= MaxAncestorLevels; level++)
         {
             var r = ancestorRect(level);
-            if (!IsUsable(r)) continue;
+            if (!HasArea(r)) continue;
 
             // ⚠ A DEGENERATE yardstick makes both tests below meaningless — nothing IntersectsWith a rect
             // of zero width or height, so every candidate would be discarded and, under an earlier design
@@ -866,7 +866,7 @@ public static class MaskEscalation
     /// case this geometric check rejects the window root anyway — here is the case that makes it
     /// load-bearing, because it is not obvious. `captureBounds` is read ONCE at the start of the walk; an
     /// ancestor's rect is read DURING it. On a window that MOVES in between, the window root's live rect
-    /// no longer contains the stale `visibleCapture`, this check PASSES, and the root is accepted as a
+    /// no longer contains the stale `yardstick`, this check PASSES, and the root is accepted as a
     /// mask — producing an image blacked out in the wrong place with the secret possibly still visible.
     /// The identity stop does not care where the window is.</summary>
     public static bool BlacksOutTheCapture(Rectangle mask, Rectangle captureYardstick)
@@ -886,13 +886,13 @@ REVERT before applying the next.
 
 | Mutant | Edit | Test that must go red |
 |---|---|---|
-| Drop the escalate branch | change `if (IsUsable(r)) return new MaskResolution(r.Value, Escalated: true, Refused: false);` to `if (IsUsable(r)) return new MaskResolution(r.Value, Escalated: false, Refused: false);` | `An_unreadable_own_rect_escalates_to_the_first_usable_ancestor` |
+| Drop the escalate branch | change `if (HasArea(r)) return new MaskResolution(r.Value, Escalated: true, Refused: false);` to `if (HasArea(r)) return new MaskResolution(r.Value, Escalated: false, Refused: false);` | `An_unreadable_own_rect_escalates_to_the_first_usable_ancestor` |
 | Drop the root-refusal branch | change `return MaskResolution.Refusal;` to `return new MaskResolution(default, false, false);` | `No_usable_ancestor_refuses_rather_than_returning_a_rect` |
-| Weaken the usability rule | change `IsUsable` to `r is not null` | `A_zero_size_own_rect_is_unusable_and_escalates` |
+| Weaken the usability rule | change `HasArea` to `r is not null` | `A_zero_size_own_rect_is_unusable_and_escalates` |
 | Drop the blacks-out guard | change `BlacksOutTheCapture` to `=> false` | `An_escalated_rect_that_covers_the_capture_is_rejected_and_the_walk_continues` |
-| Apply the guard to the element's OWN rect too | move the `!BlacksOutTheCapture(...)` test onto the `IsUsable(ownRect)` branch | `An_elements_OWN_capture_covering_rect_is_masked_not_refused` |
+| Apply the guard to the element's OWN rect too | move the `!BlacksOutTheCapture(...)` test onto the `HasArea(ownRect)` branch | `An_elements_OWN_capture_covering_rect_is_masked_not_refused` |
 | Restore the outside-capture DROP | change the `IntersectsWith` guard to `return new MaskResolution(default, true, false);` | `An_element_whose_every_ancestor_misses_the_capture_refuses` |
-| Use `IsEmpty` for the degenerate yardstick | change the extents test to `if (visibleCapture.IsEmpty)` | `A_degenerate_yardstick_refuses_rather_than_dropping_every_mask` (the two non-zero-origin rows) |
+| Use `IsEmpty` for the degenerate yardstick | change the extents test to `if (yardstick.IsEmpty)` | `A_degenerate_yardstick_refuses_rather_than_dropping_every_mask` (the two non-zero-origin rows) |
 
 Run each as: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
 
@@ -1185,7 +1185,7 @@ Replace `PerceptionManager.cs:942`:
 
 ```csharp
 public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> PasswordRects, bool Minimized, bool Denied, string? DeniedProcess,
-    IReadOnlyList<MaskEscalationEntry> Escalated);
+    IReadOnlyList<MaskEscalationEntry> Escalations);
 ```
 
 Update the two early-return construction sites, `:853` and `:858`, to pass an empty list:
@@ -1210,7 +1210,7 @@ floor, which is correct — `desktop_find_text` returns OCR matches, not capture
 to report an escalation and no consumer expecting one. It still inherits the REFUSAL, which is the part
 that matters, via Task 5b.
 
-- [ ] **Step 4b: Add the `skipIfOffscreen` parameter**
+- [ ] **Step 4b: Add the `skipIfNoRenderableOverlap` parameter**
 
 Replace the signature line at `PerceptionManager.cs:848`, which currently reads:
 
@@ -1221,12 +1221,12 @@ Replace the signature line at `PerceptionManager.cs:848`, which currently reads:
 with:
 
 ```csharp
-    /// <param name="skipIfOffscreen">TRUE only for the full-desktop mask sweep, where a window with no
+    /// <param name="skipIfNoRenderableOverlap">TRUE only for the full-desktop mask sweep, where a window with no
     /// renderable overlap contributes no pixels and may be skipped. FALSE for a caller that NAMED this
     /// window and will photograph its rect regardless — suppressing that window's masks would hand back an
     /// unmasked image of the named target, which is the one thing this feature must not do.</param>
     public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref,
-                                                                   bool skipIfOffscreen = false) =>
+                                                                   bool skipIfNoRenderableOverlap = false) =>
 ```
 
 The default is `false`, so every existing call site keeps the safe behaviour with no edit; only the
@@ -1269,7 +1269,7 @@ with:
             // rects land against a stale capture rect. Reading it AFTER the walk just inverts which side is
             // stale. That race is inherent to capturing a moving window — do not read this as claiming
             // otherwise.
-            var visibleCapture = System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds());
+            var yardstick = System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds());
 
             // ⚠ A window with NO renderable overlap contributes no pixels to any capture, so there is
             // nothing here to withhold and nothing to refuse over. Returning early is not a shortcut: it is
@@ -1281,13 +1281,13 @@ with:
             // — (100, 50, 0, 30) — for two rects that merely touch along an edge. IsEmpty is false there,
             // and the walk would then judge every mask against a degenerate yardstick that nothing
             // intersects: every mask dropped, capture returned unmasked. A guard producing a leak.
-            if (visibleCapture.Width <= 0 || visibleCapture.Height <= 0)
+            if (yardstick.Width <= 0 || yardstick.Height <= 0)
             {
                 // ⚠⚠ TWO CALLERS, TWO CORRECT ANSWERS, AND THEY ARE NOT THE SAME ANSWER. This is why the
                 // parameter exists: the method cannot infer which caller it is serving, and guessing was
                 // wrong in BOTH directions across two review rounds.
                 //
-                // FULL-DESKTOP (skipIfOffscreen: true): a window with no renderable overlap contributes no
+                // FULL-DESKTOP (skipIfNoRenderableOverlap: true): a window with no renderable overlap contributes no
                 // pixels to a virtual-screen capture, so there is nothing to withhold. Return an empty mask
                 // set. This is what stops ONE invisible off-screen window with a broken provider from
                 // refusing — and so fatally failing — a whole-desktop capture it could not have appeared in.
@@ -1297,18 +1297,18 @@ with:
                 // hand back an unmasked image of the named target, which is the one thing this feature must
                 // not do. Fall back to the unclipped rect and compute masks normally — the maximized-bleed
                 // case the clipping exists for cannot arise when nothing is on screen to bleed over.
-                if (skipIfOffscreen)
+                if (skipIfNoRenderableOverlap)
                     return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
                                                false, false, null, System.Array.Empty<MaskEscalationEntry>());
                 // ⚠ The UNCLIPPED rect becomes the yardstick here, and MaskEscalation's parameter contract
                 // says that is allowed: the requirement is NON-DEGENERATE, not "clipped". Clipping has
                 // already produced a degenerate rect for this target, and judging every mask against THAT
                 // would discard them all and return an unmasked image of a window the caller named.
-                visibleCapture = captureBounds;
+                yardstick = captureBounds;
             }
 
             var pw = new List<System.Drawing.Rectangle>();
-            var escalated = new List<MaskEscalationEntry>();
+            var escalations = new List<MaskEscalationEntry>();
 
             // ⚠ ONE BLANKET CONVERSION, not a guard per read. Round 4 wrapped the capture-bounds read and
             // the roots[0] enumeration individually and STILL missed PopupFinder.SearchRoots, which is a
@@ -1402,7 +1402,7 @@ with:
                     System.Drawing.Rectangle? own = null;
                     try { own = d.BoundingRectangle; } catch { }
 
-                    var resolution = MaskEscalation.Resolve(own, ancestors.For(d), visibleCapture);
+                    var resolution = MaskEscalation.Resolve(own, ancestors.For(d), yardstick);
                     string aid = SafeRead(() => d.AutomationId, "") ?? string.Empty;
                     string ct = SafeRead(() => d.ControlType, FlaUI.Core.Definitions.ControlType.Custom).ToString();
                     if (resolution.Refused)
@@ -1421,10 +1421,10 @@ with:
                             "capture that window alone to confirm, or retry once the UI has settled");
 
                     pw.Add(resolution.Rect);
-                    if (resolution.Escalated) escalated.Add(new MaskEscalationEntry(aid, ct));
+                    if (resolution.Escalated) escalations.Add(new MaskEscalationEntry(aid, ct));
                 }
             }
-            return new CaptureGeometry(captureBounds, pw, false, false, null, escalated);
+            return new CaptureGeometry(captureBounds, pw, false, false, null, escalations);
             }
             catch (ToolException) { throw; }
             // ⚠ A CRITICAL failure is NOT a redaction outcome. Reclassifying OutOfMemoryException — or a
@@ -1503,7 +1503,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ⚠ **RESUMING AFTER A HALT INSIDE THIS TASK.** Because 5a leaves the tree non-compiling, an executor that
 stops between the halves comes back to a STATE-VERIFY in 5a that expects the ORIGINAL text and now finds
 5a's own output. **That is NOT a `STATE_MISMATCH` — do not abort on it.** If `ScreenshotTools.cs` already
-declares `IReadOnlyList<MaskEscalationEntry> escalated;` and reads `desk.Escalated`, 5a is already applied:
+declares `IReadOnlyList<MaskEscalationEntry> escalations;` and reads `desk.Escalations`, 5a is already applied:
 skip to 5b. Reporting a mismatch there would strand the repository in the one non-compiling gap this plan
 contains, with no automated way out.
 
@@ -1539,7 +1539,7 @@ with:
 
 ```csharp
             CaptureResult result;
-            IReadOnlyList<MaskEscalationEntry> escalated;
+            IReadOnlyList<MaskEscalationEntry> escalations;
             if (string.IsNullOrEmpty(window))
             {
                 var present = await _perception.DenylistedWindowsVisibleAsync();
@@ -1551,7 +1551,7 @@ with:
                 // covers DENYLISTED windows; an ordinary window holding a password field was photographed
                 // in the clear.
                 var desk = await _perception.AllPasswordRectsAsync();
-                escalated = desk.Escalated;
+                escalations = desk.Escalations;
                 result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth));
             }
             else
@@ -1559,7 +1559,7 @@ with:
                 var geo = await _perception.ResolveWindowCaptureGeometryAsync(new WindowHandle(window!), @ref);
                 if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"Capturing windows owned by '{geo.DeniedProcess}' is blocked.", "capture a non-sensitive window");
                 if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
-                escalated = geo.Escalated;
+                escalations = geo.Escalations;
                 result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.PasswordRects, maxWidth));
             }
             var dpi = DpiHelper.ScaleForPoint(result.X, result.Y);
@@ -1579,8 +1579,8 @@ with:
                 dpiScale = dpi,
                 scaleApplied = result.ScaleApplied,
                 redactions = result.Redactions,
-                maskEscalations = escalated.Count,
-                escalated = escalated.Select(e => new { automationId = e.AutomationId, controlType = e.ControlType })
+                maskEscalations = escalations.Count,
+                escalated = escalations.Select(e => new { automationId = e.AutomationId, controlType = e.ControlType })
             });
 ```
 
@@ -1656,7 +1656,7 @@ Replace `PerceptionManager.cs:899-914` with:
     public async Task<DesktopMaskSet> AllPasswordRectsAsync()
     {
         var rects = new List<System.Drawing.Rectangle>();
-        var escalated = new List<MaskEscalationEntry>();
+        var escalations = new List<MaskEscalationEntry>();
         var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
         foreach (var w in windows)
         {
@@ -1664,11 +1664,11 @@ Replace `PerceptionManager.cs:899-914` with:
             try
             {
                 var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null,
-                                                                  skipIfOffscreen: true);
+                                                                  skipIfNoRenderableOverlap: true);
                 if (!geo.Denied && !geo.Minimized)
                 {
                     rects.AddRange(geo.PasswordRects);
-                    escalated.AddRange(geo.Escalated);
+                    escalations.AddRange(geo.Escalations);
                 }
             }
             // A1: a REFUSAL is not a window we failed to bind — it is a window we CAN see and CANNOT mask.
@@ -1676,9 +1676,17 @@ Replace `PerceptionManager.cs:899-914` with:
             // anyway, making A1 inert on precisely the capture mode DEF-2 was about. Rethrown so the
             // full-desktop capture refuses as a window-scoped one does.
             catch (ToolException ex) when (ex.Code == ToolErrorCode.RedactionUnmaskable) { throw; }
-            catch { } // a window that closed mid-enumeration, or one we cannot bind: skip it
+            // ⚠ THE SKIP MUST NOT SWALLOW A CRITICAL FAILURE, and this is the edge round 6's own fix cut.
+            // That round stopped the mask walk reclassifying OutOfMemoryException as RedactionUnmaskable —
+            // correct — but the exception then propagates OUT of the walk and lands HERE, where a bare
+            // `catch { }` swallowed it, skipped the window, and let the full-desktop capture proceed and
+            // photograph it. Filtering the misclassification without filtering the swallow just moved the
+            // leak one frame up the stack.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException)
+            { } // a window that closed mid-enumeration, or one we cannot bind: skip it
         }
-        return new DesktopMaskSet(rects, escalated);
+        return new DesktopMaskSet(rects, escalations);
     }
 ```
 
@@ -1698,7 +1706,7 @@ file (after `CaptureGeometry` at `:942`):
 /// <summary>The mask set for a FULL-DESKTOP capture: every visible non-denied window's rects, plus the
 /// elements across all of them whose mask came from an ancestor. Two lists rather than a tuple so the
 /// screenshot tool's metadata reads the same on both capture paths.</summary>
-public sealed record DesktopMaskSet(IReadOnlyList<System.Drawing.Rectangle> Rects, IReadOnlyList<MaskEscalationEntry> Escalated);
+public sealed record DesktopMaskSet(IReadOnlyList<System.Drawing.Rectangle> Rects, IReadOnlyList<MaskEscalationEntry> Escalations);
 ```
 
 - [ ] **Step 4: Stop the OCR path swallowing the refusal**
@@ -2452,7 +2460,7 @@ denied to a process with no recent user input, and the fixture window may not ha
 | Mutant | Edit | Test that must go red |
 |---|---|---|
 | Revert A5 | in `WindowManager.ResolveFocusedWindowAsync`, replace the `WindowTitle(hwnd) ?? ""` line with `string title = ""; try { title = focused.Properties.Name.ValueOrDefault ?? ""; } catch { }` and delete the fallback block | `Focused_element_reports_the_WINDOW_title_not_the_element_name` |
-| Report a phantom escalation | in `ScreenshotTools`, change `maskEscalations = escalated.Count` to `maskEscalations = escalated.Count + 1` | `An_ordinary_window_capture_reports_no_mask_escalations` |
+| Report a phantom escalation | in `ScreenshotTools`, change `maskEscalations = escalations.Count` to `maskEscalations = escalations.Count + 1` | `An_ordinary_window_capture_reports_no_mask_escalations` |
 
 Run each as: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~RedactionOracleTests"`
 
@@ -2951,6 +2959,16 @@ spelled once and used identically everywhere after.
   stated in the rule's own comment. No such site exists in `src/` today; if one is ever added, the rule is
   silent on it. Not closed because closing it means walking `InterpolatedStringTextSyntax` too, which buys
   nothing against a guard the spec already declares bypassable by construction.
+- **`CaptureGeometry.PasswordRects` and `TextCaptureGeometry.PasswordRects` are MISNAMED, and this plan
+  does not rename them.** They have held rects from every redaction source since SP3 — OS password fields,
+  operator rules, and unreadable-identity fail-closed — and after A1 they also hold ancestor rects from
+  escalation, so "password" is wrong three ways over. It is the same defect class as A2, which this
+  increment DOES fix. The difference, and the reason for the split: A2's `redacted` is a WIRE field that
+  misleads every consumer, and renaming it is free only before v1.0.0. `PasswordRects` is an internal DTO
+  member with three call sites and no wire presence, so it can be renamed at any time at no cost — while
+  renaming it here would add a step touching two records, three consumers and a test, to a plan that has
+  already been rewritten across ten review rounds, and each such edit has twice produced a STATE-VERIFY
+  mismatch. **Deferred deliberately, not overlooked. Raised at panel round 10.**
 - **The exact Desktop pass count in G3 (156) is an arithmetic projection** from 153 at the branch point plus
   the 3 facts added in Task 10. If the actual number differs, do not adjust the expectation to match the
   result — find out which test appeared or vanished first.
@@ -3215,7 +3233,7 @@ capture - plus one HIGH over-refusal and one stale-prose defect. 5 findings fold
   being true at round 2 (popup fork) and again at round 3 (geometric rule). Rewritten, with a note that
   this entry's behaviour changed three times during review.
 - **Stale `<paramref name="captureBounds"/>`** in MaskEscalation's doc after the parameter was renamed to
-  `visibleCapture` (driver's own find). Harmless to the build - neither project sets
+  `yardstick` (driver's own find). Harmless to the build - neither project sets
   GenerateDocumentationFile, VERIFIED in both csproj files - but wrong.
 
 **Confirmed clean, and worth recording as a positive result:** the peer enumerated every caller of
@@ -3237,7 +3255,7 @@ had reread since round 1. 5 findings folded.**
   ONLY inside that verify block, so the "confirm the current code is exactly this" quote silently absorbed
   the captureBounds guard and the yardstick computation. An executor would have reported STATE_MISMATCH at
   the first task touching the mask walk, and the new code was never inserted anywhere - so had it somehow
-  proceeded, Task 5 would have referenced `visibleCapture` and `captureBounds` as undefined symbols. The
+  proceeded, Task 5 would have referenced `yardstick` and `captureBounds` as undefined symbols. The
   verify block is restored to the file's real contents, the new code moved into the REPLACEMENT block where
   it belongs, and a standing rule added at the top of the plan so the class cannot recur.
 - **CRITICAL: the outside-the-capture DROP codified a leak, and its test asserted the bug.** UIA logical
@@ -3291,12 +3309,12 @@ finds that the peer and the driver made independently. 6 findings folded.**
   to stop an invisible off-screen window fatally failing a full-desktop capture. But a caller that NAMES a
   window will photograph its rect regardless of what is rendered there, so suppressing that window's masks
   hands back an unmasked image of the named target. The two callers now get two answers via an explicit
-  `skipIfOffscreen` parameter, defaulting to the safe one: the full-desktop sweep skips, a named target
+  `skipIfNoRenderableOverlap` parameter, defaulting to the safe one: the full-desktop sweep skips, a named target
   falls back to the unclipped yardstick and computes masks normally. The parameter exists because the
   method cannot infer its caller, and guessing was wrong in BOTH directions across two rounds.
 - **MEDIUM: the degenerate-yardstick fact had become a false-GREEN.** Round 6's early return intercepted
   degenerate yardsticks before `Resolve` could ever see one, so the test asserted a guard nothing could
-  reach. The `skipIfOffscreen` fork restores reachability (a zero-size NAMED window falls through to it),
+  reach. The `skipIfNoRenderableOverlap` fork restores reachability (a zero-size NAMED window falls through to it),
   and the fact now documents exactly when it is reached plus the instruction to DELETE it rather than keep
   it if a future change makes it unreachable again.
 - **Driver's own find this round, by running the check the rotation seat was asked to run:** Task 1's
@@ -3320,7 +3338,7 @@ caller-dependent correctness fork, one false-GREEN, and one false STATE_MISMATCH
 The rotation seat's brief was "which earlier fix did a later fix silently break?", and it found the worst
 case of that so far: **a fix this plan's own ledger CLAIMED was applied, and which was not.**
 
-- **CRITICAL: `skipIfOffscreen` was a DEAD LETTER, and round 7's ledger asserted otherwise.** The parameter
+- **CRITICAL: `skipIfNoRenderableOverlap` was a DEAD LETTER, and round 7's ledger asserted otherwise.** The parameter
   was added to the signature (Step 4b) and passed by the full-desktop sweep, but the method body still
   returned unconditionally - so the early return fired for EVERY caller. A window- or element-scoped
   capture of an off-screen target therefore still received zero masks: exactly the leak round 7 believed it
@@ -3387,7 +3405,7 @@ single query STA, for a question already answered. Kept as a short-circuit, and 
 next reader does not delete it as dead code.
 
 **Confirmed clean, recorded as positive results:** the Literal Implementer verified the task ORDER holds
-against the new signature - `skipIfOffscreen` is optional, so Task 4's build gate passes with existing
+against the new signature - `skipIfNoRenderableOverlap` is optional, so Task 4's build gate passes with existing
 callers untouched, and Task 5b then consumes it. Axiom Breaker and Boundary Smuggler reported no new
 findings. Separately, the driver re-verified all 22 ledger claims against the file mechanically after round
 8's lesson; 22 of 22 hold (one initial FAIL was a line-wrap artefact in the checker, not in the artifact).
@@ -3402,3 +3420,42 @@ where the window is.
 **PANEL VERDICT - round 9: REJECT-then-fold. One contract violation that nine rounds of bug-hunting had
 missed because it needed a comprehension lens, one pre-existing boundary surfaced to the operator, and one
 finding rejected with recorded reasoning. 2 folded, 1 rejected, 1 documented.**
+
+
+### Round 10 (rotation seat: Naming & Contract Auditor) - folded; do NOT re-raise
+
+⚠ **The peer's reply arrived TRUNCATED** - its final message was a meta-summary rather than the panel text,
+naming its findings (`visibleCapture`, `PasswordRects`, `Resolve`'s docstring, and a Cascade Analyst
+finding on swallowed critical exceptions) without their full argument. Recorded plainly rather than
+papered over: three of the four had already been found independently by the driver in the same round, and
+the fourth was reconstructible and verified. Round 11 re-covers the same ground with a fresh seat, so a
+detail lost to the truncation gets a second chance rather than being assumed absent.
+
+- **CRITICAL, and it is the edge round 6's own fix cut: filtering the misclassification moved the leak one
+  frame up.** Round 6 correctly stopped the mask walk reclassifying `OutOfMemoryException` as
+  `RedactionUnmaskable` - but the exception then propagates OUT of the walk into
+  `AllPasswordRectsAsync`, where a bare `catch { }` swallowed it, skipped the window, and let the
+  full-desktop capture photograph it. The skip now carries the same filter as the conversion.
+- **Driver's own finds this round, converging with the peer on the first:**
+  · `visibleCapture` was no longer the visible capture - after round 7 the caller reassigns it to the
+    UNCLIPPED rect - so the local is renamed `yardstick`, matching the parameter renamed in round 9. The
+    same lie, one frame up, found one round later.
+  · `skipIfOffscreen` COLLIDED with an established domain term: UIA's `IsOffscreen` means "scrolled or
+    virtualized out of view", which this repo uses throughout (`includeOffscreen`, `isOffscreen`), and is
+    NOT what the parameter means. Renamed `skipIfNoRenderableOverlap`.
+  · `IsUsable` promised more than it delivered - a rect can be "usable" and still be rejected for
+    overlapping nothing or blacking out the capture. Renamed `HasArea`, which is exactly what it tests.
+  · **`Escalated` meant a BOOL on one type and a LIST on two others** (`MaskResolution.Escalated` vs
+    `CaptureGeometry.Escalated` / `DesktopMaskSet.Escalated`). The list-valued members are now
+    `Escalations`; the WIRE field stays `escalated`, because that is the published contract.
+- **Flagged, deliberately NOT fixed, with the reason recorded:** `PasswordRects` has been misnamed since
+  SP3 - it holds rects from every redaction source, and after A1 also ancestor rects - which is the same
+  defect class as A2. A2 is fixed here because it is a WIRE field, misleading every consumer, and free to
+  rename only before v1.0.0. `PasswordRects` is internal with three call sites and can be renamed at no
+  cost at any time, while renaming it at round 10 would add a step touching two records, three consumers
+  and a test to a plan whose every such edit has twice produced a STATE-VERIFY mismatch. Deferred, not
+  overlooked.
+
+**PANEL VERDICT - round 10: REJECT-then-fold. One CRITICAL leak created by round 6's own fix, four naming
+contracts that lied at their use sites, and one misnaming flagged with an explicit reason for deferring.
+5 folded, 1 flagged, 1 peer reply truncated and re-covered next round.**
