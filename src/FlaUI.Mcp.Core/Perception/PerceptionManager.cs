@@ -207,7 +207,7 @@ public sealed class PerceptionManager
                 // — a selector must not be usable as a password-field name oracle.
                 var sens = ElementContent.SensitivityOf(el, _classifier, procName);
                 string rawName = SafeRead(() => el.Name, "") ?? string.Empty;
-                string name = sens.Redact ? "[REDACTED]" : rawName;
+                string name = sens.Redact ? ElementContent.RedactedToken : rawName;
                 bool enabled = SafeRead(() => el.IsEnabled, false);
                 // DEF-3: withhold a redacted element from NAME search only — matching it on the token made
                 // the selector a locator oracle for every password field. Driven by the ELEMENT's
