@@ -1648,7 +1648,7 @@ with:
 
 Add `using System.Linq;` and `using System.Collections.Generic;` to the top of the file if either is absent.
 
-⚠ `AllMaskRectsAsync` does not yet return `.Rects` / `.Escalated` — 5b adds that. **Do not build or
+⚠ `AllMaskRectsAsync` does not yet return `.Rects` / `.Escalations` — 5b adds that. **Do not build or
 gate here.** Continue straight into 5b; the tree is expected to be non-compiling in between, which is why
 this is one task rather than two.
 
@@ -1921,6 +1921,12 @@ using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Watch;
 ```
+
+⚠ **Step 2 shifts Step 3's line number inside this same task** — adding the `using` to `WatchTools.cs`
+pushes its line 30 to 31. The standing rule already covers it (every number is as of the branch point) and
+Step 3 quotes the content, so anchor on the quoted line. Called out here because Task 6 is the only task
+whose own earlier step moves its own later step, and because this defect class has bitten three times at
+larger scale.
 
 - [ ] **Step 3: Replace the four literals with const concatenations**
 
@@ -3718,3 +3724,60 @@ found one in the same round.
 
 **PANEL VERDICT - round 14: REJECT-then-fold. One CRITICAL sequential-execution trap that would have
 destroyed the previous task's work, found by combining two half-answers. 1 finding folded, 1 sweep clean.**
+
+
+### Round 15 (rotation seat: Coupling Cartographer) - **CLEAN**
+
+**All six seats reported no new findings, and the rotation seat's map came back ALL-SAFE.**
+
+The seat was created for the one class that had produced every finding since round 11 and that BOTH
+mechanical checks are structurally blind to: one task's edit invalidating a later task's assumption. It
+mapped, per task, what each changes about the repository - line offsets, symbol names, signatures, file
+existence, test counts, staged-file state - and which later task depends on that thing being as it was.
+Three such couplings had been BROKEN across this review (rounds 6, 12, 14). It marked every one of them
+SAFE, naming the specific mechanism that saves each: Task 9 anchors on `ResolveFocusedWindowAsync` rather
+than a line; Task 5a's targets in `ScreenshotTools.cs` are immune to Task 4's +198; Task 5b anchors on the
+`AllMaskRectsAsync` declaration; Task 7's `:210` sits above the drift; Task 9's `:85` sits above Task 8's
+insertions; and 5a's deliberate build-break is caught by 5b before any gate.
+
+**The driver's independent coupling map, built in parallel without seeing the peer's, reached the same
+conclusion** and turned up exactly one item: a prose note in Task 5a still said `AllMaskRectsAsync` returns
+`.Rects` / `.Escalated`, which round 10's rename had made `.Escalations`. Fixed.
+
+**One clarification added AFTER the clean verdict, and it does not reopen it:** Task 6 is the only task
+whose own Step 2 shifts its own Step 3's line number (adding a `using` moves `WatchTools.cs:30` to `:31`).
+The standing rule already covers this and Step 3 quotes the content, so the peer correctly marked it SAFE;
+the note simply says so at the site, because this class has bitten three times at larger scale. A
+documentation clarification of a coupling already marked safe is not a mechanism change.
+
+**PANEL VERDICT - round 15: GREEN. No live challenge from any seat. The review's stop condition is met.**
+
+---
+
+## Final disposition
+
+**GREEN after 15 rounds.** Fourteen rounds of REJECT-then-fold, ~85 findings, then a clean round.
+
+**What the review actually bought, stated plainly.** Six of the findings were leaks that would have shipped
+under a green suite - the missing root bound (an all-black screenshot returned successfully), the
+maximized-window bleed defeating the geometric guard, the empty yardstick dropping every mask, a raw
+exception becoming a silent skip on full-desktop capture, that same leak moved one frame up by its own fix,
+and a test that CODIFIED a leak as correct behaviour. Three were executability halts that would have
+stopped the rollout partway. One was a fix this plan's own ledger claimed had been applied and which had
+never been written to the file.
+
+**The pattern worth keeping.** In six rounds the CRITICAL was an edge cut by the PREVIOUS round's fix.
+Folding without re-running would have shipped a defect nearly every time. And the two mechanical checks
+this review built - diffing STATE-VERIFY blocks against disk, and verifying every ledger claim against the
+artifact - caught real defects but were structurally blind to the coupling class, which needed a panel
+every time.
+
+**What remains OPEN, and is the operator's to decide, not the panel's:**
+1. A benign element dying mid-scan now refuses the whole capture. The operator chose MEASURE FIRST: whether
+   `GetParent` on a stale UIA element throws was asserted by the peer and never measured. One Desktop
+   experiment settles it.
+2. A window UIA cannot BIND - an elevated one - is skipped and photographed anyway on full-desktop capture
+   (AB-9). The fix is a policy choice with real cost; options (a), (b) and (c) are stated in OPEN #2.
+
+Neither blocks execution of the plan as written; both are recorded so they cannot be mistaken for
+oversights.
