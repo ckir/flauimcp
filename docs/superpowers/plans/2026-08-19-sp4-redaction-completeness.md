@@ -107,6 +107,37 @@ facts, in Task 10.
 
 ---
 
+## Task 0: branch off `master`
+
+⚠ **The plan had NO branch step through fifteen panel rounds, and gate G6 says "merge to `master` with
+`--no-ff`, matching SP0-SP3".** Executed as written from `master`, all eleven tasks would land directly on
+`master` and G6 would have nothing to merge. Every seat reviewed the tasks and the gates; none reviewed the
+precondition BEFORE Task 1. Recorded rather than quietly inserted, because "the reviewers all looked past
+the same blind spot" is the useful part.
+
+- [ ] **Step 1: Confirm the starting point**
+
+```bash
+git status --short && git branch --show-current && git log --oneline -1
+```
+
+Expected: clean tree, `master`, and a HEAD that includes this plan. If the tree is dirty, STOP — every
+task's `git add` names exact paths and assumes nothing else is staged.
+
+- [ ] **Step 2: Create the branch**
+
+```bash
+git checkout -b sp4-redaction-completeness
+```
+
+⚠ Two standing decisions apply to this branch and are NOT oversights:
+- **Nothing is pushed this release.** `master` is far ahead of `origin/master` by the operator's explicit
+  choice; do not push this branch or add a remote.
+- **This project KEEPS merged branches.** `sp2-additive-perception` and `sp3-per-field-redaction` both
+  still exist after their merges. Do not delete this one at G6, whatever a finishing script says.
+
+---
+
 ## Task 1: A5 — `window.title` becomes the real window title
 
 **Files:**
@@ -3004,7 +3035,7 @@ Not a task — the branch-completion sequence, run once at the end, in this orde
       measurement before folding, and verify the peer's SUGGESTED FIX the same way — a correct finding
       routinely arrives with a wrong or incomplete fix. Re-run a fresh round after each fold.
 - [ ] **G5 — AGY-TEST-AUDIT** on the committed test suites, after G4 is GREEN.
-- [ ] **G6 — merge to `master` with `--no-ff`**, matching SP0-SP3. Do not push: nothing has been pushed this
+- [ ] **G6 — merge `sp4-redaction-completeness` to `master` with `--no-ff`**, matching SP0-SP3. Do not push: nothing has been pushed this
       release, by standing decision. Do not delete the branch: this project keeps merged branches.
 
 ---
