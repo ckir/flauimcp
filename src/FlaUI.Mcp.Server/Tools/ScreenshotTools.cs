@@ -14,7 +14,7 @@ public sealed class ScreenshotTools
     private readonly PerceptionManager _perception;
     public ScreenshotTools(PerceptionManager perception) => _perception = perception;
 
-    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions}. Redacted elements (OS password fields, or an operator rule) are masked at capture time, full-desktop included (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
+    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated}. Redacted elements (OS password fields, or an operator rule) are masked at capture time, full-desktop included (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). If a redacted element cannot report usable bounds its mask is taken from an ancestor: maskEscalations counts those ELEMENTS (not levels climbed) and escalated lists their {automationId,controlType} so you can tell which control has a broken provider. If no ancestor is usable either, the capture is REFUSED with RedactionUnmaskable rather than returning an all-black image - retry once the UI settles, or capture a different window. NOTE redactions counts rects PAINTED, so when several elements escalate to the SAME ancestor it exceeds the number of distinct black regions you can see; compare it against maskEscalations rather than reading it as a control count. output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
     public Task<CallToolResult> DesktopScreenshot(
         [Description("Window handle, e.g. w1. Omit (and omit ref) for the full virtual desktop.")] string? window = null,
         [Description("Element ref to capture (requires window).")] string? @ref = null,
@@ -28,6 +28,7 @@ public sealed class ScreenshotTools
                 throw new ToolException(ToolErrorCode.CaptureUnavailable, "The desktop session is disconnected or locked.", "reconnect to restore rendering");
 
             CaptureResult result;
+            IReadOnlyList<MaskEscalationEntry> escalations;
             if (string.IsNullOrEmpty(window))
             {
                 var present = await _perception.DenylistedWindowsVisibleAsync();
@@ -38,18 +39,38 @@ public sealed class ScreenshotTools
                 // though window- and element-scoped capture both masked correctly. The refusal above only
                 // covers DENYLISTED windows; an ordinary window holding a password field was photographed
                 // in the clear.
-                var deskRects = await _perception.AllMaskRectsAsync();
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, deskRects, maxWidth));
+                var desk = await _perception.AllMaskRectsAsync();
+                escalations = desk.Escalations;
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth));
             }
             else
             {
                 var geo = await _perception.ResolveWindowCaptureGeometryAsync(new WindowHandle(window!), @ref);
                 if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"Capturing windows owned by '{geo.DeniedProcess}' is blocked.", "capture a non-sensitive window");
                 if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
+                escalations = geo.Escalations;
                 result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth));
             }
             var dpi = DpiHelper.ScaleForPoint(result.X, result.Y);
-            return ToolResponse.Image(result.Png, new { bounds = new { x = result.X, y = result.Y, w = result.W, h = result.H }, dpiScale = dpi, scaleApplied = result.ScaleApplied, redactions = result.Redactions });
+            // A1: maskEscalations counts ELEMENTS whose own rect was unusable and whose mask therefore came
+            // from an ancestor — NOT levels climbed. One element climbing three levels counts as 1. Both
+            // fields are ALWAYS present (0 / empty when nothing escalated), because a diagnostic that
+            // appears only on failure teaches a consumer to ignore its absence.
+            //
+            // `escalated` carries automationId + controlType and NEVER the Name: a bare count is not a
+            // diagnostic — an operator seeing a giant black box and maskEscalations:2 cannot tell which
+            // control has the broken provider — while the Name is the identity the mask exists to hide.
+            // Both fields are already published for redacted elements by desktop_find, so this surfaces
+            // nothing the query path does not.
+            return ToolResponse.Image(result.Png, new
+            {
+                bounds = new { x = result.X, y = result.Y, w = result.W, h = result.H },
+                dpiScale = dpi,
+                scaleApplied = result.ScaleApplied,
+                redactions = result.Redactions,
+                maskEscalations = escalations.Count,
+                escalated = escalations.Select(e => new { automationId = e.AutomationId, controlType = e.ControlType })
+            });
         });
 
     [McpServerTool(ReadOnly = true), Description("Get an element's absolute physical-pixel screen bounds {x,y,w,h} (signed, multi-monitor safe), its monitor dpiScale (informational), and isOffscreen (UIA scrolled/virtualized-out, NOT occlusion).")]

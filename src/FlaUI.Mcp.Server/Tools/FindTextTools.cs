@@ -101,7 +101,11 @@ public sealed class FindTextTools
                 // ~50-150ms CAPTURE, which stays on Task.Run). If the window vanished mid-wait, treat as not-found.
                 TextCaptureGeometry geo;
                 try { geo = await _perception.ResolveTextCaptureGeometryAsync(new WindowHandle(window), region); }
-                catch (ToolException) { return false; } // window vanished/closed mid-wait -> not found; an UNEXPECTED exception propagates (surfaced by ToolResponse.Guard) so a real bug isn't hidden as a timeout
+                // A1: a RedactionUnmaskable refusal must NOT degrade to "not found". This path captures the
+                // same pixels the screenshot path refused to show and OCRs them, so swallowing the refusal
+                // would read back in plaintext exactly what the mask was there to withhold. Every OTHER
+                // ToolException still means the window vanished/closed mid-wait -> not found.
+                catch (ToolException ex) when (ex.Code != ToolErrorCode.RedactionUnmaskable) { return false; }
                 if (geo.Denied || geo.Minimized) return false;
                 var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.MaskRects, maxWidth: 0));
                 var matches = await _finder.FindAsync(query, cap.Png, MatchMode.Fuzzy, all: false,

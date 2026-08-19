@@ -1093,22 +1093,62 @@ public sealed class PerceptionManager
     ///
     /// A window that fails to resolve is SKIPPED rather than fatal: one unreadable window must not fail the
     /// whole capture. That is not a hole — ScreenshotTools already REFUSES a full-desktop capture outright
-    /// when any denylisted credential window is visible, so this path only ever runs when none is.</summary>
-    public async Task<IReadOnlyList<System.Drawing.Rectangle>> AllMaskRectsAsync()
+    /// when any denylisted credential window is visible, so this path only ever runs when none is.
+    ///
+    /// ⚠ The skip is NOT unconditional: a RedactionUnmaskable refusal is rethrown. Skipping a window we
+    /// cannot BIND is right; skipping one we can see and cannot MASK would photograph it in the clear.</summary>
+    public async Task<DesktopMaskSet> AllMaskRectsAsync()
     {
         var rects = new List<System.Drawing.Rectangle>();
+        var escalations = new List<MaskEscalationEntry>();
         var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
         foreach (var w in windows)
         {
+            // ⚠ THE ORIGINAL REASON GIVEN FOR KEEPING THIS CHECK WAS FALSE, and the correction is recorded
+            // because the false version was persuasive. It claimed that deleting it would ENUMERATE a
+            // denylisted window's entire tree. MEASURED at PerceptionManager.cs:852 (line as of the branch point, before this task's own +198): the callee tests
+            // PerceptionPolicy.IsDenied FIRST and returns immediately, well before PopupFinder.SearchRoots
+            // at :861 — so no tree is ever walked for a denied window, with or without this line.
+            //
+            // What it actually saves is smaller and worth stating accurately: one
+            // RunWithWindowAndDesktopAsync dispatch per denied window — binding the handle to a live
+            // element on the query STA, plus SafeProcessName — for an answer already known here. Kept for
+            // that, and because stating the denylist at the enumeration site keeps the policy visible where
+            // windows are chosen rather than only where they are resolved. A reviewer who wants it gone has
+            // a defensible case; the case must just not be the false one above.
             if (w.Handle is null || PerceptionPolicy.IsDenied(w.ProcessName)) continue;
             try
             {
-                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null);
-                if (!geo.Denied && !geo.Minimized) rects.AddRange(geo.MaskRects);
+                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null,
+                                                                  skipIfNoRenderableOverlap: true);
+                // ⚠ KEPT DELIBERATELY. A review seat proposed deleting this condition because the callee
+                // guarantees empty lists when Denied or Minimized, making the AddRange calls harmless
+                // no-ops. True today — and it is precisely the "caller relies on the callee's internals"
+                // coupling that produced this review's round-9 finding, one frame in the other direction.
+                // If a future change ever returned a non-empty rect alongside Denied, deleting this would
+                // turn that into a silent mask of a window we refused to inspect.
+                if (!geo.Denied && !geo.Minimized)
+                {
+                    rects.AddRange(geo.MaskRects);
+                    escalations.AddRange(geo.Escalations);
+                }
             }
-            catch { } // a window that closed mid-enumeration, or one we cannot bind: skip it
+            // A1: a REFUSAL is not a window we failed to bind — it is a window we CAN see and CANNOT mask.
+            // Swallowing it here would skip that window's mask set and photograph the whole desktop
+            // anyway, making A1 inert on precisely the capture mode DEF-2 was about. Rethrown so the
+            // full-desktop capture refuses as a window-scoped one does.
+            catch (ToolException ex) when (ex.Code == ToolErrorCode.RedactionUnmaskable) { throw; }
+            // ⚠ THE SKIP MUST NOT SWALLOW A CRITICAL FAILURE, and this is the edge round 6's own fix cut.
+            // That round stopped the mask walk reclassifying OutOfMemoryException as RedactionUnmaskable —
+            // correct — but the exception then propagates OUT of the walk and lands HERE, where a bare
+            // `catch { }` swallowed it, skipped the window, and let the full-desktop capture proceed and
+            // photograph it. Filtering the misclassification without filtering the swallow just moved the
+            // leak one frame up the stack.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException)
+            { } // a window that closed mid-enumeration, or one we cannot bind: skip it
         }
-        return rects;
+        return new DesktopMaskSet(rects, escalations);
     }
 
     public async Task<bool> DenylistedWindowsVisibleAsync()
@@ -1139,6 +1179,11 @@ public sealed record FocusedElementInfo(string Ref, string DescriptorLine, strin
 
 public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects, bool Minimized, bool Denied, string? DeniedProcess,
     IReadOnlyList<MaskEscalationEntry> Escalations);
+
+/// <summary>The mask set for a FULL-DESKTOP capture: every visible non-denied window's rects, plus the
+/// elements across all of them whose mask came from an ancestor. Two lists rather than a tuple so the
+/// screenshot tool's metadata reads the same on both capture paths.</summary>
+public sealed record DesktopMaskSet(IReadOnlyList<System.Drawing.Rectangle> Rects, IReadOnlyList<MaskEscalationEntry> Escalations);
 
 public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword,
     bool Redacted, string? RedactedBy);
