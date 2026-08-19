@@ -96,6 +96,13 @@ facts, in Task 10.
    signature change is allowed. Changing an assertion, an expected string, or an expected count is not.
 4. **The build must stay at 0 warnings.** `dotnet build FlaUI.Mcp.slnx -c Release` must report
    `0 Warning(s)` and `0 Error(s)`.
+   ⚠⚠ **THAT COMMAND ALONE IS NOT A GATE, AND THIS BIT DURING TASK 3.** MSBuild does not re-report
+   warnings for projects it considers up to date, so a warning introduced by task N is invisible to every
+   later task's build. MEASURED on this branch: the slnx build printed `0 Warning(s)` on the very tree
+   where `dotnet build src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj -c Release --no-incremental` printed
+   `2 Warning(s)` (CS8629). A subagent only caught it because it happened to run `dotnet clean` first.
+   **Add `--no-incremental` whenever the task changed source**, or the 0-warning rule silently stops being
+   enforced partway through the plan. Captured as a `[process]` anomaly.
 5. **Headless gate after every task** — where "task" means a numbered `## Task N`. Task 5 is ONE task with
    two interior halves (5a, 5b); its gate runs at the end of 5b, and the tree is expected not to compile in
    between. No other task has an interior.
@@ -660,14 +667,35 @@ public class MaskEscalationTests
     /// arrives here. (The full-desktop sweep is the path that returns early instead, because a window with
     /// no renderable overlap contributes no pixels to a virtual-screen capture.) Were this branch ever
     /// unreachable it would be a false-GREEN, so if a future change makes the caller always pre-filter,
-    /// delete this fact rather than leaving it asserting a guard nothing can reach.</summary>
+    /// delete this fact rather than leaving it asserting a guard nothing can reach.
+    ///
+    /// ⚠ THE ANCESTOR RECT IS PER-ROW, AND THAT IS THE ONLY REASON THIS FACT PINS ANYTHING. It originally
+    /// used the shared `Other` fixture, and MEASURED, the fact was then VACUOUS on both non-zero rows: the
+    /// `IsEmpty` mutant this exists to catch left every row green. `Other` = (1,2,300,400) CONTAINS both
+    /// degenerate yardsticks, so once the mutant let execution reach the loop the candidate was rejected by
+    /// the blacks-out guard instead — the same Refused outcome by a different route, which an assertion on
+    /// `Refused` alone cannot see. A rect that OVERLAPS the yardstick without CONTAINING it is what makes
+    /// the two guards disagree, and disagreement is the only thing a single-point mutant can detect.
+    ///
+    /// ⚠ Row 1 is deliberately NOT discriminating and cannot be made so — do not "fix" it. For
+    /// Rectangle.Empty the mutant's `IsEmpty` is genuinely TRUE, so it refuses at the same point the real
+    /// guard does; the mutant is simply CORRECT for that one input. No ancestor rect changes that, because
+    /// the ancestor is never consulted. The row earns its place by covering the all-zero shape, not by
+    /// killing the mutant. Rows 2 and 3 do the killing.</summary>
     [Theory]
-    [InlineData(0, 0, 0, 0)]        // Rectangle.Empty
-    [InlineData(100, 50, 0, 30)]    // ⚠ NOT IsEmpty: Rectangle.Intersect compares with `>=`, so two rects
-    [InlineData(100, 50, 30, 0)]    //   touching along an edge yield a degenerate rect at non-zero coords
-    public void A_degenerate_yardstick_refuses_rather_than_dropping_every_mask(int x, int y, int w, int h)
+    //          yardstick     |  level-1 ancestor  | why
+    [InlineData(0, 0, 0, 0,      1, 2, 300, 400)]  // Rectangle.Empty — see the row-1 note above
+    [InlineData(100, 50, 0, 30,  90, 40, 20, 20)]  // ⚠ NOT IsEmpty: Rectangle.Intersect compares with `>=`,
+    [InlineData(100, 50, 30, 0,  90, 40, 20, 20)]  //   so two rects touching along an edge yield a
+                                                   //   degenerate rect at NON-ZERO coords. The ancestor
+                                                   //   overlaps without containing, so under the mutant it
+                                                   //   is ACCEPTED as a mask and this fact goes red.
+    public void A_degenerate_yardstick_refuses_rather_than_dropping_every_mask(
+        int x, int y, int w, int h, int ax, int ay, int aw, int ah)
     {
-        var r = MaskEscalation.Resolve(null, Source(new List<int>(), (1, Other)), new Rectangle(x, y, w, h));
+        var ancestor = new Rectangle(ax, ay, aw, ah);
+
+        var r = MaskEscalation.Resolve(null, Source(new List<int>(), (1, ancestor)), new Rectangle(x, y, w, h));
 
         Assert.True(r.Refused);
     }
@@ -729,6 +757,7 @@ Create `src/FlaUI.Mcp.Core/Perception/MaskEscalation.cs`:
 
 ```csharp
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 
 namespace FlaUI.Mcp.Core.Perception;
@@ -791,8 +820,15 @@ public static class MaskEscalation
     public const int MaxAncestorLevels = 32;
 
     /// <summary>A rect is usable only with positive area. A provider unable to report bounds may return
-    /// zeros rather than throw, and a zero-area rect paints nothing — a silent leak, not a mask.</summary>
-    public static bool HasArea(Rectangle? r) => r is not null && r.Value.Width > 0 && r.Value.Height > 0;
+    /// zeros rather than throw, and a zero-area rect paints nothing — a silent leak, not a mask.
+    ///
+    /// ⚠ <see cref="NotNullWhenAttribute"/> is load-bearing, not decoration. Nullable flow analysis cannot
+    /// carry a null-check across a method boundary, so without it every caller that reads <c>.Value</c>
+    /// after a true return raises CS8629 and the build leaves 0-warnings. The attribute states the
+    /// invariant this method actually guarantees — a true return means the value is present — rather than
+    /// suppressing the warning at each call site with <c>!</c>, which would tell the next reader nothing.
+    /// Verified: this works for a nullable VALUE type, not only for reference types.</summary>
+    public static bool HasArea([NotNullWhen(true)] Rectangle? r) => r is not null && r.Value.Width > 0 && r.Value.Height > 0;
 
     /// <summary>Resolve one redact-worthy element to the rect that should be painted black.
     ///
@@ -927,26 +963,54 @@ public static class MaskEscalation
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
 Expected: `Passed!  - Failed: 0, Passed: 16`.
 
-- [ ] **Step 5: Prove the pins are non-vacuous (three temporary LOGIC MUTANTS)**
+- [ ] **Step 5: Prove the pins are non-vacuous (EIGHT temporary LOGIC MUTANTS)**
+
+⚠ This heading said "three" over a table of seven for fifteen review rounds. It is **eight** — the seven
+below plus the cap mutant. The table is authoritative; run every row.
+
+⚠ Two rows quote the shape by INTENT, not literally: the implementation splits `HasArea` into
+`if (!HasArea(r)) continue;` plus a later return, and the parameter is `captureYardstick`, not `yardstick`.
+A mutant instruction is not a STATE-VERIFY block — do not report `STATE_MISMATCH` against it.
 
 Apply each mutant on its own, run the named command, confirm the NAMED test is the one that goes red, then
 REVERT before applying the next.
 
 | Mutant | Edit | Test that must go red |
 |---|---|---|
-| Drop the escalate branch | change `if (HasArea(r)) return new MaskResolution(r.Value, Escalated: true, Refused: false);` to `if (HasArea(r)) return new MaskResolution(r.Value, Escalated: false, Refused: false);` | `An_unreadable_own_rect_escalates_to_the_first_usable_ancestor` |
-| Drop the root-refusal branch | change `return MaskResolution.Refusal;` to `return new MaskResolution(default, false, false);` | `No_usable_ancestor_refuses_rather_than_returning_a_rect` |
-| Weaken the usability rule | change `HasArea` to `r is not null` | `A_zero_size_own_rect_is_unusable_and_escalates` |
-| Drop the blacks-out guard | change `BlacksOutTheCapture` to `=> false` | `An_escalated_rect_that_covers_the_capture_is_rejected_and_the_walk_continues` |
+| Drop the escalate branch | on the escalation return, change `Escalated: true` to `Escalated: false` | `An_unreadable_own_rect_escalates_to_the_first_usable_ancestor` |
+| Drop the root-refusal branch | change the final `return MaskResolution.Refusal;` to `return new MaskResolution(default, false, false);` | `No_usable_ancestor_refuses_rather_than_returning_a_rect` |
+| Weaken the usability rule | change `HasArea`'s body to `r is not null` | `A_zero_size_own_rect_is_unusable_and_escalates` |
+| Drop the blacks-out guard | change `BlacksOutTheCapture`'s body to `=> false` | `An_escalated_rect_that_covers_the_capture_is_rejected_and_the_walk_continues` |
 | Apply the guard to the element's OWN rect too | move the `!BlacksOutTheCapture(...)` test onto the `HasArea(ownRect)` branch | `An_elements_OWN_capture_covering_rect_is_masked_not_refused` |
-| Restore the outside-capture DROP | change the `IntersectsWith` guard to `return new MaskResolution(default, true, false);` | `An_element_whose_every_ancestor_misses_the_capture_refuses` |
-| Use `IsEmpty` for the degenerate yardstick | change the extents test to `if (yardstick.IsEmpty)` | `A_degenerate_yardstick_refuses_rather_than_dropping_every_mask` (the two non-zero-origin rows) |
+| Restore the outside-capture DROP | change the `IntersectsWith` guard's `continue;` to `return new MaskResolution(default, true, false);` | `An_element_whose_every_ancestor_misses_the_capture_refuses` |
+| Use `IsEmpty` for the degenerate yardstick | change the extents test to `if (captureYardstick.IsEmpty)` | `A_degenerate_yardstick_refuses_rather_than_dropping_every_mask` — **rows 2 and 3 ONLY** (see below) |
+| Widen the cap | change `level <= MaxAncestorLevels` to `level <= MaxAncestorLevels + 1` | `The_walk_stops_at_the_depth_cap_and_refuses` (on the call count) |
 
 Run each as: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
 
-⚠ Do NOT mutate the loop bound to `while (true)` — that hangs the suite rather than failing it. To pin the
-cap, change `level <= MaxAncestorLevels` to `level <= MaxAncestorLevels + 1` and confirm
-`The_walk_stops_at_the_depth_cap_and_refuses` goes red on the call count. Revert.
+⚠ Do NOT mutate the loop bound to `while (true)` — that hangs the suite rather than failing it.
+
+⚠⚠ **THE `IsEmpty` ROW EXPECTED A RED THAT COULD NOT OCCUR, and the correction is recorded because the
+original was persuasive.** As first written, the degenerate-yardstick theory used the shared `Other`
+fixture, and MEASURED, the mutant left all 16 tests GREEN. `Other` = (1,2,300,400) CONTAINS both degenerate
+yardsticks, so the candidate reached the loop and was rejected by the blacks-out guard instead — the same
+`Refused` outcome by a different route, invisible to an assertion on `Refused` alone. The theory now
+carries a PER-ROW ancestor rect for exactly this reason; with `(90,40,20,20)` the mutant turns rows 2 and 3
+red as intended.
+
+⚠ **Row 1 `(0,0,0,0)` can NEVER catch this mutant and must not be "fixed".** `Rectangle.IsEmpty` is
+genuinely true for `Rectangle.Empty`, so the mutant refuses at the same point the real guard does — it is
+simply CORRECT for that one input, and the ancestor is never consulted. Verified against a live .NET 10
+runtime: `IsEmpty` is `False` for `(100,50,0,30)` and `(100,50,30,0)`, i.e. it does require all four fields
+to be zero. (That is `Rectangle`; `RectangleF.IsEmpty` is the `W<=0||H<=0` one — a subagent asserted the
+latter definition for `Rectangle` and was wrong.)
+
+⚠ **The guard is outcome-load-bearing, not merely a cost short-circuit** — which the surrounding comment
+half-concedes and which is worth stating flatly. Measured against yardstick `(100,50,0,30)`: ancestor
+`(1,2,300,400)` intersects AND contains, so it is skipped either way; ancestor `(90,40,20,20)` intersects
+and does NOT contain, so without the extents check it is ACCEPTED as a mask instead of refusing. The two
+guards disagree on a reachable input, and `Rectangle.Intersect` really does yield degenerate rects at
+non-zero origins (measured: `Intersect((0,0,1920,1080), (1920,50,300,30))` = `(1920,50,0,30)`).
 
 - [ ] **Step 6: Run the headless gate and commit**
 
