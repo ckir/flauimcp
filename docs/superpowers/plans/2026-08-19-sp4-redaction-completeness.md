@@ -99,7 +99,7 @@ facts, in Task 10.
 ## Task 1: A5 — `window.title` becomes the real window title
 
 **Files:**
-- Modify: `src/FlaUI.Mcp.Core/Windows/WindowManager.cs:611-628`
+- Modify: `src/FlaUI.Mcp.Core/Windows/WindowManager.cs:611-627`
 
 The defect: `ResolveFocusedWindowAsync` reads `focused.Properties.Name` — the focused ELEMENT's Name,
 which is element content — and `PerceptionManager.GetFocusedElementAsync` (`:936`) puts it on the wire as
@@ -107,7 +107,7 @@ which is element content — and `PerceptionManager.GetFocusedElementAsync` (`:9
 
 - [ ] **Step 1: STATE-VERIFY**
 
-Open `src/FlaUI.Mcp.Core/Windows/WindowManager.cs` and confirm lines 611-628 are exactly:
+Open `src/FlaUI.Mcp.Core/Windows/WindowManager.cs` and confirm lines 611-627 are exactly:
 
 ```csharp
     public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowAsync() =>
