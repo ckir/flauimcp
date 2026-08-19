@@ -1278,7 +1278,14 @@ full-desktop sweep opts in, in Task 5b.
 
 - [ ] **Step 5: Replace the mask collection**
 
-Replace `PerceptionManager.cs:862-871` (from `var pw = ...` through the `return new CaptureGeometry(...)`)
+⚠ **ANCHOR ON THE CONTENT, NOT THE LINE NUMBERS — Step 4b has already moved them.** Step 4b replaces the
+one-line signature at `:848` with a six-line block (five `<param>` doc lines plus a wrapped signature), so
+everything below it has shifted DOWN by five: the region originally at `:862-871` now sits at `:867-876`.
+Both numbers are given because a plan that names only the stale one is how an executor edits the wrong
+lines confidently.
+
+Replace the region running from `var pw = new List<System.Drawing.Rectangle>();` through the
+`return new CaptureGeometry(...);` — originally `PerceptionManager.cs:862-871`, `:867-876` after Step 4b —
 with:
 
 ```csharp
@@ -1510,7 +1517,11 @@ Expected: `Passed!  - Failed: 0`, total unchanged from Task 3. In particular
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/FlaUI.Mcp.Core/Perception/AncestorRectSource.cs src/FlaUI.Mcp.Core/Errors/ToolErrorCode.cs src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs
+# ⚠ Step 4a touches FIVE files, not one. Committing only PerceptionManager.cs would push a tree whose
+# committed PerceptionManager references MaskRects/AllMaskRectsAsync while the four files that USE those
+# names still say PasswordRects at that commit - a build-broken commit in history, and
+# TextCaptureGeometry.cs would never be staged by ANY task in this plan.
+git add src/FlaUI.Mcp.Core/Perception/AncestorRectSource.cs         src/FlaUI.Mcp.Core/Errors/ToolErrorCode.cs         src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs         src/FlaUI.Mcp.Core/Perception/TextCaptureGeometry.cs         src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs         src/FlaUI.Mcp.Server/Tools/FindTextTools.cs         test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs
 git commit -m "fix(sp4): A1 - an unmaskable element escalates, then refuses
 
 The pixel-mask rect collection failed OPEN: SP3 made SensitivityOf fail closed
@@ -3610,3 +3621,41 @@ rejections from round 11.
 **PANEL VERDICT - round 12: REJECT-then-fold. One CRITICAL executability halt introduced by round 11's own
 rename, and one of the driver's rejections refuted by measurement. The seat's answer to "is it ready" was:
 ready once the STATE-VERIFY contradiction is patched. It now is.**
+
+
+### Round 13 (rotation seat: Sequence Simulator) - folded; do NOT re-raise
+
+The seat was chosen because of what round 12 exposed: two executability halts in this review were caused by
+one task's edit invalidating a LATER task's verify block, and NEITHER was catchable by a disk diff, because
+neither was a disk mismatch. This seat walks the tasks as a SEQUENCE, holding a model of the repository
+after each step.
+
+- **HIGH, and it would have committed a BROKEN BUILD into history: Task 4's `git add` was never updated
+  when Step 4a was added.** Step 4a renames across FIVE files; the commit staged three. Two distinct
+  consequences, both real: `TextCaptureGeometry.cs` would never be staged by ANY task in the plan, and the
+  commit at the end of Task 4 would contain a `PerceptionManager.cs` referencing `MaskRects` /
+  `AllMaskRectsAsync` while the four files that use those names still said `PasswordRects` at that commit.
+  Found independently by the peer and the driver in the same round. All seven paths now staged.
+- **Driver's own find, which the peer did NOT catch: Step 4b silently moved the line numbers Step 5 names.**
+  Step 4b replaces the one-line signature at `:848` with a six-line block, shifting everything below it down
+  by five - so Step 5's `:862-871` is `:867-876` by the time an executor reaches it. Step 5 was already
+  content-anchored in its prose, so a careful executor was safe; one following the numbers was not. Both
+  numbers are now given, with the content anchor stated first, because a plan naming only the stale number
+  is how someone edits the wrong lines confidently.
+- **Driver's own sweep, recorded as a positive result:** every task's `git add` was checked mechanically
+  against the files its body names. After the Task 4 fix, four apparent omissions remain and ALL FOUR are
+  false positives, verified one by one - `AutomationDispatcherTests.cs` is cited as measurement evidence,
+  `VerifyReader.cs` appears in Task 2's explicit "do NOT rename these" list, `SnapshotDiff.cs` is a Task 8
+  mutant that is reverted before committing, `WindowManager.cs` is only STATE-VERIFIED by Task 9, and
+  `CapstoneFixTests.cs` is only grepped for the AB-3 anchor. `src/Fake.cs` is a path inside a test snippet
+  and not a file at all.
+
+**Confirmed clean by the peer, recorded as positive results:** it verified that every STATE-VERIFY block
+matches the SIMULATED state - explicitly including Task 5b Step 1's post-Task-4a block, which is the one
+round 12 fixed - and that both gate numbers are right at the point in the sequence where they are checked
+(870 + 19 = 889 headless, 153 + 3 = 156 Desktop). Axiom Breaker, Cascade Analyst, Boundary Smuggler,
+Literal Implementer and Mechanism Gamer all reported no new findings.
+
+**PANEL VERDICT - round 13: REJECT-then-fold, and narrowing. One HIGH that would have put a broken build in
+history, one line-number drift the peer missed, and everything else verified clean. 2 findings folded, 0
+disputed.**
