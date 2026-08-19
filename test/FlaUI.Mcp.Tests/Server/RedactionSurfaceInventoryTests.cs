@@ -140,17 +140,101 @@ public class RedactionSurfaceInventoryTests
         Add("RULE 3 — caller-supplied property-id parameter forwarded to a generic accessor", r.Rule3);
         Add("RULE 4 — generic accessor's property-id argument is not a static field reference", r.Rule4);
         Add("RULE 4b — classifier-argument guarantee (omitted / re-declared default-null / literal null)", r.Rule4b);
+        Add("RULE 5 — bare redaction-token literal in src/ outside ElementContent", r.Rule5);
 
         Assert.True(total == 0,
             $"Redaction surface sweep found {total} violation(s) across {sections.Count} rule(s):\n\n" +
             string.Join("\n\n", sections));
     }
 
+    // ============================== RULE 5 pins (SP4/A6) ==============================
+
+    /// Parse a snippet and run the REAL visitor with the REAL allowlist over it.
+    ///
+    /// ⚠ <paramref name="relPath"/> is NOT decoration. RULE 5's exemption is keyed on the type name AND its
+    /// defining FILE, so a snippet declaring `ElementContent` at some other path is correctly FLAGGED. A
+    /// caller checking the exemption must pass the real defining path; everything else uses the default.
+    private static List<string> Rule5Over(string source, string relPath = "src/Fake.cs")
+    {
+        var tree = CSharpSyntaxTree.ParseText(source, path: relPath);
+        Assert.DoesNotContain(tree.GetDiagnostics(), d => d.Severity == DiagnosticSeverity.Error);
+        var visitor = new SweepVisitor(relPath, "Fake", AllowedMembers);
+        visitor.Visit(tree.GetRoot());
+        return visitor.Rule5;
+    }
+
+    /// <summary>⚠ THE ANTI-DEAD-ON-ARRIVAL PIN, and the reason this rule is written separately from every
+    /// other rule in this file. SnapshotDiff.ShownName is IN AllowedMembers (:64) and it is one of the three
+    /// sites A6 exists to catch. If RULE 5 were routed through the `_allowed.ContainsKey` suppression at
+    /// :454 / :567 — the obvious way to write it, reusing the machinery already here — it would fire on
+    /// nothing that matters and report GREEN forever.</summary>
+    [Fact]
+    public void Rule5_fires_inside_a_member_that_the_content_allowlist_exempts()
+    {
+        Assert.True(AllowedMembers.ContainsKey("SnapshotDiff.ShownName"),
+            "this pin is only meaningful while SnapshotDiff.ShownName is allowlisted; it no longer is");
+
+        var hits = Rule5Over(@"
+namespace X;
+public static class SnapshotDiff
+{
+    private static string ShownName(SnapshotNode n) => n.Sensitivity.Redact ? ""[REDACTED]"" : n.Name;
+}");
+
+        var hit = Assert.Single(hits);
+        Assert.Contains("SnapshotDiff.ShownName", hit);
+    }
+
+    /// <summary>The rule is AST-aware, and that is what keeps it from breaking the build on documentation.
+    /// A token inside a `//` or `///` comment is TRIVIA, never a LiteralExpressionSyntax, so it is never
+    /// visited. Twelve such comments exist in src/ today.</summary>
+    [Fact]
+    public void Rule5_ignores_the_token_in_comments_and_doc_comments()
+    {
+        var hits = Rule5Over(@"
+namespace X;
+/// <summary>A password field's name is ""[REDACTED]"" on the wire.</summary>
+public static class Documented
+{
+    // the snapshot renders [REDACTED] here
+    private static string Safe() => ""nothing to see"";
+}");
+
+        Assert.Empty(hits);
+    }
+
+    /// <summary>The exemption set has exactly one entry: the type that DEFINES the token, IN ITS OWN FILE.
+    /// Anywhere else in src/, a literal copy of it is the coupling this rule removes.
+    ///
+    /// ⚠ The third assertion is the anti-gaming half, and it is why the exemption is keyed on the file and
+    /// not just the type name: `CurrentType` holds only the SHORT class name, so declaring a second
+    /// `class ElementContent` anywhere in src/ and putting the literal inside it would otherwise satisfy
+    /// the letter of the guard while leaving a hole in it.</summary>
+    [Fact]
+    public void Rule5_exempts_only_the_type_that_defines_the_token_in_its_own_file()
+    {
+        const string decl = @"
+namespace X;
+public static class ElementContent { public const string RedactedToken = ""[REDACTED]""; }";
+
+        // The real definition, at its real path: exempt.
+        Assert.Empty(Rule5Over(decl, "src/FlaUI.Mcp.Core/Perception/ElementContent.cs"));
+
+        // Any other type: flagged.
+        Assert.Single(Rule5Over(@"
+namespace X;
+public static class SomethingElse { public const string Copy = ""[REDACTED]""; }"));
+
+        // ⚠ THE SAME TYPE NAME AT A DIFFERENT PATH: flagged. An impostor cannot borrow the exemption.
+        Assert.Single(Rule5Over(decl, "src/FlaUI.Mcp.Server/Tools/Impostor.cs"));
+    }
+
     // ============================== sweep engine ==============================
 
     private sealed record SweepResult(
         string RepoRoot, int SrcFileCount, List<string> ParseDiagnostics,
-        List<string> Rule1, List<string> Rule2, List<string> Rule3, List<string> Rule4, List<string> Rule4b);
+        List<string> Rule1, List<string> Rule2, List<string> Rule3, List<string> Rule4, List<string> Rule4b,
+        List<string> Rule5);
 
     private static SweepResult RunSweep()
     {
@@ -168,6 +252,7 @@ public class RedactionSurfaceInventoryTests
         var rule3 = new List<string>();
         var rule4 = new List<string>();
         var rule4b = new List<string>();
+        var rule5 = new List<string>();
 
         foreach (var file in files)
         {
@@ -190,9 +275,10 @@ public class RedactionSurfaceInventoryTests
             rule3.AddRange(visitor.Rule3);
             rule4.AddRange(visitor.Rule4);
             rule4b.AddRange(visitor.Rule4b);
+            rule5.AddRange(visitor.Rule5);
         }
 
-        return new SweepResult(repoRoot, files.Count, parseDiagnostics, rule1, rule2, rule3, rule4, rule4b);
+        return new SweepResult(repoRoot, files.Count, parseDiagnostics, rule1, rule2, rule3, rule4, rule4b, rule5);
     }
 
     private static bool IsBuildArtifactPath(string filePath)
@@ -232,6 +318,14 @@ public class RedactionSurfaceInventoryTests
         public readonly List<string> Rule3 = new();
         public readonly List<string> Rule4 = new();
         public readonly List<string> Rule4b = new();
+        public readonly List<string> Rule5 = new();
+
+        // The token itself, taken from the ONE place that defines it rather than spelled again here — a
+        // fourth independent copy inside the rule that forbids independent copies would be its own joke.
+        // The sweep only scans src/, so this reference in test/ is not self-flagging.
+        private static readonly string RedactionToken = FlaUI.Mcp.Core.Perception.ElementContent.RedactedToken;
+        private const string TokenDefiningType = "ElementContent";
+        private const string TokenDefiningFile = "src/FlaUI.Mcp.Core/Perception/ElementContent.cs";
 
         public SweepVisitor(string relPath, string fileBaseNameFallback, Dictionary<string, string> allowed)
         {
@@ -320,6 +414,58 @@ public class RedactionSurfaceInventoryTests
             if (!IsCallToElementContentAccessor(node) && !(id == "Value" && IsCapabilityOrWriteShape(node)))
                 CheckNameOrValue(node, id, node.Expression.ToString());
             base.VisitMemberAccessExpression(node);
+        }
+
+        // ---- Rule 5 (SP4/A6): the redaction token may not appear as a bare string literal anywhere in
+        // src/ outside the type that DEFINES it.
+        //
+        // ⚠⚠ DELIBERATELY INDEPENDENT OF `_allowed`. The allowlist exempts a member from the CONTENT-READ
+        // rules because it is a sanctioned egress accessor; that says nothing about whether the member may
+        // hard-code the token string. The two concerns are orthogonal, and conflating them would be fatal
+        // rather than untidy: SnapshotEngine.FormatNode (:60), SnapshotDiff.ShownName (:64) and
+        // PerceptionManager.ResolveSelectorOnSta (:70) are ALL allowlisted, and they are ALL the sites this
+        // rule exists to catch. Routing it through the `_allowed.ContainsKey` suppression at :454 / :567
+        // would leave it firing on nothing and reporting GREEN forever.
+        // Rule5_fires_inside_a_member_that_the_content_allowlist_exempts pins exactly that.
+        //
+        // AST-awareness is free here rather than new machinery: a token in a `//` or `///` comment is
+        // TRIVIA and never reaches a LiteralExpressionSyntax, so documentation is untouched.
+        //
+        // HONEST LIMITS, so this is never mistaken for a guarantee:
+        //  · BYPASSABLE BY CONSTRUCTION — writing the token as a concatenation, or as a second constant,
+        //    defeats it. It catches ACCIDENT, not intent.
+        //  · NOT A LEAK GUARD — the existing egress tests already compare against the constant, so a typo
+        //    at any single site already fails a test. This removes a coupling.
+        //  · An interpolated string's text is InterpolatedStringTextSyntax, not a literal, so a token
+        //    embedded in a $"..." is not seen. No such site exists in src/ today.
+        public override void VisitLiteralExpression(LiteralExpressionSyntax node)
+        {
+            // The exemption is keyed on the type name AND its file. CurrentType holds only the SHORT
+            // class name, so a type-name-only exemption is defeated by declaring a second
+            // `class ElementContent` anywhere in src/ and putting the literal inside it — which satisfies
+            // the letter of the guard while leaving a hole in it. Requiring the defining file closes that
+            // without a semantic model.
+            //
+            // ⚠ The PATH half compares case-INSENSITIVELY on purpose. `relPath` comes from
+            // Path.GetRelativePath, which preserves the casing ON DISK, so an ordinal compare would fail —
+            // and fail the BUILD, by flagging ElementContent's own constant — on a clone whose folder is
+            // `Src`. Windows paths are case-insensitive, so nothing is lost: an impostor still needs a
+            // different PATH, not merely different casing, and the TYPE-name half stays ordinal.
+            bool inTokenDefiningType =
+                string.Equals(CurrentType, TokenDefiningType, StringComparison.Ordinal)
+                && _relPath.EndsWith(TokenDefiningFile, StringComparison.OrdinalIgnoreCase);
+
+            if (node.IsKind(SyntaxKind.StringLiteralExpression)
+                && !inTokenDefiningType
+                && node.Token.ValueText.Contains(RedactionToken, StringComparison.Ordinal))
+            {
+                int line = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                Rule5.Add($"{_relPath}:{line} member={CurrentKey} — string literal contains the redaction " +
+                          "token; use ElementContent.RedactedToken (concatenate it if the literal is a " +
+                          "longer sentence — const + const is a compile-time constant, so this works in an " +
+                          "attribute argument too)");
+            }
+            base.VisitLiteralExpression(node);
         }
 
         // SP3 reconciliation, Part A: three narrow `.Value` shapes that are not content reads by any
