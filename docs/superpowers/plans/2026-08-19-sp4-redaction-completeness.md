@@ -3752,6 +3752,14 @@ documentation clarification of a coupling already marked safe is not a mechanism
 
 **PANEL VERDICT - round 15: GREEN. No live challenge from any seat. The review's stop condition is met.**
 
+⚠ **REVIEW-ONLY BREACH, recorded rather than glossed:** the peer wrote `check.csx` to the REPOSITORY ROOT,
+outside the `.clavity/scratch/` directory every payload names. Diffed after the consult, as the safety
+envelope requires: **no tracked file was touched**, and the file was a single line -
+`new Rectangle(100, 50, 0, 30)` printing `IsEmpty` and `Width`. So the peer was EMPIRICALLY VERIFYING the
+touching-edge degenerate claim this plan folded in round 6, which is the behaviour one wants; only its
+location was wrong. Deleted. It has no bearing on what was folded, because round 15 folded nothing - every
+seat reported no new findings.
+
 ---
 
 ## Final disposition
