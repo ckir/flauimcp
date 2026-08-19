@@ -539,6 +539,140 @@ public class MaskEscalationTests
         Assert.Equal(3, asked.Count);            // three levels were climbed
         Assert.IsType<bool>(r.Escalated);        // and the outcome is still one boolean
     }
+
+    /// <summary>REGRESSION PIN for the second defect the panel caught, which round 2's own fix introduced:
+    /// a WPF light-dismiss popup's host is a transparent FULL-SCREEN overlay, so its BoundingRectangle is
+    /// the whole monitor while the visible popup is small. Treating "it is only a popup" as "masking it is
+    /// safe" would return a successful all-black screenshot for the most common popup shape there is.
+    ///
+    /// An escalated rect that COVERS the captured region is not a mask - it is an all-black image wearing
+    /// one - and it is rejected on geometry, so the walk keeps climbing and ultimately REFUSES.</summary>
+    [Fact]
+    public void An_escalated_rect_that_covers_the_capture_is_rejected_and_the_walk_continues()
+    {
+        var asked = new List<int>();
+        var wholeScreen = new Rectangle(-100, -100, 9000, 9000); // contains Capture
+
+        // Level 1 would black out everything; level 2 is a real container.
+        var r = MaskEscalation.Resolve(null, Source(asked, (1, wholeScreen), (2, Other)), Capture);
+
+        Assert.True(r.Escalated);
+        Assert.Equal(Other, r.Rect);                 // NOT the screen-covering rect
+        Assert.Equal(new[] { 1, 2 }, asked);
+    }
+
+    /// <summary>The same rule with nothing above it to fall back on: refuse rather than return the
+    /// all-black image. This is the window-root case expressed purely as geometry.</summary>
+    [Fact]
+    public void A_capture_covering_rect_with_no_alternative_refuses()
+    {
+        var wholeScreen = new Rectangle(-100, -100, 9000, 9000);
+
+        var r = MaskEscalation.Resolve(null, level => level == 1 ? wholeScreen : (Rectangle?)null, Capture);
+
+        Assert.True(r.Refused);
+    }
+
+    /// <summary>⚠ THIS FACT REPLACED ONE THAT ASSERTED THE OPPOSITE, and the reversal is the point.
+    ///
+    /// An earlier revision DROPPED an ancestor that did not overlap the capture, reasoning that a secret
+    /// inside it could not appear in the photograph. A panel seat showed the reasoning codifies a LEAK: UIA
+    /// logical parents do not always enclose their visual children. A WPF tooltip, popup or drag adorner is
+    /// routinely ON SCREEN while its logical parent - a scrolled-away button - is entirely off it. If the
+    /// tooltip's own bounds throw, its off-screen parent "cannot appear in the capture", the mask is
+    /// dropped, and the tooltip is photographed in the clear. The test that asserted the drop was asserting
+    /// the bug.
+    ///
+    /// A non-overlapping candidate is now UNUSABLE: keep climbing toward one that does overlap, and refuse
+    /// if none does.</summary>
+    [Fact]
+    public void An_ancestor_outside_the_capture_is_unusable_and_the_walk_climbs_past_it()
+    {
+        var asked = new List<int>();
+        var faraway = new Rectangle(50_000, 50_000, 100, 100); // no overlap with Capture
+
+        var r = MaskEscalation.Resolve(null, Source(asked, (1, faraway), (2, Other)), Capture);
+
+        Assert.True(r.Escalated);
+        Assert.Equal(Other, r.Rect);              // the OVERLAPPING ancestor, not the far-away one
+        Assert.Equal(new[] { 1, 2 }, asked);
+    }
+
+    /// <summary>The same rule with nothing overlapping above it: REFUSE. Dropping here is what leaked.</summary>
+    [Fact]
+    public void An_element_whose_every_ancestor_misses_the_capture_refuses()
+    {
+        var faraway = new Rectangle(50_000, 50_000, 100, 100);
+
+        var r = MaskEscalation.Resolve(null, level => level == 1 ? faraway : (Rectangle?)null, Capture);
+
+        Assert.True(r.Refused);
+    }
+
+    /// <summary>Nothing IntersectsWith a degenerate rectangle, so a degenerate yardstick would discard
+    /// every candidate. The decision REFUSES there rather than returning an unmasked capture.
+    ///
+    /// ⚠ This is REACHABLE in production, and a review round was right to ask. For a window- or
+    /// element-scoped capture the caller falls back to the UNCLIPPED capture rect when the renderable
+    /// intersection is degenerate — and that rect is itself degenerate for a zero-size window, which
+    /// arrives here. (The full-desktop sweep is the path that returns early instead, because a window with
+    /// no renderable overlap contributes no pixels to a virtual-screen capture.) Were this branch ever
+    /// unreachable it would be a false-GREEN, so if a future change makes the caller always pre-filter,
+    /// delete this fact rather than leaving it asserting a guard nothing can reach.</summary>
+    [Theory]
+    [InlineData(0, 0, 0, 0)]        // Rectangle.Empty
+    [InlineData(100, 50, 0, 30)]    // ⚠ NOT IsEmpty: Rectangle.Intersect compares with `>=`, so two rects
+    [InlineData(100, 50, 30, 0)]    //   touching along an edge yield a degenerate rect at non-zero coords
+    public void A_degenerate_yardstick_refuses_rather_than_dropping_every_mask(int x, int y, int w, int h)
+    {
+        var r = MaskEscalation.Resolve(null, Source(new List<int>(), (1, Other)), new Rectangle(x, y, w, h));
+
+        Assert.True(r.Refused);
+    }
+
+    /// <summary>The rule applies to ESCALATED rects only. An element whose OWN rect covers the capture is
+    /// genuinely that large, and masking it is correct rather than a degradation - refusing there would
+    /// break a legitimate full-window redaction.</summary>
+    [Fact]
+    public void An_elements_OWN_capture_covering_rect_is_masked_not_refused()
+    {
+        var wholeScreen = new Rectangle(-100, -100, 9000, 9000);
+
+        var r = MaskEscalation.Resolve(wholeScreen, Source(new List<int>()), Capture);
+
+        Assert.False(r.Refused);
+        Assert.False(r.Escalated);
+        Assert.Equal(wholeScreen, r.Rect);
+    }
+
+    /// <summary>REGRESSION PIN for the defect an adversarial panel caught in this plan's first draft: the
+    /// ancestor walk had NO root bound, and since GetParent succeeds at the window root and the root HAS
+    /// valid bounds, escalation would have masked the whole window and returned a SUCCESSFUL all-black
+    /// screenshot instead of refusing. Every headless fact still passed, because the fake source's chain
+    /// ends in null and so described a boundary the real walk did not have.
+    ///
+    /// This fact pins the CONTRACT that made the fake lie: a source that reports the root as usable turns
+    /// what should be a refusal into a mask, so the SOURCE owes the decision a null at the root.
+    ///
+    /// ⚠ It does NOT pin AncestorRectSource's actual bound. That needs a live element which fails to report
+    /// bounds while its ancestors do not, and no fixture can stage one — the AB-1 limitation. The bound is
+    /// therefore ledgered as accepted boundary AB-7, with this fact named as its compensation and its limit
+    /// stated: if the root check were deleted from AncestorRectSource, no test goes red.</summary>
+    [Fact]
+    public void A_source_that_reports_the_root_as_usable_would_mask_instead_of_refusing()
+    {
+        var asked = new List<int>();
+
+        // A source that keeps answering - i.e. one that failed to stop at the root.
+        var unbounded = MaskEscalation.Resolve(null, level => { asked.Add(level); return Other; }, Capture);
+
+        Assert.False(unbounded.Refused);   // this is the WRONG outcome, and it is what an unbounded walk gives
+        Assert.True(unbounded.Escalated);
+
+        // The bounded contract: the source must report the root as "no rect at this level".
+        var bounded = MaskEscalation.Resolve(null, Source(new List<int>()), Capture);
+        Assert.True(bounded.Refused);
+    }
 }
 ```
 
@@ -1012,145 +1146,6 @@ public sealed class AncestorRectSource
 }
 ```
 
-⚠ **Add one headless fact to `MaskEscalationTests.cs` for the bound, because the fake ancestor source is
-exactly what hid this defect.** Append to that file:
-
-```csharp
-    /// <summary>REGRESSION PIN for the second defect the panel caught, which round 2's own fix introduced:
-    /// a WPF light-dismiss popup's host is a transparent FULL-SCREEN overlay, so its BoundingRectangle is
-    /// the whole monitor while the visible popup is small. Treating "it is only a popup" as "masking it is
-    /// safe" would return a successful all-black screenshot for the most common popup shape there is.
-    ///
-    /// An escalated rect that COVERS the captured region is not a mask - it is an all-black image wearing
-    /// one - and it is rejected on geometry, so the walk keeps climbing and ultimately REFUSES.</summary>
-    [Fact]
-    public void An_escalated_rect_that_covers_the_capture_is_rejected_and_the_walk_continues()
-    {
-        var asked = new List<int>();
-        var wholeScreen = new Rectangle(-100, -100, 9000, 9000); // contains Capture
-
-        // Level 1 would black out everything; level 2 is a real container.
-        var r = MaskEscalation.Resolve(null, Source(asked, (1, wholeScreen), (2, Other)), Capture);
-
-        Assert.True(r.Escalated);
-        Assert.Equal(Other, r.Rect);                 // NOT the screen-covering rect
-        Assert.Equal(new[] { 1, 2 }, asked);
-    }
-
-    /// <summary>The same rule with nothing above it to fall back on: refuse rather than return the
-    /// all-black image. This is the window-root case expressed purely as geometry.</summary>
-    [Fact]
-    public void A_capture_covering_rect_with_no_alternative_refuses()
-    {
-        var wholeScreen = new Rectangle(-100, -100, 9000, 9000);
-
-        var r = MaskEscalation.Resolve(null, level => level == 1 ? wholeScreen : (Rectangle?)null, Capture);
-
-        Assert.True(r.Refused);
-    }
-
-    /// <summary>⚠ THIS FACT REPLACED ONE THAT ASSERTED THE OPPOSITE, and the reversal is the point.
-    ///
-    /// An earlier revision DROPPED an ancestor that did not overlap the capture, reasoning that a secret
-    /// inside it could not appear in the photograph. A panel seat showed the reasoning codifies a LEAK: UIA
-    /// logical parents do not always enclose their visual children. A WPF tooltip, popup or drag adorner is
-    /// routinely ON SCREEN while its logical parent - a scrolled-away button - is entirely off it. If the
-    /// tooltip's own bounds throw, its off-screen parent "cannot appear in the capture", the mask is
-    /// dropped, and the tooltip is photographed in the clear. The test that asserted the drop was asserting
-    /// the bug.
-    ///
-    /// A non-overlapping candidate is now UNUSABLE: keep climbing toward one that does overlap, and refuse
-    /// if none does.</summary>
-    [Fact]
-    public void An_ancestor_outside_the_capture_is_unusable_and_the_walk_climbs_past_it()
-    {
-        var asked = new List<int>();
-        var faraway = new Rectangle(50_000, 50_000, 100, 100); // no overlap with Capture
-
-        var r = MaskEscalation.Resolve(null, Source(asked, (1, faraway), (2, Other)), Capture);
-
-        Assert.True(r.Escalated);
-        Assert.Equal(Other, r.Rect);              // the OVERLAPPING ancestor, not the far-away one
-        Assert.Equal(new[] { 1, 2 }, asked);
-    }
-
-    /// <summary>The same rule with nothing overlapping above it: REFUSE. Dropping here is what leaked.</summary>
-    [Fact]
-    public void An_element_whose_every_ancestor_misses_the_capture_refuses()
-    {
-        var faraway = new Rectangle(50_000, 50_000, 100, 100);
-
-        var r = MaskEscalation.Resolve(null, level => level == 1 ? faraway : (Rectangle?)null, Capture);
-
-        Assert.True(r.Refused);
-    }
-
-    /// <summary>Nothing IntersectsWith a degenerate rectangle, so a degenerate yardstick would discard
-    /// every candidate. The decision REFUSES there rather than returning an unmasked capture.
-    ///
-    /// ⚠ This is REACHABLE in production, and a review round was right to ask. For a window- or
-    /// element-scoped capture the caller falls back to the UNCLIPPED capture rect when the renderable
-    /// intersection is degenerate — and that rect is itself degenerate for a zero-size window, which
-    /// arrives here. (The full-desktop sweep is the path that returns early instead, because a window with
-    /// no renderable overlap contributes no pixels to a virtual-screen capture.) Were this branch ever
-    /// unreachable it would be a false-GREEN, so if a future change makes the caller always pre-filter,
-    /// delete this fact rather than leaving it asserting a guard nothing can reach.</summary>
-    [Theory]
-    [InlineData(0, 0, 0, 0)]        // Rectangle.Empty
-    [InlineData(100, 50, 0, 30)]    // ⚠ NOT IsEmpty: Rectangle.Intersect compares with `>=`, so two rects
-    [InlineData(100, 50, 30, 0)]    //   touching along an edge yield a degenerate rect at non-zero coords
-    public void A_degenerate_yardstick_refuses_rather_than_dropping_every_mask(int x, int y, int w, int h)
-    {
-        var r = MaskEscalation.Resolve(null, Source(new List<int>(), (1, Other)), new Rectangle(x, y, w, h));
-
-        Assert.True(r.Refused);
-    }
-
-    /// <summary>The rule applies to ESCALATED rects only. An element whose OWN rect covers the capture is
-    /// genuinely that large, and masking it is correct rather than a degradation - refusing there would
-    /// break a legitimate full-window redaction.</summary>
-    [Fact]
-    public void An_elements_OWN_capture_covering_rect_is_masked_not_refused()
-    {
-        var wholeScreen = new Rectangle(-100, -100, 9000, 9000);
-
-        var r = MaskEscalation.Resolve(wholeScreen, Source(new List<int>()), Capture);
-
-        Assert.False(r.Refused);
-        Assert.False(r.Escalated);
-        Assert.Equal(wholeScreen, r.Rect);
-    }
-
-    /// <summary>REGRESSION PIN for the defect an adversarial panel caught in this plan's first draft: the
-    /// ancestor walk had NO root bound, and since GetParent succeeds at the window root and the root HAS
-    /// valid bounds, escalation would have masked the whole window and returned a SUCCESSFUL all-black
-    /// screenshot instead of refusing. Every headless fact still passed, because the fake source's chain
-    /// ends in null and so described a boundary the real walk did not have.
-    ///
-    /// This fact pins the CONTRACT that made the fake lie: a source that reports the root as usable turns
-    /// what should be a refusal into a mask, so the SOURCE owes the decision a null at the root.
-    ///
-    /// ⚠ It does NOT pin AncestorRectSource's actual bound. That needs a live element which fails to report
-    /// bounds while its ancestors do not, and no fixture can stage one — the AB-1 limitation. The bound is
-    /// therefore ledgered as accepted boundary AB-7, with this fact named as its compensation and its limit
-    /// stated: if the root check were deleted from AncestorRectSource, no test goes red.</summary>
-    [Fact]
-    public void A_source_that_reports_the_root_as_usable_would_mask_instead_of_refusing()
-    {
-        var asked = new List<int>();
-
-        // A source that keeps answering - i.e. one that failed to stop at the root.
-        var unbounded = MaskEscalation.Resolve(null, level => { asked.Add(level); return Other; }, Capture);
-
-        Assert.False(unbounded.Refused);   // this is the WRONG outcome, and it is what an unbounded walk gives
-        Assert.True(unbounded.Escalated);
-
-        // The bounded contract: the source must report the root as "no rect at this level".
-        var bounded = MaskEscalation.Resolve(null, Source(new List<int>()), Capture);
-        Assert.True(bounded.Refused);
-    }
-```
-
 ⚠ **Sweep note, so it is not a surprise:** this type reads `RuntimeId` and `BoundingRectangle`, both of
 which are in `StructuralProperties` (`RedactionSurfaceInventoryTests.cs:92-96`) and are never flagged by
 RULE 1. It declares no `SensitivityClassifier` parameter, so RULE 4b does not apply. **No allowlist entry
@@ -1259,8 +1254,26 @@ with:
             // and the walk would then judge every mask against a degenerate yardstick that nothing
             // intersects: every mask dropped, capture returned unmasked. A guard producing a leak.
             if (visibleCapture.Width <= 0 || visibleCapture.Height <= 0)
-                return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
-                                           false, false, null, System.Array.Empty<MaskEscalationEntry>());
+            {
+                // ⚠⚠ TWO CALLERS, TWO CORRECT ANSWERS, AND THEY ARE NOT THE SAME ANSWER. This is why the
+                // parameter exists: the method cannot infer which caller it is serving, and guessing was
+                // wrong in BOTH directions across two review rounds.
+                //
+                // FULL-DESKTOP (skipIfOffscreen: true): a window with no renderable overlap contributes no
+                // pixels to a virtual-screen capture, so there is nothing to withhold. Return an empty mask
+                // set. This is what stops ONE invisible off-screen window with a broken provider from
+                // refusing — and so fatally failing — a whole-desktop capture it could not have appeared in.
+                //
+                // WINDOW- OR ELEMENT-SCOPED (false, the default): the caller NAMED this window and will
+                // photograph its rect whatever is or is not rendered there. Suppressing its masks would
+                // hand back an unmasked image of the named target, which is the one thing this feature must
+                // not do. Fall back to the unclipped rect and compute masks normally — the maximized-bleed
+                // case the clipping exists for cannot arise when nothing is on screen to bleed over.
+                if (skipIfOffscreen)
+                    return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
+                                               false, false, null, System.Array.Empty<MaskEscalationEntry>());
+                visibleCapture = captureBounds;
+            }
 
             var pw = new List<System.Drawing.Rectangle>();
             var escalated = new List<MaskEscalationEntry>();
@@ -2117,9 +2130,15 @@ at `:234`:
             // `class ElementContent` anywhere in src/ and putting the literal inside it — which satisfies
             // the letter of the guard while leaving a hole in it. Requiring the defining file closes that
             // without a semantic model.
+            //
+            // ⚠ The PATH half compares case-INSENSITIVELY on purpose. `relPath` comes from
+            // Path.GetRelativePath, which preserves the casing ON DISK, so an ordinal compare would fail —
+            // and fail the BUILD, by flagging ElementContent's own constant — on a clone whose folder is
+            // `Src`. Windows paths are case-insensitive, so nothing is lost: an impostor still needs a
+            // different PATH, not merely different casing, and the TYPE-name half stays ordinal.
             bool inTokenDefiningType =
                 string.Equals(CurrentType, TokenDefiningType, StringComparison.Ordinal)
-                && _relPath.EndsWith(TokenDefiningFile, StringComparison.Ordinal);
+                && _relPath.EndsWith(TokenDefiningFile, StringComparison.OrdinalIgnoreCase);
 
             if (node.IsKind(SyntaxKind.StringLiteralExpression)
                 && !inTokenDefiningType
@@ -3224,3 +3243,44 @@ finds that the peer and the driver made independently. 6 findings folded.**
 **PANEL VERDICT - round 7: REJECT-then-fold. One executability HALT that five rounds had missed, one
 caller-dependent correctness fork, one false-GREEN, and one false STATE_MISMATCH on the first task.
 4 findings folded.**
+
+
+### Round 8 (rotation seat: Regression Historian) - folded; do NOT re-raise
+
+The rotation seat's brief was "which earlier fix did a later fix silently break?", and it found the worst
+case of that so far: **a fix this plan's own ledger CLAIMED was applied, and which was not.**
+
+- **CRITICAL: `skipIfOffscreen` was a DEAD LETTER, and round 7's ledger asserted otherwise.** The parameter
+  was added to the signature (Step 4b) and passed by the full-desktop sweep, but the method body still
+  returned unconditionally - so the early return fired for EVERY caller. A window- or element-scoped
+  capture of an off-screen target therefore still received zero masks: exactly the leak round 7 believed it
+  had closed. Root cause is worth recording because it is a process defect, not a reasoning one: the edit
+  that would have written the body fork was in a script that aborted on a later assertion and never wrote,
+  while the follow-up script only re-applied the signature and the call site. **The ledger entry was
+  written from intent rather than from the file.** The body fork is now actually present.
+- **CONSEQUENCE, also confirmed: two things round 7 recorded as fixed were still broken** because they
+  depended on that fork - the named-target leak, and the false-GREEN `A_degenerate_yardstick_refuses...`
+  fact, which production still could not reach. Both are genuinely closed now.
+- **MEDIUM: RULE 5's file-keyed exemption was case-brittle.** `relPath` comes from
+  `Path.GetRelativePath`, which preserves the ON-DISK casing, so an ordinal `EndsWith` against
+  `"src/FlaUI.Mcp.Core/Perception/ElementContent.cs"` would FAIL - and fail the build, by flagging
+  `ElementContent`'s own constant - on a clone whose folder is `Src`. The path half now compares
+  case-insensitively (Windows paths are), while the TYPE-name half stays ordinal; an impostor still needs a
+  different path, not merely different casing.
+- **Driver's own find this round, by counting rather than trusting: 7 test methods (16 xunit cases) that
+  belong to `MaskEscalationTests.cs` were physically sitting in TASK 4.** Five rounds of appending facts
+  had anchored them wherever the nearest matching summary happened to be. Two consequences, both real:
+  Task 3's gate expected `Passed: 16` from a file that then held 7, and Task 4's `git add` names only three
+  source files, so those facts would have been left UNCOMMITTED. All of them are pure `MaskEscalation.Resolve`
+  decision facts and now sit in Task 3 where that type is built. MEASURED after the move: Task 3 = 16
+  cases, Task 4 = 0, Task 8 = 3, so G2's 870 + 19 = 889 reconciles for the first time since round 3.
+
+**PANEL VERDICT - round 8: REJECT-then-fold. One CRITICAL that was a ledger entry written from intent
+rather than from the file - the most dangerous failure mode a review of this shape has - plus its two
+dependent regressions, a case-brittle guard, and 16 test cases sitting in the wrong task. 4 findings
+folded.**
+
+⚠ **PROCESS LESSON, recorded because it nearly shipped a leak twice:** an entry in a folded ledger is a
+CLAIM about the artifact, not evidence. From here on, every ledger entry in this file should be
+re-verified against the file before it is trusted - which is exactly what the Regression Historian seat
+did, and why it caught this.
