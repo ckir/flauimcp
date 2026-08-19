@@ -774,8 +774,13 @@ public static class MaskEscalation
     ///     is the whole monitor even though the visible popup is small, so "it is only a popup, masking it is
     ///     safe" is false for exactly the popups that are most common;
     ///   · the DESKTOP, if a walk ever escapes its root through an unreadable ancestor identity.
-    /// An earlier draft tried to express this as a window-root-versus-popup-root fork in the ancestor source.
-    /// That fork was wrong in both directions: it refused maskable popups AND it masked whole monitors.
+    /// ⚠ Read this next sentence carefully, because an earlier revision of it was WRONG and a review seat
+    /// caught the lie: the window-root-versus-popup-root fork in AncestorRectSource **still exists and is
+    /// still correct**. What changed is its STATUS. It was once the SOLE mechanism, and as the sole
+    /// mechanism it was wrong in both directions — it refused maskable popups AND it masked whole monitors,
+    /// because a WPF light-dismiss overlay IS a popup and IS the whole screen. This geometric rule is now
+    /// the primary decision; the fork remains beside it as an identity stop that geometry cannot express
+    /// (see BlacksOutTheCapture on why a MOVING window defeats geometry alone).
     ///
     /// The check applies ONLY to escalated rects. An element whose OWN rect covers the capture is genuinely
     /// that large, and masking it is correct rather than a degradation.</summary>
@@ -789,29 +794,30 @@ public static class MaskEscalation
     {
         if (HasArea(ownRect)) return new MaskResolution(ownRect.Value, Escalated: false, Refused: false);
 
+        // ⚠ A DEGENERATE yardstick makes both loop tests meaningless — nothing IntersectsWith a rect of
+        // zero width or height, so every candidate would be discarded and, under an earlier design that
+        // DROPPED such candidates, the capture came back UNMASKED. The caller guarantees a non-degenerate
+        // yardstick; if that guarantee is ever broken, fail CLOSED rather than turning a guard into a leak.
+        //
+        // ⚠ HOISTED ABOVE THE LOOP, and the position is the whole point. A review seat called this check
+        // redundant, and it is RIGHT ABOUT THE OUTCOME: the overlap test below would reject every candidate
+        // anyway and the loop would refuse at the cap. It is kept because "at the cap" means
+        // MaxAncestorLevels ANCESTOR FETCHES first, each a cross-process COM round trip on the single query
+        // STA, for a question already answered. But INSIDE the loop it did not actually deliver that — it
+        // could not run until an ancestor with area had already been fetched, so the short-circuit
+        // short-circuited nothing. The yardstick does not change between iterations; testing it once, here,
+        // is the only position at which this check does what it is justified by.
+        //
+        // ⚠ Tested on EXTENTS, not Rectangle.IsEmpty. IsEmpty requires all four fields to be zero, while
+        // Rectangle.Intersect compares with `>=` and so yields a zero-width rect at non-zero coordinates —
+        // (100, 50, 0, 30) — for two rects that merely touch along an edge. IsEmpty is false there and the
+        // leak would return.
+        if (captureYardstick.Width <= 0 || captureYardstick.Height <= 0) return MaskResolution.Refusal;
+
         for (int level = 1; level <= MaxAncestorLevels; level++)
         {
             var r = ancestorRect(level);
             if (!HasArea(r)) continue;
-
-            // ⚠ A DEGENERATE yardstick makes both tests below meaningless — nothing IntersectsWith a rect
-            // of zero width or height, so every candidate would be discarded and, under an earlier design
-            // that DROPPED such candidates, the capture came back UNMASKED. The caller guarantees a
-            // non-degenerate yardstick; if that guarantee is ever broken, fail CLOSED rather than turning a
-            // guard into a leak.
-            //
-            // ⚠ A review seat called this redundant, and it is RIGHT ABOUT THE OUTCOME and wrong about the
-            // cost. Without it the overlap test below rejects every candidate anyway and the loop refuses at
-            // the cap — same answer. But "at the cap" means MaxAncestorLevels ANCESTOR FETCHES first, each a
-            // cross-process COM round trip on the single query STA, for a question already answered. Kept
-            // as a short-circuit, not as a correctness guard. Do not delete it as dead code; it is a
-            // performance guard whose outcome happens to coincide with the slow path's.
-            //
-            // ⚠ Tested on EXTENTS, not Rectangle.IsEmpty. IsEmpty requires all four fields to be zero,
-            // while Rectangle.Intersect compares with `>=` and so yields a zero-width rect at non-zero
-            // coordinates — (100, 50, 0, 30) — for two rects that merely touch along an edge. IsEmpty is
-            // false there and the leak would return.
-            if (captureYardstick.Width <= 0 || captureYardstick.Height <= 0) return MaskResolution.Refusal;
 
             // ⚠⚠ A CANDIDATE THAT DOES NOT OVERLAP THE CAPTURE IS UNUSABLE — climb on. An earlier revision
             // DROPPED it instead, reasoning that a secret inside an off-capture ancestor cannot appear in
@@ -936,7 +942,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Create: `src/FlaUI.Mcp.Core/Perception/AncestorRectSource.cs`
 - Modify: `src/FlaUI.Mcp.Core/Errors/ToolErrorCode.cs`
-- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:848` (signature), `:862-871` (body), `:942` (record)
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:848` (signature), `:862-871` (body), `:942` (record), `:884,888,899` (rename)
+- Modify: `src/FlaUI.Mcp.Core/Perception/TextCaptureGeometry.cs:13` (rename)
 
 - [ ] **Step 1: STATE-VERIFY**
 
@@ -1121,7 +1128,10 @@ public sealed class AncestorRectSource
                 string? id = IdOf(cursor);
                 lastId = id;
 
-                if (id is not null && string.Equals(id, _rootId, StringComparison.Ordinal))
+                // string.Equals(null, x, Ordinal) is FALSE, so no null guard is needed here — and an
+                // unreadable id must NOT stop the walk anyway; see the paragraph above, which is the whole
+                // reason this reads as a comparison rather than an abort.
+                if (string.Equals(id, _rootId, StringComparison.Ordinal))
                 {
                     exhausted = true; // never climb PAST the root
                     // The window root is never a usable mask — its rect IS the capture. A popup root may be,
@@ -1184,7 +1194,7 @@ is needed for this file.** If the sweep flags it anyway, STOP and report rather 
 Replace `PerceptionManager.cs:942`:
 
 ```csharp
-public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> PasswordRects, bool Minimized, bool Denied, string? DeniedProcess,
+public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects, bool Minimized, bool Denied, string? DeniedProcess,
     IReadOnlyList<MaskEscalationEntry> Escalations);
 ```
 
@@ -1209,6 +1219,36 @@ construction sites, all in this one method (`:853`, `:858`, `:871`), and three r
 floor, which is correct — `desktop_find_text` returns OCR matches, not capture metadata, so it has nowhere
 to report an escalation and no consumer expecting one. It still inherits the REFUSAL, which is the part
 that matters, via Task 5b.
+
+- [ ] **Step 4a: Rename `PasswordRects` → `MaskRects` and `AllPasswordRectsAsync` → `AllMaskRectsAsync`**
+
+Same defect class as A2, and named by a review seat as the last thing standing between this plan and
+"ready". The field has held rects from EVERY redaction source since SP3 — OS password fields, operator
+rules, and unreadable-identity fail-closed — and after A1 it also holds ancestor rects from escalation, so
+"password" is wrong three ways over.
+
+⚠ **INTERNAL ONLY — this is not a wire change and must not become one.** `CaptureGeometry` and
+`TextCaptureGeometry` are internal DTOs; no JSON field is named `passwordRects`. A2 is the wire half of
+this same defect and is the only half with a back-compat cost.
+
+Rename the member on both records and at every use site:
+
+| File | What |
+|---|---|
+| `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:942` | `CaptureGeometry.PasswordRects` → `MaskRects` |
+| `src/FlaUI.Mcp.Core/Perception/TextCaptureGeometry.cs:13` | `TextCaptureGeometry.PasswordRects` → `MaskRects` |
+| `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:884,888` | the two `geo.PasswordRects` reads in `ResolveTextCaptureGeometryAsync` |
+| `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:899` | `AllPasswordRectsAsync` → `AllMaskRectsAsync` |
+| `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:41,49` | the call and the `geo.PasswordRects` read |
+| `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:106` | `geo.PasswordRects` passed to `CaptureRectangle` |
+| `test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs:49` | `Assert.NotEmpty(geo.PasswordRects)` |
+
+⚠ The test edit is a RENAME ONLY — `Assert.NotEmpty` and its subject are unchanged, so standing rule 3 is
+satisfied (a construction fix forced by a signature change is allowed; changing an assertion is not).
+
+Run: `dotnet build FlaUI.Mcp.slnx -c Release`
+Expected: `0 Warning(s)`, `0 Error(s)`. Any file the compiler names that is NOT in the table above means the
+enumeration was incomplete — STOP and report it rather than fixing it silently.
 
 - [ ] **Step 4b: Add the `skipIfNoRenderableOverlap` parameter**
 
@@ -1239,7 +1279,7 @@ with:
 
 ```csharp
             // ⚠ EVERY FAILURE FROM HERE TO THE RETURN MUST BECOME RedactionUnmaskable, NEVER A RAW
-            // EXCEPTION. AllPasswordRectsAsync (the FULL-DESKTOP path) wraps this call in `catch { }` to
+            // EXCEPTION. AllMaskRectsAsync (the FULL-DESKTOP path) wraps this call in `catch { }` to
             // skip a window it cannot bind, and rethrows ONLY RedactionUnmaskable. So a raw COMException
             // escaping here does not fail the capture — it silently drops this window's ENTIRE mask set and
             // photographs it in the clear. That is a leak, and it defeats two decisions at once: A1's
@@ -1313,7 +1353,7 @@ with:
             // ⚠ ONE BLANKET CONVERSION, not a guard per read. Round 4 wrapped the capture-bounds read and
             // the roots[0] enumeration individually and STILL missed PopupFinder.SearchRoots, which is a
             // UIA walk of its own. Any raw exception escaping this region is swallowed by
-            // AllPasswordRectsAsync's `catch { }` on the full-desktop path and becomes a window photographed
+            // AllMaskRectsAsync's `catch { }` on the full-desktop path and becomes a window photographed
             // with NO mask set — so the safe default has to be structural, not a list of remembered sites.
             //
             // A ToolException passes through UNCHANGED: those are deliberate, already-classified outcomes
@@ -1351,7 +1391,7 @@ with:
                     // this line for exactly this reason; this makes the third sibling agree with them.
                     //
                     // ⚠ CONVERTED, not propagated raw. Letting a COMException escape would be caught by
-                    // AllPasswordRectsAsync's `catch { }` on the full-desktop path and turn this strictness
+                    // AllMaskRectsAsync's `catch { }` on the full-desktop path and turn this strictness
                     // into a SILENT SKIP - the precise opposite of the decision this branch encodes.
                     try { descendants = roots[rootIndex].FindAllDescendants(); }
                     catch (System.Exception ex)
@@ -1550,7 +1590,7 @@ with:
                 // though window- and element-scoped capture both masked correctly. The refusal above only
                 // covers DENYLISTED windows; an ordinary window holding a password field was photographed
                 // in the clear.
-                var desk = await _perception.AllPasswordRectsAsync();
+                var desk = await _perception.AllMaskRectsAsync();
                 escalations = desk.Escalations;
                 result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth));
             }
@@ -1560,7 +1600,7 @@ with:
                 if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"Capturing windows owned by '{geo.DeniedProcess}' is blocked.", "capture a non-sensitive window");
                 if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
                 escalations = geo.Escalations;
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.PasswordRects, maxWidth));
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth));
             }
             var dpi = DpiHelper.ScaleForPoint(result.X, result.Y);
             // A1: maskEscalations counts ELEMENTS whose own rect was unusable and whose mask therefore came
@@ -1586,7 +1626,7 @@ with:
 
 Add `using System.Linq;` and `using System.Collections.Generic;` to the top of the file if either is absent.
 
-⚠ `AllPasswordRectsAsync` does not yet return `.Rects` / `.Escalated` — 5b adds that. **Do not build or
+⚠ `AllMaskRectsAsync` does not yet return `.Rects` / `.Escalated` — 5b adds that. **Do not build or
 gate here.** Continue straight into 5b; the tree is expected to be non-compiling in between, which is why
 this is one task rather than two.
 
@@ -1653,21 +1693,33 @@ If either differs, STOP and report `STATE_MISMATCH`.
 Replace `PerceptionManager.cs:899-914` with:
 
 ```csharp
-    public async Task<DesktopMaskSet> AllPasswordRectsAsync()
+    public async Task<DesktopMaskSet> AllMaskRectsAsync()
     {
         var rects = new List<System.Drawing.Rectangle>();
         var escalations = new List<MaskEscalationEntry>();
         var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
         foreach (var w in windows)
         {
+            // ⚠ The IsDenied check is NOT redundant with the one inside ResolveWindowCaptureGeometryAsync,
+            // and a review seat proposed deleting it on exactly that reasoning. Deleting it would still
+            // reach the right ANSWER — the callee returns Denied and the mask set is discarded — but only
+            // after ENUMERATING A DENYLISTED WINDOW'S ENTIRE TREE to build a result thrown away. On a
+            // credential window that is the one tree this product most wants never to walk. It is a
+            // pre-filter for that reason, not a duplicated policy.
             if (w.Handle is null || PerceptionPolicy.IsDenied(w.ProcessName)) continue;
             try
             {
                 var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null,
                                                                   skipIfNoRenderableOverlap: true);
+                // ⚠ KEPT DELIBERATELY. A review seat proposed deleting this condition because the callee
+                // guarantees empty lists when Denied or Minimized, making the AddRange calls harmless
+                // no-ops. True today — and it is precisely the "caller relies on the callee's internals"
+                // coupling that produced this review's round-9 finding, one frame in the other direction.
+                // If a future change ever returned a non-empty rect alongside Denied, deleting this would
+                // turn that into a silent mask of a window we refused to inspect.
                 if (!geo.Denied && !geo.Minimized)
                 {
-                    rects.AddRange(geo.PasswordRects);
+                    rects.AddRange(geo.MaskRects);
                     escalations.AddRange(geo.Escalations);
                 }
             }
@@ -1757,7 +1809,7 @@ nothing the query path does not.
 
 The refusal now reaches both other pixel paths, which were swallowing it:
 
-- full-desktop capture (AllPasswordRectsAsync) skipped any window whose
+- full-desktop capture (AllMaskRectsAsync) skipped any window whose
   geometry threw. A window we cannot BIND is right to skip; one we can see and
   cannot MASK is not - swallowing there made A1 inert on exactly the capture
   mode DEF-2 was about.
@@ -2585,7 +2637,7 @@ pinned on the desktop by
 windows all have captions.
 
 ### AB-9 — a window UIA cannot BIND is skipped, not refused  *(SP4/A1, pre-existing)*
-**Behaviour:** on the full-desktop path, `AllPasswordRectsAsync` catches a bind failure and skips that
+**Behaviour:** on the full-desktop path, `AllMaskRectsAsync` catches a bind failure and skips that
 window; the capture then proceeds and photographs it.
 **Why it matters:** an ELEVATED window (an admin terminal, Task Manager) cannot be bound by a
 non-elevated UIA client at all, so `ResolveWindowCaptureGeometryAsync` throws BEFORE reaching the mask
@@ -2959,12 +3011,12 @@ spelled once and used identically everywhere after.
   stated in the rule's own comment. No such site exists in `src/` today; if one is ever added, the rule is
   silent on it. Not closed because closing it means walking `InterpolatedStringTextSyntax` too, which buys
   nothing against a guard the spec already declares bypassable by construction.
-- **`CaptureGeometry.PasswordRects` and `TextCaptureGeometry.PasswordRects` are MISNAMED, and this plan
+- **`CaptureGeometry.MaskRects` and `TextCaptureGeometry.MaskRects` are MISNAMED, and this plan
   does not rename them.** They have held rects from every redaction source since SP3 — OS password fields,
   operator rules, and unreadable-identity fail-closed — and after A1 they also hold ancestor rects from
   escalation, so "password" is wrong three ways over. It is the same defect class as A2, which this
   increment DOES fix. The difference, and the reason for the split: A2's `redacted` is a WIRE field that
-  misleads every consumer, and renaming it is free only before v1.0.0. `PasswordRects` is an internal DTO
+  misleads every consumer, and renaming it is free only before v1.0.0. `MaskRects` is an internal DTO
   member with three call sites and no wire presence, so it can be renamed at any time at no cost — while
   renaming it here would add a step touching two records, three consumers and a test, to a plan that has
   already been rewritten across ten review rounds, and each such edit has twice produced a STATE-VERIFY
@@ -3176,7 +3228,7 @@ anecdote: on this mechanism, folding without re-running would have shipped a def
   unreadable identity reaches the desktop, whose rect now correctly contains the visible capture and is
   rejected.
 - **CRITICAL, and it is a LEAK that predates SP4: a raw exception from the mask walk becomes a SILENT SKIP
-  on the full-desktop path.** `AllPasswordRectsAsync` wraps each window in `catch { }` to skip one it cannot
+  on the full-desktop path.** `AllMaskRectsAsync` wraps each window in `catch { }` to skip one it cannot
   bind, and rethrows only `RedactionUnmaskable`. So a COMException from the capture-bounds read - or from
   `roots[0].FindAllDescendants()` - drops that window's ENTIRE mask set while the full-desktop capture
   proceeds and photographs it in the clear. It defeated TWO decisions at once: A1's refusal, and the
@@ -3214,7 +3266,7 @@ capture - plus one HIGH over-refusal and one stale-prose defect. 5 findings fold
 - **CRITICAL, and it is the THIRD instance of one class: `PopupFinder.SearchRoots` was still unguarded.**
   Round 4 wrapped the capture-bounds read and the roots[0] enumeration individually and missed this one,
   which is a UIA walk of its own. Any raw exception escaping the mask walk is swallowed by
-  AllPasswordRectsAsync's `catch { }` and becomes a window photographed with NO mask set. Fixed
+  AllMaskRectsAsync's `catch { }` and becomes a window photographed with NO mask set. Fixed
   STRUCTURALLY rather than by adding a third guard: the whole region is now wrapped in ONE conversion to
   RedactionUnmaskable, with ToolException passing through unchanged so RefNotFound and the refusals keep
   their codes. Guarding reads one at a time had already failed twice; the lesson is that the safe default
@@ -3270,7 +3322,7 @@ had reread since round 1. 5 findings folded.**
   determined might be inside the captured region, and guessing otherwise is what leaked.
 - **HIGH: an off-screen window with a broken provider FATALLY failed the whole full-desktop capture.** Its
   degraded yardstick equalled its own bounds, so any escalation to the window root "blacked out the
-  capture" and refused - and AllPasswordRectsAsync rethrows that. A window with no renderable overlap now
+  capture" and refused - and AllMaskRectsAsync rethrows that. A window with no renderable overlap now
   returns early with no masks and no refusal: it contributes no pixels to any capture, so there is nothing
   to withhold and nothing to refuse over.
 - **MEDIUM: the blanket `catch (System.Exception)` reclassified CRITICAL failures.** An OutOfMemoryException
@@ -3425,7 +3477,7 @@ finding rejected with recorded reasoning. 2 folded, 1 rejected, 1 documented.**
 ### Round 10 (rotation seat: Naming & Contract Auditor) - folded; do NOT re-raise
 
 ⚠ **The peer's reply arrived TRUNCATED** - its final message was a meta-summary rather than the panel text,
-naming its findings (`visibleCapture`, `PasswordRects`, `Resolve`'s docstring, and a Cascade Analyst
+naming its findings (`visibleCapture`, `MaskRects`, `Resolve`'s docstring, and a Cascade Analyst
 finding on swallowed critical exceptions) without their full argument. Recorded plainly rather than
 papered over: three of the four had already been found independently by the driver in the same round, and
 the fourth was reconstructible and verified. Round 11 re-covers the same ground with a fresh seat, so a
@@ -3434,7 +3486,7 @@ detail lost to the truncation gets a second chance rather than being assumed abs
 - **CRITICAL, and it is the edge round 6's own fix cut: filtering the misclassification moved the leak one
   frame up.** Round 6 correctly stopped the mask walk reclassifying `OutOfMemoryException` as
   `RedactionUnmaskable` - but the exception then propagates OUT of the walk into
-  `AllPasswordRectsAsync`, where a bare `catch { }` swallowed it, skipped the window, and let the
+  `AllMaskRectsAsync`, where a bare `catch { }` swallowed it, skipped the window, and let the
   full-desktop capture photograph it. The skip now carries the same filter as the conversion.
 - **Driver's own finds this round, converging with the peer on the first:**
   · `visibleCapture` was no longer the visible capture - after round 7 the caller reassigns it to the
@@ -3448,10 +3500,10 @@ detail lost to the truncation gets a second chance rather than being assumed abs
   · **`Escalated` meant a BOOL on one type and a LIST on two others** (`MaskResolution.Escalated` vs
     `CaptureGeometry.Escalated` / `DesktopMaskSet.Escalated`). The list-valued members are now
     `Escalations`; the WIRE field stays `escalated`, because that is the published contract.
-- **Flagged, deliberately NOT fixed, with the reason recorded:** `PasswordRects` has been misnamed since
+- **Flagged, deliberately NOT fixed, with the reason recorded:** `MaskRects` has been misnamed since
   SP3 - it holds rects from every redaction source, and after A1 also ancestor rects - which is the same
   defect class as A2. A2 is fixed here because it is a WIRE field, misleading every consumer, and free to
-  rename only before v1.0.0. `PasswordRects` is internal with three call sites and can be renamed at no
+  rename only before v1.0.0. `MaskRects` is internal with three call sites and can be renamed at no
   cost at any time, while renaming it at round 10 would add a step touching two records, three consumers
   and a test to a plan whose every such edit has twice produced a STATE-VERIFY mismatch. Deferred, not
   overlooked.
@@ -3459,3 +3511,49 @@ detail lost to the truncation gets a second chance rather than being assumed abs
 **PANEL VERDICT - round 10: REJECT-then-fold. One CRITICAL leak created by round 6's own fix, four naming
 contracts that lied at their use sites, and one misnaming flagged with an explicit reason for deferring.
 5 folded, 1 flagged, 1 peer reply truncated and re-covered next round.**
+
+
+### Round 11 (rotation seat: Diff Minimalist) - folded; do NOT re-raise
+
+The first round in which most seats reported NO NEW FINDINGS - Axiom Breaker, Cascade Analyst, Boundary
+Smuggler, Literal Implementer and Mechanism Gamer all came back empty, and the peer answered the
+"is it ready" question directly rather than hunting for a finding to justify the round.
+
+- **The `PasswordRects` deferral is REVERSED, and the reversal is worth recording.** Round 10 flagged the
+  misnaming and deferred it, arguing that each such edit had twice produced a STATE-VERIFY mismatch. That
+  argument was weaker than it looked: the mismatch risk is now MEASURABLE - a script extracts every
+  STATE-VERIFY block and diffs it against disk - so the cost that justified deferring had already been
+  removed by an earlier round. The peer independently named this as the last thing between the plan and
+  "ready". Renamed: `PasswordRects` -> `MaskRects` on both records, `AllPasswordRectsAsync` ->
+  `AllMaskRectsAsync`, as new Step 4a with a complete site table. Internal only; no wire field is affected,
+  because A2 is the wire half of this same defect.
+- **HIGH: `Resolve`'s docstring said the window/popup fork was an earlier draft that was "wrong in both
+  directions", while `AncestorRectSource` still implements it and its own doc defends it.** Both sentences
+  were written truthfully and neither was edited when the design changed underneath them: the fork WAS
+  wrong as the SOLE mechanism, and is correct as an identity stop beside the geometric rule. The doc now
+  says which of those it is talking about. This is the FOURTH stale-comment defect in this review, all four
+  the same shape - a sentence that was true when written.
+- **ACCEPTED removal: the `id is not null &&` guard was dead code.** `string.Equals(null, x, Ordinal)` is
+  already false, so the operator did nothing. Removed, with the comment kept, because the comment is what
+  carries round 2's finding that an unreadable id must not abort the walk.
+
+**REJECTED, with the reasoning written into the code where the next reader will try again:**
+- *"`PerceptionPolicy.IsDenied` in the caller duplicates the callee's check."* True about the ANSWER, wrong
+  about the cost: deleting it reaches the same result only after ENUMERATING A DENYLISTED WINDOW'S ENTIRE
+  TREE to build a mask set that is then discarded. On a credential window that is the one tree this product
+  most wants never to walk.
+- *"`if (!geo.Denied && !geo.Minimized)` duplicates a callee guarantee."* True today, and it is exactly the
+  "caller relies on the callee's internals" coupling that produced round 9's finding, one frame in the
+  other direction. If a future change returned a non-empty rect alongside Denied, deleting this would turn
+  that into a silent mask of a window we refused to inspect.
+
+**Driver's own find this round, applying the same minimalist lens:** the degenerate-yardstick check was
+INSIDE the loop, so it could not run until an ancestor with area had already been fetched - meaning the
+short-circuit that round 9 justified it by did not actually short-circuit anything. The yardstick does not
+change between iterations; hoisted above the loop, which is the only position at which the check does what
+it is justified by.
+
+**PANEL VERDICT - round 11: REJECT-then-fold, but the shape of the round changed. Five of six seats found
+nothing; one CRITICAL-class stale doc, one reversed deferral, one accepted removal, two removals rejected
+with recorded reasoning, one driver find. The peer's answer to "is it ready" was YES conditional on the
+two items now folded.**
