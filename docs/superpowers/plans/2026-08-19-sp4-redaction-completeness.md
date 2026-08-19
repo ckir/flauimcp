@@ -2617,7 +2617,6 @@ third is the `WindowTitle` assertion moved here from Task 1, because a headless 
         Assert.Null(mgr.WindowTitle(System.IntPtr.Zero));
     }
 
-```csharp
 
     /// <summary>SP4/A5 — the load-bearing half of this fact is the NotEqual. `window.title` used to be the
     /// focused ELEMENT's Name, so under the pre-fix code focusing OkButton made title == "OK". It is now
@@ -3143,15 +3142,15 @@ Run by the author against the spec, after the plan was written.
 | §3 contracts | `maskEscalations`, `escalated`, `RedactionUnmaskable`, refusal message names id+type never Name | 4 (code) + 5 (metadata) |
 | §3 testability seam (lazy · failure-as-absence · injectable) | all three | 3 |
 | §3 cost + termination (memoize, non-element key, cap) | all three | 3 (cap) + 4 (memoize) |
-| §3 ledger consequence (re-validate AB-3) | done, with a recorded outcome | 12 |
+| §3 ledger consequence (re-validate AB-3) | done, with a recorded outcome | 11 |
 | §4 A5 fix steps 1, 2, 4 | GetWindowText · no new field · guarded root fallback | 1 |
-| §4 A5 fix step 3 | allowlist REWRITE, not delete | 10 |
-| §4 out-of-band announcement (CHANGELOG · agent-contract · `[Description]`) | all three | 5 (description) + 12 |
+| §4 A5 fix step 3 | allowlist REWRITE, not delete | 9 |
+| §4 out-of-band announcement (CHANGELOG · agent-contract · `[Description]`) | all three | 5 (description) + 11 |
 | §5 A2 rename + no alias + pin preserved | all three | 2 |
-| §6 A6 (3 executable · 4 attributes · allowlist-independent rule · one exemption) | all four | 7, 8, 9 |
-| §7 A3, A4 dispositions | both | 12 |
-| §8 test table (10 rows) | every row has a task and a named mutant | 2, 3, 9, 11 |
-| §8a order (source → attributes → rules → allowlist) | task order is 1-2, 3-6, 7-8, 9, 10 | — |
+| §6 A6 (3 executable · 4 attributes · allowlist-independent rule · one exemption) | all four | 6, 7, 8 |
+| §7 A3, A4 dispositions | both | 11 |
+| §8 test table (10 rows) | every row has a task and a named mutant | 2, 3, 8, 10 |
+| §8a order (source → attributes → rules → allowlist) | task order is 1-2, 3-5, 6-7, 8, 9 | — |
 | §9 gates | G1-G6 | — |
 | §10 binding constraints (4) | see below | — |
 
