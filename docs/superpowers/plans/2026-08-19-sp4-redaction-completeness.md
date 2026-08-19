@@ -71,7 +71,11 @@ facts, in Task 10.
 1. **Step 0 STATE-VERIFICATION is mandatory.** Open the cited file and confirm the pasted "current" code
    matches byte-for-byte before editing. If it differs, STOP and report `STATE_MISMATCH: <what>` — do not
    adapt.
-   ⚠ **A STATE-VERIFY block quotes the file AS IT IS ON DISK, never code this plan adds.** That sounds too
+   ⚠ **A STATE-VERIFY block quotes the file AS THE PRECEDING TASKS LEAVE IT.** For every block but one
+   that is identical to the file on disk today, because no earlier task touched those lines. The single
+   exception is Task 5b Step 1, which quotes `PerceptionManager.cs:899-914` AFTER Task 4 Step 4a's rename,
+   and says so at the block. A block must never quote code that NO task produces.
+   ⚠ **Never quote code this plan adds as though it were already there.** That sounds too
    obvious to write down, and it is written down because it was VIOLATED: five rounds of review edits
    anchored new code onto a line that appeared only inside Task 4's verify block, so the "current code" it
    asked the executor to confirm silently grew ~50 lines that exist nowhere. An executor would have
@@ -1658,10 +1662,18 @@ about.
 
 - [ ] **Step 1: STATE-VERIFY**
 
-Confirm `PerceptionManager.cs:899-914` is exactly:
+⚠⚠ **THIS BLOCK QUOTES THE FILE AS TASK 4 LEAVES IT, NOT AS IT IS ON DISK TODAY — and it is the ONLY
+STATE-VERIFY block in this plan that does.** Task 4 Step 4a renames `AllPasswordRectsAsync` and
+`geo.PasswordRects`, and Task 4 runs first, so by the time an executor reaches here those two identifiers
+have already changed. Quoting the pre-rename text would produce a `STATE_MISMATCH` caused by the plan's own
+earlier step, halting the rollout halfway through — which is exactly what a review round caught. If you are
+running the mechanical disk-diff over this plan's STATE-VERIFY blocks, EXCLUDE this one or apply Task 4a's
+rename to the file first; a diff failure here is expected and is not a defect.
+
+Confirm `PerceptionManager.cs:899-914` is exactly (post-Task-4a):
 
 ```csharp
-    public async Task<IReadOnlyList<System.Drawing.Rectangle>> AllPasswordRectsAsync()
+    public async Task<IReadOnlyList<System.Drawing.Rectangle>> AllMaskRectsAsync()
     {
         var rects = new List<System.Drawing.Rectangle>();
         var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
@@ -1671,7 +1683,7 @@ Confirm `PerceptionManager.cs:899-914` is exactly:
             try
             {
                 var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null);
-                if (!geo.Denied && !geo.Minimized) rects.AddRange(geo.PasswordRects);
+                if (!geo.Denied && !geo.Minimized) rects.AddRange(geo.MaskRects);
             }
             catch { } // a window that closed mid-enumeration, or one we cannot bind: skip it
         }
@@ -1700,12 +1712,18 @@ Replace `PerceptionManager.cs:899-914` with:
         var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
         foreach (var w in windows)
         {
-            // ⚠ The IsDenied check is NOT redundant with the one inside ResolveWindowCaptureGeometryAsync,
-            // and a review seat proposed deleting it on exactly that reasoning. Deleting it would still
-            // reach the right ANSWER — the callee returns Denied and the mask set is discarded — but only
-            // after ENUMERATING A DENYLISTED WINDOW'S ENTIRE TREE to build a result thrown away. On a
-            // credential window that is the one tree this product most wants never to walk. It is a
-            // pre-filter for that reason, not a duplicated policy.
+            // ⚠ THE ORIGINAL REASON GIVEN FOR KEEPING THIS CHECK WAS FALSE, and the correction is recorded
+            // because the false version was persuasive. It claimed that deleting it would ENUMERATE a
+            // denylisted window's entire tree. MEASURED at PerceptionManager.cs:852: the callee tests
+            // PerceptionPolicy.IsDenied FIRST and returns immediately, well before PopupFinder.SearchRoots
+            // at :861 — so no tree is ever walked for a denied window, with or without this line.
+            //
+            // What it actually saves is smaller and worth stating accurately: one
+            // RunWithWindowAndDesktopAsync dispatch per denied window — binding the handle to a live
+            // element on the query STA, plus SafeProcessName — for an answer already known here. Kept for
+            // that, and because stating the denylist at the enumeration site keeps the policy visible where
+            // windows are chosen rather than only where they are resolved. A reviewer who wants it gone has
+            // a defensible case; the case must just not be the false one above.
             if (w.Handle is null || PerceptionPolicy.IsDenied(w.ProcessName)) continue;
             try
             {
@@ -3557,3 +3575,38 @@ it is justified by.
 nothing; one CRITICAL-class stale doc, one reversed deferral, one accepted removal, two removals rejected
 with recorded reasoning, one driver find. The peer's answer to "is it ready" was YES conditional on the
 two items now folded.**
+
+
+### Round 12 (rotation seat: Adversary of Record) - folded; do NOT re-raise
+
+Five of six seats reported no new findings again. The rotation seat's brief was to name the ONE thing that
+would most embarrass everyone if it shipped - and it did, plus it refuted one of the driver's own
+rejections from round 11.
+
+- **CRITICAL, and self-inflicted by round 11: the plan was UNEXECUTABLE again.** Task 4 Step 4a renames
+  `AllPasswordRectsAsync` and `geo.PasswordRects`; Task 5b Step 1 then STATE-VERIFIES
+  `PerceptionManager.cs:899-914` against the PRE-rename text. An executor following the plan literally
+  halts at `STATE_MISMATCH` caused by the plan's own earlier step, aborting the rollout halfway. Fixed by
+  quoting the POST-Task-4a text and labelling that block as the single one in this plan that quotes the
+  file as a PRIOR TASK leaves it rather than as it is on disk - with an explicit instruction that the
+  mechanical disk-diff must exclude it, so a future run does not "fix" it back into a halt. The standing
+  rule at the top of the plan is reworded to cover this case, since it previously said STATE-VERIFY quotes
+  disk, full stop, and that is now true of every block but one.
+  ⚠ This is the SECOND executability halt caused by an edit interacting with a STATE-VERIFY block, and the
+  FIRST caused by a rename. Both were caught by a panel, neither by the mechanical check - the check
+  compares against DISK, and neither defect was a disk mismatch.
+- **THE DRIVER'S OWN REJECTION FROM ROUND 11 WAS FACTUALLY WRONG, and the peer refuted it with a
+  citation.** I rejected removing the caller's `IsDenied` pre-filter on the grounds that deleting it would
+  ENUMERATE a denylisted window's entire tree. MEASURED at `PerceptionManager.cs:852`: the callee tests
+  `PerceptionPolicy.IsDenied` FIRST and returns immediately, well before `PopupFinder.SearchRoots` at
+  `:861`. No tree is ever walked for a denied window, with or without that line. The check is KEPT, but on
+  the accurate and much smaller ground that it saves one `RunWithWindowAndDesktopAsync` dispatch per denied
+  window and keeps the denylist visible where windows are chosen. The false reasoning is recorded at the
+  site rather than quietly replaced, because it was persuasive and someone will re-derive it.
+  ⚠ Worth stating plainly: a rejection written into the code is exactly as capable of being wrong as a
+  finding, and this review had been treating its own rejections as settled. The peer accepted the OTHER
+  rejection (the Denied/Minimized guard) on its merits.
+
+**PANEL VERDICT - round 12: REJECT-then-fold. One CRITICAL executability halt introduced by round 11's own
+rename, and one of the driver's rejections refuted by measurement. The seat's answer to "is it ready" was:
+ready once the STATE-VERIFY contradiction is patched. It now is.**
