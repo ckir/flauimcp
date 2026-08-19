@@ -2232,7 +2232,12 @@ Add these three `[Fact]` methods INSIDE the `RedactionSurfaceInventoryTests` cla
     private static List<string> Rule5Over(string source, string relPath = "src/Fake.cs")
     {
         var tree = CSharpSyntaxTree.ParseText(source, path: relPath);
-        Assert.Empty(tree.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error));
+        // ⚠ NOT Assert.Empty(...Where(...)). That is what this line said for fifteen rounds, and it emits
+        // analyzer warning xUnit2029 ("Do not use Assert.Empty to check if a value does not exist in a
+        // collection"), which breaks standing rule 4. MEASURED: restoring the Where-form makes
+        // `dotnet build test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj -c Release --no-incremental` report
+        // `1 Warning(s)` at this exact line. The two forms assert the identical condition.
+        Assert.DoesNotContain(tree.GetDiagnostics(), d => d.Severity == DiagnosticSeverity.Error);
         var visitor = new SweepVisitor(relPath, "Fake", AllowedMembers);
         visitor.Visit(tree.GetRoot());
         return visitor.Rule5;
