@@ -82,7 +82,14 @@ public class RedactionSurfaceInventoryTests
         ["SensitivityClassifier.Classify"] = "not a UIA read: rule.Name is the matched rule's configured name, which becomes Sensitivity.RuleName",
         ["SnapshotEngine.IsInteractiveNode"] = "reads SnapshotNode.Name but ONLY as IsNullOrWhiteSpace emptiness; exposes no content, not even via branching on it",
         ["SnapshotEngine.SupportedPatterns"] = "not a UIA read: c.Name is a hardcoded pattern label from a (string Name, Func<bool>) tuple - Invoke, Value, etc.",
-        ["WindowManager.ResolveFocusedWindowAsync"] = "window TITLE via Properties.Name, not element content - the census's canonical 'neither'. NOTE: filed as an open anomaly (.clavity/local-anomalies.md) because a title can carry a document/customer name and no rule can target it today",
+        // ⚠⚠ THIS REASON HAS THE SAME SHAPE AS THE FALSE ONE IT REPLACES, AND THAT IS A HAZARD, NOT A
+        // COINCIDENCE. The removed text read "window TITLE via Properties.Name, not element content" and was
+        // FALSE, because the element being read was the FOCUSED ELEMENT. The text below is TRUE, because the
+        // element being read is the WINDOW ROOT. The distinction IS the entire justification. A future
+        // reviewer must check WHICH ELEMENT this member reads before honouring the exemption — not merely
+        // that a plausible sentence is present. Two reasons in this file have already turned out false, and
+        // one of them silenced the sweep on the exact member that was leaking.
+        ["WindowManager.ResolveFocusedWindowAsync"] = "IDENTITY reader: reads the WINDOW ROOT's Name, which IS the window's title, and only as a fallback when the Win32 caption is empty (a framework drawing its own title bar). NOT the focused element's Name - that was the false version of this reason, and the leak it hid is fixed in SP4/A5",
         ["CheckRedactionRulesCommand.PrintResults"] = "not a UIA read: r.Name is the rule's configured name from the operator's own file",
         ["FindTools.DesktopFind"] = "reads FindMatch.Name, ALREADY redacted at construction in PerceptionManager.FindAsync - a DTO re-read, not a live element read",
         ["SnapshotTools.DesktopSnapshotDiff"] = "reads DiffDescriptor.Name, ALREADY redacted at construction by SnapshotDiff.ShownName - a DTO re-read, not a live element read",
