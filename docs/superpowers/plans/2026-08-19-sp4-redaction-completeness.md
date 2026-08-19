@@ -73,9 +73,16 @@ facts, in Task 10.
    adapt.
    ⚠ **A STATE-VERIFY block quotes the file AS THE PRECEDING TASKS LEAVE IT.** For every block but one
    that is identical to the file on disk today, because no earlier task touched those lines. The single
-   exception is Task 5b Step 1, which quotes `PerceptionManager.cs:899-914` AFTER Task 4 Step 4a's rename,
+   exception is Task 5b Step 1, which quotes the `AllMaskRectsAsync` member AFTER Task 4 Step 4a's rename,
    and says so at the block. A block must never quote code that NO task produces.
-   ⚠ **Never quote code this plan adds as though it were already there.** That sounds too
+   ⚠ **Never quote code this plan adds as though it were already there.**
+   ⚠ **EVERY line number in this plan is stated as of the BRANCH POINT, not as of the moment you reach it.**
+   Task 4 alone moves everything below `PerceptionManager.cs:848` down by **198 lines** (Step 5 turns 10
+   lines into 203; Step 4b turns 1 into 6). Any later task naming a line in that file is therefore naming a
+   number that no longer exists. **Anchor on the member declaration or the quoted content, always** — the
+   numbers are orientation, and a task that gives only a number is telling you where the code USED to be.
+   This bit twice: once at +5 and once at +198, the second time pointing into the middle of the block the
+   plan had just written. That sounds too
    obvious to write down, and it is written down because it was VIOLATED: five rounds of review edits
    anchored new code onto a line that appeared only inside Task 4's verify block, so the "current code" it
    asked the executor to confirm silently grew ~50 lines that exist nowhere. An executor would have
@@ -1664,7 +1671,7 @@ with:
 ### Task 5b — propagate the refusal to full-desktop capture and OCR
 
 **Files:**
-- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:891-914`
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` — the `AllMaskRectsAsync` member and its XML doc (pre-Task-4 `:891-914`; ~`:1089-1112` after Task 4's +198 — anchor on the member)
 - Modify: `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:104`
 
 Decisions D4 and D5. Both sites currently swallow a `ToolException` from geometry resolution, so without
@@ -1681,7 +1688,18 @@ earlier step, halting the rollout halfway through — which is exactly what a re
 running the mechanical disk-diff over this plan's STATE-VERIFY blocks, EXCLUDE this one or apply Task 4a's
 rename to the file first; a diff failure here is expected and is not a defect.
 
-Confirm `PerceptionManager.cs:899-914` is exactly (post-Task-4a):
+⚠⚠ **THE LINE NUMBERS BELOW ARE PRE-TASK-4 AND ARE NOW WRONG BY ~198 LINES. ANCHOR ON THE MEMBER NAME.**
+Task 4 replaces a 10-line region with a 203-line one (Step 5) and a 1-line signature with a 6-line one
+(Step 4b), so everything below `:848` in this file has moved DOWN by **198** by the time you arrive here:
+`AllMaskRectsAsync` sits at roughly `:1097-1112` and its XML doc at roughly `:1089-1096`.
+
+**Find the member by its declaration, not by counting.** An executor that trusts `:899-914` here overwrites
+the dead centre of the 203-line block Task 4 just wrote — destroying the mask walk and leaving a file that
+neither compiles nor resembles either version. Every "roughly" above is deliberate: the exact figure shifts
+again with any edit to Task 4, so the SIGNATURE is the anchor and the numbers are orientation only.
+
+Confirm the member `AllMaskRectsAsync` (pre-Task-4 `PerceptionManager.cs:899-914`, ~`:1097-1112` now) is
+exactly (post-Task-4a):
 
 ```csharp
     public async Task<IReadOnlyList<System.Drawing.Rectangle>> AllMaskRectsAsync()
@@ -1713,7 +1731,8 @@ If either differs, STOP and report `STATE_MISMATCH`.
 
 - [ ] **Step 2: Return escalations from the full-desktop path, and stop swallowing the refusal**
 
-Replace `PerceptionManager.cs:899-914` with:
+Replace the whole `AllMaskRectsAsync` member you just verified — pre-Task-4 `:899-914`, ~`:1097-1112` after
+Task 4's +198 — with:
 
 ```csharp
     public async Task<DesktopMaskSet> AllMaskRectsAsync()
@@ -1725,7 +1744,7 @@ Replace `PerceptionManager.cs:899-914` with:
         {
             // ⚠ THE ORIGINAL REASON GIVEN FOR KEEPING THIS CHECK WAS FALSE, and the correction is recorded
             // because the false version was persuasive. It claimed that deleting it would ENUMERATE a
-            // denylisted window's entire tree. MEASURED at PerceptionManager.cs:852: the callee tests
+            // denylisted window's entire tree. MEASURED at PerceptionManager.cs:852 (line as of the branch point, before this task's own +198): the callee tests
             // PerceptionPolicy.IsDenied FIRST and returns immediately, well before PopupFinder.SearchRoots
             // at :861 — so no tree is ever walked for a denied window, with or without this line.
             //
@@ -1771,7 +1790,8 @@ Replace `PerceptionManager.cs:899-914` with:
     }
 ```
 
-Also update the XML doc immediately above it (`:891-898`) by appending this paragraph before `</summary>`:
+Also update the XML doc immediately ABOVE that member — pre-Task-4 `:891-898`, ~`:1089-1096` after Task 4's
++198 — by appending this paragraph before `</summary>`:
 
 ```
     /// ⚠ The skip is NOT unconditional: a RedactionUnmaskable refusal is rethrown. Skipping a window we
@@ -3659,3 +3679,42 @@ Literal Implementer and Mechanism Gamer all reported no new findings.
 **PANEL VERDICT - round 13: REJECT-then-fold, and narrowing. One HIGH that would have put a broken build in
 history, one line-number drift the peer missed, and everything else verified clean. 2 findings folded, 0
 disputed.**
+
+
+### Round 14 (rotation seat: Closing Argument) - folded; do NOT re-raise
+
+Four of six seats reported no new findings. The Literal Implementer found a much larger instance of the
+drift round 13 had caught, and the rotation seat - asked to argue that the review should STOP, then attack
+its own case - predicted precisely that class before it was found.
+
+- **CRITICAL, and it is round 13's finding at forty times the magnitude: Task 5b's line numbers were wrong
+  by 198 lines, and following them would have destroyed the code Task 4 had just written.** Round 13 fixed
+  the +5 from Step 4b's expanded signature. It missed that Step 5 replaces a 10-line region with a
+  **203-line** one. MEASURED by counting both fenced blocks: total shift below `PerceptionManager.cs:848`
+  is **+198**, so `AllMaskRectsAsync` sits at ~`:1097-1112` and its XML doc at ~`:1089-1096`. An executor
+  replacing `:899-914` would overwrite the dead centre of the 203-line mask walk it had written one task
+  earlier, leaving a file that neither compiles nor resembles either version.
+  ⚠ The peer computed +193 and the driver had earlier computed +5. **Each had exactly half the answer**:
+  the peer missed Step 4b's signature expansion, the driver missed Step 5's block. The true figure is the
+  sum, and neither party would have got there alone.
+  Fixed by ANCHORING Task 5b on the member declaration rather than on numbers, giving both the pre-Task-4
+  and post-Task-4 figures explicitly as orientation, and adding a standing rule at the top of the plan:
+  every line number in this document is stated as of the BRANCH POINT, so any task after Task 4 that names
+  a line in that file is naming a number that no longer exists.
+- **Driver's own sweep after the fold:** every `PerceptionManager.cs` line reference in a task AFTER Task 4
+  was enumerated and dispositioned. Task 7's `:210` and its comment lines are all ABOVE `:848` and so
+  unaffected - verified, not assumed. The two survivors are now explicitly qualified: Task 5b's Files entry
+  names the member, and the `:852` citation is marked as a branch-point line, since it supports a
+  MEASUREMENT claim about the code as it exists today rather than an edit target.
+
+**The Closing Argument's verdict, recorded because it is the answer to the question this review has been
+circling:** the plan's CODE defects are exhausted; what remains fragile is its meta-level scaffolding -
+docstrings, ledger claims, and sequential coupling between tasks. It made the case to stop (every finding
+since round 11 has been a document-maintenance artifact created by the review process itself) and then
+attacked it: a plan that enforces byte-matching STATE-VERIFY blocks and exact line numbers precisely to
+remove executor judgement cannot dismiss line-number drift as clerical, because a brittle instruction set
+is a failing one. It named "sequential execution traps" as what it would still expect to find - and then
+found one in the same round.
+
+**PANEL VERDICT - round 14: REJECT-then-fold. One CRITICAL sequential-execution trap that would have
+destroyed the previous task's work, found by combining two half-answers. 1 finding folded, 1 sweep clean.**
