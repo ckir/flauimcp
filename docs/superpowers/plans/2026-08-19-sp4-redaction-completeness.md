@@ -628,7 +628,7 @@ public static class MaskEscalation
     /// here as null. That equivalence is what makes the case table's parent-fetch refusal reachable without
     /// this function knowing anything about UIA.
     ///
-    /// ⚠⚠ <paramref name="captureBounds"/> IS THE SAFETY NET, AND IT IS WHY THIS FUNCTION TAKES GEOMETRY IT
+    /// ⚠⚠ <paramref name="visibleCapture"/> IS THE SAFETY NET, AND IT IS WHY THIS FUNCTION TAKES GEOMETRY IT
     /// OTHERWISE WOULD NOT NEED. An ESCALATED rect that covers the whole captured region is not a mask — it
     /// is an all-black screenshot wearing one, and returning it successfully is the single outcome A1 exists
     /// to refuse instead. Checking that here, geometrically, catches every route to it at once and needs no
@@ -652,6 +652,12 @@ public static class MaskEscalation
         {
             var r = ancestorRect(level);
             if (!IsUsable(r)) continue;
+
+            // ⚠ An EMPTY yardstick makes the test below meaningless — nothing IntersectsWith an empty
+            // rectangle, so every mask would be dropped and the capture would come back UNMASKED. The
+            // caller guarantees a non-empty yardstick; if that guarantee is ever broken, fail CLOSED here
+            // rather than turning a guard into a leak.
+            if (visibleCapture.IsEmpty) return MaskResolution.Refusal;
 
             // OUTSIDE THE CAPTURE: the secret is somewhere inside this ancestor, and this ancestor does not
             // overlap what is being photographed, so there is nothing here to withhold. Not a mask, and NOT
@@ -693,7 +699,7 @@ public static class MaskEscalation
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
-Expected: `Passed!  - Failed: 0, Passed: 12`.
+Expected: `Passed!  - Failed: 0, Passed: 13`.
 
 - [ ] **Step 5: Prove the pins are non-vacuous (three temporary LOGIC MUTANTS)**
 
@@ -718,7 +724,7 @@ cap, change `level <= MaxAncestorLevels` to `level <= MaxAncestorLevels + 1` and
 - [ ] **Step 6: Run the headless gate and commit**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: `Passed!  - Failed: 0`, total up by 12.
+Expected: `Passed!  - Failed: 0`, total up by 13.
 
 ```bash
 git add src/FlaUI.Mcp.Core/Perception/MaskEscalation.cs test/FlaUI.Mcp.Tests/Perception/MaskEscalationTests.cs
@@ -738,7 +744,7 @@ is stated in the type's own doc rather than implied.
 The depth cap is termination, not tuning: an uncapped climb on a cyclic
 provider tree hangs the single query STA, which wedges every LATER query.
 
-All 12 pins proven non-vacuous by logic mutants (drop the escalate branch, drop
+All 13 pins proven non-vacuous by logic mutants (drop the escalate branch, drop
 the refusal branch, weaken the zero-area rule, widen the cap).
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
@@ -770,6 +776,9 @@ Confirm `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 861-871 are e
             // Note this hazard PREDATES SP4 — the old code read target.BoundingRectangle unguarded at its
             // return statement, with the same swallow downstream. It is fixed here because A1 is what makes
             // the difference between "no mask" and "refuse" load-bearing.
+            //
+            // This read keeps its OWN guard even though a blanket conversion follows below, because it is
+            // the one failure worth naming precisely in the message an operator reads.
             System.Drawing.Rectangle captureBounds;
             try { captureBounds = target.BoundingRectangle; }
             catch (System.Exception ex)
@@ -788,6 +797,14 @@ Confirm `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 861-871 are e
             // side is stale. That race is inherent to capturing a moving window and is not what this line
             // fixes — do not read the comment as claiming otherwise.
             var visibleCapture = System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds());
+            // ⚠ AN EMPTY INTERSECTION MUST NOT BECOME THE YARDSTICK. A window entirely off the renderable
+            // desktop intersects it in Rectangle.Empty, and NOTHING IntersectsWith an empty rect - so every
+            // escalated mask would be classified "outside the capture", dropped, and the capture would
+            // proceed with no masks at all. That is a leak produced by a guard, which is the worst kind.
+            // Degrade to the unclipped rect instead: it is the behaviour that held before the clipping was
+            // introduced, and the maximized-bleed case the clipping exists for cannot arise when nothing is
+            // on screen to bleed over.
+            if (visibleCapture.IsEmpty) visibleCapture = captureBounds;
             var pw = new List<System.Drawing.Rectangle>();
             foreach (var rootEl in PopupFinder.SearchRoots(win, desktop))
             {
@@ -1073,6 +1090,20 @@ exactly what hid this defect.** Append to that file:
         Assert.True(r.Escalated);   // it DID escalate - the diagnostic still reports the broken provider
     }
 
+    /// <summary>The outside-the-capture drop is a LEAK if the yardstick is ever empty: nothing
+    /// IntersectsWith an empty rectangle, so every escalated mask would be dropped and the capture would
+    /// come back unmasked. The production call site guarantees a non-empty yardstick (it falls back to the
+    /// unclipped capture rect), and this fact pins what the decision does if that guarantee is ever broken,
+    /// so the failure is a refusal rather than a silent leak.</summary>
+    [Fact]
+    public void An_empty_yardstick_refuses_rather_than_dropping_every_mask()
+    {
+        var r = MaskEscalation.Resolve(null, Source(new List<int>(), (1, Other)), Rectangle.Empty);
+
+        Assert.True(r.Refused);
+        Assert.False(r.Irrelevant);
+    }
+
     /// <summary>The rule applies to ESCALATED rects only. An element whose OWN rect covers the capture is
     /// genuinely that large, and masking it is correct rather than a degradation - refusing there would
     /// break a legitimate full-window redaction.</summary>
@@ -1162,6 +1193,18 @@ with:
 ```csharp
             var pw = new List<System.Drawing.Rectangle>();
             var escalated = new List<MaskEscalationEntry>();
+
+            // ⚠ ONE BLANKET CONVERSION, not a guard per read. Round 4 wrapped the capture-bounds read and
+            // the roots[0] enumeration individually and STILL missed PopupFinder.SearchRoots, which is a
+            // UIA walk of its own. Any raw exception escaping this region is swallowed by
+            // AllPasswordRectsAsync's `catch { }` on the full-desktop path and becomes a window photographed
+            // with NO mask set — so the safe default has to be structural, not a list of remembered sites.
+            //
+            // A ToolException passes through UNCHANGED: those are deliberate, already-classified outcomes
+            // (RefNotFound from the ref resolution above, and the RedactionUnmaskable refusals raised
+            // inside the loop), and re-wrapping them would destroy the code an agent branches on.
+            try
+            {
             var roots = PopupFinder.SearchRoots(win, desktop);
             for (int rootIndex = 0; rootIndex < roots.Count; rootIndex++)
             {
@@ -1258,6 +1301,14 @@ with:
                 }
             }
             return new CaptureGeometry(captureBounds, pw, false, false, null, escalated);
+            }
+            catch (ToolException) { throw; }
+            catch (System.Exception ex)
+            {
+                throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                    $"Could not determine the redacted regions of window '{handle.Id}' (process '{procName}'): {ex.Message}",
+                    "retry once the UI has settled, or capture a different window");
+            }
 ```
 
 ⚠ **Escalation depth is NOT uniform, and the implementer must not be surprised by it.** The walk enumerates
@@ -2384,8 +2435,11 @@ least attributable after the fact.
 contributed NO mask at all; it does not promise the substituted mask is pixel-complete.
 
 ### AB-7 — `AncestorRectSource`'s root bound  *(SP4/A1)*
-**Behaviour:** the ancestor climb stops at the search root and reports it as "no rect at this level", so
-reaching the root becomes a REFUSAL rather than a mask of the whole window.
+**Behaviour:** the ancestor climb stops AT its search root and never climbs past it. Reaching the WINDOW
+root yields no rect, which becomes a refusal; reaching a POPUP root offers that popup's rect, which
+`MaskEscalation` then accepts or rejects geometrically. (This entry described a blanket refusal at every
+root until the popup fork and the geometric rule replaced it — the behaviour changed three times during
+review, so read the code, not this sentence, if they ever disagree.)
 **Why not covered:** needs a live element that fails to report bounds while its ancestors succeed. No
 fixture can stage one — the AB-1 limitation.
 **Compensation + anchor:** the decision's half of the contract is pinned headlessly by
@@ -2655,7 +2709,7 @@ Not a task — the branch-completion sequence, run once at the end, in this orde
 - [ ] **G1 — build clean.** `dotnet build FlaUI.Mcp.slnx -c Release` → `0 Warning(s)`, `0 Error(s)`.
 - [ ] **G2 — headless green.**
       `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-      → `Failed: 0, Skipped: 0`, total = 870 + 15 new headless facts (12 in Task 3, 3 in Task 8) = **885**.
+      → `Failed: 0, Skipped: 0`, total = 870 + 16 new headless facts (13 in Task 3, 3 in Task 8) = **886**.
 - [ ] **G3 — Desktop green, both halves, `0 skipped`, one SHA, physical console + lease.**
       `--filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"` → **156** (153 + the 3 facts in Task 10);
       `--filter "FullyQualifiedName~PopupGrafting"` → **1**.
@@ -2696,7 +2750,8 @@ Run by the author against the spec, after the plan was written.
 `SensitivityOf` and refuses when it cannot act on it; A5 removes the value entirely. (2) Fail closed but
 never silently: `maskEscalations` + `escalated` are always present, and name no withheld content. (3) §4.4
 zero-cost default path: an install with no rules is unchanged except the three declared wire changes. The
-added cost on that path is one `AncestorRectSource` per capture and one closure per *redact-worthy* element
+added cost on that path is one `AncestorRectSource` per SEARCH ROOT (the window plus any popups — it read
+"per capture" until the bound had to be rooted somewhere) and one closure per *redact-worthy* element
 (typically 0-1 per window), not per node — and the escalation walk itself runs only for an element that
 failed to report its own bounds. (4) No pre-existing test weakened: the only test edit outside new facts is
 `RedactionStatsTests.cs:32`, identifier-only, with its discriminating `1`/`2` untouched and proven by mutant.
@@ -2941,3 +2996,41 @@ returned Bounds, and captured region) and what it explicitly does not.
 **PANEL VERDICT - round 4: REJECT-then-fold. Two CRITICALs - one defeating round 3's own guard on
 maximized windows, one a pre-existing leak where a raw exception becomes a silent skip on full-desktop
 capture - plus one HIGH over-refusal and one stale-prose defect. 5 findings folded, 1 partially.**
+
+
+### Round 5 (rotation seat: Contract Archaeologist) - folded; do NOT re-raise
+
+- **CRITICAL, and it is the THIRD instance of one class: `PopupFinder.SearchRoots` was still unguarded.**
+  Round 4 wrapped the capture-bounds read and the roots[0] enumeration individually and missed this one,
+  which is a UIA walk of its own. Any raw exception escaping the mask walk is swallowed by
+  AllPasswordRectsAsync's `catch { }` and becomes a window photographed with NO mask set. Fixed
+  STRUCTURALLY rather than by adding a third guard: the whole region is now wrapped in ONE conversion to
+  RedactionUnmaskable, with ToolException passing through unchanged so RefNotFound and the refusals keep
+  their codes. Guarding reads one at a time had already failed twice; the lesson is that the safe default
+  has to be structural, not a list of remembered sites.
+- **CRITICAL LEAK, found INDEPENDENTLY by the peer and by the driver in the same round: an EMPTY yardstick
+  disabled masking entirely.** A window wholly off the renderable desktop intersects it in
+  Rectangle.Empty, and NOTHING IntersectsWith an empty rect - so every escalated mask would be classified
+  "outside the capture", dropped, and the capture would come back unmasked. A guard producing a leak is
+  the worst kind. Fixed in two places: the call site degrades an empty intersection back to the unclipped
+  capture rect (the pre-clipping behaviour, and the maximized-bleed case the clipping exists for cannot
+  arise when nothing is on screen), and the DECISION refuses outright on an empty yardstick so a future
+  caller that breaks the guarantee fails closed instead of silently.
+- **The self-audit said "one AncestorRectSource per capture".** It has been per SEARCH ROOT since round 2,
+  when the bound had to be rooted somewhere. Corrected.
+- **AB-7 still described round 1's behaviour** - "reaching the root becomes a REFUSAL" - which stopped
+  being true at round 2 (popup fork) and again at round 3 (geometric rule). Rewritten, with a note that
+  this entry's behaviour changed three times during review.
+- **Stale `<paramref name="captureBounds"/>`** in MaskEscalation's doc after the parameter was renamed to
+  `visibleCapture` (driver's own find). Harmless to the build - neither project sets
+  GenerateDocumentationFile, VERIFIED in both csproj files - but wrong.
+
+**Confirmed clean, and worth recording as a positive result:** the peer enumerated every caller of
+`ResolveWindowCaptureGeometryAsync` and found none outside the screenshot path, the OCR path and the test
+suite - so the two (now one) new throw sites reach no unintended consumer. It also traced `Irrelevant`
+through the screenshot path and confirmed it cannot be confused with `Refused` or with a zero-area mask.
+Axiom Breaker and Mechanism Gamer reported no new findings.
+
+**PANEL VERDICT - round 5: REJECT-then-fold. Two CRITICAL leaks - a third unguarded UIA call becoming a
+silent skip, and an empty yardstick dropping every mask - plus two stale-prose defects in sections nobody
+had reread since round 1. 5 findings folded.**
