@@ -567,6 +567,11 @@ public sealed record MaskEscalationEntry(string AutomationId, string ControlType
 /// cannot represent a level count cannot drift into reporting one.</summary>
 public readonly record struct MaskResolution(Rectangle Rect, bool Escalated, bool Refused)
 {
+    /// <summary>The escalated ancestor does not overlap the captured region at all, so there is nothing to
+    /// withhold here: no rect is contributed and the capture is NOT refused. Distinct from a zero-area
+    /// Rect, which would silently paint nothing while claiming to be a mask.</summary>
+    public bool Irrelevant { get; init; }
+
     public static readonly MaskResolution Refusal = new(default, false, true);
 }
 
@@ -639,14 +644,24 @@ public static class MaskEscalation
     /// The check applies ONLY to escalated rects. An element whose OWN rect covers the capture is genuinely
     /// that large, and masking it is correct rather than a degradation.</summary>
     public static MaskResolution Resolve(Rectangle? ownRect, Func<int, Rectangle?> ancestorRect,
-                                         Rectangle captureBounds)
+                                         Rectangle visibleCapture)
     {
         if (IsUsable(ownRect)) return new MaskResolution(ownRect.Value, Escalated: false, Refused: false);
 
         for (int level = 1; level <= MaxAncestorLevels; level++)
         {
             var r = ancestorRect(level);
-            if (IsUsable(r) && !BlacksOutTheCapture(r.Value, captureBounds))
+            if (!IsUsable(r)) continue;
+
+            // OUTSIDE THE CAPTURE: the secret is somewhere inside this ancestor, and this ancestor does not
+            // overlap what is being photographed, so there is nothing here to withhold. Not a mask, and NOT
+            // a refusal — refusing a capture because of a secret that provably cannot appear in it is
+            // over-refusal with no security value. (This rests on the same ancestor-encloses-descendant
+            // assumption as escalation itself, already ledgered as AB-8; it introduces no new one.)
+            if (!r.Value.IntersectsWith(visibleCapture))
+                return new MaskResolution(default, Escalated: true, Refused: false) { Irrelevant = true };
+
+            if (!BlacksOutTheCapture(r.Value, visibleCapture))
                 return new MaskResolution(r.Value, Escalated: true, Refused: false);
         }
 
@@ -655,22 +670,30 @@ public static class MaskEscalation
 
     /// <summary>An escalated mask that CONTAINS the captured region hides everything, so it is not a mask.
     ///
+    /// ⚠⚠ THE YARDSTICK IS THE VISIBLE CAPTURE, NOT THE RAW CAPTURE RECT, and that distinction is the whole
+    /// correctness of this check. A MAXIMIZED window's UIA BoundingRectangle BLEEDS PAST the monitor — its
+    /// invisible resize border gives it a negative origin and a width and height larger than the screen. A
+    /// WPF light-dismiss overlay is exactly the monitor. Against the raw rect, `overlay.Contains(window)` is
+    /// FALSE (because -8 &lt; 0), so the full-monitor mask sails straight past this guard and returns the
+    /// all-black image it exists to reject. Intersecting the capture with the renderable desktop first
+    /// removes the bleed and the comparison becomes the one that was meant.
+    ///
     /// ⚠ Honest limit, stated because the next reader will look for a tolerance and should know there is
-    /// deliberately none: this is exact containment, not "covers most of". A rect one pixel short of the
-    /// capture on one edge passes this check and blacks out ~99.99% of the image. A percentage threshold
-    /// would close that and would introduce a tuning knob on a withholding path, which this design refuses
-    /// on principle — so the root-identity stop in AncestorRectSource is kept as well. Neither guard is
-    /// sufficient alone: identity catches the exact root whatever its geometry, geometry catches everything
-    /// the identity check cannot name.</summary>
-    public static bool BlacksOutTheCapture(Rectangle mask, Rectangle captureBounds)
-        => mask.Contains(captureBounds);
+    /// deliberately none: this is exact containment, not "covers most of". A rect one pixel short on one
+    /// edge passes and blacks out ~99.99% of the image. A percentage threshold would close that and would
+    /// introduce a tuning knob on a withholding path, which this design refuses on principle — so the
+    /// root-identity stop in AncestorRectSource is kept as well. Neither guard is sufficient alone:
+    /// identity catches the exact root whatever its geometry, geometry catches everything identity cannot
+    /// name.</summary>
+    public static bool BlacksOutTheCapture(Rectangle mask, Rectangle visibleCapture)
+        => mask.Contains(visibleCapture);
 }
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
-Expected: `Passed!  - Failed: 0, Passed: 11`.
+Expected: `Passed!  - Failed: 0, Passed: 12`.
 
 - [ ] **Step 5: Prove the pins are non-vacuous (three temporary LOGIC MUTANTS)**
 
@@ -684,6 +707,7 @@ REVERT before applying the next.
 | Weaken the usability rule | change `IsUsable` to `r is not null` | `A_zero_size_own_rect_is_unusable_and_escalates` |
 | Drop the blacks-out guard | change `BlacksOutTheCapture` to `=> false` | `An_escalated_rect_that_covers_the_capture_is_rejected_and_the_walk_continues` |
 | Apply the guard to the element's OWN rect too | move the `!BlacksOutTheCapture(...)` test onto the `IsUsable(ownRect)` branch | `An_elements_OWN_capture_covering_rect_is_masked_not_refused` |
+| Turn the outside-capture drop into a refusal | change the `IntersectsWith` branch to `return MaskResolution.Refusal;` | `An_ancestor_outside_the_capture_contributes_nothing_and_does_not_refuse` |
 
 Run each as: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
 
@@ -694,7 +718,7 @@ cap, change `level <= MaxAncestorLevels` to `level <= MaxAncestorLevels + 1` and
 - [ ] **Step 6: Run the headless gate and commit**
 
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: `Passed!  - Failed: 0`, total up by 11.
+Expected: `Passed!  - Failed: 0`, total up by 12.
 
 ```bash
 git add src/FlaUI.Mcp.Core/Perception/MaskEscalation.cs test/FlaUI.Mcp.Tests/Perception/MaskEscalationTests.cs
@@ -714,7 +738,7 @@ is stated in the type's own doc rather than implied.
 The depth cap is termination, not tuning: an uncapped climb on a cyclic
 provider tree hangs the single query STA, which wedges every LATER query.
 
-All 11 pins proven non-vacuous by logic mutants (drop the escalate branch, drop
+All 12 pins proven non-vacuous by logic mutants (drop the escalate branch, drop
 the refusal branch, weaken the zero-area rule, widen the cap).
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
@@ -735,11 +759,35 @@ Confirm `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 861-871 are e
 
 ```csharp
             var target = string.IsNullOrEmpty(@ref) ? (AutomationElement)win : _refs.Resolve(handle.Id, @ref!, PopupFinder.SearchRoots(win, desktop));
-            // Read ONCE, before the walk: it is both the returned Bounds and the yardstick MaskEscalation
-            // uses to reject an escalated rect that would black out the whole capture. Reading it twice
-            // could hand the decision a different rect than the one actually captured, on a window that
-            // moved mid-walk.
-            var captureBounds = target.BoundingRectangle;
+            // ⚠ EVERY FAILURE FROM HERE TO THE RETURN MUST BECOME RedactionUnmaskable, NEVER A RAW
+            // EXCEPTION. AllPasswordRectsAsync (the FULL-DESKTOP path) wraps this call in `catch { }` to
+            // skip a window it cannot bind, and rethrows ONLY RedactionUnmaskable. So a raw COMException
+            // escaping here does not fail the capture — it silently drops this window's ENTIRE mask set and
+            // photographs it in the clear. That is a leak, and it defeats two decisions at once: A1's
+            // refusal, and the strict-on-roots[0] rule below, whose whole point is that a dead target must
+            // not be quietly skipped.
+            //
+            // Note this hazard PREDATES SP4 — the old code read target.BoundingRectangle unguarded at its
+            // return statement, with the same swallow downstream. It is fixed here because A1 is what makes
+            // the difference between "no mask" and "refuse" load-bearing.
+            System.Drawing.Rectangle captureBounds;
+            try { captureBounds = target.BoundingRectangle; }
+            catch (System.Exception ex)
+            {
+                throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                    $"Could not read the capture bounds of window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located: {ex.Message}",
+                    "retry once the UI has settled, or capture a different window");
+            }
+
+            // The yardstick is the capture clipped to the RENDERABLE desktop. A maximized window's rect
+            // bleeds past the monitor by its invisible resize border, and comparing against that bleed is
+            // what let a full-monitor mask pass the blacks-out check. Read once, so the rect the decision
+            // judges against is the same rect that is returned as Bounds and ultimately captured.
+            // ⚠ It does NOT eliminate movement-induced misalignment: if the window moves mid-walk, live mask
+            // rects land against a stale capture rect. Reading it AFTER the walk instead just inverts which
+            // side is stale. That race is inherent to capturing a moving window and is not what this line
+            // fixes — do not read the comment as claiming otherwise.
+            var visibleCapture = System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds());
             var pw = new List<System.Drawing.Rectangle>();
             foreach (var rootEl in PopupFinder.SearchRoots(win, desktop))
             {
@@ -872,9 +920,14 @@ public sealed class AncestorRectSource
     { _root = root; _rootId = IdOf(root); _rootIsWindow = rootIsWindow; }
 
     /// <summary>The lazy accessor <see cref="MaskEscalation.Resolve"/> consumes, bound to ONE element.
-    /// Level 1 is that element's parent. Returns null for "no rect at this level", which deliberately
-    /// covers every failure shape: the parent fetch threw, the bounds read threw, the bounds came back
-    /// empty, there is no further ancestor, OR the walk reached the root it is bounded by.
+    /// Level 1 is that element's parent. Returns null for "no rect at this level", covering the parent
+    /// fetch throwing, the bounds read throwing, the bounds coming back empty, and there being no further
+    /// ancestor.
+    ///
+    /// ⚠ Reaching the root is NOT one of those: the root is OFFERED (its rect returned) unless it is the
+    /// window root, and the walk then stops. An earlier revision returned null there too and this sentence
+    /// still said so one revision after it stopped being true — check the code, not this comment, if the
+    /// two ever disagree again.
     ///
     /// The cursor only ever moves FORWARD. Resolve requests levels strictly in ascending order, so each
     /// ancestor of this element is fetched at most once, before the shared cache is consulted at all.</summary>
@@ -1002,6 +1055,24 @@ exactly what hid this defect.** Append to that file:
         Assert.True(r.Refused);
     }
 
+    /// <summary>An ancestor that does not OVERLAP the captured region withholds nothing that could appear
+    /// in it, so it contributes no mask and does NOT refuse. Refusing a capture over a secret that provably
+    /// cannot be in it is over-refusal with no security value - and it is what an element-scoped capture
+    /// would have suffered constantly, since captureBounds is then one small element while mask rects are
+    /// still collected window-wide.</summary>
+    [Fact]
+    public void An_ancestor_outside_the_capture_contributes_nothing_and_does_not_refuse()
+    {
+        var asked = new List<int>();
+        var faraway = new Rectangle(50_000, 50_000, 100, 100); // no overlap with Capture
+
+        var r = MaskEscalation.Resolve(null, Source(asked, (1, faraway)), Capture);
+
+        Assert.False(r.Refused);
+        Assert.True(r.Irrelevant);
+        Assert.True(r.Escalated);   // it DID escalate - the diagnostic still reports the broken provider
+    }
+
     /// <summary>The rule applies to ESCALATED rects only. An element whose OWN rect covers the capture is
     /// genuinely that large, and masking it is correct rather than a degradation - refusing there would
     /// break a legitimate full-window redaction.</summary>
@@ -1108,7 +1179,17 @@ with:
                     // because the tree could not be read — a leak dressed as a successful screenshot.
                     // FindAsync (:583-596) and EvaluateSelectorValueAsync (:745-760) already draw exactly
                     // this line for exactly this reason; this makes the third sibling agree with them.
-                    descendants = roots[rootIndex].FindAllDescendants();
+                    //
+                    // ⚠ CONVERTED, not propagated raw. Letting a COMException escape would be caught by
+                    // AllPasswordRectsAsync's `catch { }` on the full-desktop path and turn this strictness
+                    // into a SILENT SKIP - the precise opposite of the decision this branch encodes.
+                    try { descendants = roots[rootIndex].FindAllDescendants(); }
+                    catch (System.Exception ex)
+                    {
+                        throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                            $"Could not enumerate window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located: {ex.Message}",
+                            "retry once the UI has settled, or capture a different window");
+                    }
                 }
                 else
                 {
@@ -1151,7 +1232,7 @@ with:
                     System.Drawing.Rectangle? own = null;
                     try { own = d.BoundingRectangle; } catch { }
 
-                    var resolution = MaskEscalation.Resolve(own, ancestors.For(d), captureBounds);
+                    var resolution = MaskEscalation.Resolve(own, ancestors.For(d), visibleCapture);
                     string aid = SafeRead(() => d.AutomationId, "") ?? string.Empty;
                     string ct = SafeRead(() => d.ControlType, FlaUI.Core.Definitions.ControlType.Custom).ToString();
                     if (resolution.Refused)
@@ -1169,7 +1250,10 @@ with:
                             $"A redact-worthy element in window '{handle.Id}' (process '{procName}') could not be masked (automationId='{aid}', controlType='{ct}'): neither it nor any ancestor reported usable bounds.",
                             "capture that window alone to confirm, or retry once the UI has settled");
 
-                    pw.Add(resolution.Rect);
+                    // Irrelevant = the ancestor does not overlap the capture, so there is nothing here to
+                    // mask. It still counts as an escalation for the diagnostic: the element DID fail to
+                    // report its own bounds, and an operator debugging a broken provider wants to know.
+                    if (!resolution.Irrelevant) pw.Add(resolution.Rect);
                     if (resolution.Escalated) escalated.Add(new MaskEscalationEntry(aid, ct));
                 }
             }
@@ -2571,7 +2655,7 @@ Not a task — the branch-completion sequence, run once at the end, in this orde
 - [ ] **G1 — build clean.** `dotnet build FlaUI.Mcp.slnx -c Release` → `0 Warning(s)`, `0 Error(s)`.
 - [ ] **G2 — headless green.**
       `dotnet test FlaUI.Mcp.slnx -c Release --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-      → `Failed: 0, Skipped: 0`, total = 870 + 14 new headless facts (11 in Task 3, 3 in Task 8) = **884**.
+      → `Failed: 0, Skipped: 0`, total = 870 + 15 new headless facts (12 in Task 3, 3 in Task 8) = **885**.
 - [ ] **G3 — Desktop green, both halves, `0 skipped`, one SHA, physical console + lease.**
       `--filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"` → **156** (153 + the 3 facts in Task 10);
       `--filter "FullyQualifiedName~PopupGrafting"` → **1**.
@@ -2809,3 +2893,51 @@ threaded.
 **PANEL VERDICT - round 3: REJECT-then-fold. One CRITICAL (full-screen popup overlay masking the monitor)
 and one HIGH over-refusal, both introduced by round 2's fix; plus one real limit promoted from silent
 assumption to ledgered AB-8. 6 findings folded.**
+
+
+### Round 4 (rotation seat: Geometry Adversary) - folded; do NOT re-raise
+
+Third consecutive round in which the previous round's fix cut the new edges. Recorded as a pattern, not an
+anecdote: on this mechanism, folding without re-running would have shipped a defect every single time.
+
+- **CRITICAL: the geometric guard did not fire on a MAXIMIZED window.** A maximized window's UIA
+  BoundingRectangle BLEEDS PAST the monitor - its invisible resize border gives it a negative origin and a
+  width and height larger than the screen. A WPF light-dismiss overlay is exactly the monitor. So
+  `overlay.Contains(window)` is FALSE (because -8 < 0), the full-monitor mask passed the guard, and round
+  3's fix returned the all-black image it was written to reject. The yardstick is now the capture
+  INTERSECTED WITH THE RENDERABLE DESKTOP, which removes the bleed and makes the comparison the one that
+  was meant. This also closes the Boundary Smuggler's route: a walk that escapes its root through an
+  unreadable identity reaches the desktop, whose rect now correctly contains the visible capture and is
+  rejected.
+- **CRITICAL, and it is a LEAK that predates SP4: a raw exception from the mask walk becomes a SILENT SKIP
+  on the full-desktop path.** `AllPasswordRectsAsync` wraps each window in `catch { }` to skip one it cannot
+  bind, and rethrows only `RedactionUnmaskable`. So a COMException from the capture-bounds read - or from
+  `roots[0].FindAllDescendants()` - drops that window's ENTIRE mask set while the full-desktop capture
+  proceeds and photographs it in the clear. It defeated TWO decisions at once: A1's refusal, and the
+  strict-on-roots[0] rule whose whole point is that a dead target must not be quietly skipped. Both reads
+  are now CONVERTED to `RedactionUnmaskable` rather than propagated raw. (The old code read
+  `target.BoundingRectangle` unguarded at its return statement with the same swallow downstream, so this
+  hole is older than this increment - it is fixed here because A1 is what makes the difference between "no
+  mask" and "refuse" load-bearing.)
+- **HIGH: an element-scoped capture would have refused constantly.** With `@ref` supplied, `captureBounds`
+  is one small element while mask rects are still collected window-wide, so ANY unrelated element
+  escalating to the window root covers the capture and refuses. An ancestor that does not OVERLAP the
+  captured region now contributes nothing and does not refuse: the secret is inside that ancestor and that
+  ancestor cannot appear in the photograph, so refusing has no security value. It still counts as an
+  escalation in the diagnostic, because the provider really did fail. (This rests on the same
+  ancestor-encloses-descendant assumption as escalation itself - AB-8 - and introduces no new one.)
+- **MEDIUM: prose in `AncestorRectSource.For` still described round 3's behaviour.** It claimed returning
+  null covers "the walk reached the root", which stopped being true when the root began being OFFERED. The
+  comment now says which is authoritative if the two ever disagree again. This is the SECOND round to find
+  stale prose in this file; both times the sentence was correct when written.
+
+**Partially folded, with the peer's framing rejected on reasoning:** the Mechanism Gamer argued that
+reading `captureBounds` once "actively causes" mask misalignment when a window moves mid-walk. It does not:
+reading it AFTER the walk instead just inverts which side is stale, and the race is inherent to capturing a
+moving window. What WAS wrong is my comment claiming the single read prevents that misalignment - an
+overclaim, now corrected to state what the single read actually buys (one rect serving as yardstick,
+returned Bounds, and captured region) and what it explicitly does not.
+
+**PANEL VERDICT - round 4: REJECT-then-fold. Two CRITICALs - one defeating round 3's own guard on
+maximized windows, one a pre-existing leak where a raw exception becomes a silent skip on full-desktop
+capture - plus one HIGH over-refusal and one stale-prose defect. 5 findings folded, 1 partially.**
