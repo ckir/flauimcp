@@ -1101,6 +1101,8 @@ public sealed class PerceptionManager
     {
         var rects = new List<System.Drawing.Rectangle>();
         var escalations = new List<MaskEscalationEntry>();
+        // AB-9: the processes whose windows contributed NO masks. See the catch below and DesktopMaskSet.
+        var unmasked = new List<string>();
         var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
         foreach (var w in windows)
         {
@@ -1146,9 +1148,31 @@ public sealed class PerceptionManager
             // leak one frame up the stack.
             catch (System.Exception ex) when (ex is not System.OutOfMemoryException
                                               and not System.OperationCanceledException)
-            { } // a window that closed mid-enumeration, or one we cannot bind: skip it
+            {
+                // AB-9: the skip STAYS — refusing here would break an ordinary desktop, because an elevated
+                // Task Manager, admin terminal, regedit or MMC snap-in is steady state on a developer
+                // machine, and a tooltip fading out mid-capture lands in this same clause. But the skip is
+                // no longer SILENT, which is this increment's binding constraint 2: fail closed, never
+                // silently. Without this, an agent reads a full-desktop screenshot as fully redacted when
+                // one window on it was never inspected at all.
+                //
+                // ⚠ THE FIELD MEANS "CONTRIBUTED NO MASKS", NOT "ELEVATED", and the distinction is forced
+                // rather than chosen. This clause catches BOTH a window UIA cannot BIND (most often an
+                // elevated one) and a window that CLOSED mid-enumeration, and the exceptions are
+                // indistinguishable here — both surface as the same COM/UIA failures from the same native
+                // boundary. Naming the field for elevation would be a claim the code cannot support.
+                // Reporting the honest union is still correct, because both causes have the identical
+                // consequence for the caller: that window's pixels are in the image and its redactions
+                // are not.
+                //
+                // The process NAME is not withheld content — desktop_list_windows already publishes handle,
+                // process and title for every window.
+                if (!string.IsNullOrEmpty(w.ProcessName)) unmasked.Add(w.ProcessName);
+            }
         }
-        return new DesktopMaskSet(rects, escalations);
+        // DISTINCT, first-seen order: the actionable question is WHICH processes went unmasked, not how many
+        // windows each contributed. Deterministic, so the field is stable across repeat captures.
+        return new DesktopMaskSet(rects, escalations, unmasked.Distinct(StringComparer.Ordinal).ToArray());
     }
 
     public async Task<bool> DenylistedWindowsVisibleAsync()
@@ -1181,9 +1205,24 @@ public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyL
     IReadOnlyList<MaskEscalationEntry> Escalations);
 
 /// <summary>The mask set for a FULL-DESKTOP capture: every visible non-denied window's rects, plus the
-/// elements across all of them whose mask came from an ancestor. Two lists rather than a tuple so the
-/// screenshot tool's metadata reads the same on both capture paths.</summary>
-public sealed record DesktopMaskSet(IReadOnlyList<System.Drawing.Rectangle> Rects, IReadOnlyList<MaskEscalationEntry> Escalations);
+/// elements across all of them whose mask came from an ancestor. Lists rather than a tuple so the
+/// screenshot tool's metadata reads the same on both capture paths.
+///
+/// <paramref name="UnmaskedProcesses"/> — AB-9. The DISTINCT process names whose windows contributed no
+/// masks at all, because resolving their geometry failed. Two causes land here and the code cannot tell
+/// them apart: a window UIA cannot BIND (most often an ELEVATED one — a non-elevated UIA client cannot bind
+/// it at all), and a window that CLOSED mid-enumeration. Both have the same consequence for the caller, so
+/// the field is named for the consequence rather than for either cause.
+///
+/// ⚠ A NON-EMPTY LIST MEANS THE IMAGE IS NOT FULLY REDACTED. Those windows' pixels are in the capture and
+/// their redactions are not, so a caller must not treat the screenshot as exhaustively masked. This does
+/// not REFUSE, deliberately: refusing on an unbindable window would break an ordinary developer desktop,
+/// where an elevated terminal or Task Manager is steady state. The highest-value case is covered by a
+/// different mechanism — ScreenshotTools refuses full-desktop capture outright when a DENYLISTED window is
+/// visible, and that guard enumerates by PROCESS (ListWindowsAsync + PerceptionPolicy.IsDenied), never by
+/// UIA binding, so it still fires for a denylisted window that is elevated.</summary>
+public sealed record DesktopMaskSet(IReadOnlyList<System.Drawing.Rectangle> Rects, IReadOnlyList<MaskEscalationEntry> Escalations,
+    IReadOnlyList<string> UnmaskedProcesses);
 
 public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword,
     bool Redacted, string? RedactedBy);

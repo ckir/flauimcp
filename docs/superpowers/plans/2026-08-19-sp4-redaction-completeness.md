@@ -3301,6 +3301,37 @@ visible, so the highest-value case is covered by a different mechanism.
 strictness; or (c) narrow (b) to windows whose process is elevated, which needs a new elevation probe and
 is its own increment.
 
+**RESOLVED 2026-08-19 — option (d), which none of a/b/c had listed. Implemented as Task 9b.** The peer
+proposed it on a second consult and the operator chose it: do not refuse, but REPORT. `DesktopMaskSet`
+gains `UnmaskedProcesses` and `desktop_screenshot` metadata gains `unmaskedProcesses`, always present and
+empty when nothing was skipped.
+
+Why (d) rather than (a): AB-9 is the one SILENT incompleteness left in an increment whose binding
+constraint 2 is *fail closed, but never silently* — and it sits on the full-desktop path, exactly the mode
+DEF-2 was about. An agent reading such a screenshot would believe it fully redacted.
+
+Why not (b): MEASURED against the code — the clause that swallows the bind failure
+(`catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)`) cannot
+distinguish a window UIA cannot BIND from one that CLOSED mid-enumeration; both surface as the same COM
+failures. So (b) would fire on ordinary UI churn as well as on every elevated Task Manager, admin terminal,
+regedit and MMC snap-in — near-total loss of availability on a developer desktop.
+
+⚠ That same indistinguishability is why the field is named for the CONSEQUENCE, not the cause. It reports
+"contributed no masks", which is true of both, rather than "elevated", which the code cannot establish.
+The first reading of this was that indistinguishability made (d) *noisy*; it does not — both causes have
+the identical consequence for the caller, so the union is the honest field.
+
+⚠ VERIFIED while deciding, and it is what makes this a boundary rather than a hole:
+`DenylistedWindowsVisibleAsync` (`PerceptionManager.cs:1154-1158`) is `ListWindowsAsync()` +
+`PerceptionPolicy.IsDenied(w.ProcessName)` — Win32 process enumeration, never UIA binding — so the
+denylist refusal still fires for a denylisted window that is ELEVATED and therefore unbindable. The
+highest-value case was already covered.
+
+⚠ The tool description has a 1500-char budget (`ToolTrapFactInvariantTests.No_tool_description_exceeds_the_budget`,
+`DescriptionBudget = 1500`). The first draft of this field's documentation blew it by 344 chars and the
+headless suite caught it. The description now carries a one-line pointer at 1477 chars; the reasoning lives
+on `DesktopMaskSet`'s XML doc, which is where it belongs.
+
 
 ### Round 2 (rotation seat: Fix-Edge Hunter) - folded; do NOT re-raise
 

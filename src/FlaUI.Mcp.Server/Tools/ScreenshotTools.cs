@@ -14,7 +14,7 @@ public sealed class ScreenshotTools
     private readonly PerceptionManager _perception;
     public ScreenshotTools(PerceptionManager perception) => _perception = perception;
 
-    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated}. Redacted elements (OS password fields, or an operator rule) are masked at capture time, full-desktop included (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). If a redacted element cannot report usable bounds its mask is taken from an ancestor: maskEscalations counts those ELEMENTS (not levels climbed) and escalated lists their {automationId,controlType} so you can tell which control has a broken provider. If no ancestor is usable either, the capture is REFUSED with RedactionUnmaskable rather than returning an all-black image - retry once the UI settles, or capture a different window. NOTE redactions counts rects PAINTED, so when several elements escalate to the SAME ancestor it exceeds the number of distinct black regions you can see; compare it against maskEscalations rather than reading it as a control count. output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
+    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses}. Redacted elements (OS password fields, or an operator rule) are masked at capture time, full-desktop included (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). If a redacted element cannot report usable bounds its mask is taken from an ancestor: maskEscalations counts those ELEMENTS (not levels climbed) and escalated lists their {automationId,controlType} so you can tell which control has a broken provider. If no ancestor is usable either, the capture is REFUSED with RedactionUnmaskable rather than returning an all-black image - retry once the UI settles, or capture a different window. NOTE redactions counts rects PAINTED, so when several elements escalate to the SAME ancestor it exceeds the number of distinct black regions you can see; compare it against maskEscalations rather than reading it as a control count. unmaskedProcesses (full-desktop only) lists processes whose windows contributed NO masks - unbindable, usually elevated, or closed mid-capture; NON-EMPTY means the image is NOT fully redacted. output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
     public Task<CallToolResult> DesktopScreenshot(
         [Description("Window handle, e.g. w1. Omit (and omit ref) for the full virtual desktop.")] string? window = null,
         [Description("Element ref to capture (requires window).")] string? @ref = null,
@@ -29,6 +29,10 @@ public sealed class ScreenshotTools
 
             CaptureResult result;
             IReadOnlyList<MaskEscalationEntry> escalations;
+            // AB-9. Only the full-desktop path can SKIP a window and carry on; a window- or element-scoped
+            // capture names its target, so a failure to resolve it throws rather than degrading. Empty on
+            // that branch is therefore the truth, not a placeholder.
+            IReadOnlyList<string> unmaskedProcesses;
             if (string.IsNullOrEmpty(window))
             {
                 var present = await _perception.DenylistedWindowsVisibleAsync();
@@ -41,6 +45,7 @@ public sealed class ScreenshotTools
                 // in the clear.
                 var desk = await _perception.AllMaskRectsAsync();
                 escalations = desk.Escalations;
+                unmaskedProcesses = desk.UnmaskedProcesses;
                 result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth));
             }
             else
@@ -49,6 +54,7 @@ public sealed class ScreenshotTools
                 if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"Capturing windows owned by '{geo.DeniedProcess}' is blocked.", "capture a non-sensitive window");
                 if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
                 escalations = geo.Escalations;
+                unmaskedProcesses = System.Array.Empty<string>();
                 result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth));
             }
             var dpi = DpiHelper.ScaleForPoint(result.X, result.Y);
@@ -69,7 +75,12 @@ public sealed class ScreenshotTools
                 scaleApplied = result.ScaleApplied,
                 redactions = result.Redactions,
                 maskEscalations = escalations.Count,
-                escalated = escalations.Select(e => new { automationId = e.AutomationId, controlType = e.ControlType })
+                escalated = escalations.Select(e => new { automationId = e.AutomationId, controlType = e.ControlType }),
+                // AB-9: ALWAYS present, empty when nothing was skipped — same reasoning as the two fields
+                // above. A NON-EMPTY list means this image is NOT fully redacted: those processes' windows
+                // are in the pixels and their redactions are not. Full-desktop only; a named window that
+                // cannot be resolved throws instead of degrading.
+                unmaskedProcesses
             });
         });
 
