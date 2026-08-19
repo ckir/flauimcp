@@ -764,8 +764,8 @@ public static class MaskEscalation
     /// here as null. That equivalence is what makes the case table's parent-fetch refusal reachable without
     /// this function knowing anything about UIA.
     ///
-    /// ⚠⚠ <paramref name="visibleCapture"/> IS THE SAFETY NET, AND IT IS WHY THIS FUNCTION TAKES GEOMETRY IT
-    /// OTHERWISE WOULD NOT NEED. An ESCALATED rect that covers the whole captured region is not a mask — it
+    /// ⚠⚠ <paramref name="captureYardstick"/> IS THE SAFETY NET, AND IT IS WHY THIS FUNCTION TAKES GEOMETRY
+    /// IT OTHERWISE WOULD NOT NEED. An ESCALATED rect that covers the whole captured region is not a mask — it
     /// is an all-black screenshot wearing one, and returning it successfully is the single outcome A1 exists
     /// to refuse instead. Checking that here, geometrically, catches every route to it at once and needs no
     /// knowledge of which element produced the rect:
@@ -779,8 +779,13 @@ public static class MaskEscalation
     ///
     /// The check applies ONLY to escalated rects. An element whose OWN rect covers the capture is genuinely
     /// that large, and masking it is correct rather than a degradation.</summary>
+    /// <param name="captureYardstick">The region an escalated mask is judged against. MUST be
+    /// non-degenerate (positive width AND height); the caller guarantees that, and this function fails
+    /// CLOSED if the guarantee is broken. Normally the capture rect clipped to the renderable desktop;
+    /// the unclipped rect when clipping would be degenerate. It is NOT necessarily equal to the rect that
+    /// ends up captured.</param>
     public static MaskResolution Resolve(Rectangle? ownRect, Func<int, Rectangle?> ancestorRect,
-                                         Rectangle visibleCapture)
+                                         Rectangle captureYardstick)
     {
         if (IsUsable(ownRect)) return new MaskResolution(ownRect.Value, Escalated: false, Refused: false);
 
@@ -795,11 +800,18 @@ public static class MaskEscalation
             // non-degenerate yardstick; if that guarantee is ever broken, fail CLOSED rather than turning a
             // guard into a leak.
             //
+            // ⚠ A review seat called this redundant, and it is RIGHT ABOUT THE OUTCOME and wrong about the
+            // cost. Without it the overlap test below rejects every candidate anyway and the loop refuses at
+            // the cap — same answer. But "at the cap" means MaxAncestorLevels ANCESTOR FETCHES first, each a
+            // cross-process COM round trip on the single query STA, for a question already answered. Kept
+            // as a short-circuit, not as a correctness guard. Do not delete it as dead code; it is a
+            // performance guard whose outcome happens to coincide with the slow path's.
+            //
             // ⚠ Tested on EXTENTS, not Rectangle.IsEmpty. IsEmpty requires all four fields to be zero,
             // while Rectangle.Intersect compares with `>=` and so yields a zero-width rect at non-zero
             // coordinates — (100, 50, 0, 30) — for two rects that merely touch along an edge. IsEmpty is
             // false there and the leak would return.
-            if (visibleCapture.Width <= 0 || visibleCapture.Height <= 0) return MaskResolution.Refusal;
+            if (captureYardstick.Width <= 0 || captureYardstick.Height <= 0) return MaskResolution.Refusal;
 
             // ⚠⚠ A CANDIDATE THAT DOES NOT OVERLAP THE CAPTURE IS UNUSABLE — climb on. An earlier revision
             // DROPPED it instead, reasoning that a secret inside an off-capture ancestor cannot appear in
@@ -813,10 +825,10 @@ public static class MaskEscalation
             //
             // The cost is accepted and is the fail-closed direction: an element-scoped capture whose
             // unrelated sibling escalates past it now refuses rather than guessing the secret is elsewhere.
-            if (!r.Value.IntersectsWith(visibleCapture)) continue;
+            if (!r.Value.IntersectsWith(captureYardstick)) continue;
 
             // Covering the capture entirely is not a mask either — see BlacksOutTheCapture.
-            if (BlacksOutTheCapture(r.Value, visibleCapture)) continue;
+            if (BlacksOutTheCapture(r.Value, captureYardstick)) continue;
 
             return new MaskResolution(r.Value, Escalated: true, Refused: false);
         }
@@ -826,8 +838,16 @@ public static class MaskEscalation
 
     /// <summary>An escalated mask that CONTAINS the captured region hides everything, so it is not a mask.
     ///
-    /// ⚠⚠ THE YARDSTICK IS THE VISIBLE CAPTURE, NOT THE RAW CAPTURE RECT, and that distinction is the whole
-    /// correctness of this check. A MAXIMIZED window's UIA BoundingRectangle BLEEDS PAST the monitor — its
+    /// ⚠⚠ THE YARDSTICK IS NORMALLY THE VISIBLE CAPTURE — the capture rect INTERSECTED with the renderable
+    /// desktop — and that distinction is most of the correctness of this check.
+    ///
+    /// ⚠ It is NOT always clipped, and this function must not assume it is. Read the contract on the
+    /// parameter, not this paragraph: the ONE case where the caller passes the UNCLIPPED rect is a
+    /// window- or element-scoped capture of a target with no renderable overlap, where clipping yields a
+    /// degenerate rect that nothing intersects — and judging every mask against THAT would drop them all
+    /// and return an unmasked image. An earlier revision of this comment asserted the yardstick was always
+    /// clipped while the caller had already been changed to sometimes pass the raw rect, which is exactly
+    /// the kind of confidently-wrong invariant that gets a guard "simplified" away by the next reader. A MAXIMIZED window's UIA BoundingRectangle BLEEDS PAST the monitor — its
     /// invisible resize border gives it a negative origin and a width and height larger than the screen. A
     /// WPF light-dismiss overlay is exactly the monitor. Against the raw rect, `overlay.Contains(window)` is
     /// FALSE (because -8 &lt; 0), so the full-monitor mask sails straight past this guard and returns the
@@ -840,9 +860,17 @@ public static class MaskEscalation
     /// introduce a tuning knob on a withholding path, which this design refuses on principle — so the
     /// root-identity stop in AncestorRectSource is kept as well. Neither guard is sufficient alone:
     /// identity catches the exact root whatever its geometry, geometry catches everything identity cannot
-    /// name.</summary>
-    public static bool BlacksOutTheCapture(Rectangle mask, Rectangle visibleCapture)
-        => mask.Contains(visibleCapture);
+    /// name.
+    ///
+    /// ⚠ If you are about to delete the identity stop as redundant — someone will, because in the common
+    /// case this geometric check rejects the window root anyway — here is the case that makes it
+    /// load-bearing, because it is not obvious. `captureBounds` is read ONCE at the start of the walk; an
+    /// ancestor's rect is read DURING it. On a window that MOVES in between, the window root's live rect
+    /// no longer contains the stale `visibleCapture`, this check PASSES, and the root is accepted as a
+    /// mask — producing an image blacked out in the wrong place with the secret possibly still visible.
+    /// The identity stop does not care where the window is.</summary>
+    public static bool BlacksOutTheCapture(Rectangle mask, Rectangle captureYardstick)
+        => mask.Contains(captureYardstick);
 }
 ```
 
@@ -1272,6 +1300,10 @@ with:
                 if (skipIfOffscreen)
                     return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
                                                false, false, null, System.Array.Empty<MaskEscalationEntry>());
+                // ⚠ The UNCLIPPED rect becomes the yardstick here, and MaskEscalation's parameter contract
+                // says that is allowed: the requirement is NON-DEGENERATE, not "clipped". Clipping has
+                // already produced a degenerate rect for this target, and judging every mask against THAT
+                // would discard them all and return an unmasked image of a window the caller named.
                 visibleCapture = captureBounds;
             }
 
@@ -2544,6 +2576,23 @@ pinned on the desktop by
 ⚠ **Honest limit:** if the fallback block or its `catch` were deleted, no test goes red on a machine whose
 windows all have captions.
 
+### AB-9 — a window UIA cannot BIND is skipped, not refused  *(SP4/A1, pre-existing)*
+**Behaviour:** on the full-desktop path, `AllPasswordRectsAsync` catches a bind failure and skips that
+window; the capture then proceeds and photographs it.
+**Why it matters:** an ELEVATED window (an admin terminal, Task Manager) cannot be bound by a
+non-elevated UIA client at all, so `ResolveWindowCaptureGeometryAsync` throws BEFORE reaching the mask
+walk — outside the blanket conversion, which lives inside the STA lambda. Failing to prove a window is safe
+becomes, silently, a guarantee that its pixels are captured.
+**Why not fixed here:** the fix is a policy decision with real cost, not a code detail. Refusing every
+full-desktop capture while any unbindable window is visible would break the common case (an admin terminal
+open on a developer's desktop) to protect a window SP3 never protected either — UIA cannot read its
+contents, so no redaction has ever applied to it. **Surfaced to the operator in the OPEN section rather
+than decided here.**
+**Compensation + anchor:** partial and honest — `ScreenshotTools.cs:33-35` already refuses full-desktop
+capture outright when a DENYLISTED credential window is visible, which covers the highest-value case
+(`PerceptionPolicy.IsDenied`). Everything else is skipped.
+⚠ **Honest limit:** this predates SP4 and A1 does not close it. It is ledgered so it stops being invisible.
+
 ### AB-8 — escalation assumes an ancestor encloses its descendants  *(SP4/A1)*
 **Behaviour:** when an element's own bounds are unreadable, the mask taken from its ancestor is assumed to
 cover the pixels the element was painting.
@@ -2985,6 +3034,27 @@ answers from a cached parent, was ASSERTED by the peer and NOT measured. If it a
 largely evaporates. Measuring it costs one Desktop experiment and would settle the question before Task 4
 is written.
 
+### OPEN #2 — a window UIA cannot BIND is skipped, and the desktop is photographed anyway
+
+Raised at panel round 9 and ledgered as AB-9. On the full-desktop path, a window that cannot be bound —
+most commonly an ELEVATED one, since a non-elevated UIA client cannot bind it at all — throws before the
+mask walk is even entered, is swallowed by the per-window `catch { }`, and contributes no masks while the
+capture proceeds and photographs it.
+
+**Why this is not decided in the plan:** the only fix is a policy choice with real cost. Refusing every
+full-desktop capture while any unbindable window is visible would break an ordinary developer desktop with
+an admin terminal open, in order to protect a window SP3 never protected either — UIA cannot read its
+contents, so no redaction has ever applied to it, and A1 changes nothing about that.
+
+**What is already true, and is the reason this is a boundary rather than a hole:**
+`ScreenshotTools.cs:33-35` refuses full-desktop capture outright when a DENYLISTED credential window is
+visible, so the highest-value case is covered by a different mechanism.
+
+**The choice, for the operator:** (a) leave it as a ledgered boundary, which is the current state;
+(b) refuse full-desktop capture when any visible window cannot be bound, trading availability for
+strictness; or (c) narrow (b) to windows whose process is elevated, which needs a new elevation probe and
+is its own increment.
+
 
 ### Round 2 (rotation seat: Fix-Edge Hunter) - folded; do NOT re-raise
 
@@ -3284,3 +3354,51 @@ folded.**
 CLAIM about the artifact, not evidence. From here on, every ledger entry in this file should be
 re-verified against the file before it is trusted - which is exactly what the Regression Historian seat
 did, and why it caught this.
+
+
+### Round 9 (rotation seat: Fresh-Eyes Implementer) - folded; do NOT re-raise
+
+The seat's lens was deliberately different: not "is this wrong" but "is this still followable" after eight
+rounds of patching. It found a real contract defect that a bug-hunting lens had missed nine times.
+
+- **HIGH: the caller VIOLATED the callee's most heavily-documented invariant.** `MaskEscalation.Resolve`'s
+  docstring asserted, loudly and in capitals, that its yardstick "IS THE VISIBLE CAPTURE, NOT THE RAW
+  CAPTURE RECT" - while the caller, since round 7, reassigns it to the UNCLIPPED rect for a named target
+  with no renderable overlap. A fresh engineer modifying `Resolve` would trust the docstring and could
+  confidently break the geometric guards. The parameter is renamed `captureYardstick`, its real contract
+  (non-degenerate; usually but NOT always clipped) now sits on the parameter where a modifier will read it,
+  and the reassignment site says why it is allowed. **The comment was correct when written and the caller
+  changed underneath it** - the third time in this review that a true sentence became false without being
+  edited.
+- **HIGH, pre-existing, and SURFACED rather than decided: a window UIA cannot BIND is skipped and
+  photographed anyway.** An ELEVATED window cannot be bound by a non-elevated UIA client at all, so the
+  resolve throws BEFORE the mask walk - outside the blanket conversion, which lives inside the STA lambda -
+  and the per-window `catch { }` turns "could not prove this is safe" into "capture it". Ledgered as AB-9
+  and raised as OPEN #2 for the operator, because the only fix is a policy choice with real cost: refusing
+  full-desktop capture whenever an admin terminal is visible, to protect a window SP3 never protected
+  either. Partial compensation already exists and is why this is a boundary rather than a hole -
+  `ScreenshotTools.cs:33-35` refuses outright when a DENYLISTED credential window is visible.
+
+**Rejected on reasoning, with the reasoning recorded in the code:** the Mechanism Gamer called the
+degenerate-yardstick refusal redundant, since the overlap rule discards every candidate against a zero-area
+yardstick and the loop refuses at the cap anyway. It is right about the OUTCOME and wrong about the COST:
+"at the cap" means MaxAncestorLevels ancestor fetches first, each a cross-process COM round trip on the
+single query STA, for a question already answered. Kept as a short-circuit, and now labelled as one so the
+next reader does not delete it as dead code.
+
+**Confirmed clean, recorded as positive results:** the Literal Implementer verified the task ORDER holds
+against the new signature - `skipIfOffscreen` is optional, so Task 4's build gate passes with existing
+callers untouched, and Task 5b then consumes it. Axiom Breaker and Boundary Smuggler reported no new
+findings. Separately, the driver re-verified all 22 ledger claims against the file mechanically after round
+8's lesson; 22 of 22 hold (one initial FAIL was a line-wrap artefact in the checker, not in the artifact).
+
+**Driver's own find this round:** recorded WHY the root-identity stop is not redundant against the
+geometric rule, since the next reader will ask. `captureBounds` is read ONCE at the start of the walk while
+an ancestor's rect is read DURING it, so on a window that MOVES in between, the root's live rect no longer
+contains the stale yardstick, the geometric check PASSES, and the root is accepted as a mask - an image
+blacked out in the wrong place with the secret possibly still visible. The identity stop does not care
+where the window is.
+
+**PANEL VERDICT - round 9: REJECT-then-fold. One contract violation that nine rounds of bug-hunting had
+missed because it needed a comprehension lens, one pre-existing boundary surfaced to the operator, and one
+finding rejected with recorded reasoning. 2 folded, 1 rejected, 1 documented.**
