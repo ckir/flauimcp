@@ -4,6 +4,16 @@
 
 Requires the **.NET 10 SDK** (the project targets `net10.0-windows`).
 
+**Warnings are errors.** The root `Directory.Build.props` sets `TreatWarningsAsErrors` for all four
+projects, so a build that used to warn now fails. This is deliberate: `dotnet build` is incremental and
+does not re-report warnings for projects it considers up to date, so the old 0-warning gate enforced
+nothing — MEASURED, it printed `0 Warning(s)` on a tree a full rebuild showed had 2. An error fixes that
+mechanically, because MSBuild never marks a failed project up to date.
+
+If a warning genuinely needs silencing, add a targeted `<NoWarn>` for that specific ID with a written
+reason. Do **not** set `TreatWarningsAsErrors=false` in a `.csproj` or a nested `Directory.Build.props` —
+`BuildPropertySweepTests` fails on both, and a nested props file silently wins over the root one.
+
 ```powershell
 # Build + run tests. The Desktop-category tests need an interactive desktop, connected and unlocked.
 # The UIA-pattern tests run over RDP; the synthetic-input tests need a PHYSICAL CONSOLE — SendInput
