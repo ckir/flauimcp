@@ -74,6 +74,20 @@ check happens *before* the `disabled` array is parsed at `:168`, so no entries a
 therefore add a best-effort entry projection for the `FutureVersion` state, or the message has nothing to
 name. This is why Task 5 comes before Task 8.
 
+⚠⚠ **CORRECTION A HAD A DEFECT OF ITS OWN, FOUND DURING EXECUTION. Read this before writing Step 3e.**
+The first version of this correction simply moved the `disabled`-array check *ahead* of the version check.
+MEASURED, that DESTROYS a future build's marker. The chain: a `version: 3` marker whose schema has no
+`disabled` **JsonArray** (a renamed key, or an object instead of an array) now classifies as `Corrupt`
+rather than `FutureVersion`; `Record` (`:102-104`) responds to `Corrupt` by calling `BackUpCorrupt`, which
+does `File.Move(path, dest)` — renaming the newer build's marker aside so this build can overwrite it —
+and `SweepBackups` later deletes the `.bak-*`. That is precisely the data loss the `FutureVersion` guard
+exists to prevent, and the line the correction deleted said so in as many words:
+`// honored on version alone (goal 4)`.
+
+**The rule the fixed Step 3e encodes: project best-effort, but never let the array's SHAPE downgrade a
+future marker.** The `FutureVersion` verdict stands on the VERSION ALONE. Step 3e below is already
+written this way — do not "simplify" it back.
+
 **Correction B — the out-of-process uninstall test cannot prove the new catch.**
 Spec finding 37 requires the malformed-JSON test to shell out to the built exe and assert exit 0, because
 an in-process `Restore()` test would prove nothing about the process boundary. That is right as far as it
@@ -741,17 +755,32 @@ entry loop and its `return (MarkerState.Present, list);` — with:
 
 ```csharp
             if (version < 1) return (MarkerState.Corrupt, empty);
-            if (o["disabled"] is not JsonArray arr) return (MarkerState.Corrupt, empty);
 
             // CORRECTION A: project the entries BEFORE branching on version. A FutureVersion marker's
             // ids are what the restore message needs to name so the user can re-enable them by hand —
-            // and the old order (version check at :166, parse at :168) meant that message had nothing to
+            // and the old order (version check first, parse second) meant that message had nothing to
             // name. Best-effort: a future schema may shape entries differently, in which case this
             // yields fewer or none, which is exactly the fail-safe direction.
-            var list = ParseEntries(arr);
+            //
+            // ⚠ But the FutureVersion verdict stands on the VERSION ALONE, and the array's shape may
+            // never downgrade it. A future schema might not have a `disabled` array at all; calling that
+            // Corrupt would send it to Record's Corrupt branch -> BackUpCorrupt -> File.Move, renaming a
+            // NEWER build's marker aside so this build can overwrite it, with SweepBackups deleting the
+            // .bak afterwards. That is the exact destruction this guard exists to prevent. Hence: parse
+            // if we can, decide on the version, and only then hold a v1/v2 marker to the array contract.
+            var arr = o["disabled"] as JsonArray;
+            var list = arr is null ? empty : ParseEntries(arr);
             if (version > SchemaVersion) return (MarkerState.FutureVersion, list);
+            if (arr is null) return (MarkerState.Corrupt, empty);
             return (MarkerState.Present, list);
 ```
+
+⚠ **The four `"version": 2` FutureVersion sentinels.** Four existing tests use a literal `"version": 2`
+to mean "a future version", which was true only while `SchemaVersion` was 1. Bumping to 2 makes them
+`Present` and they go red. Change the literal to `3` — the assertions are already correct and must not be
+touched. All four sites, enumerated so none is missed:
+`ClaudeCollisionRestoreTests.cs:288` · `ClaudeCollisionRestoreTests.cs:314` (a `case "future":`) ·
+`InstallStatusTests.cs:123` · `InstallStatusTests.cs:164`. Task 5's file list must include both files.
 
 ⚠ **Move the entry loop VERBATIM into `ParseEntries` below** — comments and guards included. This is the
 most error-prone edit in the plan; several of those guards exist for inputs no test exercises, so a
