@@ -112,6 +112,14 @@ $env:FLAUI_MCP_STATE_DIR = $state2
 $env:FLAUI_MCP_DATA_DIR  = Join-Path $sandbox2 'data'
 Push-Location $outside2
 try {
+    # ⚠ THE ONLY GATE FOR THIS SUBPROJECT DEPENDS ON A THIRD-PARTY CLI, A GITHUB CLONE AND THE NETWORK.
+    # It cannot run offline, cannot run in CI, and breaks if ckir/flauimcp is renamed or made private.
+    # That is accepted rather than solved - a local fake marketplace would test a fake instead of the real
+    # CLI behaviour, and the CLI's real behaviour is precisely what this defect turned on. The consequence
+    # is that a green result is only evidence about the CLI of a particular day, so the version goes in
+    # the recorded output.
+    Write-Host "claude CLI: $(claude --version 2>&1)" -ForegroundColor DarkGray
+
     claude plugin marketplace add ckir/flauimcp 2>&1 | Out-Host
     claude plugin install flaui-mcp@flaui-mcp --scope user 2>&1 | Out-Host
 
@@ -134,6 +142,75 @@ try {
         $restored = claude plugin list --json | ConvertFrom-Json | Where-Object { $_.id -eq 'flaui-mcp@flaui-mcp' }
         Check 'marketplace copy is RESTORED after uninstall' ($restored.enabled -eq $true)
         Check 'the marker was consumed' (-not (Test-Path (Join-Path $state2 'disabled-plugins.json')))
+
+        # ⚠⚠ THE FORCING CHECK FOR LAYER (b). Everything above passes under fix (a) ALONE - the qualified
+        # sweep means nothing evicts the copy, so the reinstall fallback would ship completely
+        # unexercised. This block SIMULATES an eviction the qualified sweep no longer causes (the user's
+        # own tooling, a future registrar change, a claude behaviour shift) and then asserts the copy
+        # comes back. It also removes the MARKETPLACE, which is the harder case: the recorded SOURCE is
+        # the only thing that can rebuild it. MEASURED: `claude plugin install flaui-mcp@flaui-mcp` exits
+        # 1 once the marketplace is removed.
+        Write-Host "`n== collision: an EVICTED copy must be REINSTALLED on uninstall ==" -ForegroundColor Cyan
+
+        claude plugin marketplace add ckir/flauimcp 2>&1 | Out-Null
+        claude plugin install flaui-mcp@flaui-mcp --scope user 2>&1 | Out-Host
+        & $Exe install --agent claude | Out-Host
+
+        $seeded = claude plugin list --json | ConvertFrom-Json | Where-Object { $_.id -eq 'flaui-mcp@flaui-mcp' }
+        # A gate that cannot run has NOT passed. Same rule as the seeding check above.
+        Check 'the reinstall scenario could be set up (the check is able to run at all)' `
+              ($null -ne $seeded -and $seeded.enabled -eq $false)
+        if ($null -eq $seeded -or $seeded.enabled -ne $false) {
+            Write-Warning "could not re-seed a DISABLED marketplace copy - the reinstall check did NOT run. This is a FAILURE, not a skip."
+        } else {
+            # The marker must carry the source, or the reinstall has nothing to rebuild from.
+            $marker = Get-Content (Join-Path $state2 'disabled-plugins.json') -Raw | ConvertFrom-Json
+            Check 'the marker is version 2' ($marker.version -eq 2)
+            Check 'the marker recorded the marketplace source' `
+                  ($null -ne $marker.disabled[0].marketplace -and $marker.disabled[0].marketplace.source)
+
+            # SIMULATE THE EVICTION, then remove the marketplace so only the recorded SOURCE can recover.
+            claude plugin uninstall flaui-mcp@flaui-mcp 2>&1 | Out-Host
+            claude plugin marketplace remove flaui-mcp 2>&1 | Out-Host
+            $gone = claude plugin list --json | ConvertFrom-Json | Where-Object { $_.id -eq 'flaui-mcp@flaui-mcp' }
+            Check 'the copy really was evicted (the precondition holds)' ($null -eq $gone)
+
+            & $Exe uninstall --agent claude | Out-Host
+            $rebuilt = claude plugin list --json | ConvertFrom-Json | Where-Object { $_.id -eq 'flaui-mcp@flaui-mcp' }
+            Check 'the evicted copy was REINSTALLED from the recorded marketplace' ($null -ne $rebuilt)
+            Check 'and re-enabled' ($rebuilt.enabled -eq $true)
+        }
+
+        # ⚠ THE BRANCH THAT PROTECTS THE USER FROM A SILENTLY WRONG INSTALL. A repointed alias must be
+        # REFUSED, not followed - "present by alias" is not "is the thing we recorded".
+        Write-Host "`n== collision: a REPOINTED alias must be refused, not followed ==" -ForegroundColor Cyan
+
+        claude plugin marketplace add ckir/flauimcp 2>&1 | Out-Null
+        claude plugin install flaui-mcp@flaui-mcp --scope user 2>&1 | Out-Null
+        & $Exe install --agent claude | Out-Host
+        claude plugin uninstall flaui-mcp@flaui-mcp 2>&1 | Out-Null
+
+        # Repoint the alias at a DIFFERENT source by hand - the registry is what restore compares against.
+        $registry = Join-Path $claude2 'plugins\known_marketplaces.json'
+        $repointed = $false
+        if (Test-Path $registry) {
+            $json = Get-Content $registry -Raw | ConvertFrom-Json
+            if ($json.'flaui-mcp') {
+                $json.'flaui-mcp'.source.repo = 'someone-else/a-different-fork'
+                $json | ConvertTo-Json -Depth 10 | Set-Content $registry
+                $repointed = $true
+            }
+        }
+        Check 'the alias could be repointed (the check is able to run at all)' $repointed
+        if (-not $repointed) {
+            Write-Warning "could not repoint the alias - the refusal check did NOT run. This is a FAILURE, not a skip."
+        } else {
+            $out = & $Exe uninstall --agent claude 2>&1 | Out-String
+            Write-Host $out
+            Check 'restore REFUSED to install from a repointed alias' ($out -match 'someone-else/a-different-fork')
+            $wrong = claude plugin list --json | ConvertFrom-Json | Where-Object { $_.id -eq 'flaui-mcp@flaui-mcp' }
+            Check 'and installed nothing' ($null -eq $wrong)
+        }
     }
 }
 finally {
