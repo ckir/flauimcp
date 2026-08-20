@@ -111,6 +111,33 @@ Hand that pair to `Encode` and the scale factor comes off the wrong width, every
 offset, and the returned `W/H` describe a rectangle the PNG is not. **The plan must crop the window
 bitmap to `captureBounds` before `Encode`**, restoring the invariant explicitly.
 
+**Two coordinate spaces meet at that crop, and the spec must not leave the conversion implied.**
+*(Panel round 2, Fold Auditor.)*
+
+- `captureBounds` is in **absolute screen** coordinates.
+- The `PrintWindow` bitmap is a standalone image whose origin is **`(0,0)`**, corresponding to the
+  window's top-left — which is `GetWindowRect.left/top`, and by F6 the window's own UIA origin.
+- So the crop rectangle is `captureBounds` **offset by the window origin**:
+  `(captureBounds.X - windowRect.X, captureBounds.Y - windowRect.Y, captureBounds.Width, captureBounds.Height)`.
+- **`Encode` still receives the ABSOLUTE `captureBounds`**, unchanged. Its mask arithmetic
+  (`clip.X - captureBounds.X`) works on absolute rects and must keep doing so. Translating the value
+  passed to `Encode` as well would double-apply the offset.
+
+⚠ **The window rect is not currently available at that site.** `CaptureGeometry`
+(`PerceptionManager.cs:1275`) carries `Bounds` — which for element scope IS the element rect — and no
+window rectangle. The plan must plumb the window rect through. `CaptureGeometry` is a positional record,
+so the same append-only rule applies as for `CaptureResult`.
+
+⚠ **The crop must CLAMP to the bitmap it actually got, and must not turn a known race into a crash.**
+§2 already documents that a window moving mid-walk leaves live mask rects against a stale capture rect,
+and calls that race inherent. Under the scrape a stale rect degrades the image; under a mandatory crop a
+stale rect that is now LARGER than the bitmap is an out-of-range operation. That matters more than it
+looks: `Bitmap.Clone` raises **`OutOfMemoryException`** for an out-of-range source rectangle, and this
+repo's catch filters deliberately exclude `OutOfMemoryException` as a CRITICAL failure
+(`PerceptionManager.cs:891-892`, `:919-920`). A window resize would therefore surface to the agent as an
+out-of-memory condition. Intersect the crop with the real bitmap bounds and define the outcome; do not
+let the arithmetic throw. *(Panel round 2, State Corruptor.)*
+
 For WINDOW scope the invariant holds, and F6 is what establishes it: `captureBounds` is the window's UIA
 rect, which equals the `GetWindowRect` the bitmap is sized from.
 
@@ -191,6 +218,22 @@ diagnostic then costs effort and changes nothing. *(Panel round 1, PP-2.)*
 the plan has nothing to measure against: the detector exists to tell an agent that this image may not be
 usable and that the UIA tree is the fallback. It is not a correctness gate and must not grow into one.
 *(Panel round 1, LI-1.)*
+
+⚠ **And its ACCEPTANCE CRITERIA are settled here too, or "measure it" is an observation rather than a
+test.** The predicate and its sampling strategy pass if, and only if:
+
+- it classifies the F1 flag-0 blank renders as **true**, and
+- it classifies the F4 row — the 0.044 non-black, dark-themed, pixel-perfect capture — as **false**, and
+- it does not measurably change capture latency. It runs over a bitmap that is already allocated and
+  already being encoded; a detector that costs real time has chosen the wrong sampling strategy.
+
+Those three are checkable against evidence this spec already holds, so the plan can pass or fail against
+them rather than merely reporting a number. *(Panel round 2, direct question 3.)*
+
+⚠ **"Always present" is scoped to image responses.** A hard failure (§4) returns a `ToolException` and no
+image at all, so there is no metadata object to carry the field. The field is always present whenever an
+image is returned — it is never conditional on the image being GOOD. *(Panel round 2 raised this as an
+unsure finding; it is a clarification, not a contradiction.)*
 
 **Why not refuse.** The instinct comes from SP4's `RedactionUnmaskable`, which refuses rather than
 returning an all-black image (`PerceptionManager.cs:894`). That precedent does **not** transfer, and the
@@ -423,3 +466,23 @@ one (§3's diagnostic contradiction) was raised almost in passing. Its answer to
 your own design" was the false one restated. Score the claim and the evidence separately — and give the
 peer the FILE rather than your measurement: pointed at `PerceptionManager.cs:927-930` and asked what it
 concluded, it reversed itself and cited the line that did it.
+
+### AGY-AFTER adversarial panel — round 2
+
+Seats: State Corruptor (its trigger did not fire until round 1's folds introduced a two-source staleness
+relationship), Fold Auditor (aimed only at round 1's eight edits, enumerated), Disposition Challenger
+(aimed at the four round-1 rejections rather than at the artifact). Report:
+`.clavity/scratch/item8-panel/agy-round2.md`. **Verdict: NOT GREEN.** Three findings folded:
+
+- The element crop's absolute→relative coordinate translation was unstated (§1). Verified and found to be
+  worse than reported: `CaptureGeometry` does not carry a window rect at all, so the operand is missing,
+  not merely the arithmetic.
+- The mandatory crop converts §2's known, accepted movement race from a soft degrade into a hard throw,
+  and `Bitmap.Clone`'s out-of-range exception is `OutOfMemoryException`, which this repo's catch filters
+  deliberately treat as CRITICAL and pass through (§1).
+- The detector's deferral had a purpose but no pass/fail criteria, so the plan could measure without
+  being able to conclude (§3).
+
+The Disposition Challenger seat found no wrong rejection and re-derived F6's reasoning independently,
+reaching the same conclusion from the file. That is corroboration, but a seat aimed at the driver's own
+judgement returning nothing is the weakest signal in the round, not the strongest.
