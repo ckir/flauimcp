@@ -175,3 +175,28 @@ gates.
 on; refusal is confined to whole-process death. This closed the plan's OPEN #1 with no code change.
 ⚠ **Honest limit:** measured on one Windows build against WPF. A different framework or OS version may
 answer differently, and nothing in the suite would notice.
+
+### AB-11 — a POPUP whose enumeration throws is skipped, and its pixels are captured  *(SP4/A1)*
+**Behaviour:** in `ResolveWindowCaptureGeometryAsync`'s mask walk, a search root at `rootIndex > 0` — a
+popup, tooltip or context menu — whose `FindAllDescendants()` throws is skipped with `catch { continue; }`.
+The capture then proceeds and photographs that popup's pixels with no mask set for it.
+**Why it is this way, deliberately:** this is decision D3, made by the operator. The walk is STRICT on
+`roots[0]` (the window — a failure there is the TARGET dying, and it REFUSES) and LENIENT on popups,
+because a tooltip or menu closing mid-scan is an ordinary UI event and must not fail the window's own
+capture. `FindAsync` (`:583-596`) and `EvaluateSelectorValueAsync` (`:745-760`) already draw this same
+line.
+**The residual leak, stated plainly because it was not written down until a capstone round named it:** the
+`continue` cannot distinguish a popup that CLOSED from one that is still painted but whose provider
+glitched. In the second case the popup is on screen, holds possibly-redact-worthy content, and is captured
+in the clear. The measured behaviour in AB-10 makes the benign case likely — a popup that closed leaves an
+element that ANSWERS with a zero-area rect rather than throwing — which means a THROW here is more likely
+to be the glitch case than the closed case. That cuts against the leniency, and it is why this is ledgered
+rather than left implicit.
+**Compensation + anchor:** partial. `roots[0]` is strict, so the window's own content is never skipped this
+way, and a DENYLISTED window still refuses the whole capture before any of this runs. There is no pin for
+the popup-throws path: staging a popup whose enumeration throws on demand is the AB-1 limitation.
+**Why not fixed in SP4:** the fix proposed at capstone — check Win32 `IsWindow` on the popup and refuse if
+it is still alive — requires `PopupFinder.SearchRoots` to yield HWNDs alongside its `AutomationElement`s,
+which changes a shared API used by paths outside the mask walk. That is an increment, not a detail.
+⚠ **Honest limit:** A1 closes the fail-open where a redact-worthy ELEMENT contributed no mask. It does not
+close the fail-open where an entire popup SUBTREE was never walked.

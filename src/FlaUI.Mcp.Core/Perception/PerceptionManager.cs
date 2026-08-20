@@ -863,7 +863,31 @@ public sealed class PerceptionManager
                     return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), true, false, null, System.Array.Empty<MaskEscalationEntry>());
             }
             catch { }
-            var target = string.IsNullOrEmpty(@ref) ? (AutomationElement)win : _refs.Resolve(handle.Id, @ref!, PopupFinder.SearchRoots(win, desktop));
+            // ⚠ THE REF RESOLUTION IS GUARDED TOO, and it was NOT until a capstone round pointed at it.
+            // `PopupFinder.SearchRoots` is a UIA walk of its own, and it sits OUTSIDE the blanket
+            // conversion further down — so on a tearing-down window it threw a raw COMException that
+            // escaped this method entirely. That is not a mask leak (no image is returned), but it is two
+            // real defects: the agent gets `INTERNAL` instead of `RedactionUnmaskable` and so cannot branch
+            // on it, and ToolResponse.GuardImage puts `ex.Message` on the wire — UNCLASSIFIED third-party
+            // text, which is the exact thing this increment removed from the diagnostics below.
+            //
+            // ⚠ Evaluated ONLY when @ref is non-empty: the ternary short-circuits, so the full-desktop
+            // path (which passes @ref = null and whose caller swallows) never reaches SearchRoots here.
+            // That is why this was not also a silent full-desktop leak.
+            AutomationElement target;
+            try
+            {
+                target = string.IsNullOrEmpty(@ref) ? (AutomationElement)win : _refs.Resolve(handle.Id, @ref!, PopupFinder.SearchRoots(win, desktop));
+            }
+            // RefNotFound is a deliberate, already-classified outcome — re-wrapping it would destroy the
+            // code an agent branches on, exactly as in the blanket conversion below.
+            catch (ToolException) { throw; }
+            catch (System.Exception ex)
+            {
+                throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                    $"Could not resolve the capture target in window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
+                    "retry once the UI has settled, or capture a different window");
+            }
             // ⚠ EVERY FAILURE FROM HERE TO THE RETURN MUST BECOME RedactionUnmaskable, NEVER A RAW
             // EXCEPTION. AllMaskRectsAsync (the FULL-DESKTOP path) wraps this call in `catch { }` to
             // skip a window it cannot bind, and rethrows ONLY RedactionUnmaskable. So a raw COMException

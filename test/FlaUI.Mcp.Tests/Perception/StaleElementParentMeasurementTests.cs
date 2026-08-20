@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using FlaUI.Core.AutomationElements;
+using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
 using Xunit;
@@ -145,5 +146,70 @@ public class StaleElementParentMeasurementTests
         _out.WriteLine($"app still alive? HasExited={app.Process.HasExited}");
         _out.WriteLine(Probe("window root still readable", () =>
             mgr.WindowTitle(app.Process.MainWindowHandle) ?? "<null>"));
+    }
+
+    /// <summary>SP4 capstone round 1, finding 2 — MEASUREMENT of what `window.title` reports when the
+    /// FOCUSED element lives in a popup (a WPF ContextMenu is its own top-level HWND).
+    ///
+    /// The peer's claim: `ResolveFocusedWindowAsync` resolves the owning window with
+    /// `GetAncestor(hwnd, GA_ROOT)`, which stops at the first TOP-LEVEL window — and a popup IS one — so
+    /// the "owning window" resolves to the POPUP, whose Win32 caption is typically empty. The agent would
+    /// then get an empty `window.title` and lose the application context. The proposed fix is
+    /// `GA_ROOTOWNER`, which follows OWNER links too.
+    ///
+    /// ⚠ `GA_ROOT` is PRE-EXISTING — introduced at `d818435`, an ancestor of SP4's branch point, so this
+    /// is not an SP4 regression in the handle. But A5 CHANGED WHAT IS READ from that handle: before SP4
+    /// `title` was the focused ELEMENT's Name (a menu item would have reported "Alpha"), and now it is the
+    /// window's caption. So SP4 can have changed the SYMPTOM even though it did not change the resolution.
+    /// That is exactly what this measures, and it is why the answer decides whether anything is owed here.
+    ///
+    /// ⚠ Needs an INPUT LEASE: the context menu is opened by a real right-click, as PopupGraftingTests
+    /// does. Measurement only — it asserts nothing about the title, because the right answer is a policy
+    /// question, not an OS fact.</summary>
+    [Fact]
+    public async Task What_window_title_reports_when_focus_is_inside_a_popup()
+    {
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
+        var handle = await mgr.OpenByPidAsync(app.Process.Id);
+
+        await mgr.FocusAsync(handle);
+        var baseline = await perception.GetFocusedElementAsync();
+        _out.WriteLine($"BASELINE (focus in the main window): title=\"{baseline.Title}\"");
+
+        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+        {
+            win.FindFirstDescendant(cf => cf.ByAutomationId("MenuTarget"))!.RightClick();
+            return true;
+        });
+        await Task.Delay(600); // let the menu open as a desktop-level popup
+
+        // Focus a menu item directly; a WPF MenuItem takes UIA focus once the menu is up.
+        await mgr.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
+        {
+            var item = desktop.FindFirstDescendant(cf => cf.ByAutomationId("MenuAlpha"));
+            _out.WriteLine($"MenuAlpha found on the desktop? {item is not null}");
+            item?.Focus();
+            return true;
+        });
+        await Task.Delay(300);
+
+        _out.WriteLine("");
+        _out.WriteLine("--- WITH FOCUS INSIDE THE CONTEXT MENU (the measurement) ---");
+        try
+        {
+            var f = await perception.GetFocusedElementAsync();
+            _out.WriteLine($"GetFocusedElementAsync(): ANSWERED -> title=\"{f.Title}\"  descriptor=\"{f.DescriptorLine}\"");
+        }
+        catch (Exception ex)
+        {
+            _out.WriteLine($"GetFocusedElementAsync(): THREW -> {ex.GetType().FullName}: {ex.Message}");
+        }
+        _out.WriteLine("");
+        _out.WriteLine("READING IT: an EMPTY title means the peer is right that GA_ROOT stops at the popup,");
+        _out.WriteLine("and that A5 turned a useful value (the menu item's name) into an empty one. A title");
+        _out.WriteLine("naming the app means GA_ROOT already resolves to the owner here and nothing is owed.");
     }
 }
