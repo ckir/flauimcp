@@ -310,7 +310,8 @@ public static class CliRouter
                 var sw2 = System.Diagnostics.Stopwatch.StartNew(); // preserve the live budget clock (was :255-256)
                 var remedy = new ClaudeCollisionRemedy(
                     ClaudeRunner(() => sw2.Elapsed, ClaudeBudget), paths.StateDir,
-                    claudeConfigDir: paths.ClaudeConfigDir);
+                    claudeConfigDir: paths.ClaudeConfigDir,
+                    longRun: ClaudeLongRunner(() => sw2.Elapsed, ClaudeBudget));
                 if (install)
                 {
                     new PluginArtifactWriter(stagingDir).Generate(exePath, ThisVersion()); // idempotent if agy already ran
@@ -339,13 +340,25 @@ public static class CliRouter
     /// copies), so overhead on hung predecessors never squeezes a legitimately slow later call.
     internal static readonly TimeSpan ClaudeBudget = TimeSpan.FromSeconds(120);
 
+    /// The per-call bound for `claude plugin marketplace add`, the ONE claude call that touches the
+    /// network: it performs a git clone, which DefaultTimeout (30s, tuned for local IPC) would routinely
+    /// kill. Still BOUNDED and still inside ClaudeBudget — a slow clone eats the pass budget and later
+    /// entries degrade to TimedOut warnings, which is the correct behaviour. An uninstall must always
+    /// finish.
+    internal static readonly TimeSpan MarketplaceAddTimeout = TimeSpan.FromSeconds(90);
+
     /// The timeout to hand the next claude call given the elapsed pass time, or null when the budget is
     /// spent (the caller short-circuits to TimedOut without launching a process). Pure — unit-tested.
-    internal static TimeSpan? BudgetedTimeout(TimeSpan budget, TimeSpan elapsed)
+    internal static TimeSpan? BudgetedTimeout(TimeSpan budget, TimeSpan elapsed) =>
+        BudgetedTimeout(budget, elapsed, ProcessRunner.DefaultTimeout);
+
+    /// As above, with an explicit per-call cap — the network-bound `marketplace add` needs a longer one
+    /// than the local-IPC default, but must still never exceed the pass budget.
+    internal static TimeSpan? BudgetedTimeout(TimeSpan budget, TimeSpan elapsed, TimeSpan cap)
     {
         var remaining = budget - elapsed;
         if (remaining <= TimeSpan.Zero) return null;
-        return remaining < ProcessRunner.DefaultTimeout ? remaining : ProcessRunner.DefaultTimeout;
+        return remaining < cap ? remaining : cap;
     }
 
     /// The claude runner, with a test seam for the "CLI absent" case — the branch that gates the
@@ -377,6 +390,24 @@ public static class CliRouter
         return (file, args, cwd) =>
         {
             var timeout = BudgetedTimeout(budget, elapsed());
+            if (timeout is null) return new RunResult(ProcessRunner.TimedOut, "");
+            return ProcessRunner.Run(file, args, cwd, timeout.Value);
+        };
+    }
+
+    /// ClaudeRunner with the longer per-call cap, for the network-bound `marketplace add`. It delegates
+    /// to ClaudeRunner whenever a test seam is active, so a fake CLI behaves identically on both runners
+    /// — only the real path's deadline differs.
+    private static Func<string, string[], string?, RunResult> ClaudeLongRunner(Func<TimeSpan> elapsed, TimeSpan budget)
+    {
+        if (Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_MISSING") == "1"
+            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_COLLISION"))
+            || Environment.GetEnvironmentVariable("FLAUI_MCP_FAKE_CLAUDE_PRESENT") == "1")
+            return ClaudeRunner(elapsed, budget);
+
+        return (file, args, cwd) =>
+        {
+            var timeout = BudgetedTimeout(budget, elapsed(), MarketplaceAddTimeout);
             if (timeout is null) return new RunResult(ProcessRunner.TimedOut, "");
             return ProcessRunner.Run(file, args, cwd, timeout.Value);
         };

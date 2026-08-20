@@ -228,6 +228,10 @@ public sealed class ClaudeCollisionRemedy
 
             var present = ClaudePluginInventory.Matching(entries, MarketplaceId);
 
+            // Read ONCE per pass. Every entry consults the same file, and re-reading it per entry would
+            // multiply the failure surface of a read that runs inside uninstall for no gain.
+            var marketplaces = KnownMarketplaces.Read(_claudeConfigDir);
+
             foreach (var e in recorded)
             {
                 // Symmetric to Apply's guard: a project deleted AFTER we disabled the copy but BEFORE
@@ -248,8 +252,11 @@ public sealed class ClaudeCollisionRemedy
                 // nonexistent id) — check the id is still installed first.
                 if (!present.Any(p => Same(p, e)))
                 {
-                    warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, so it was not re-enabled.");
-                    continue;
+                    // LAYER (b): something evicted the copy. Rebuild it from the marketplace we recorded
+                    // rather than reporting a dead end — but only what we RECORDED, never a guess.
+                    if (!TryReinstall(e, marketplaces, warnings)) continue;
+                    // Reinstalled: fall through to the enable below, which is what actually undoes our
+                    // disable. `install` does not imply the entry is enabled at our recorded scope.
                 }
 
                 var r = _run("claude", new[] { "plugin", "enable", e.Id, "--scope", e.Scope }, e.ProjectPath);
@@ -339,6 +346,93 @@ public sealed class ClaudeCollisionRemedy
         if (at < 0 || at == id.Length - 1) return null;
         var alias = id[(at + 1)..];
         return marketplaces.ByName.TryGetValue(alias, out var src) ? src : null;
+    }
+
+    /// <summary>Rebuild an evicted copy from its recorded marketplace: re-add the marketplace if the
+    /// alias is absent, then reinstall. Returns true when the caller should go on to ENABLE it, false
+    /// when this entry is done (a warning has been recorded either way).
+    ///
+    /// ⚠ EVERY false return is a `continue` at the call site, NEVER a `return`/`break`. One entry's
+    /// problem is never another entry's — reading "stop" as `return` would strand every LATER entry
+    /// because one alias mismatched.
+    ///
+    /// ⚠ NOTHING HERE MAY THROW. It runs inside `uninstall`, which Inno invokes with
+    /// `waituntilterminated` (installer/flaui-mcp.iss:44-47). KnownMarketplaces.Read never throws and
+    /// every CLI call goes through a bounded runner, so a hang or a hostile file becomes a warning.</summary>
+    private bool TryReinstall(DisabledEntry e, MarketplacesSnapshot marketplaces, List<string> warnings)
+    {
+        var manual = $"claude plugin install {e.Id} --scope {e.Scope}" +
+                     (e.ProjectPath is null ? "" : $" (run it from {e.ProjectPath})");
+
+        if (e.Marketplace is not { } mkt)
+        {
+            // ⚠ AN HONEST DEAD END, not a graceful degrade. The plugin is GONE and this path cannot
+            // bring it back, so the message must read as one. Guessing a source would install something
+            // the user did not ask for, which is strictly worse. The honest failure is the feature.
+            warnings.Add($"{e.Id} ({Where(e)}) is no longer installed and no marketplace source was " +
+                         "recorded for it, so it could NOT be restored. To put it back yourself, re-add " +
+                         $"the marketplace it came from and run: {manual}.");
+            return false;
+        }
+
+        if (marketplaces.State == MarketplacesState.Unreadable)
+        {
+            // "Cannot read" is NOT "not there". The live source is genuinely UNKNOWN, and re-adding
+            // blind could overwrite a marketplace the user has repointed.
+            warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, and the marketplace registry " +
+                         $"({KnownMarketplaces.FileName}) could not be read, so we did not risk changing " +
+                         $"it. To restore it yourself: claude plugin marketplace add {mkt.Source} then {manual}.");
+            return false;
+        }
+
+        // FileAbsent means there are NO registered marketplaces, so the alias is DEFINITIVELY absent and
+        // re-adding is both safe and necessary. Only a successfully READ file can say an alias is live.
+        var live = marketplaces.State == MarketplacesState.Read
+                   && marketplaces.ByName.TryGetValue(mkt.Name, out var l) ? l : null;
+
+        if (live is not null && !KnownMarketplaces.SameSource(live, mkt))
+        {
+            // ⚠ "PRESENT BY ALIAS" IS NOT "IS THE THING WE RECORDED". The alias is a local name the USER
+            // controls. If they repointed it, installing would silently deliver whatever now sits behind
+            // that name. The user's own configuration outranks our restore — for THIS entry.
+            warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, and the marketplace `{mkt.Name}` " +
+                         $"now points at {live.Kind} `{live.Source}` instead of the {mkt.Kind} " +
+                         $"`{mkt.Source}` we recorded — so it was NOT reinstalled and your marketplace " +
+                         $"was NOT changed. To restore it yourself once `{mkt.Name}` points where you " +
+                         $"expect: {manual}.");
+            return false;
+        }
+
+        if (live is null)
+        {
+            var add = _longRun("claude", new[] { "plugin", "marketplace", "add", mkt.Source }, e.ProjectPath);
+            if (add.Code != 0)
+            {
+                warnings.Add($"could not re-add the marketplace `{mkt.Name}` for {e.Id} ({Where(e)}): " +
+                             $"claude {DescribeExit(add.Code)}. To restore it yourself: claude plugin " +
+                             $"marketplace add {mkt.Source} then {manual}.");
+                return false;
+            }
+        }
+
+        var reinstall = _run("claude", new[] { "plugin", "install", e.Id, "--scope", e.Scope }, e.ProjectPath);
+        if (reinstall.Code != 0)
+        {
+            // ⚠ RULE 3: a PARTIAL restore reports as a FAILURE with the remaining commands, never as a
+            // success. We may have just re-added a marketplace and left the plugin missing.
+            warnings.Add((live is null ? $"re-added the marketplace `{mkt.Name}` but " : "") +
+                         $"could NOT reinstall {e.Id} ({Where(e)}): claude {DescribeExit(reinstall.Code)}. " +
+                         $"To finish: {manual}.");
+            return false;
+        }
+
+        // ⚠ RULE 2: say WHICH steps ran. "Restored" when only an enable was needed and "reinstalled from
+        // <marketplace>" when the copy was rebuilt are different facts, and an operator debugging a lost
+        // plugin needs to know which happened.
+        warnings.Add($"{e.Id} ({Where(e)}) was no longer installed, so it was reinstalled from " +
+                     $"`{mkt.Name}` ({mkt.Kind}: {mkt.Source})" +
+                     (live is null ? ", after re-adding that marketplace." : "."));
+        return true;
     }
 
     /// <summary>The exact commands a human must run to undo our disable themselves.
