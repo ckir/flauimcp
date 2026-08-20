@@ -96,6 +96,18 @@ public static class KnownMarketplaces
             }
             return new MarketplacesSnapshot(MarketplacesState.Read, byName, unsupported);
         }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // The file (or its directory) vanished AFTER the File.Exists check above — a concurrent
+            // `claude` run rewriting its own registry, or the user's tooling. That is ABSENT, not
+            // UNREADABLE, and the distinction is the whole point of having two states: absent means
+            // there are no registered marketplaces, so a recorded alias is DEFINITIVELY absent and
+            // re-adding it is safe and necessary; unreadable means the live source is UNKNOWN and we
+            // must not touch it. Falling through to the bare catch below would abort a restore that
+            // should have proceeded — the false-negative direction, which is the dangerous one.
+            // CollisionMarker.ReadState guards the identical race on the marker file for the same reason.
+            return Empty();
+        }
         catch
         {
             // Locked, ACL-blocked, or a schema that made a cast throw. "I know nothing" is a usable

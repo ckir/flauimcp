@@ -287,3 +287,29 @@ that overturned two earlier claims about it.
 been worse than shipping none — it would have claimed this line was guarded.
 ⚠ **Re-validation note for a future audit:** if the fixture ever gains a window whose UIA ClassName starts
 with `HwndWrapper`, this entry is promoted straight back to a live gap and the test becomes writable.
+
+### AB-17 — the `known_marketplaces.json` exists→read race  *(release-tooling capstone r1, finding 1)*
+
+`KnownMarketplaces.Read` checks `File.Exists` and then `File.ReadAllText`. If a concurrent `claude` run
+rewrites its own registry inside that window, the read throws `FileNotFoundException` /
+`DirectoryNotFoundException`. Before the capstone this fell into the bare `catch` and returned
+**Unreadable**, which is the wrong answer with a real consequence: `FileAbsent` and `Unreadable` drive
+OPPOSITE actions, so a restore that should have re-added the marketplace and reinstalled the plugin would
+instead refuse with "the registry could not be read" — the false-negative direction the design elsewhere
+calls the dangerous one.
+
+**Fixed** by a filtered catch mapping both exceptions to `Empty()` (FileAbsent).
+
+**Why not covered:** the race cannot be staged without a filesystem seam. `File.Exists` returning true
+while `File.ReadAllText` fails requires another process to delete the file between two adjacent
+statements; nothing in-process can interpose there, and adding a seam to production code to test a
+microsecond window is a worse trade than recording the boundary.
+**Compensation + anchor:** the filtered catch is at `KnownMarketplaces.Read`, immediately above the bare
+one, and carries the reasoning inline. `CollisionMarker.ReadState` guards the identical race on the marker
+file with the same filter and the same justification — that sibling is the precedent, and it is what makes
+this a consistency fix rather than a speculative one.
+⚠ **Honest limit:** no test goes red if the filtered catch is deleted. The two states remain covered by
+`A_missing_file_is_FileAbsent_not_Unreadable` and `Malformed_json_is_Unreadable_and_never_throws`, but
+neither reaches the race.
+⚠ **Re-validation note:** if a filesystem seam is ever introduced into this class for another reason, this
+entry is promoted back to a live gap and the test becomes writable.
