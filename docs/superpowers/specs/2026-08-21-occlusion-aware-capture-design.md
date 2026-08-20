@@ -119,24 +119,53 @@ bitmap to `captureBounds` before `Encode`**, restoring the invariant explicitly.
   window's top-left — which is `GetWindowRect.left/top`, and by F6 the window's own UIA origin.
 - So the crop rectangle is `captureBounds` **offset by the window origin**:
   `(captureBounds.X - windowRect.X, captureBounds.Y - windowRect.Y, captureBounds.Width, captureBounds.Height)`.
-- **`Encode` still receives the ABSOLUTE `captureBounds`**, unchanged. Its mask arithmetic
+- **`Encode` receives an ABSOLUTE rectangle**, not a window-relative one. Its mask arithmetic
   (`clip.X - captureBounds.X`) works on absolute rects and must keep doing so. Translating the value
   passed to `Encode` as well would double-apply the offset.
+
+⚠ **CLAMP ONCE, THEN DERIVE BOTH FROM THE SAME RECTANGLE.** This is the rule, and it is stated this way
+because the obvious two-sentence version of it is wrong — an earlier draft of this spec said "intersect
+the crop with the bitmap" and "`Encode` still receives the unchanged `captureBounds`" in the same
+breath, which silently reintroduces the exact misalignment this subsection exists to prevent. If the
+clamp shrinks the crop and `Encode` is still handed the original larger rect, the scale factor comes off
+the smaller `src.Width` while masks translate against the larger origin. Same bug, new cause.
+
+So:
+
+```
+effective = Intersect(cropRectRelativeToWindow, new Rectangle(0, 0, bitmap.Width, bitmap.Height))
+src       = bitmap cropped to `effective`
+absolute  = effective offset back by the window origin
+Encode(src, absolute, masks, maxWidth)     // src.Size == absolute.Size, by construction
+```
+
+`CaptureResult`'s `X/Y/W/H` then honestly describe the region actually captured, which is what a caller
+needs when a resize truncated it. *(Panel round 3, Fold Auditor — a defect introduced by round 2's own
+fix.)*
 
 ⚠ **The window rect is not currently available at that site.** `CaptureGeometry`
 (`PerceptionManager.cs:1275`) carries `Bounds` — which for element scope IS the element rect — and no
 window rectangle. The plan must plumb the window rect through. `CaptureGeometry` is a positional record,
 so the same append-only rule applies as for `CaptureResult`.
 
-⚠ **The crop must CLAMP to the bitmap it actually got, and must not turn a known race into a crash.**
-§2 already documents that a window moving mid-walk leaves live mask rects against a stale capture rect,
-and calls that race inherent. Under the scrape a stale rect degrades the image; under a mandatory crop a
-stale rect that is now LARGER than the bitmap is an out-of-range operation. That matters more than it
-looks: `Bitmap.Clone` raises **`OutOfMemoryException`** for an out-of-range source rectangle, and this
-repo's catch filters deliberately exclude `OutOfMemoryException` as a CRITICAL failure
-(`PerceptionManager.cs:891-892`, `:919-920`). A window resize would therefore surface to the agent as an
-out-of-memory condition. Intersect the crop with the real bitmap bounds and define the outcome; do not
-let the arithmetic throw. *(Panel round 2, State Corruptor.)*
+⚠ **Why the clamp is required at all.** §2 already documents that a window moving mid-walk leaves live
+mask rects against a stale capture rect, and calls that race inherent. Under the scrape a stale rect
+degrades the image; under a mandatory crop a stale rect that is now LARGER than the bitmap is an
+out-of-range operation.
+
+**MEASURED on this runtime** (`.NET 10`, `System.Drawing`): `Bitmap.Clone(rect, format)` with a rect
+outside the source throws **`ExternalException`** — "An object could not be created, possibly due to a
+lack of memory, but most likely due to invalid input" — for an oversized rect, an overhanging rect and a
+negative-origin rect alike; an exactly-fitting rect does not throw.
+
+That is not the harmless outcome it looks like. `ScreenCapture.cs:40` already catches
+`COMException or ExternalException` and maps it to `ToolErrorCode.CaptureUnavailable` with the hint
+"reconnect to restore rendering". So without the clamp, **a window being resized mid-capture is reported
+to the agent as a disconnected or locked session** — a confident, actionable, and completely wrong
+diagnosis. Clamp, and the case never arises. *(Panel round 2, State Corruptor; the exception type
+corrected in round 3 after the peer flagged the original claim as unverified — it was, and it was wrong.
+The earlier draft said `OutOfMemoryException`, which would have escaped this repo's CRITICAL filters at
+`PerceptionManager.cs:891-892`. It does not, on this runtime.)*
 
 For WINDOW scope the invariant holds, and F6 is what establishes it: `captureBounds` is the window's UIA
 rect, which equals the `GetWindowRect` the bitmap is sized from.
@@ -335,8 +364,17 @@ plan's edit list. *(Panel round 1, LI-3.)*
 - **Full-desktop scope.** Keeps the scrape.
 - **Minimized windows.** Still `ElementNotActionable`. `PrintWindow` on a minimized window is unreliable,
   and nothing in item 8 requires changing it.
-- **A scrape fallback when `PrintWindow` disappoints.** Rejected: choosing between the two needs the
-  unsound detector F4 rules out, and a silent backend switch is worse than a known one.
+- **A scrape fallback when `PrintWindow` disappoints.** Rejected — **on error-budget grounds, which is a
+  different and better reason than the one this spec originally gave.** The original wording said the
+  choice "needs the unsound detector F4 rules out"; that is now imprecise, because §3 gives the detector
+  explicit acceptance criteria. The exclusion still stands, and here is why: §3's error budget is
+  calibrated to a CHEAP consequence — a false positive costs a spurious sentence. Reusing the same signal
+  to SELECT A BACKEND re-prices every error in it. A false positive would then silently return the
+  scrape, which for an occluded window is a photograph of the occluder — the exact defect item 8 exists
+  to fix, reintroduced by the mechanism meant to protect against it. A detector good enough to annotate
+  is not thereby good enough to switch on. *(Panel round 3, Scope Auditor: the flaw in the old rationale
+  was real and is corrected; the conclusion it implied — that the exclusion should be revisited — is
+  rejected.)*
 - **ROADMAP item 13** (bare catches) and any redaction-rule change.
 
 ## Privacy posture — an unstated widening, named here so it is ratified deliberately
@@ -364,9 +402,29 @@ should accept knowingly rather than inherit silently. *(Panel round 1, BS-1.)*
 - **The element-crop invariant needs a headless test** proving that a window-sized bitmap cropped to an
   element-sized `captureBounds` puts masks in the right place — the AB-2 case. Also leak-shaped, also not
   Desktop-only.
+- **The clamp path needs a headless test** — a `src` bitmap SMALLER than the requested `captureBounds`,
+  asserting masks still land correctly and nothing throws. Cheap to stage once acquisition is injectable,
+  and it is the regression test for the defect round 2's fix introduced.
 - **Desktop-category:** capture an occluded window and assert it is not the occluder's pixels. The probe
   shows this is stageable — a second window over the target, then compare against a known control.
 - **Every new gate needs a logic mutant** that turns that specific test red. Repo rule, no exceptions.
+
+⚠ **Three failures in this design have NO test that would go red. Named, because an untested guard is a
+guard that silently stops working.** *(Panel round 3, Test Oracle. The seat was asked which test goes RED
+for each failure, or NONE — not whether the area was "covered".)*
+
+1. **The yardstick parameter defaulting the wrong way at a forgotten call site.** No test of
+   `PerceptionManager`'s yardstick logic can catch a CALLER omission — and §2 makes that default the
+   thing standing between this feature and a mask-dropping leak. This needs a **call-site sweep**, which
+   is an idiom the repo already owns: `BuildPropertySweepTests` sweeps project files, and item 6 shipped
+   JSON-shape tripwires. A sweep asserting every capture-geometry call site passes the parameter
+   explicitly turns "someone forgot" from silent into red.
+2. **The clamp path.** Covered by the new headless test above; it did not exist before this round.
+3. **`captureMethod` or the diagnostic missing from the response.** No contract test asserts the metadata
+   projection's shape. The precedent to follow is
+   `test/FlaUI.Mcp.Tests/Perception/ListWindowsProjectionShapeTests.cs` — a projection-shape tripwire, so
+   a field silently dropped from the anonymous object fails a test rather than reaching an agent as an
+   absent field it has no way to notice.
 
 ## Risks, and what the plan must verify before relying on them
 
@@ -486,3 +544,27 @@ relationship), Fold Auditor (aimed only at round 1's eight edits, enumerated), D
 The Disposition Challenger seat found no wrong rejection and re-derived F6's reasoning independently,
 reaching the same conclusion from the file. That is corroboration, but a seat aimed at the driver's own
 judgement returning nothing is the weakest signal in the round, not the strongest.
+
+### AGY-AFTER adversarial panel — round 3
+
+Operator waived the round cap: rounds run until one is clean. Seats: Fold Auditor (round 2's three edits,
+enumerated), Test Oracle (the Testing section, which nothing had reviewed), Scope Auditor (the Out-of-scope
+list, likewise). Report: `.clavity/scratch/item8-panel/agy-round3.md`. **Verdict: NOT GREEN.** Four folds:
+
+- **Round 2's fix reintroduced the defect it was fixing.** "Intersect the crop with the bitmap" and
+  "`Encode` still receives the unchanged `captureBounds`" cannot both hold: a clamped crop with an
+  unclamped bounds is precisely the `src.Size != captureBounds.Size` misalignment §1 exists to prevent.
+  Replaced with a single rule — clamp once, derive both operands from that rectangle — because the
+  two-sentence form of this instruction has now been got wrong twice.
+- **A bare factual claim of this spec's own was refuted by measurement.** The peer answered the
+  "name something you did not verify" question with the `Bitmap.Clone` exception type. It was right to
+  flag it: measured on .NET 10 it throws `ExternalException`, not `OutOfMemoryException`. The correction
+  makes the hazard sharper rather than softer — see §1.
+- **Three failure modes had no test that would go red**, including the yardstick default, which is the
+  single thing standing between this design and a mask-dropping leak. All three now named in Testing.
+- **The scrape-fallback exclusion's rationale was stale** and is restated on error-budget grounds. The
+  exclusion itself stands; the peer's implied conclusion that it should be revisited is rejected.
+
+**This is the third consecutive round in which a fix spawned its own defect.** Rounds 1, 2 and 3 each
+found a defect created by the previous round's correction. The fold-auditor seat is doing the work here,
+and it is the reason the round cap was worth waiving.
