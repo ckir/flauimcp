@@ -314,6 +314,13 @@ extend that same discipline to every new read:
   it is never a failed uninstall.
 - The plan owns a test that puts DELIBERATELY MALFORMED JSON at that path and asserts `uninstall` still
   exits 0.
+  ⚠⚠ **THAT TEST MUST RUN THE COMPILED EXE OUT-OF-PROCESS AND ASSERT THE OS EXIT CODE.** Panel round 5
+  (open question 3) caught a false-GREEN in this very requirement: an in-process test that calls
+  `Restore()` and asserts it does not throw would technically satisfy the sentence above while proving
+  nothing about the thing that matters. Inno runs `flaui-mcp.exe uninstall` as a PROCESS
+  (`flaui-mcp.iss:44-47`), and the top-level handling in `Program.cs` is what turns an escaped exception
+  into a non-zero exit — so an in-process test bypasses the entire boundary under test. **Shell out to the
+  built executable and assert `$LASTEXITCODE -eq 0`**, or the test measures the wrong thing.
 
 ⚠ **Comparing a `directory` source is a PATH comparison, and naive string equality gets it wrong.**
 Panel round 3 (open question 2). `C:\path` vs `c:\path`, `\` vs `/`, a trailing separator, or a relative
@@ -473,6 +480,19 @@ consequences the plan must handle:
 
 ---
 
+# ─────────────────────────────────────────────────────────────────────
+# HISTORICAL REVIEW RECORD — NOT INSTRUCTIONS. DO NOT IMPLEMENT FROM BELOW.
+# ─────────────────────────────────────────────────────────────────────
+#
+# Everything above this line is the SPEC. Everything below is the panel history:
+# five rounds, ~23 findings, including decisions that were REVERSED (round 1 said
+# "keep marker version 1"; round 2 proved that impossible and it is now version 2).
+#
+# ⚠ Panel round 5 flagged that reading these ledgers as instructions is a real hazard —
+# a discarded rule read out of context looks like a requirement. If you are implementing,
+# stop reading here. The ledgers exist so a later reviewer does not re-raise settled
+# findings, and so the reasoning behind each decision survives.
+
 ## Panel ledger — round 1 (folded; do NOT re-raise)
 
 **Solo panel** (relentless-adversarial-auditor; Axiom Breaker + Cascade Analyst core, plus Protocol Pedant
@@ -573,3 +593,46 @@ consistency), Axiom Breaker, Cascade Analyst, Mechanism Gamer. Four open questio
 
 **PANEL VERDICT — round 4: NEGOTIATE-then-fold. Five findings folded (three of them self-contradictions
 introduced by earlier folding), one decided by the operator, one noted. One seat clean.**
+
+---
+
+## Panel ledger — round 5: **CLEAN** (the stop condition)
+
+Seats: **Fold Auditor** (bespoke, via the palette's escape hatch — its only subject was round 4's five
+edits, because four rounds had shown that is where this project's defects live), Literal Implementer,
+Axiom Breaker, Cascade Analyst. Four open questions.
+
+**Three of four seats returned "no new findings".** The Fold Auditor audited each round-4 edit in place and
+found none had traded one defect for another. `PANEL VERDICT: CLEAN — the spec is sound, coherent, and
+ready to implement.`
+
+Two open-question answers were substantive and were folded anyway, because a clean verdict does not make
+the round's other output worthless:
+
+| # | Finding | Disposition |
+|---|---|---|
+| 37 | **The malformed-JSON test as specified was satisfiable by an IN-PROCESS test that proves nothing** — `Restore()` not throwing says nothing about whether the EXE exits 0, and `Program.cs` owns that boundary | **FOLDED.** VERIFIED: Inno runs `flaui-mcp.exe uninstall` as a process, so the test must shell out and assert the OS exit code. A false-GREEN inside the requirement written to prevent a false-GREEN |
+| 38 | The ~23 findings of ledger material is history sitting in an instruction document, where a reversed decision (round 1's "keep version 1") reads like a requirement | **FOLDED.** A hard separator now marks everything below as historical, with the version-1 reversal named as the concrete hazard. Kept in-file rather than split out, so a later reviewer cannot re-raise settled findings without seeing why they were settled |
+
+---
+
+## Review disposition
+
+**FIVE ROUNDS. ~25 findings folded, 5 refuted by measurement, 2 raised to the operator, 1 accepted as a
+known limit for a future version.** The round cap was waived by the operator with instructions to run until
+a round came back green; round 5 did.
+
+What the rounds actually cost and bought, recorded because it is the useful part:
+
+- **Round 2 refuted a round-1 fold outright.** "Keep marker `version: 1`" was impossible — a lossy v1
+  writer had already shipped in v0.20.0 and cannot be patched.
+- **Round 4 found that three of its five defects were introduced by the review's own folding.** Hunting
+  self-contradiction is what made it the most productive round.
+- **Three findings were killed by measurement rather than argument**, including one asserted as "a
+  mathematical certainty" that a single command disproved.
+- **Two findings went to the operator** rather than being resolved unilaterally: the marker-version
+  trade-off, and whether to split the subproject.
+
+⚠ The spec is ready to implement. It is NOT proof the design is correct — five rounds of review over an
+artifact is exactly the thing SP4 proved insufficient, because a panel reads text and never runs it. The
+next step is `writing-plans`, and the plan's own gates are what will actually test this.
