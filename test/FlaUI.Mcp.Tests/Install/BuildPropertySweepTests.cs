@@ -15,8 +15,12 @@ namespace FlaUI.Mcp.Tests.Install;
 ///
 /// HONEST LIMIT, stated so nobody mistakes this for a proof: Directory.Build.targets, an &lt;Import&gt;,
 /// a .props included under another name, or `-p:TreatWarningsAsErrors=false` on the command line all
-/// still bypass it. This raises the cost of an accidental or lazy override; it does not make the gate
-/// tamper-proof, and it is not worth pretending otherwise.</summary>
+/// still bypass it. So does a build file placed under ANY name in ExcludedDirs — the exclusion matches
+/// that segment anywhere in the path, so `src/publish/Thing.csproj` is never swept. That exclusion is
+/// still right (those directories hold build output and gitignored scratch, not tracked build inputs),
+/// but it is a hole and belongs on this list rather than being discovered later. This raises the cost of
+/// an accidental or lazy override; it does not make the gate tamper-proof, and it is not worth pretending
+/// otherwise.</summary>
 [Trait("Category", "SourceSweep")]
 public class BuildPropertySweepTests
 {

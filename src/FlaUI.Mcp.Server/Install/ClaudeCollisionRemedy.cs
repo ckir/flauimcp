@@ -462,7 +462,14 @@ public sealed class ClaudeCollisionRemedy
                    "run `claude plugin list` and re-enable whatever is still disabled.";
 
         var recoverable = entries.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
-        if (recoverable.Count == 0) return "No manual action is possible (the recorded projects no longer exist).";
+        // ⚠ "NEEDED", not "possible". Reaching here means every recorded entry is a non-user scope whose
+        // project directory is gone — and this class's own guards state why that is not a loss: a plugin
+        // whose project is deleted cannot load, so the collision is MOOT (see the Restore loop's guard,
+        // and Apply's symmetric one). "No manual action is possible" implies helplessness about something
+        // that still matters; it does not matter, and saying so is the honest and calmer answer.
+        if (recoverable.Count == 0)
+            return "No manual action is needed for those: the recorded projects no longer exist, so " +
+                   "those copies cannot load anyway.";
         return "To re-enable manually: " + string.Join("; ", recoverable.Select(e =>
             $"claude plugin enable {e.Id} --scope {e.Scope}" +
             (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})"))) + ".";
