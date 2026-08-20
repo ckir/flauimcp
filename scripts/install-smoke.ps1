@@ -44,14 +44,29 @@ try {
     Write-Host "`n== install ==" -ForegroundColor Cyan
     & $Exe install --agent claude | Out-Host
 
-    $root = Join-Path $claude 'skills\flaui-mcp'
-    Check 'manifest deployed'  (Test-Path (Join-Path $root '.claude-plugin\plugin.json'))
-    Check 'skill deployed'     (Test-Path (Join-Path $root 'skills\driving-flaui-mcp\SKILL.md'))
+    # ⚠ THE LAYOUT MOVED, AND THIS GATE DID NOT NOTICE FOR A WHOLE RELEASE. `install --agent claude` used
+    # to drop files into <config>\skills\flaui-mcp\; the registration rework made it register a LOCAL
+    # MARKETPLACE instead, so the payload now lands under
+    #   <config>\plugins\cache\flaui-mcp-marketplace\flaui-mcp\<version>\
+    # This script kept asserting the old path. It was never run, so nothing surfaced that — it failed on
+    # the FIRST real execution, during the v1.0 pre-release smoke on 2026-08-20. Glob the version rather
+    # than pinning it, so a version bump cannot re-break the gate the same way.
+    $root = Get-ChildItem -Directory (Join-Path $claude 'plugins\cache\flaui-mcp-marketplace\flaui-mcp') -EA SilentlyContinue |
+            Sort-Object Name -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName }
+    Check 'plugin payload deployed' ($null -ne $root)
+    Check 'manifest deployed'   ($null -ne $root -and (Test-Path (Join-Path $root 'plugin.json')))
+    Check 'skill deployed'      ($null -ne $root -and (Test-Path (Join-Path $root 'skills\driving-flaui-mcp\SKILL.md')))
+    Check 'mcp server declared' ($null -ne $root -and (Test-Path (Join-Path $root '.mcp.json')))
+    Check 'hooks deployed'      ($null -ne $root -and (Test-Path (Join-Path $root 'hooks\hooks.json')))
 
     Write-Host "`n== version lockstep ==" -ForegroundColor Cyan
     $exeVer      = (& $Exe --version) -replace '^flaui-mcp\s+',''
-    $manifestVer = (Get-Content (Join-Path $root '.claude-plugin\plugin.json') -Raw | ConvertFrom-Json).version
+    $manifestVer = if ($root) { (Get-Content (Join-Path $root 'plugin.json') -Raw | ConvertFrom-Json).version } else { '<no manifest>' }
     Check "manifest $manifestVer matches exe $exeVer" ($exeVer.StartsWith($manifestVer))
+    # The payload DIRECTORY is named for the version too - a third place that must agree, and the one a
+    # stale cache would betray.
+    Check "payload dir $(if ($root) { Split-Path $root -Leaf } else { '<none>' }) matches exe $exeVer" `
+          ($null -ne $root -and $exeVer.StartsWith((Split-Path $root -Leaf)))
 
     Write-Host "`n== the skill actually LOADS (validate would not catch this) ==" -ForegroundColor Cyan
     $list = claude plugin list --json | ConvertFrom-Json
@@ -69,7 +84,16 @@ try {
 
     Write-Host "`n== uninstall ==" -ForegroundColor Cyan
     & $Exe uninstall --agent claude | Out-Host
-    Check 'skill removed' (-not (Test-Path $root))
+    # ⚠ ASSERT DEREGISTRATION, NOT DELETION. The old check was `-not (Test-Path $root)` and it is the WRONG
+    # question: MEASURED 2026-08-20, the agent's own marketplace cache KEEPS the payload directory after an
+    # uninstall and drops an `.orphaned_at` marker beside it. That is the agent's housekeeping, not ours, and
+    # our uninstall did its job - `installed_plugins.json` comes back `{"plugins": {}}`. Asserting the
+    # directory is gone would make this gate fail forever on correct behaviour.
+    $reg = Join-Path $claude 'plugins\installed_plugins.json'
+    $stillRegistered = (Test-Path $reg) -and
+                       ((Get-Content $reg -Raw | ConvertFrom-Json).plugins.PSObject.Properties.Name -match '^flaui-mcp@')
+    Check 'plugin deregistered' (-not $stillRegistered)
+    Check 'payload orphaned or gone' ($null -eq $root -or -not (Test-Path $root) -or (Test-Path (Join-Path $root '.orphaned_at')))
 }
 finally {
     Pop-Location
