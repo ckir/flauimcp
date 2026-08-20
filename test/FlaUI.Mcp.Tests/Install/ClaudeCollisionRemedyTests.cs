@@ -472,6 +472,39 @@ public class ClaudeCollisionRemedyTests
         Assert.DoesNotContain("reinstall", warning, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ⚠ WHY `restorable == justDisabled.Count` IS SAFE, pinned rather than assumed. A test audit flagged
+    // the "mixed" case (some entries restorable, some not) as untested, and MEASURED it is: weakening the
+    // condition to `restorable > 0` leaves all 57 collision tests green. But the mixed case is
+    // UNREACHABLE, not merely untested: ClaudePluginInventory.Matching filters by EXACT id, so every
+    // entry one Apply() pass disables carries the SAME id, therefore the same alias, therefore the same
+    // SourceFor result. `restorable` is always 0 or all. The two forms are equivalent on every reachable
+    // input, which is why no test could separate them.
+    //
+    // This test pins that INVARIANT instead of the unreachable branch. It goes red if SourceFor ever
+    // becomes scope- or path-dependent — which is exactly the change that would make the mixed state
+    // reachable and the promise logic load-bearing for real.
+    [Fact]
+    public void Every_entry_in_one_pass_shares_the_id_so_source_presence_is_uniform()
+    {
+        // Two copies of the SAME plugin id at different scopes — the only multi-entry shape Apply() sees.
+        var cli = new FakeClaude()
+            .Install("flaui-mcp@flaui-mcp", "user", null, enabled: true)
+            .Install("flaui-mcp@flaui-mcp", "local", @"C:\Proj", enabled: true);
+        var state = TempState();
+
+        var warning = Remedy(cli, state, claudeConfigDir: TempClaudeConfigWith(LiveRegistry)).Apply();
+
+        var read = CollisionMarker.Read(state);
+        Assert.Equal(2, read.Count);
+        // UNIFORM: either every entry has a source or none does. A mix would mean SourceFor stopped
+        // deriving from the id alone, and the promise below could then overstate what a restore can do.
+        Assert.True(read.All(e => e.Marketplace is not null) || read.All(e => e.Marketplace is null),
+            "source presence must be uniform across one pass — all entries share the id, so all share the alias");
+        Assert.All(read, e => Assert.Equal("flaui-mcp", e.Marketplace!.Name));
+        Assert.NotNull(warning);
+        Assert.Contains("reinstalled first", warning!);   // all restorable, so the fuller promise is honest
+    }
+
     // The alias is DERIVED from the id (`<plugin>@<alias>`), never assumed. An unknown alias records
     // nothing rather than falling back to some other marketplace's source.
     [Fact]

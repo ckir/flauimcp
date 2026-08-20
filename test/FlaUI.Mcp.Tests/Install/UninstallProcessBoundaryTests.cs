@@ -77,6 +77,16 @@ public class UninstallProcessBoundaryTests
             // NON-VACUITY: prove the run actually REACHED the malformed read. Without this the test
             // could pass having exited 0 for entirely unrelated reasons.
             Assert.Contains("known_marketplaces.json", stdout);
+
+            // ⚠ AND PROVE IT FINISHED, not merely that it started and exited 0. Flagged by a test audit:
+            // exit 0 plus that log line is ALSO what you get if Restore() logs the warning and then throws
+            // before consuming the marker — CliRouter.Isolate catches it and Report still exits 0, so the
+            // user is silently left stranded while this test stays green. Consuming the marker is the last
+            // thing Restore does (R7: deleting it is part of consuming it), so its absence is the cheapest
+            // available proof that the pass ran to completion rather than dying in the middle.
+            Assert.False(File.Exists(Path.Combine(state, "disabled-plugins.json")),
+                "the marker must be CONSUMED — a surviving marker means Restore did not finish, and exit 0 " +
+                "plus a logged warning cannot tell those apart on its own.");
         }
         finally
         {
