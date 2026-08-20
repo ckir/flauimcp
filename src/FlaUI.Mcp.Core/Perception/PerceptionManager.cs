@@ -862,7 +862,10 @@ public sealed class PerceptionManager
                 if (wp is not null && wp.WindowVisualState.ValueOrDefault == FlaUI.Core.Definitions.WindowVisualState.Minimized)
                     return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), true, false, null, System.Array.Empty<MaskEscalationEntry>());
             }
-            catch { }
+            // ⚠ Criticals excluded: a bare catch here swallowed OutOfMemoryException too, which defeated the
+            // filters on every converting catch below it. Added at capstone round 3.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException) { _ = ex; }
             // ⚠ THE REF RESOLUTION IS GUARDED TOO, and it was NOT until a capstone round pointed at it.
             // `PopupFinder.SearchRoots` is a UIA walk of its own, and it sits OUTSIDE the blanket
             // conversion further down — so on a tearing-down window it threw a raw COMException that
@@ -893,8 +896,10 @@ public sealed class PerceptionManager
                     "retry once the UI has settled, or capture a different window");
             }
             // ⚠ EVERY FAILURE FROM HERE TO THE RETURN MUST BECOME RedactionUnmaskable, NEVER A RAW
-            // EXCEPTION. AllMaskRectsAsync (the FULL-DESKTOP path) wraps this call in `catch { }` to
-            // skip a window it cannot bind, and rethrows ONLY RedactionUnmaskable. So a raw COMException
+            // EXCEPTION. AllMaskRectsAsync (the FULL-DESKTOP path) wraps this call in a skip-and-continue
+            // catch and rethrows ONLY RedactionUnmaskable. (That catch is no longer bare - it excludes
+            // criticals since capstone round 2, and records the process in unmaskedProcesses since AB-9 -
+            // but it still SKIPS, which is what matters here.) So a raw COMException
             // escaping here does not fail the capture — it silently drops this window's ENTIRE mask set and
             // photographs it in the clear. That is a leak, and it defeats two decisions at once: A1's
             // refusal, and the strict-on-roots[0] rule below, whose whole point is that a dead target must
@@ -971,8 +976,8 @@ public sealed class PerceptionManager
             // ⚠ ONE BLANKET CONVERSION, not a guard per read. Round 4 wrapped the capture-bounds read and
             // the roots[0] enumeration individually and STILL missed PopupFinder.SearchRoots, which is a
             // UIA walk of its own. Any raw exception escaping this region is swallowed by
-            // AllMaskRectsAsync's `catch { }` on the full-desktop path and becomes a window photographed
-            // with NO mask set — so the safe default has to be structural, not a list of remembered sites.
+            // AllMaskRectsAsync's skip-and-continue catch on the full-desktop path and becomes a window
+            // photographed with NO mask set — so the safe default has to be structural, not a list of remembered sites.
             //
             // A ToolException passes through UNCHANGED: those are deliberate, already-classified outcomes
             // (RefNotFound from the ref resolution above, and the RedactionUnmaskable refusals raised
@@ -1009,8 +1014,10 @@ public sealed class PerceptionManager
                     // this line for exactly this reason; this makes the third sibling agree with them.
                     //
                     // ⚠ CONVERTED, not propagated raw. Letting a COMException escape would be caught by
-                    // AllMaskRectsAsync's `catch { }` on the full-desktop path and turn this strictness
-                    // into a SILENT SKIP - the precise opposite of the decision this branch encodes.
+                    // AllMaskRectsAsync's skip-and-continue catch on the full-desktop path and turn this
+                    // strictness into a SKIP - the precise opposite of the decision this branch encodes.
+                    // (Since AB-9 the skip is reported in unmaskedProcesses rather than silent, but a
+                    // REPORTED skip is still not the REFUSAL this branch exists to produce.)
                     try { descendants = roots[rootIndex].FindAllDescendants(); }
                     // ⚠ A CRITICAL failure is not a redaction outcome — same filter, same reason as the blanket
                     // catch below: telling the agent to "retry once the UI has settled" while the process is dying
@@ -1027,8 +1034,12 @@ public sealed class PerceptionManager
                 {
                     // PER-ROOT isolation, POPUPS only: a tooltip or menu closing mid-scan must not fail the
                     // window's own capture. A root that throws contributes nothing.
+                    // ⚠ Criticals excluded (capstone round 3). The LENIENCY here is deliberate - see AB-11
+                    // and decision D3 - but it was leniency toward EVERYTHING, including a dying process.
                     try { descendants = roots[rootIndex].FindAllDescendants(); }
-                    catch { continue; }
+                    catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                                      and not System.OperationCanceledException)
+                    { _ = ex; continue; }
                 }
 
                 foreach (var d in descendants)
@@ -1053,16 +1064,26 @@ public sealed class PerceptionManager
                     // TEXT egress sites - which have no such catch - silently leaking, while the pixel path
                     // kept working and hid the regression.
                     Sensitivity sens;
+                    // ⚠ Criticals excluded (capstone round 3): failing CLOSED is right for a classifier
+                    // error, but an OOM is not a classification outcome and must not be laundered into one.
                     try { sens = ElementContent.SensitivityOf(d, _classifier, procName); }
-                    catch { sens = Sensitivity.UnreadableIdentity; } // an element we cannot CLASSIFY is
-                                                                     // masked, never skipped
+                    catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                                      and not System.OperationCanceledException)
+                    { _ = ex; sens = Sensitivity.UnreadableIdentity; } // an element we cannot CLASSIFY is
+                                                                       // masked, never skipped
                     if (!sens.Redact) continue;
 
                     // A1: the rect read used to sit in that same swallowing catch, so a redact-worthy
                     // element whose BoundingRectangle THREW contributed NO mask and its pixels were
                     // captured — the identical fail-OPEN shape as DEF-1, on the other half of one line.
+                    // ⚠ Criticals excluded (capstone round 3). Failure-as-absence is A1's DESIGN - a throw
+                    // here is what triggers escalation - but that reasoning covers UIA faults, not a dying
+                    // process. An OOM laundered into "no bounds" would silently become a mask decision.
                     System.Drawing.Rectangle? own = null;
-                    try { own = d.BoundingRectangle; } catch { }
+                    try { own = d.BoundingRectangle; }
+                    catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                                      and not System.OperationCanceledException)
+                    { _ = ex; }
 
                     var resolution = MaskEscalation.Resolve(own, ancestors.For(d), yardstick);
                     string aid = SafeRead(() => d.AutomationId, "") ?? string.Empty;
