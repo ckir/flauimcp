@@ -22,7 +22,10 @@ public class SnapshotStatsTests : IClassFixture<TestAppFixture>
         var json = await snap.DesktopSnapshotStats(handle, null);
         using var doc = JsonDocument.Parse(json);
         Assert.True(doc.RootElement.GetProperty("total").GetInt32() > 0);
-        Assert.Equal(1, doc.RootElement.GetProperty("redacted").GetInt32());
+        // SP4/A2: this key was `redacted`. Renamed to osPasswordCount because it counts OS-flagged password
+        // nodes ONLY, while `redactedCount` beside it counts every withheld node - two same-rooted names
+        // for two different quantities. The expected 1 is unchanged; only the key moved.
+        Assert.Equal(1, doc.RootElement.GetProperty("osPasswordCount").GetInt32());
         Assert.True(doc.RootElement.GetProperty("byControlType").TryGetProperty("Button", out _));
     }
 

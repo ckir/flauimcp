@@ -298,6 +298,20 @@ others:
 | `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:843` | the tally that produces it |
 | `src/FlaUI.Mcp.Server/Tools/SnapshotTools.cs:108` | the wire projection (plus the description at `:99`) |
 | `test/FlaUI.Mcp.Tests/Perception/RedactionStatsTests.cs:32` | the mutually-discriminating assertion |
+| `test/FlaUI.Mcp.Tests/Server/SnapshotStatsTests.cs:25` | ⚠ **MISSED BY THIS TABLE FOR FIFTEEN ROUNDS.** A DESKTOP test reading the WIRE key `GetProperty("redacted")` |
+
+⚠⚠ **THE D2 GREP ENUMERATED THE C# MEMBER, NOT THE WIRE KEY, AND SAID "no consumer outside them".** It
+missed `SnapshotStatsTests.cs:25`, which reads `doc.RootElement.GetProperty("redacted")` — a JSON key, so
+no search for `.Redacted` or `SnapshotStats.Redacted` could ever have found it. It is also a
+`[Trait("Category", "Desktop")]` test, so **it did not run once during Tasks 1-9** — the headless gate is
+what every task gates on, and this only surfaced at the Task 10 Desktop run, eight tasks after the rename
+that broke it (`KeyNotFoundException` at that line). A rename that changes a WIRE name must be grepped for
+the wire name in test JSON assertions too, not only for the C# identifier.
+
+Fixed as a key rename with the expected `1` untouched. The full re-enumeration found exactly this one site:
+the other `"redacted"` matches in `test/` are `VerifyOutcome.Reason`'s string VALUE (`PasteFlowTests.cs:160`,
+`VerifyResultTests.cs:100-101`) and a comment, which belong to the DIFFERENT field this table already warns
+must not be renamed.
 
 ⚠ **Do NOT rename these — they are a DIFFERENT field with the same name.** `VerifyRead.Redacted`
 (`src/FlaUI.Mcp.Core/Interaction/VerifyReader.cs:12`), `GridCellInfo.Redacted` and
