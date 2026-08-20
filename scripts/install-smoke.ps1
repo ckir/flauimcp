@@ -51,8 +51,15 @@ try {
     # This script kept asserting the old path. It was never run, so nothing surfaced that — it failed on
     # the FIRST real execution, during the v1.0 pre-release smoke on 2026-08-20. Glob the version rather
     # than pinning it, so a version bump cannot re-break the gate the same way.
+    # ⚠ Sort as VERSIONS, not as text. `Sort-Object Name` is a string sort, so `1.2.0` sorts ABOVE
+    # `1.10.0` and `0.9.0` above `0.20.0` — the gate would silently select a stale payload directory and
+    # then assert against it. MEASURED: over 0.9.0 / 0.20.0 / 1.2.0 / 1.10.0 the string sort picks 1.2.0
+    # and the version sort picks 1.10.0. Not reachable today because the sandbox only ever installs one
+    # version, which is exactly why it would have gone unnoticed until a release broke it. The
+    # `-as [version]` filter keeps a stray non-version directory from throwing the sort.
     $root = Get-ChildItem -Directory (Join-Path $claude 'plugins\cache\flaui-mcp-marketplace\flaui-mcp') -EA SilentlyContinue |
-            Sort-Object Name -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName }
+            Where-Object { $_.Name -as [version] } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1 | ForEach-Object { $_.FullName }
     Check 'plugin payload deployed' ($null -ne $root)
     Check 'manifest deployed'   ($null -ne $root -and (Test-Path (Join-Path $root 'plugin.json')))
     Check 'skill deployed'      ($null -ne $root -and (Test-Path (Join-Path $root 'skills\driving-flaui-mcp\SKILL.md')))
