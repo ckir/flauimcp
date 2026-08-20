@@ -22,6 +22,16 @@ All notable changes to this project are documented here. This project adheres to
   value, change it now.** The element's name is still available, through `descriptor` (rendered classified)
   and through `ref` + `desktop_get_text`.
 
+- **The restore marker is now `version: 2`. An older build can no longer restore a marker written by this
+  one.** It fails visibly, not silently: the older build reports that the file came from a newer
+  flaui-mcp, leaves it untouched, and names every plugin still disabled together with the exact
+  `claude plugin enable` command for each. Running this build again fixes it completely.
+
+  The cost is real and was chosen deliberately. v0.20.0 shipped a marker writer that is lossy by
+  construction — it serializes three fields and drops the rest on every rewrite. Keeping `version: 1`
+  would have let that build silently strip the marketplace field, destroying the one piece of data the
+  new restore depends on. A visible failure beats a silent one.
+
 ### Security
 
 - **The screenshot mask no longer fails open.** A redacted element whose `BoundingRectangle` could not be
@@ -58,6 +68,32 @@ All notable changes to this project are documented here. This project adheres to
   redaction rules: the OS `IsPassword` flag alone was enough, which is the shipping default. Every install
   before SP3 was affected, not only adopters of the SP3 rule feature. Fixed in SP3; disclosed here because
   the original note understated the population as rule-adopters only.
+
+### Fixed
+
+- **The installer no longer destroys a conflicting marketplace copy it promised to restore.** If you had
+  your own `flaui-mcp@flaui-mcp` plugin installed, `flaui-mcp install` disabled it, recorded it, and
+  announced it would be re-enabled on uninstall. An idempotency sweep then ran
+  `claude plugin uninstall flaui-mcp` with the BARE plugin name, which matched your copy and removed it.
+  MEASURED: exit 0, "Successfully uninstalled", plugin list empty. Both halves were individually correct;
+  the defect lived only in their sequence. The sweep is now qualified to
+  `flaui-mcp@flaui-mcp-marketplace` and can only ever match our own copy.
+
+- **Uninstall now rebuilds an evicted copy instead of reporting a dead end.** The marker records which
+  marketplace a disabled plugin came from. If anything removed the copy in the meantime, uninstall re-adds
+  that marketplace and reinstalls the plugin before re-enabling it.
+
+  Two refusals are deliberate. If the alias now points somewhere other than what we recorded, the restore
+  stops and names both sources rather than installing whatever sits behind that name — an alias is a local
+  name you control, and following it blind would deliver software you did not ask for. And an entry with
+  no recorded source is an honest dead end that prints the exact commands to fix it by hand. Neither case
+  is ever guessed, and one entry's problem never blocks another's.
+
+- **The repo's 0-warning build gate now enforces something.** `dotnet build` is incremental and does not
+  re-report warnings for projects it considers up to date. MEASURED: it printed `0 Warning(s)` on a tree
+  where a full rebuild printed 2, so a warning introduced by one commit was invisible to every later gate.
+  Warnings are now errors, which fixes this mechanically rather than by discipline — MSBuild never marks a
+  failed project up to date, so the next build recompiles it and reports it again.
 
 ## [0.20.0] - 2026-07-29
 

@@ -120,7 +120,7 @@ public class InstallStatusTests
     {
         var (plugins, dataDir, claude, state) = TempPaths();
         Directory.CreateDirectory(state);
-        File.WriteAllText(CollisionMarker.PathIn(state), """{ "version": 2, "disabled": [] }""");
+        File.WriteAllText(CollisionMarker.PathIn(state), """{ "version": 3, "disabled": [] }""");
 
         var s = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
 
@@ -161,7 +161,7 @@ public class InstallStatusTests
         var corrupt = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
         Assert.Contains(CollisionMarker.PathIn(state), corrupt);
 
-        File.WriteAllText(CollisionMarker.PathIn(state), """{ "version": 2, "disabled": [] }""");
+        File.WriteAllText(CollisionMarker.PathIn(state), """{ "version": 3, "disabled": [] }""");
         var future = InstallStatus.Describe(@"C:\flaui-mcp.exe", plugins, dataDir, claude, state, ClaudePluginStatus.NotRegistered);
         Assert.Contains(CollisionMarker.PathIn(state), future);
     }

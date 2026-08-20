@@ -38,7 +38,7 @@ For full requirement details, see the [Operator Manual](docs/operator-manual.md)
 
 ## Maintainers
 
-When developing inside this repository, disable the globally installed skill for this repo so the local `driving-flaui-mcp` skill is the single authority. Add `{ "enabledPlugins": { "flaui-mcp@skills-dir": false } }` to `.claude/settings.local.json`, or run `claude plugin disable flaui-mcp@skills-dir --scope local`.
+When developing inside this repository, disable the globally installed plugin for this repo so the local `driving-flaui-mcp` skill is the single authority. Add `{ "enabledPlugins": { "flaui-mcp@flaui-mcp-marketplace": false } }` to `.claude/settings.local.json`, or run `claude plugin disable flaui-mcp@flaui-mcp-marketplace --scope local`.
 
 ## Contributing
 

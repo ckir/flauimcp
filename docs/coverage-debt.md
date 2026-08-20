@@ -287,3 +287,55 @@ that overturned two earlier claims about it.
 been worse than shipping none — it would have claimed this line was guarded.
 ⚠ **Re-validation note for a future audit:** if the fixture ever gains a window whose UIA ClassName starts
 with `HwndWrapper`, this entry is promoted straight back to a live gap and the test becomes writable.
+
+### AB-17 — the `known_marketplaces.json` exists→read race  *(release-tooling capstone r1, finding 1)*
+
+`KnownMarketplaces.Read` checks `File.Exists` and then `File.ReadAllText`. If a concurrent `claude` run
+rewrites its own registry inside that window, the read throws `FileNotFoundException` /
+`DirectoryNotFoundException`. Before the capstone this fell into the bare `catch` and returned
+**Unreadable**, which is the wrong answer with a real consequence: `FileAbsent` and `Unreadable` drive
+OPPOSITE actions, so a restore that should have re-added the marketplace and reinstalled the plugin would
+instead refuse with "the registry could not be read" — the false-negative direction the design elsewhere
+calls the dangerous one.
+
+**Fixed** by a filtered catch mapping both exceptions to `Empty()` (FileAbsent).
+
+**Why not covered:** the race cannot be staged without a filesystem seam. `File.Exists` returning true
+while `File.ReadAllText` fails requires another process to delete the file between two adjacent
+statements; nothing in-process can interpose there, and adding a seam to production code to test a
+microsecond window is a worse trade than recording the boundary.
+**Compensation + anchor:** the filtered catch is at `KnownMarketplaces.Read`, immediately above the bare
+one, and carries the reasoning inline. `CollisionMarker.ReadState` guards the identical race on the marker
+file with the same filter and the same justification — that sibling is the precedent, and it is what makes
+this a consistency fix rather than a speculative one.
+⚠ **Honest limit:** no test goes red if the filtered catch is deleted. The two states remain covered by
+`A_missing_file_is_FileAbsent_not_Unreadable` and `Malformed_json_is_Unreadable_and_never_throws`, but
+neither reaches the race.
+⚠ **Re-validation note:** if a filesystem seam is ever introduced into this class for another reason, this
+entry is promoted back to a live gap and the test becomes writable.
+
+### AB-18 — `BackUpCorrupt`'s same-millisecond collision loop  *(release-tooling test audit)*
+
+`BackUpCorrupt` appends an incrementing suffix when two corrupt-marker backups would land on the same
+millisecond stamp. No test reaches that loop, and deleting it turns nothing red.
+
+**Why not covered:** staging it needs two `Record` calls inside one millisecond with a frozen clock, which
+means a time seam in production code.
+**Compensation + anchor:** the artifact the loop protects is one this codebase has already decided to
+discard — `SweepBackups` states outright that it "intentionally trades away its forensic value", because a
+corrupt marker's bytes are rarely inspected before the next restore removes them. So the regression is the
+loss of a `.bak` that is deleted on the next run anyway. The atomic-write path that prevents actual marker
+corruption is separately covered.
+⚠ **Re-validation note:** if `SweepBackups` ever stops deleting `.bak-*`, those bytes acquire real value
+and this entry is promoted straight back to a live gap.
+
+### Refuted, recorded so it is not re-raised — the "mixed restorable" gap
+
+A test audit flagged `restorable == justDisabled.Count` (`ClaudeCollisionRemedy`) as untested in its mixed
+case, MEASURED correctly: weakening it to `restorable > 0` leaves all 57 collision tests green. But the
+mixed case is **UNREACHABLE, not untested**. `ClaudePluginInventory.Matching` filters by EXACT id, so every
+entry a single `Apply()` pass disables carries the same id, hence the same alias, hence the same `SourceFor`
+result — `restorable` is always 0 or all. The two forms are equivalent on every reachable input, which is
+why no test can separate them. Pinned instead by
+`Every_entry_in_one_pass_shares_the_id_so_source_presence_is_uniform`, which goes red if `SourceFor` ever
+stops deriving from the id alone — the change that would make the mixed state reachable for real.

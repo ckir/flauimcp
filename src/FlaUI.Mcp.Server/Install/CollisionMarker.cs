@@ -5,14 +5,29 @@ using System.Text.Json.Nodes;
 
 namespace FlaUI.Mcp.Server.Install;
 
+/// <summary>Where a disabled plugin's marketplace came from, so a restore can rebuild the plugin when
+/// something has evicted it. MEASURED: `claude plugin install flaui-mcp@flaui-mcp` exits 0 while the
+/// marketplace is registered and exit 1 once it is removed — so the NAME alone cannot reinstall, and the
+/// SOURCE is what makes the restore promise keepable.</summary>
+/// <param name="Name">The local alias, e.g. "flaui-mcp". A name the USER controls, not an identity.</param>
+/// <param name="Kind">"github" | "git" | "directory". Recorded for DIAGNOSTICS — an unsupported kind must
+/// be visible at the moment a restore fails, not silent.</param>
+/// <param name="Source">Passed VERBATIM to `claude plugin marketplace add`, which takes "a URL, path, or
+/// GitHub repo" (measured from its --help), so one string serves all three kinds.</param>
+public sealed record MarketplaceSource(string Name, string Kind, string Source);
+
 /// <summary>One plugin entry that WE disabled, and everything needed to put it back.</summary>
 /// <param name="ProjectPath">Null for user scope. For any other scope this is the directory the
 /// enable must RUN from — `claude plugin enable` cannot target another project by flag.</param>
-public sealed record DisabledEntry(string Id, string Scope, string? ProjectPath);
+/// <param name="Marketplace">OPTIONAL even at v2: absent when the source could not be read at install
+/// time, or its kind was unrecognised. An entry without one degrades to re-enable-only — we never guess
+/// a source, because guessing would install something the user did not ask for.</param>
+public sealed record DisabledEntry(string Id, string Scope, string? ProjectPath, MarketplaceSource? Marketplace = null);
 
 /// <summary>How <see cref="CollisionMarker.ReadState"/> classified the marker file.
 /// Absent = no file. Corrupt = present but structurally unreadable (fail-safe: collapse to empty).
-/// FutureVersion = written by a newer build (version &gt; 1) — leave it untouched. Present = valid v1.</summary>
+/// FutureVersion = written by a newer build (version &gt; <see cref="CollisionMarker.SchemaVersion"/>) —
+/// leave it untouched. Present = a valid v1 or v2 marker.</summary>
 internal enum MarkerState { Absent, Corrupt, FutureVersion, Present }
 
 /// <summary>
@@ -37,6 +52,18 @@ internal enum MarkerState { Absent, Corrupt, FutureVersion, Present }
 public static class CollisionMarker
 {
     public const string FileName = "disabled-plugins.json";
+
+    /// <summary>The schema version this build WRITES, and the highest it will act on.
+    ///
+    /// ⚠ WHY 2 AND NOT 1. v0.20.0 has already shipped with a writer that is lossy by construction —
+    /// BuildJson serialized only id/scope/projectPath and ReadState dropped every other property, while
+    /// Record reads-merges-rewrites the WHOLE file. That binary is on users' machines and cannot be
+    /// patched. Keeping version 1 would therefore let an older build silently strip `marketplace` from
+    /// every entry, permanently destroying the one field the reinstall depends on. At version 2 the old
+    /// build hits the FutureVersion guard instead: it leaves the marker intact and SAYS so. The cost is
+    /// real and stated in the release notes — an older build can no longer restore a marker written by
+    /// this one — but that failure is visible and recoverable, and running the newer build fixes it.</summary>
+    public const int SchemaVersion = 2;
 
     public static string PathIn(string stateDir) => Path.Combine(stateDir, FileName);
 
@@ -66,8 +93,9 @@ public static class CollisionMarker
         var (state, existing) = ReadState(stateDir);
         if (state == MarkerState.FutureVersion)
             return $"the restore record at {PathIn(stateDir)} was written by a newer flaui-mcp and was " +
-                   "left unchanged; this install's disable was NOT recorded. If you did not expect this, " +
-                   $"remove {PathIn(stateDir)}.";
+                   "left unchanged; this install's disable was NOT recorded, so uninstalling flaui-mcp " +
+                   "will not re-enable it automatically. If you did not expect this, remove " +
+                   $"{PathIn(stateDir)} and run `flaui-mcp install --agent claude` again.";
 
         try
         {
@@ -104,8 +132,14 @@ public static class CollisionMarker
     {
         var arr = new JsonArray();
         foreach (var e in entries)
-            arr.Add(new JsonObject { ["id"] = e.Id, ["scope"] = e.Scope, ["projectPath"] = e.ProjectPath });
-        return new JsonObject { ["version"] = 1, ["disabled"] = arr };
+        {
+            var o = new JsonObject { ["id"] = e.Id, ["scope"] = e.Scope, ["projectPath"] = e.ProjectPath };
+            // Written only when we have one, so a v1-shaped entry stays v1-shaped inside a v2 file.
+            if (e.Marketplace is { } m)
+                o["marketplace"] = new JsonObject { ["name"] = m.Name, ["kind"] = m.Kind, ["source"] = m.Source };
+            arr.Add(o);
+        }
+        return new JsonObject { ["version"] = SchemaVersion, ["disabled"] = arr };
     }
 
     // Follows JsoncFile.Save's tmp -> File.Move pattern (the repo's atomic-write convention), but with
@@ -163,30 +197,23 @@ public static class CollisionMarker
                 return (MarkerState.Corrupt, empty);
             var version = vNode.GetValue<double>();
             if (version < 1) return (MarkerState.Corrupt, empty);
-            if (version > 1) return (MarkerState.FutureVersion, empty);   // honored on version alone (goal 4)
 
-            if (o["disabled"] is not JsonArray arr) return (MarkerState.Corrupt, empty);
-
-            var list = new List<DisabledEntry>();
-            foreach (var node in arr)
-            {
-                if (node is not JsonObject e) continue;
-                // A bare (string?)e["id"] cast THROWS on a numeric/boolean node (it does NOT return
-                // null), so every field is gated on GetValueKind == String; a wrong-typed field drops
-                // THIS entry only, never the whole file.
-                var id = AsString(e["id"]);
-                var scope = AsString(e["scope"]);
-                if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(scope)) continue;
-
-                // projectPath may be legitimately absent or JSON null (user scope). A present-but-
-                // wrong-typed projectPath drops the entry.
-                var ppNode = e["projectPath"];
-                string? projectPath;
-                if (ppNode is null) projectPath = null;                     // absent OR JSON null
-                else { projectPath = AsString(ppNode); if (projectPath is null) continue; }
-
-                list.Add(new DisabledEntry(id!, scope!, projectPath));
-            }
+            // CORRECTION A: project the entries BEFORE branching on version. A FutureVersion marker's
+            // ids are what the restore message needs to name so the user can re-enable them by hand —
+            // and the old order (version check first, parse second) meant that message had nothing to
+            // name. Best-effort: a future schema may shape entries differently, in which case this
+            // yields fewer or none, which is exactly the fail-safe direction.
+            //
+            // ⚠ But the FutureVersion verdict stands on the VERSION ALONE, and the array's shape may
+            // never downgrade it. A future schema might not have a `disabled` array at all; calling that
+            // Corrupt would send it to Record's Corrupt branch -> BackUpCorrupt -> File.Move, renaming a
+            // NEWER build's marker aside so this build can overwrite it, with SweepBackups deleting the
+            // .bak afterwards. That is the exact destruction this guard exists to prevent. Hence: parse
+            // if we can, decide on the version, and only then hold a v1/v2 marker to the array contract.
+            var arr = o["disabled"] as JsonArray;
+            var list = arr is null ? empty : ParseEntries(arr);
+            if (version > SchemaVersion) return (MarkerState.FutureVersion, list);
+            if (arr is null) return (MarkerState.Corrupt, empty);
             return (MarkerState.Present, list);
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
@@ -196,6 +223,59 @@ public static class CollisionMarker
             return (MarkerState.Absent, empty);
         }
         catch { return (MarkerState.Corrupt, empty); }
+    }
+
+    /// The `disabled` array projection, shared by the Present and FutureVersion paths. Never throws:
+    /// a wrong-typed field drops THAT entry only, never the whole file.
+    private static IReadOnlyList<DisabledEntry> ParseEntries(JsonArray arr)
+    {
+        var list = new List<DisabledEntry>();
+        foreach (var node in arr)
+        {
+            if (node is not JsonObject e) continue;
+            // A bare (string?)e["id"] cast THROWS on a numeric/boolean node (it does NOT return
+            // null), so every field is gated on GetValueKind == String; a wrong-typed field drops
+            // THIS entry only, never the whole file.
+            var id = AsString(e["id"]);
+            var scope = AsString(e["scope"]);
+            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(scope)) continue;
+
+            // projectPath may be legitimately absent or JSON null (user scope). A present-but-
+            // wrong-typed projectPath drops the entry.
+            var ppNode = e["projectPath"];
+            string? projectPath;
+            if (ppNode is null) projectPath = null;                     // absent OR JSON null
+            else { projectPath = AsString(ppNode); if (projectPath is null) continue; }
+
+            list.Add(new DisabledEntry(id!, scope!, projectPath, ParseMarketplace(e["marketplace"])));
+        }
+        return list;
+    }
+
+    /// <summary>v2's optional field. ALL THREE of name/kind/source or NONE: a partial record cannot drive
+    /// `claude plugin marketplace add`, and completing it by guessing is exactly what the spec forbids.
+    ///
+    /// ⚠ A malformed marketplace drops the FIELD, never the ENTRY. Re-enabling is still possible without
+    /// a source, and dropping the entry would strand the user's plugin disabled with no record that we
+    /// were the ones who disabled it.</summary>
+    private static MarketplaceSource? ParseMarketplace(JsonNode? node)
+    {
+        if (node is not JsonObject m) return null;
+        var name = AsString(m["name"]);
+        var kind = AsString(m["kind"]);
+        var source = AsString(m["source"]);
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(source))
+            return null;
+        return new MarketplaceSource(name!, kind!, source!);
+    }
+
+    /// <summary>Test-only projection of <see cref="ReadState"/>'s classification. <see cref="MarkerState"/>
+    /// is internal and the test assembly has no InternalsVisibleTo, so the state is surfaced by NAME
+    /// rather than by widening the enum — production code must keep using ReadState.</summary>
+    public static (string State, IReadOnlyList<DisabledEntry> Entries) ReadStateForTests(string stateDir)
+    {
+        var (state, entries) = ReadState(stateDir);
+        return (state.ToString(), entries);
     }
 
     private static string? AsString(JsonNode? node) =>

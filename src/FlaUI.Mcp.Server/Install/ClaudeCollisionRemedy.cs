@@ -34,16 +34,28 @@ public sealed class ClaudeCollisionRemedy
     private readonly Func<string, string[], string?, RunResult> _run;
     private readonly string _stateDir;
     private readonly Func<string, bool> _dirExists;
+    private readonly string? _claudeConfigDir;
+    private readonly Func<string, string[], string?, RunResult> _longRun;
 
     /// <param name="dirExists">Injected for testability; defaults to <see cref="Directory.Exists"/>.
     /// A non-user entry whose project directory is gone cannot load the plugin, and `disable` would
     /// have nowhere valid to run from — such entries are skipped.</param>
+    /// <param name="claudeConfigDir">Where `plugins/known_marketplaces.json` lives, so a disable can
+    /// RECORD the source it came from and a restore can compare it against the live one. Null means
+    /// "no registry" — every read then reads as FileAbsent, which is the correct answer for a caller
+    /// that has no config dir to offer.</param>
+    /// <param name="longRun">Runner for the ONE call that touches the network (`marketplace add` does a
+    /// git clone). Defaults to <paramref name="run"/>, which keeps every existing caller and test
+    /// unchanged; CliRouter passes a runner with a longer per-call bound.</param>
     public ClaudeCollisionRemedy(Func<string, string[], string?, RunResult> run, string stateDir,
-        Func<string, bool>? dirExists = null)
+        Func<string, bool>? dirExists = null, string? claudeConfigDir = null,
+        Func<string, string[], string?, RunResult>? longRun = null)
     {
         _run = run;
         _stateDir = stateDir;
         _dirExists = dirExists ?? Directory.Exists;
+        _claudeConfigDir = claudeConfigDir;
+        _longRun = longRun ?? run;
     }
 
     /// <summary>Install side: disable each enabled colliding entry and record it. Returns a warning
@@ -61,9 +73,13 @@ public sealed class ClaudeCollisionRemedy
         var recorded = CollisionMarker.Read(_stateDir);
         var justDisabled = new List<DisabledEntry>();
 
+        // Read the marketplace registry ONCE per pass, not per entry: it is the same file for every
+        // entry and re-reading it inside the loop would multiply the failure surface for no gain.
+        var marketplaces = KnownMarketplaces.Read(_claudeConfigDir);
+
         foreach (var e in matching)
         {
-            var entry = new DisabledEntry(e.Id, e.Scope, e.ProjectPath);
+            var entry = new DisabledEntry(e.Id, e.Scope, e.ProjectPath, SourceFor(e.Id, marketplaces));
 
             // A non-user entry whose project directory is gone cannot load the plugin (no collision),
             // and `disable` would have nowhere valid to run from. Skip it; a stale marker record for
@@ -134,13 +150,25 @@ public sealed class ClaudeCollisionRemedy
         if (recordWarning is not null) warnings.Add(recordWarning);
 
         if (justDisabled.Count > 0)
+        {
             // Only PROMISE a restore if we actually recorded it. If Record failed, recordWarning
             // already tells the user it will NOT be re-enabled — promising the opposite in the same
             // concatenated line is worse than saying nothing. (agy panel round 2.)
-            warnings.Insert(0, recordWarning is null
-                ? $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
-                  "(they will be re-enabled if you uninstall flaui-mcp)."
-                : $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill.");
+            //
+            // ⚠ RULE 1, D1: the promise must not overstate what a two-layer restore can do. We can only
+            // REINSTALL an evicted copy for entries whose marketplace source we actually captured; for
+            // the rest the honest promise is a re-enable. The whole defect began as a message that
+            // promised more than the code delivered, and a richer restore makes that easier to repeat.
+            var restorable = justDisabled.Count(d => d.Marketplace is not null);
+            warnings.Insert(0, recordWarning is not null
+                ? $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill."
+                : restorable == justDisabled.Count
+                    ? $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
+                      "(they will be re-enabled if you uninstall flaui-mcp, and reinstalled first if anything " +
+                      "has removed them)."
+                    : $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
+                      "(they will be re-enabled if you uninstall flaui-mcp).");
+        }
 
         return warnings.Count == 0 ? null : string.Join(" ", warnings);
     }
@@ -154,8 +182,21 @@ public sealed class ClaudeCollisionRemedy
 
             if (state == MarkerState.Absent) return null;
             if (state == MarkerState.FutureVersion)
+                // ⚠ THIS MESSAGE IS LOAD-BEARING, and the v2 marker bump is what made it so. Before that
+                // it was nearly unreachable; now any user who downgrades hits it during UNINSTALL — the
+                // worst moment, because they have just removed the tool and their plugin is still
+                // disabled. Explaining WHAT happened without saying what to DO is the same failure class
+                // as the warning that started this defect: the tool describing its own state instead of
+                // the user's problem. So name the ids and the exact command for each.
                 return $"the restore record at {CollisionMarker.PathIn(_stateDir)} was written by a newer " +
-                       "flaui-mcp; it was left in place and not acted on.";
+                       // ⚠ "any plugin(s) we disabled", NOT "the plugin(s) below": this prefix is
+                       // concatenated with a recourse that legitimately lists NOTHING in two of its three
+                       // forms (nothing readable in the record, or every recorded project gone). Promising
+                       // a list and then not producing one is the same defect class that started this
+                       // whole subproject — a message claiming more than the code delivers.
+                       "flaui-mcp, so it was left in place and not acted on — any plugin(s) we disabled are still " +
+                       "DISABLED. " + ManualEnableRecourse(recorded) +
+                       " Reinstalling the newer flaui-mcp and uninstalling it again would also do this.";
             if (state == MarkerState.Corrupt)
                 return $"the restore record at {CollisionMarker.PathIn(_stateDir)} is unreadable, so any " +
                        "conflicting plugin(s) we disabled may still be disabled and could not be re-enabled " +
@@ -185,17 +226,16 @@ public sealed class ClaudeCollisionRemedy
                 // directory is gone is moot AND a `cd` into a deleted path is impossible, so listing it
                 // would resurrect the same bad-recourse defect the in-loop guard below fixes. (agy panel
                 // round 2 — the early return bypassed that guard.)
-                var recoverable = recorded.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
-                var recourse = recoverable.Count == 0
-                    ? "No manual action is possible (the recorded projects no longer exist)."
-                    : "To restore manually: " + string.Join("; ", recoverable.Select(e =>
-                        $"claude plugin enable {e.Id} --scope {e.Scope}" +
-                        (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})")));
+                var recourse = ManualEnableRecourse(recorded);
                 return $"{listWarning} Your conflicting plugin(s) are still disabled and were NOT re-enabled. " +
                        "The record is kept at " + CollisionMarker.PathIn(_stateDir) + ". " + recourse;
             }
 
             var present = ClaudePluginInventory.Matching(entries, MarketplaceId);
+
+            // Read ONCE per pass. Every entry consults the same file, and re-reading it per entry would
+            // multiply the failure surface of a read that runs inside uninstall for no gain.
+            var marketplaces = KnownMarketplaces.Read(_claudeConfigDir);
 
             foreach (var e in recorded)
             {
@@ -217,8 +257,11 @@ public sealed class ClaudeCollisionRemedy
                 // nonexistent id) — check the id is still installed first.
                 if (!present.Any(p => Same(p, e)))
                 {
-                    warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, so it was not re-enabled.");
-                    continue;
+                    // LAYER (b): something evicted the copy. Rebuild it from the marketplace we recorded
+                    // rather than reporting a dead end — but only what we RECORDED, never a guess.
+                    if (!TryReinstall(e, marketplaces, warnings)) continue;
+                    // Reinstalled: fall through to the enable below, which is what actually undoes our
+                    // disable. `install` does not imply the entry is enabled at our recorded scope.
                 }
 
                 var r = _run("claude", new[] { "plugin", "enable", e.Id, "--scope", e.Scope }, e.ProjectPath);
@@ -294,6 +337,143 @@ public sealed class ClaudeCollisionRemedy
 
     private static bool Same(ClaudePluginEntry p, DisabledEntry e) =>
         CollisionMarker.SameEntry(new DisabledEntry(p.Id, p.Scope, p.ProjectPath), e);
+
+    /// <summary>The marketplace an installed plugin came from, or null when we cannot know it.
+    ///
+    /// A plugin id is `&lt;plugin&gt;@&lt;marketplace-alias&gt;`, so the alias is DERIVED from the id rather
+    /// than assumed. Null when the id has no alias segment, when the registry could not be read, or when
+    /// the alias's source kind is one we do not recognise. ⚠ NEVER GUESSED: an entry with no source
+    /// degrades to re-enable-only, and Apply's promise narrows to match (rule 1). Guessing would let a
+    /// restore install something the user did not ask for.</summary>
+    private static MarketplaceSource? SourceFor(string id, MarketplacesSnapshot marketplaces)
+    {
+        var at = id.LastIndexOf('@');
+        if (at < 0 || at == id.Length - 1) return null;
+        var alias = id[(at + 1)..];
+        return marketplaces.ByName.TryGetValue(alias, out var src) ? src : null;
+    }
+
+    /// <summary>Rebuild an evicted copy from its recorded marketplace: re-add the marketplace if the
+    /// alias is absent, then reinstall. Returns true when the caller should go on to ENABLE it, false
+    /// when this entry is done (a warning has been recorded either way).
+    ///
+    /// ⚠ EVERY false return is a `continue` at the call site, NEVER a `return`/`break`. One entry's
+    /// problem is never another entry's — reading "stop" as `return` would strand every LATER entry
+    /// because one alias mismatched.
+    ///
+    /// ⚠ NOTHING HERE MAY THROW. It runs inside `uninstall`, which Inno invokes with
+    /// `waituntilterminated` (installer/flaui-mcp.iss:44-47). KnownMarketplaces.Read never throws and
+    /// every CLI call goes through a bounded runner, so a hang or a hostile file becomes a warning.</summary>
+    private bool TryReinstall(DisabledEntry e, MarketplacesSnapshot marketplaces, List<string> warnings)
+    {
+        var manual = $"claude plugin install {e.Id} --scope {e.Scope}" +
+                     (e.ProjectPath is null ? "" : $" (run it from {e.ProjectPath})");
+
+        if (e.Marketplace is not { } mkt)
+        {
+            // ⚠ AN HONEST DEAD END, not a graceful degrade. The plugin is GONE and this path cannot
+            // bring it back, so the message must read as one. Guessing a source would install something
+            // the user did not ask for, which is strictly worse. The honest failure is the feature.
+            warnings.Add($"{e.Id} ({Where(e)}) is no longer installed and no marketplace source was " +
+                         "recorded for it, so it could NOT be restored. To put it back yourself, re-add " +
+                         $"the marketplace it came from and run: {manual}.");
+            return false;
+        }
+
+        if (marketplaces.State == MarketplacesState.Unreadable)
+        {
+            // "Cannot read" is NOT "not there". The live source is genuinely UNKNOWN, and re-adding
+            // blind could overwrite a marketplace the user has repointed.
+            warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, and the marketplace registry " +
+                         $"({KnownMarketplaces.FileName}) could not be read, so we did not risk changing " +
+                         $"it. To restore it yourself: claude plugin marketplace add {mkt.Source} then {manual}.");
+            return false;
+        }
+
+        // FileAbsent means there are NO registered marketplaces, so the alias is DEFINITIVELY absent and
+        // re-adding is both safe and necessary. Only a successfully READ file can say an alias is live.
+        var live = marketplaces.State == MarketplacesState.Read
+                   && marketplaces.ByName.TryGetValue(mkt.Name, out var l) ? l : null;
+
+        if (live is not null && !KnownMarketplaces.SameSource(live, mkt))
+        {
+            // ⚠ "PRESENT BY ALIAS" IS NOT "IS THE THING WE RECORDED". The alias is a local name the USER
+            // controls. If they repointed it, installing would silently deliver whatever now sits behind
+            // that name. The user's own configuration outranks our restore — for THIS entry.
+            warnings.Add($"{e.Id} ({Where(e)}) is no longer installed, and the marketplace `{mkt.Name}` " +
+                         $"now points at {live.Kind} `{live.Source}` instead of the {mkt.Kind} " +
+                         $"`{mkt.Source}` we recorded — so it was NOT reinstalled and your marketplace " +
+                         $"was NOT changed. To restore it yourself once `{mkt.Name}` points where you " +
+                         $"expect: {manual}.");
+            return false;
+        }
+
+        if (live is null)
+        {
+            var add = _longRun("claude", new[] { "plugin", "marketplace", "add", mkt.Source }, e.ProjectPath);
+            if (add.Code != 0)
+            {
+                warnings.Add($"could not re-add the marketplace `{mkt.Name}` for {e.Id} ({Where(e)}): " +
+                             $"claude {DescribeExit(add.Code)}. To restore it yourself: claude plugin " +
+                             $"marketplace add {mkt.Source} then {manual}.");
+                return false;
+            }
+        }
+
+        var reinstall = _run("claude", new[] { "plugin", "install", e.Id, "--scope", e.Scope }, e.ProjectPath);
+        if (reinstall.Code != 0)
+        {
+            // ⚠ RULE 3: a PARTIAL restore reports as a FAILURE with the remaining commands, never as a
+            // success. We may have just re-added a marketplace and left the plugin missing.
+            warnings.Add((live is null ? $"re-added the marketplace `{mkt.Name}` but " : "") +
+                         $"could NOT reinstall {e.Id} ({Where(e)}): claude {DescribeExit(reinstall.Code)}. " +
+                         $"To finish: {manual}.");
+            return false;
+        }
+
+        // ⚠ RULE 2: say WHICH steps ran. "Restored" when only an enable was needed and "reinstalled from
+        // <marketplace>" when the copy was rebuilt are different facts, and an operator debugging a lost
+        // plugin needs to know which happened.
+        warnings.Add($"{e.Id} ({Where(e)}) was no longer installed, so it was reinstalled from " +
+                     $"`{mkt.Name}` ({mkt.Kind}: {mkt.Source})" +
+                     (live is null ? ", after re-adding that marketplace." : "."));
+        return true;
+    }
+
+    /// <summary>The exact commands a human must run to undo our disable themselves.
+    ///
+    /// Entries whose project directory is gone are OMITTED, not listed with an impossible "run it from
+    /// &lt;deleted path&gt;" — the same bad-recourse defect the in-loop guard fixes. An empty result says so
+    /// rather than printing an empty list. Shared by the FutureVersion path and the
+    /// inventory-unreadable path so the two recourses can never drift.</summary>
+    private string ManualEnableRecourse(IReadOnlyList<DisabledEntry> entries)
+    {
+        // ⚠ TWO DIFFERENT EMPTIES, and conflating them makes the tool blame the USER for its own limit.
+        // An empty INPUT means we could not read any entries at all — a newer marker whose entry shape
+        // this build does not understand, which ParseEntries drops one by one. An empty RECOVERABLE set
+        // means we DID read entries and every one of their projects is gone. Only the second is the
+        // user's disk. Saying "the recorded projects no longer exist" for the first is a confident lie
+        // about a directory we never even had a path for.
+        //
+        // Reachable ONLY from the FutureVersion branch: the Present path returns early when
+        // recorded.Count == 0, so no other caller can pass an empty list here.
+        if (entries.Count == 0)
+            return "We could not read any entries from that record, so there is nothing to list here — " +
+                   "run `claude plugin list` and re-enable whatever is still disabled.";
+
+        var recoverable = entries.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
+        // ⚠ "NEEDED", not "possible". Reaching here means every recorded entry is a non-user scope whose
+        // project directory is gone — and this class's own guards state why that is not a loss: a plugin
+        // whose project is deleted cannot load, so the collision is MOOT (see the Restore loop's guard,
+        // and Apply's symmetric one). "No manual action is possible" implies helplessness about something
+        // that still matters; it does not matter, and saying so is the honest and calmer answer.
+        if (recoverable.Count == 0)
+            return "No manual action is needed for those: the recorded projects no longer exist, so " +
+                   "those copies cannot load anyway.";
+        return "To re-enable manually: " + string.Join("; ", recoverable.Select(e =>
+            $"claude plugin enable {e.Id} --scope {e.Scope}" +
+            (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})"))) + ".";
+    }
 
     private static string Where(DisabledEntry e) => e.ProjectPath is null ? $"scope {e.Scope}" : $"scope {e.Scope} in {e.ProjectPath}";
 

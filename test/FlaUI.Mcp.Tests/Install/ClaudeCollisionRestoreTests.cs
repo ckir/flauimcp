@@ -285,7 +285,7 @@ public class ClaudeCollisionRestoreTests
     {
         var cli = new FakeCli();
         var s = TempState();
-        File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 2, "disabled": [] }""");
+        File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 3, "disabled": [] }""");
 
         var warning = new ClaudeCollisionRemedy(cli.Run, s).Restore();
 
@@ -311,7 +311,7 @@ public class ClaudeCollisionRestoreTests
         {
             case "absent":  break;                                                             // no marker file
             case "corrupt": File.WriteAllText(CollisionMarker.PathIn(s), "{ torn"); break;
-            case "future":  File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 2, "disabled": [] }"""); break;
+            case "future":  File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 3, "disabled": [] }"""); break;
             case "present": CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) }); break;
         }
 
@@ -396,5 +396,50 @@ public class ClaudeCollisionRestoreTests
         Assert.Null(warning);
         Assert.Empty(cli.Calls);
         Assert.False(File.Exists(CollisionMarker.PathIn(s)), "an all-malformed marker should be consumed, not left forever");
+    }
+
+    // A message the user cannot act on is the same failure class as the warning that started this whole
+    // defect: the tool describing its own state instead of the user's problem. The v2 bump is what makes
+    // this reachable - a downgraded build hits it during UNINSTALL, with the plugin still disabled.
+    [Fact]
+    public void A_future_version_marker_names_every_disabled_id_and_its_enable_command()
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+            { "version": 3,
+              "disabled": [ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "projectPath": null },
+                            { "id": "other@mkt", "scope": "local", "projectPath": "C:\\Proj" } ] }
+            """);
+
+        var warning = new ClaudeCollisionRemedy(new FakeCli().Run, s, _ => true).Restore();
+
+        Assert.NotNull(warning);
+        Assert.Contains("claude plugin enable flaui-mcp@flaui-mcp --scope user", warning);
+        Assert.Contains("claude plugin enable other@mkt --scope local", warning);
+        Assert.Contains(@"C:\Proj", warning);                       // where to run the local one FROM
+        Assert.Contains("newer flaui-mcp", warning);                // still says WHAT happened
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)), "a future-version marker must be left in place");
+    }
+
+    // ⚠ TWO DIFFERENT EMPTIES. A FutureVersion marker whose ENTRY SHAPE changed - a v3 that renames
+    // `id`, say - projects to an EMPTY list, because ParseEntries drops every entry it cannot read. The
+    // message must not then blame the user's deleted projects for what is really a schema we could not
+    // read. This is FutureVersion-only: the Present path returns early when recorded.Count == 0, so an
+    // empty INPUT list can reach ManualEnableRecourse from nowhere else.
+    [Fact]
+    public void A_future_version_marker_with_unreadable_entries_does_not_blame_missing_projects()
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+            { "version": 3,
+              "disabled": [ { "pluginId": "flaui-mcp@flaui-mcp", "installScope": "user" } ] }
+            """);
+
+        var warning = new ClaudeCollisionRemedy(new FakeCli().Run, s, _ => true).Restore();
+
+        Assert.NotNull(warning);
+        Assert.Contains("newer flaui-mcp", warning!);                  // still says WHAT happened
+        Assert.DoesNotContain("no longer exist", warning);             // NOT the user's disk's fault
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)), "a future-version marker must be left in place");
     }
 }

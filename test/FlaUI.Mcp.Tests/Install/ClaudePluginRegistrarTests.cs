@@ -26,7 +26,10 @@ public class ClaudePluginRegistrarTests
         Assert.Equal(AgentChange.Created, r.Change);
         Assert.Equal(new[] { "/C", "claude", "plugin", "marketplace", "remove", "flaui-mcp-marketplace" }, calls[0]);
         Assert.Equal(new[] { "/C", "claude", "plugin", "marketplace", "add", @"C:\App\plugin", "--scope", "user" }, calls[1]);
-        Assert.Equal(new[] { "/C", "claude", "plugin", "uninstall", "flaui-mcp" }, calls[2]);
+        // D1: the sweep MUST be qualified. `flaui-mcp` is the plugin NAME, which BOTH marketplaces use —
+        // MEASURED, `claude plugin uninstall flaui-mcp` run against the user's own `flaui-mcp@flaui-mcp`
+        // copy exits 0 and empties the list. The qualified id is the only thing that distinguishes ours.
+        Assert.Equal(new[] { "/C", "claude", "plugin", "uninstall", "flaui-mcp@flaui-mcp-marketplace" }, calls[2]);
         Assert.Equal(new[] { "/C", "claude", "plugin", "install", "flaui-mcp@flaui-mcp-marketplace", "--scope", "user" }, calls[3]);
         Assert.Contains(calls, c => System.Array.IndexOf(c, "list") >= 0); // read-back happened
     }

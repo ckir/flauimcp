@@ -113,7 +113,7 @@ public class CollisionMarkerTests
     [InlineData("[]")]
     [InlineData("{ \"version\": 1 }")]
     [InlineData("{ \"version\": 1, \"disabled\": \"not an array\" }")]
-    [InlineData("{ \"version\": 2, \"disabled\": [] }")]   // FutureVersion — Read still collapses it to empty
+    [InlineData("{ \"version\": 3, \"disabled\": [] }")]   // FutureVersion — Read still collapses it to empty
     public void A_corrupt_marker_reads_as_empty_and_never_throws(string content)
     {
         var s = TempState();
@@ -228,9 +228,9 @@ public class CollisionMarkerTests
     }
 
     [Theory]
-    [InlineData("{ \"version\": 2, \"disabled\": [] }")]
+    [InlineData("{ \"version\": 3, \"disabled\": [] }")]
     [InlineData("{ \"version\": 999 }")]          // no disabled key — still FutureVersion (honored on version alone)
-    [InlineData("{ \"version\": 2.1, \"disabled\": [] }")]   // fractional must not throw into Corrupt (double parse)
+    [InlineData("{ \"version\": 3.1, \"disabled\": [] }")]   // fractional must not throw into Corrupt (double parse)
     public void ReadState_reports_FutureVersion_for_a_version_greater_than_one(string content)
     {
         var (state, entries) = CollisionMarker.ReadState(WriteMarker(content));
@@ -273,7 +273,7 @@ public class CollisionMarkerTests
     [Fact]
     public void Read_is_empty_for_a_future_version_marker()
         => Assert.Empty(CollisionMarker.Read(
-            WriteMarker("""{ "version": 2, "disabled": [ { "id": "x", "scope": "user" } ] }""")));
+            WriteMarker("""{ "version": 3, "disabled": [ { "id": "x", "scope": "user" } ] }""")));
 
     [Fact]
     public void Record_over_a_corrupt_marker_preserves_the_old_bytes_and_still_records()
@@ -296,7 +296,7 @@ public class CollisionMarkerTests
     {
         var s = TempState();
         var path = CollisionMarker.PathIn(s);
-        var future = """{ "version": 2, "disabled": [ { "id": "keep@me", "scope": "user" } ] }""";
+        var future = """{ "version": 3, "disabled": [ { "id": "keep@me", "scope": "user" } ] }""";
         File.WriteAllText(path, future);
 
         var warning = CollisionMarker.Record(s, new[] { UserEntry });
@@ -384,5 +384,134 @@ public class CollisionMarkerTests
         Assert.False(File.Exists(bak), "stale .bak-* must be swept");
         Assert.False(File.Exists(tmp), "orphaned .tmp must be swept");
         Assert.True(File.Exists(CollisionMarker.PathIn(s)), "the live marker must NOT be swept");
+    }
+
+    private static readonly MarketplaceSource GithubSrc = new("flaui-mcp", "github", "ckir/flauimcp");
+    private static readonly MarketplaceSource DirSrc = new("acme", "directory", @"C:\Marketplaces\acme");
+
+    // PREREQUISITE 2, and the sharpest test in this file. The v2 bump protects the marker from the
+    // SHIPPED v1 binary; it does nothing about a v2 writer that drops its OWN data. This is the same
+    // lossy-merge shape that made version 1 unsalvageable, one version up.
+    [Fact]
+    public void A_recorded_marketplace_survives_a_merge_that_adds_another_entry()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { UserEntry with { Marketplace = GithubSrc } });
+
+        CollisionMarker.Record(s, new[] { ProjA });   // a SECOND entry: read, merge, rewrite the whole file
+
+        var read = CollisionMarker.Read(s);
+        Assert.Equal(2, read.Count);
+        var user = read.Single(e => e.Scope == "user");
+        Assert.NotNull(user.Marketplace);
+        Assert.Equal("flaui-mcp", user.Marketplace!.Name);
+        Assert.Equal("github", user.Marketplace.Kind);
+        Assert.Equal("ckir/flauimcp", user.Marketplace.Source);
+        Assert.Null(read.Single(e => e.Scope == "local").Marketplace);   // absent stays absent
+    }
+
+    [Fact]
+    public void The_written_marker_declares_version_2()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { UserEntry with { Marketplace = GithubSrc } });
+        Assert.Contains("\"version\": 2", File.ReadAllText(CollisionMarker.PathIn(s)));
+    }
+
+    [Fact]
+    public void All_three_source_kinds_round_trip()
+    {
+        var s = TempState();
+        CollisionMarker.Record(s, new[]
+        {
+            UserEntry with { Marketplace = GithubSrc },
+            ProjA with { Marketplace = DirSrc },
+            ProjB with { Marketplace = new MarketplaceSource("ecc", "git", "https://github.com/a/b.git") },
+        });
+
+        var read = CollisionMarker.Read(s);
+        Assert.Equal(3, read.Count);
+        Assert.Equal(new[] { "directory", "git", "github" },
+            read.Select(e => e.Marketplace!.Kind).OrderBy(k => k, StringComparer.Ordinal).ToArray());
+    }
+
+    // A v1 marker written by v0.20.0 must still restore under the new code. Version 1 is VALID, just
+    // without a marketplace — it must NOT read as Corrupt or FutureVersion.
+    [Fact]
+    public void A_version_1_marker_still_reads_as_present_with_no_marketplace()
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+            { "version": 1,
+              "disabled": [ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "projectPath": null } ] }
+            """);
+
+        var e = Assert.Single(CollisionMarker.Read(s));
+        Assert.Equal("flaui-mcp@flaui-mcp", e.Id);
+        Assert.Null(e.Marketplace);
+    }
+
+    // The FutureVersion floor moves with the schema: 2 is now ours, 3 is the future.
+    [Fact]
+    public void Version_3_is_a_future_version_and_is_not_acted_on()
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+            { "version": 3, "disabled": [ { "id": "x@y", "scope": "user", "projectPath": null } ] }
+            """);
+
+        Assert.Empty(CollisionMarker.Read(s));                                  // fail-safe: restore nothing
+        Assert.NotNull(CollisionMarker.Record(s, new[] { UserEntry }));         // refuses to touch it
+    }
+
+    // CORRECTION A. The FutureVersion message must name the ids it could not restore, so ReadState has
+    // to project them best-effort — the version check at :166 fires BEFORE the entries are parsed, so
+    // today it returns an EMPTY list and the message would have nothing to name.
+    [Fact]
+    public void A_future_version_marker_still_projects_its_entries_for_the_message()
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+            { "version": 3,
+              "disabled": [ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "projectPath": null } ] }
+            """);
+
+        var (state, entries) = CollisionMarker.ReadStateForTests(s);
+        Assert.Equal("FutureVersion", state);
+        Assert.Equal("flaui-mcp@flaui-mcp", Assert.Single(entries).Id);
+    }
+
+    // A malformed `marketplace` object drops the FIELD, never the ENTRY. Re-enabling is still possible
+    // without a source; dropping the entry would strand the user's plugin disabled forever.
+    [Fact]
+    public void A_malformed_marketplace_object_drops_only_the_field()
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+            { "version": 2,
+              "disabled": [ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "projectPath": null,
+                              "marketplace": { "name": "flaui-mcp", "kind": 7 } } ] }
+            """);
+
+        var e = Assert.Single(CollisionMarker.Read(s));
+        Assert.Equal("flaui-mcp@flaui-mcp", e.Id);
+        Assert.Null(e.Marketplace);
+    }
+
+    // A future marker whose schema has no `disabled` ARRAY must still be FutureVersion, never Corrupt.
+    // Corrupt routes through Record -> BackUpCorrupt, which File.Moves the newer build's marker aside so
+    // this build can overwrite it, and SweepBackups later deletes the .bak — so classifying a future
+    // marker Corrupt DESTROYS it, which is the exact outcome the FutureVersion guard exists to prevent.
+    [Fact]
+    public void A_future_version_marker_with_no_disabled_array_is_future_not_corrupt()
+    {
+        var s = TempState();
+        var path = CollisionMarker.PathIn(s);
+        File.WriteAllText(path, """{ "version": 3, "entries": { "shape": "changed" } }""");
+
+        Assert.Equal("FutureVersion", CollisionMarker.ReadStateForTests(s).State);
+        Assert.NotNull(CollisionMarker.Record(s, new[] { UserEntry }));   // refuses to touch it
+        Assert.True(File.Exists(path), "the newer build's marker must survive untouched");
+        Assert.Contains("\"version\": 3", File.ReadAllText(path));
     }
 }
