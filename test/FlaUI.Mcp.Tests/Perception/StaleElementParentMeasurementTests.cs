@@ -85,4 +85,65 @@ public class StaleElementParentMeasurementTests
         _out.WriteLine("A1 REFUSES the capture — OPEN #1's concern stands. If it ANSWERED, escalation finds a");
         _out.WriteLine("container, the element is over-masked instead, and the concern largely evaporates.");
     }
+
+    /// <summary>THE CASE OPEN #1 ACTUALLY DESCRIBES, and the one the process-kill measurement above does
+    /// NOT settle. A tooltip, menu or list item disappearing during an ordinary UI transition kills the
+    /// ELEMENT while its APP STAYS ALIVE — a completely different situation for UIA than a dead process,
+    /// because the provider is still there to answer.
+    ///
+    /// The fixture gives this for free: ClearItemsButton_Click is `ItemList.Items.Clear()`
+    /// (MainWindow.xaml.cs:67), so grabbing a ListBoxItem and then invoking that button removes it from a
+    /// living window.
+    ///
+    /// ⚠ Invoked through the UIA InvokePattern, NOT synthetic input, so this needs no input lease — it is
+    /// a pattern call into the app, not a SendInput event.
+    ///
+    /// This is the measurement that should drive the OPEN #1 decision, because it is the frequent case.
+    /// If GetParent ANSWERS here, A1 escalates to the list and over-masks rather than refusing, and the
+    /// refusal is confined to the rare whole-process-death case.</summary>
+    [Fact]
+    public async Task What_a_removed_element_does_while_its_app_is_still_alive()
+    {
+        using var app = new TestAppFixture();
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+
+        var handle = await mgr.OpenByPidAsync(app.Process.Id);
+
+        AutomationElement? victim = null;
+        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+        {
+            victim = win.FindFirstDescendant(cf => cf.ByAutomationId("ItemA"));
+            return true;
+        });
+        Assert.NotNull(victim);
+
+        _out.WriteLine("--- BEFORE removal, app ALIVE (sanity: these must all ANSWER) ---");
+        _out.WriteLine(Probe("BoundingRectangle", () => victim!.BoundingRectangle.ToString()));
+        _out.WriteLine(Probe("RuntimeId", () => string.Join(",", victim!.Properties.RuntimeId.ValueOrDefault ?? Array.Empty<int>())));
+        _out.WriteLine(Probe("GetParent(raw view)", () =>
+            victim!.Automation.TreeWalkerFactory.GetRawViewWalker().GetParent(victim!)?.ToString() ?? "<null>"));
+
+        // Remove the item, leaving the window and its provider very much alive.
+        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+        {
+            win.FindFirstDescendant(cf => cf.ByAutomationId("ClearItemsButton"))!.Patterns.Invoke.Pattern.Invoke();
+            return true;
+        });
+        await Task.Delay(750);
+
+        _out.WriteLine("");
+        _out.WriteLine("--- AFTER removal, app STILL ALIVE (this is the measurement that matters) ---");
+        _out.WriteLine(Probe("BoundingRectangle", () => victim!.BoundingRectangle.ToString()));
+        _out.WriteLine(Probe("RuntimeId", () => string.Join(",", victim!.Properties.RuntimeId.ValueOrDefault ?? Array.Empty<int>())));
+        _out.WriteLine(Probe("GetParent(raw view)", () =>
+            victim!.Automation.TreeWalkerFactory.GetRawViewWalker().GetParent(victim!)?.ToString() ?? "<null>"));
+
+        // Confirm the app really is still alive, so a THREW result above cannot be blamed on a dead process.
+        app.Process.Refresh();
+        _out.WriteLine("");
+        _out.WriteLine($"app still alive? HasExited={app.Process.HasExited}");
+        _out.WriteLine(Probe("window root still readable", () =>
+            mgr.WindowTitle(app.Process.MainWindowHandle) ?? "<null>"));
+    }
 }

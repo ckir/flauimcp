@@ -3294,6 +3294,33 @@ answers from a cached parent, was ASSERTED by the peer and NOT measured. If it a
 largely evaporates. Measuring it costs one Desktop experiment and would settle the question before Task 4
 is written.
 
+**MEASURED 2026-08-20 — and the answer DEPENDS ON WHICH DEATH, which neither the peer's assertion nor this
+paragraph anticipated.** Both cases are pinned in
+`test/FlaUI.Mcp.Tests/Perception/StaleElementParentMeasurementTests.cs` (`Desktop` + `Measurement` traits).
+
+| probe on the dead element | process KILLED | element REMOVED, app alive |
+|---|---|---|
+| `BoundingRectangle` | THREW `COMException 0x80040201` | **ANSWERED `{0,0,0,0}`** |
+| `RuntimeId` | THREW | **ANSWERED**, unchanged |
+| `GetParent` (raw view) | THREW | **ANSWERED → the `ItemList` container** |
+
+**THE FREQUENT CASE DOES NOT REFUSE.** A tooltip, menu or list item vanishing during an ordinary UI
+transition leaves a LIVE provider that answers every read: the element reports a ZERO-AREA rect, `HasArea`
+rejects it, `GetParent` hands back the container, and escalation SUCCEEDS. The outcome is a black box over
+the container — precisely the *"occasional black boxes over benign content"* the spec signed off on, and
+NOT the harsher refusal this OPEN was raised about.
+
+Refusal is confined to whole-PROCESS death, where every read throws. That is rare, and refusing there is
+defensible: nothing about that window can be inspected at all.
+
+⚠ Two design choices are VALIDATED by this rather than merely argued. `HasArea` tests EXTENTS instead of
+null — the real removed-element rect is `{0,0,0,0}`, which a null-check would have accepted as a usable
+mask that paints nothing, the exact "silent leak wearing a mask's clothes" its doc describes. And
+`MaskEscalation.Resolve` treats failure-as-absence uniformly, so the two cases need no separate handling:
+one presents as a zero-area rect, the other as a null, and both route to the same rule.
+
+**Disposition: no code change. OPEN #1 is CLOSED on measurement.**
+
 ### OPEN #2 — a window UIA cannot BIND is skipped, and the desktop is photographed anyway
 
 Raised at panel round 9 and ledgered as AB-9. On the full-desktop path, a window that cannot be bound —
