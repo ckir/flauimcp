@@ -271,3 +271,19 @@ That is a behaviour change wanting its own increment, not a capstone tail-end ed
 already rewritten three times this branch.
 **Compensation + anchor:** none. Pre-existing; the original SP3 code had the same `rootEl.FindAllDescendants()`.
 ⚠ **Honest limit:** a rule that targets a popup host by name does not mask that host.
+
+### AB-16 — `PopupFinder`'s self-exclusion cannot be pinned with this fixture  *(SP4 test audit)*
+**Behaviour:** `IsSameElement` stops the target window being grafted into its own popup set — RuntimeId
+first, `NativeWindowHandle` when the RuntimeId cannot be read.
+**Why not covered, and this one was MEASURED rather than assumed:** a test was written for it and then
+DELETED for being vacuous. Removing `IsSameElement` entirely leaves both `PopupGraftingTests` facts GREEN,
+and the reason is that the fixture cannot stage the condition at all: this repo's WPF window reports UIA
+`ClassName` **"Window"**, `ControlType=Window`, so `looksPopup` is FALSE and it was never a self-graft
+candidate. The guard only matters for a window whose class DOES match `looksPopup` — an `HwndWrapper`-class
+host, which the Path-1 comment calls an "older WPF popup host" — and no fixture here produces one.
+**Compensation + anchor:** none. The mechanism is documented at the call site, including the measurement
+that overturned two earlier claims about it.
+⚠ **Honest limit:** if `IsSameElement` were deleted, no test goes red. Shipping the vacuous test would have
+been worse than shipping none — it would have claimed this line was guarded.
+⚠ **Re-validation note for a future audit:** if the fixture ever gains a window whose UIA ClassName starts
+with `HwndWrapper`, this entry is promoted straight back to a live gap and the test becomes writable.

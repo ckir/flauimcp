@@ -236,6 +236,30 @@ public static class SomethingElse { public const string Copy = ""[REDACTED]""; }
         Assert.Single(Rule5Over(decl, "src/FlaUI.Mcp.Server/Tools/Impostor.cs"));
     }
 
+    /// <summary>The OTHER half of the same exemption, and the three assertions above cannot see it.
+    ///
+    /// ⚠⚠ MEASURED VACUOUS BEFORE THIS FACT EXISTED. Deleting
+    /// <c>string.Equals(CurrentType, TokenDefiningType, ...)</c> from <c>inTokenDefiningType</c> — leaving
+    /// the exemption keyed on the FILE PATH alone — left all six RULE 5 tests GREEN. The reason is that the
+    /// negative cases above vary the PATH: "any other type" is evaluated at the default <c>src/Fake.cs</c>,
+    /// which fails the path half anyway, so the type half is never the thing that decides.
+    ///
+    /// This fact varies the TYPE while HOLDING THE PATH FIXED at the real defining file, which is the only
+    /// shape that isolates it. Under that mutation an impostor class declared inside
+    /// <c>ElementContent.cs</c> would be silently exempted — exactly the hole the file-keying was added to
+    /// close, reopened from the other side.</summary>
+    [Fact]
+    public void Rule5_flags_a_different_type_in_the_token_defining_file()
+    {
+        var hits = Rule5Over(@"
+namespace X;
+public static class Impostor { public const string Copy = ""[REDACTED]""; }",
+            "src/FlaUI.Mcp.Core/Perception/ElementContent.cs");
+
+        var hit = Assert.Single(hits);
+        Assert.Contains("Impostor", hit);
+    }
+
     // ============================== sweep engine ==============================
 
     private sealed record SweepResult(

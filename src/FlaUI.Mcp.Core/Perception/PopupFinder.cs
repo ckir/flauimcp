@@ -75,13 +75,27 @@ public static class PopupFinder
                 // SequenceEqual and is skipped as "the window itself" — silently dropping a real popup
                 // from the mask set while the capture succeeds. Pre-existing; found at capstone round 5.
                 //
-                // ⚠⚠ THE HWND FALLBACK IS NOT BELT-AND-BRACES — WITHOUT IT THE WINDOW GRAFTS ITSELF.
-                // Round 5 added the length test with a comment claiming the target window "does not match
-                // the looksPopup test below". THAT CLAIM WAS FALSE and was asserted without checking:
-                // `looksPopup` accepts `cls.StartsWith("HwndWrapper")`, and HwndWrapper[...] is exactly the
-                // class name WPF gives EVERY top-level window, not just popup hosts. So with an unreadable
-                // RuntimeId the window matched its own popup test and was appended to its own search roots,
-                // giving [win, win] and a duplicated subtree. Caught at capstone round 6.
+                // ⚠⚠ THE HWND FALLBACK EXISTS BECAUSE SELF-EXCLUSION MUST NOT DEPEND ON ONE READ.
+                // ⚠ THE HISTORY HERE IS WORTH KEEPING, because TWO successive claims about it were wrong.
+                // Round 5 skipped self-exclusion entirely when the RuntimeId was unreadable, arguing the
+                // window "does not match the looksPopup test below". Round 6 called that FALSE, on the
+                // grounds that `looksPopup` accepts `cls.StartsWith("HwndWrapper")` and that WPF gives
+                // EVERY top-level window that class — so the window would graft itself, giving [win, win].
+                //
+                // ⚠ THEN IT WAS MEASURED, at the test audit, and round 6's premise did not hold either:
+                // this repo's own WPF fixture window reports UIA ClassName "Window", ct=Window, and
+                // looksPopup=FALSE. So on THIS shape the window was never a self-graft candidate at all.
+                //
+                // The fallback is kept anyway, and the reason is now the honest one: `looksPopup` DOES
+                // accept HwndWrapper — the comment at that line calls it an "older WPF popup host" — so a
+                // window on a framework or version that reports that class WOULD be a candidate, and
+                // self-exclusion is the only thing standing between it and grafting itself. Depending on a
+                // single RuntimeId read for that is the fragility; the HWND fallback removes it.
+                //
+                // ⚠ This is UNPINNED and cannot be pinned with the current fixture — see AB-16. A test was
+                // written and DELETED for being vacuous: with cls="Window" the mutant that removes
+                // self-exclusion changes nothing observable, so the test asserted a condition the fixture
+                // cannot produce.
                 if (IsSameElement(c, targetWindow, targetRid)) continue; // skip the window itself
                 if (c.ControlType == FlaUI.Core.Definitions.ControlType.ToolTip) continue;
                 if (c.Properties.IsOffscreen.ValueOrDefault) continue;
