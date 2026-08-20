@@ -109,69 +109,83 @@ and `claude plugin marketplace list` prints the same thing. So `Apply()` can rea
 records the entry.
 
 **Consequence for the field shape:** the optional field is not a string. It is
-`{ name, source }` — enough to run `claude plugin marketplace add <source>` before reinstalling, when the
-marketplace has gone. A recorded entry whose source could not be read at install time degrades to
-re-enable-only, exactly as a v1 marker does.
+`{ name, kind, source }` — enough to run `claude plugin marketplace add <source>` before reinstalling, when
+the marketplace has gone. A recorded entry whose source could not be read at install time, or whose kind is
+unrecognised, degrades to re-enable-only.
 
 **The exact schema.** Panel round 1 (Literal Implementer) — the spec named the value and not the KEY,
 which would leave the reader and writer to invent it separately. Fixed here; this is the contract:
 
 ```jsonc
-{ "version": 1,
+{ "version": 2,
   "disabled": [
     { "id": "flaui-mcp@flaui-mcp", "scope": "user", "projectPath": null,
-      // OPTIONAL. Absent = written by an older build, or the source could not be read.
-      "marketplace": { "name": "flaui-mcp", "source": "ckir/flauimcp" } } ] }
+      // OPTIONAL even at v2: absent when the source could not be read, or its kind is unrecognised.
+      // `kind` is recorded for DIAGNOSTICS — an unsupported kind must be visible, not silent.
+      "marketplace": { "name": "flaui-mcp", "kind": "github", "source": "ckir/flauimcp" } } ] }
 ```
 
-`source` is the string that would be passed to `claude plugin marketplace add`. It is read from
-`known_marketplaces.json` at install time, whose measured shape is
-`{"<name>": {"source": {"source": "github", "repo": "ckir/flauimcp"}, …}}` — for a `github` source the
-value to persist is the `repo`. **A source kind this code does not recognise is recorded as absent, never
-guessed.**
+`source` is the string passed verbatim to `claude plugin marketplace add`. It is read from
+`known_marketplaces.json` at install time; the kind-to-field mapping is in the table below.
 
-⚠⚠ **KEEPING `version: 1` IS NOT SUFFICIENT — THE MERGE IS LOSSY, AND THIS WOULD HAVE SHIPPED SILENT DATA
-LOSS.** Panel round 1 (Protocol Pedant), CONFIRMED by reading the code:
+⚠ **THE NEW WRITER MUST STILL ROUND-TRIP ITS OWN FIELD.** The v2 bump protects the marker from the SHIPPED
+v1 binary; it does nothing about a v2 writer that drops its own data. `BuildJson`
+(`CollisionMarker.cs:103-109`) and the `DisabledEntry` mapping (`:188`) both need the field. **The plan
+owns a test that writes a marker containing `marketplace`, performs a merge that adds a SECOND entry, and
+asserts the first entry's `marketplace` survived** — the same lossy-merge shape, one version up.
+
+⚠⚠ **THE MARKER GOES TO `version: 2`. MY ROUND-1 FOLD SAID KEEP v1, AND IT WAS WRONG.**
+Panel round 2 (Axiom Breaker) refuted it, and the refutation is CONFIRMED by measurement.
+
+The round-1 reasoning was: keep `version: 1` so an older build still restores, and require the new code to
+preserve unknown properties across a merge. The second half is impossible. **v0.20.0 has already shipped**
+(`git cat-file -e v0.20.0:src/.../CollisionMarker.cs` succeeds) carrying a writer that is lossy by
+construction:
 
 - `BuildJson` at `CollisionMarker.cs:103-109` serializes **only** `id`, `scope`, `projectPath`.
-- `ReadState` at `:188` maps each element to `DisabledEntry(id, scope, projectPath)`, **dropping every
-  other property**.
-- `Record()` reads the existing marker, merges, and rewrites the WHOLE file.
+- `ReadState` at `:188` maps each element to `DisabledEntry(...)`, **dropping every other property**.
+- `Record()` reads, merges, and rewrites the WHOLE file.
 
-So an older build — a downgrade, or a second machine — that records any new disabled plugin **erases the
-`marketplace` of every previously recorded entry**, silently. The v1 reader tolerating an unknown field
-(which it does) only covers the READ path; the write path destroys it.
+That binary is on users' machines and **cannot be patched retroactively.** Requiring "the implementation
+MUST preserve unknown properties" constrains only the NEW code; the shipped one will still parse a v1
+marker, drop `marketplace`, and rewrite it. Keeping v1 therefore guarantees the silent destruction of the
+exact data the reinstall depends on.
 
-**This is a real constraint on the design, not a footnote.** The implementation MUST preserve unknown
-properties across a merge: parse into a shape that carries the original `JsonObject` (or re-read and
-merge at the `JsonNode` level) rather than round-tripping through a lossy `DisabledEntry`. **The plan owns
-proving this with a test that writes a marker containing `marketplace`, performs a merge that adds a
-second entry, and asserts the first entry's `marketplace` SURVIVED.**
+**Both options lose something; the operator chose the loss that is visible and recoverable.**
 
-⚠ An older build still cannot USE the field — it will re-enable only, which is the intended degrade. The
-requirement is that it must not DESTROY it.
+| | v1 marker + shipped v0.20.0 | **v2 marker + shipped v0.20.0** |
+|---|---|---|
+| what the old build does | parses it, drops `marketplace`, rewrites | sees `FutureVersion` at `:166`, leaves it untouched |
+| what the user sees | nothing | *"the restore record … was written by a newer flaui-mcp; it was left in place and not acted on"* (`ClaudeCollisionRemedy.cs:156-158`) |
+| the marker afterwards | **source silently destroyed, permanently** | **intact** |
+| the user's plugin | stays disabled, now unrestorable | stays disabled, fully restorable by the newer build |
 
-⚠ The restore order therefore becomes: **re-add the marketplace if absent → reinstall the plugin if absent
-→ enable.** Each step is skipped when unnecessary, and each failure reports the exact command for the user
-to run, as the existing failure paths already do. The plan owns proving each step is genuinely idempotent —
-re-adding an already-registered marketplace must not error.
+**The `FutureVersion` guard is doing exactly its job** — it exists so an old build refuses to act on a
+record it does not understand, rather than half-acting on it. Bumping to 2 uses that mechanism as designed.
 
-⚠⚠ **A NAIVE VERSION BUMP SILENTLY BREAKS DOWNGRADES, and `CollisionMarker.cs:166` is why.**
-`ReadState` returns `FutureVersion` for `version > 1`, and `Restore()` at `:156` treats that as *leave it
-untouched and do not act on it*. So if v2 writes `"version": 2` and the user then runs an older build — a
-downgrade, or a second machine — that build sees a future marker, **abandons it, and never re-enables the
-user's plugin**. The FutureVersion guard is correct and must not be weakened; the schema change has to
-avoid triggering it.
+⚠ The cost is real and must be stated in the release notes: **an older build can no longer restore a
+marker written by this one.** It will say so plainly rather than failing silently, and running the newer
+build again fixes it completely.
 
-**Resolution: keep `"version": 1` and add the marketplace as an OPTIONAL field.** A v1 reader ignores an
-unknown property (verify this against the actual parse at `:151-170` during implementation — the plan owns
-that check). A new reader treats a missing marketplace as "not recorded", which degrades to today's
-behaviour: re-enable only, no reinstall. Both directions stay safe, and the FutureVersion path stays
-reserved for a genuinely incompatible change.
+### Marketplace sources — all three kinds, not just `github`
 
-If implementation finds a v1 reader does NOT tolerate the extra field, the fallback is a version bump plus
-teaching old builds nothing — and accepting the downgrade hole explicitly, in the ledger, rather than
-silently. **The plan must not proceed on the assumption; it must measure it.**
+Panel round 2 (open question 2) found the spec handled only `github`. MEASURED on the operator's own
+machine, `known_marketplaces.json` holds **10 marketplaces: 5 `directory`, 4 `github`, 1 `git`** — so
+`github` is the MINORITY kind, and `directory` is what `flaui-mcp-marketplace` itself uses. A github-only
+implementation would strand the majority case.
+
+`claude plugin marketplace add` takes *"a URL, path, or GitHub repo"* (measured from its `--help`), so one
+recorded string serves all three:
+
+| `source.source` | field to persist | what `add` receives |
+|---|---|---|
+| `github` | `repo` | `ckir/flauimcp` |
+| `git` | `url` | the clone URL |
+| `directory` | `path` | the local path |
+
+⚠ **A kind this code does not recognise is recorded as ABSENT, never guessed** — and the set is now three,
+not one. An unrecognised kind is a dead end, so the plan owns logging which kind was seen, otherwise the
+next unsupported kind is invisible.
 
 ### Behaviour contract
 
@@ -207,6 +221,40 @@ more than the code delivered, and a two-layer restore makes that easier to repea
 3. A partial restore — marketplace re-added but reinstall failed — reports as a FAILURE with the remaining
    commands, never as a success. Today's failure paths already print the exact command; the new steps
    follow that convention.
+
+### Two constraints on the restore sequence
+
+⚠⚠ **"PRESENT BY ALIAS" IS NOT "IS THE THING WE RECORDED", AND CONFLATING THEM COULD INSTALL SOMETHING THE
+USER DID NOT ASK FOR.** Panel round 2 (Cascade Analyst). The re-add step is skipped when a marketplace of
+that NAME exists — but a name is a local alias the user controls. If they removed `flaui-mcp` and added a
+different source under the same alias, restore would skip the re-add and then run
+`claude plugin install flaui-mcp@flaui-mcp`, silently installing **whatever now sits behind that name.**
+
+**Compare the recorded `source` against the live one before skipping.** `known_marketplaces.json` exposes
+the live source, so this is a read, not a guess:
+
+- alias absent → re-add from the recorded source.
+- alias present, source MATCHES → skip the re-add, proceed.
+- alias present, source DIFFERS → **do not install, and do not overwrite the user's marketplace.** Report
+  it: name the alias, both sources, and stop. The user's own configuration outranks our restore.
+
+⚠ Same principle as "never guess a source", one level up: the feature restores what it recorded, or it
+says plainly that it could not.
+
+⚠⚠ **BOUNDED, NOT BLOCKING.** Panel round 2 (Resource Vampire): `marketplace add` performs a `git clone` —
+over SSH for a `github` source — and this now runs inside `uninstall`, which the Windows uninstaller
+invokes (`installer/flaui-mcp.iss:44,46`). A hung clone would freeze the uninstall with the user unable to
+proceed.
+
+`ProcessRunner` already carries a `TimedOut` sentinel that the collision code handles
+(`ClaudeCollisionRemedy.cs:87`), so the requirement is to **use it**: every new CLI call goes through the
+same bounded runner, and a timeout degrades to the same "here is the command to run yourself" recourse as
+any other failure. **A restore that cannot finish must never trap the user in an uninstall.**
+
+⚠ Panel round 2 also asked whether any halfway failure leaves the user WORSE off than the current defect.
+Traced: re-add fails → same as today; reinstall fails → better (marketplace is back); enable fails →
+better still (plugin is installed, one command from working). **No partial state is worse than the defect
+being fixed**, which is what makes the sequence safe to attempt at all.
 
 ### Acceptance
 
@@ -371,3 +419,27 @@ DROPPED — no concurrency/caching, no trust boundary, no iteration or quota, no
 
 **PANEL VERDICT — round 1: NEGOTIATE-then-fold. Eight findings folded, three refuted by measurement. One
 (the lossy v1 merge) would have shipped silent data loss.**
+
+---
+
+## Panel ledger — round 2 (folded; do NOT re-raise)
+
+Rotation seats: **State Corruptor** (the spec now defines a persisted record two builds mutate),
+**Boundary Smuggler** (a third-party JSON value is fed to a CLI), **Resource Vampire** (restore performs up
+to three network/CLI operations) — plus the two core seats. Four open questions.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 12 | **`version: 1` is impossible: v0.20.0 has ALREADY SHIPPED with the lossy writer and cannot be patched, so it will strip `marketplace` whatever the new code does** | **FOLDED — this REFUTES my own round-1 fold.** CONFIRMED: `git cat-file -e v0.20.0:…/CollisionMarker.cs` succeeds. Marker goes to **version 2**; the operator chose the visible, recoverable failure over the silent, permanent one |
+| 13 | Only `github` sources were handled | **FOLDED.** MEASURED on the operator's machine: **5 `directory`, 4 `github`, 1 `git`** — `github` is the MINORITY, and `directory` is what our own marketplace uses. All three kinds now specified |
+| 14 | "Present by alias" is not "is what we recorded" — a re-pointed alias would install something else | FOLDED: compare recorded source against live before skipping the re-add; on mismatch, report and stop |
+| 15 | `marketplace add` does a `git clone` inside `uninstall`, which the Windows uninstaller invokes — a hang traps the user | FOLDED: every new CLI call goes through the existing bounded `ProcessRunner`, timeout degrades to manual recourse |
+| 16 | Q1: does any halfway failure leave the user worse off than the current defect? | Answered NO, and traced into the spec — that is what makes the sequence safe to attempt |
+| 17 | **Q4 (least-evidenced assumption): "there is no legacy id to lose" only proves the MARKETPLACE NAME never changed, not that a pre-marketplace installer never registered the plugin some other way** | **ACCEPTED AS A REAL GAP.** `git log -S` covers `MarketplaceName`'s value, not the registration MECHANISM. The plan owns checking whether any released version registered by a different mechanism, before fix (a) lands |
+| 18 | Boundary Smuggler: the recorded `source` is untrusted input fed to a CLI | **PARTIALLY REFUTED.** `ProcessRunner.cs:29-43` uses `UseShellExecute = false` + `ArgumentList`, so each argument is a separate argv entry — there is no shell to inject commands into, and a crafted string arrives as ONE literal argument. Argument-position abuse is not possible either, since our args are fixed and only the source value varies. Kept in mind, not folded as a defect |
+| 19 | State Corruptor: `Record()`'s read-modify-write has no cross-process lock, so two concurrent installs lose an update | **REAL BUT OUT OF SCOPE, recorded rather than absorbed.** CONFIRMED: no `Mutex`/lock at `CollisionMarker.cs:62-91`, and `WriteAtomically` only prevents a TORN file, not a lost update. Pre-existing, unchanged by this spec, and requires two simultaneous installs. **Filing it as a tracked item is the plan's first task** — this project does not defer a verified defect merely for being pre-existing, but it also does not silently widen a subproject |
+| 20 | Q3: do fixes (a) and (b) interact? Fix (a) means the copy is never evicted, so (b) never runs in the primary scenario | **CORRECT, and it is the DESIGN.** (b) is defence-in-depth for evictions we have not foreseen. It also confirms round 1's finding 3: the smoke MUST force (b)'s precondition, or (b) ships unexercised |
+
+**PANEL VERDICT — round 2: NEGOTIATE-then-fold. Six findings folded including one that refuted a round-1
+fold; one accepted as a real gap for the plan; two adjudicated (one partially refuted, one filed as
+out-of-scope).**
