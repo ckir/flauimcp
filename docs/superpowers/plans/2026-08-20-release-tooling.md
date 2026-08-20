@@ -218,18 +218,23 @@ Create `Directory.Build.props` at the repository root:
 <Project>
 
   <!-- ROADMAP item 12. `dotnet build` is INCREMENTAL and does not re-report warnings for projects it
-       considers up to date: MEASURED during SP4, it printed `0 Warning(s)` on a tree where
-       `--no-incremental` printed 2. So a warning introduced by one commit was invisible to every later
+       considers up to date: MEASURED during SP4, it printed `0 Warning(s)` on a tree where a
+       no-incremental build printed 2. So a warning introduced by one commit was invisible to every later
        build gate, and SP4's own MaskEscalation.cs shipped two CS8629 warnings through a gate that
        reported clean.
 
        Making a warning an ERROR fixes that mechanically rather than by discipline: MSBuild never marks a
        FAILED project up to date, so the next incremental build recompiles it and reports it again. The
-       gate enforces itself without `--no-incremental` anywhere.
+       gate enforces itself without a no-incremental build anywhere.
 
        This applies to all FOUR projects in FlaUI.Mcp.slnx (Core, Server, TestApp, Tests) — MSBuild walks
        up from each project directory to the first Directory.Build.props it finds. Verified safe to
-       enable: a clean `--no-incremental` build of this tree is 0 Warning(s) / 0 Error(s).
+       enable: a clean no-incremental build of this tree is 0 Warning(s) / 0 Error(s).
+
+       The no-incremental flag is deliberately written WITHOUT its two leading dashes throughout this
+       comment. XML forbids a literal double-dash anywhere inside a comment body, so spelling the flag out
+       makes this file unparseable and every project fails with MSB4024 before a single line of C# is
+       compiled. MEASURED 2026-08-20, all four projects. Do not "fix" the dashes back in.
 
        If a legitimate warning ever needs silencing, add a targeted <NoWarn> for that specific ID with a
        written reason. Do NOT set TreatWarningsAsErrors=false in a .csproj or a nested
