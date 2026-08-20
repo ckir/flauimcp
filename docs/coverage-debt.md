@@ -239,3 +239,35 @@ commit.
 for a real top-level window, and `ValueOrDefault` returns 0 only for a genuinely unsupported property.
 ⚠ **Honest limit:** unlike AB-9 there is no wire signal for this one. A capture of such a window is missing
 its desktop-level popups and says nothing about it.
+
+### AB-14 — a popup with unreadable bounds can now REFUSE the whole capture  *(SP4 capstone rounds 6-7)*
+**Behaviour:** round 6 stopped `PopupFinder` dropping a popup whose `BoundingRectangle` THREW, so such a
+popup now reaches the search roots. If one of its descendants is redact-worthy and also cannot report
+bounds, the ancestor climb reaches the popup root, whose rect read throws again, no ancestor resolves, and
+`MaskEscalation` REFUSES — aborting the entire screenshot.
+**Why this is the intended trade, not a defect:** the alternative is exactly the leak round 6 closed. Before
+it, that popup was dropped during DISCOVERY and its pixels were photographed in the clear while the capture
+SUCCEEDED — A1's own defect class, on A1's own case, since A1 exists to catch a throwing
+`BoundingRectangle` and escalate, and it cannot escalate over an element it was never given.
+**Why it is recorded anyway:** it is a real availability change. A broken popup used to be isolated to
+itself (decision D3 / AB-11) and can now fail the window's whole capture. That is the fail-CLOSED direction
+and consistent with A1, but it is a change, and "screenshots of this window started failing when a menu is
+open" would otherwise be unexplainable.
+**Compensation + anchor:** the refusal is loud and classified — `RedactionUnmaskable` with the offending
+element's automationId and controlType, never its Name. An operator can act on it.
+⚠ **Honest limit:** unpinned. Staging a popup whose bounds throw on demand is the AB-1 limitation.
+
+### AB-15 — a search ROOT is never itself classified  *(SP4 capstone round 7, pre-existing)*
+**Behaviour:** the mask walk enumerates each root with `roots[rootIndex].FindAllDescendants()`, and UIA's
+`TreeScope.Descendants` EXCLUDES the element itself. So a root that is itself redact-worthy is never
+classified and never masked.
+**Reachability, stated honestly rather than dismissed:** for `roots[0]` — the window — it is moot: masking
+the whole window blacks out the capture, which `MaskEscalation.BlacksOutTheCapture` refuses anyway. For a
+POPUP root it is real but narrow: the popup HOST element would have to match a redaction rule by name or
+automationId, and its host chrome would leak while all of its CONTENT is still masked normally.
+**Why not fixed here:** classifying each root as well as its descendants changes the walk's shape for every
+root including the window, and the window case would produce refusals where captures currently succeed.
+That is a behaviour change wanting its own increment, not a capstone tail-end edit — especially on a file
+already rewritten three times this branch.
+**Compensation + anchor:** none. Pre-existing; the original SP3 code had the same `rootEl.FindAllDescendants()`.
+⚠ **Honest limit:** a rule that targets a popup host by name does not mask that host.
