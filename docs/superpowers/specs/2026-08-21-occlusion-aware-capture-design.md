@@ -147,9 +147,17 @@ absolute  = effective offset back by the window origin
 Encode(src, absolute, masks, maxWidth)     // src.Size == absolute.Size, by construction
 ```
 
-`CaptureResult`'s `X/Y/W/H` then honestly describe the region actually captured, which is what a caller
-needs when a resize truncated it. *(Panel round 3, Fold Auditor — a defect introduced by round 2's own
-fix.)*
+`CaptureResult`'s `X/Y/W/H` then describe the region actually captured rather than the region that was
+requested. *(Panel round 3, Fold Auditor — a defect introduced by round 2's own fix.)*
+
+⚠ **Why absolute coordinates are load-bearing here, since it is NOT that the caller clicks them.**
+`Encode`'s mask arithmetic is absolute (`clip.X - captureBounds.X`) and the masks arrive as absolute
+screen rects, so the rectangle handed to `Encode` must be absolute or every mask is wrong. That is the
+requirement. The reported `bounds` must then match it because a `bounds` that describes a region the
+pixels are not is simply a false statement in the response. **Neither reason is "so the caller can map
+image coordinates back to the screen" — §5 explains why the caller must not do that at all under this
+backend.** *(Panel round 5, Contradiction Hunter: §1 previously justified this math by a caller need that
+§5 forbids. The math stays; the justification was wrong.)*
 
 ⚠ **`effective` can be EMPTY, and that case needs a defined outcome — not a crash.** If the window shrinks
 enough between the UIA read and the capture, a stale element rect can fall entirely outside the new
@@ -167,8 +175,27 @@ same. (Measured: fully disjoint rects do give `IsEmpty=true` at `0,0` — which 
 **The outcome on empty is a defined refusal, not a degraded image.** The named element is not in the
 pixels that were captured, so there is nothing honest to return. A `1x1` placeholder or a silently
 substituted window capture would both be graceful-looking wrong answers, which this project rejects on
-principle. Refuse with a retry hint naming the cause — the window changed size mid-capture.
+principle. Refuse with a retry hint naming the cause.
 *(Panel round 4, Fold Auditor — a defect introduced by round 3's own fix.)*
+
+⚠⚠ **THE CLAMP PREVENTS A CRASH. IT DOES NOT DETECT A RESIZE — and must not be read as though it did.**
+The empty case fires only when a stale element rect falls ENTIRELY outside the new bitmap. The far more
+likely resize leaves the stale rect comfortably in bounds while the window's internal layout has moved
+underneath it: the crop then extracts the wrong pixels, the masks land on them consistently, and the
+result is a flawless-looking PNG of the wrong region, returned as success. That is the worst outcome in
+this whole design — a wrong answer that reads as right. *(Panel round 5, Fold Auditor — a gap in round
+4's own fix, the fifth consecutive round in which this has happened.)*
+
+**But this backend makes the resize DETECTABLE, which the scrape did not.** §2 calls the moving-window
+race inherent, and for MOVEMENT it is. A SIZE change is different: the plan already calls `GetWindowRect`
+to size the bitmap, so it holds a second, later observation of the same window. Comparing it against the
+window rect implied by the UIA walk is free, and any difference is positive evidence that the window
+changed shape between the two reads — at which point the element's stale rect is untrustworthy whether or
+not it happens to be in bounds.
+
+The plan owns what to DO with that signal — refuse, or capture and flag — but it does not get to leave
+the signal unread. Note the asymmetry that makes this worth doing: detecting a size change is cheap and
+certain, whereas detecting a pure move or an internal relayout is neither.
 
 ⚠ **The window rect is not currently available at that site.** `CaptureGeometry`
 (`PerceptionManager.cs:1275`) carries `Bounds` — which for element scope IS the element rect — and no
@@ -386,6 +413,15 @@ focus-first"), and that comment's closing promise — "Headless/disconnected ses
 capture so we never hand back a black frame" — is exactly what stops being guaranteed. Both are in the
 plan's edit list. *(Panel round 1, LI-3.)*
 
+⚠ **The tool description's metadata ENUMERATION must be extended too — this is the third required edit to
+that same string, and it is repeated here deliberately.** `ScreenshotTools.cs:17` lists the contract
+explicitly as `{bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses}`. A
+field present in the payload but missing from that list is one the model has no reason to read. The
+requirement is argued in §3, where it belongs alongside the diagnostic's rationale — but an engineer
+working through the contract changes will be reading THIS section, not the failure policy, so the
+obligation is recorded in both. *(Panel round 5, Disposition Challenger: a correct fold placed where the
+person who has to act on it would not look.)*
+
 ## Out of scope
 
 - **Full-desktop scope.** Keeps the scrape.
@@ -485,6 +521,13 @@ for each failure, or NONE — not whether the area was "covered".)*
    happen". **A negative therefore licenses shipping with the risk documented and unmitigated; it does
    not license deleting this risk entry.** Anyone reading a clean probe as proof of safety has drawn the
    one conclusion the experiment cannot support. *(Panel round 4, Privacy Auditor.)*
+
+   ⚠ **And "ship with it documented" is the OPERATOR's call, not the plan's.** This is an unmitigated
+   privacy risk being accepted on the strength of a test that cannot return a refutation. The plan runs
+   the probe and reports; it does not get to authorise the acceptance on a negative. *(Panel round 5 —
+   the peer filed this below its own severity floor as "a policy decision rather than a mechanical
+   defect". In this project an unratified privacy acceptance is above the floor, and the below-floor list
+   has now yielded a real item in several reviews.)*
 4. **`Capture.Rectangle` also handles the DC lifecycle** that the new path must own: `CreateCompatibleDC`,
    `CreateCompatibleBitmap`, `SelectObject`, and their release. A leak here runs inside a long-lived
    server. The plan owns the exact ownership pattern.
@@ -624,3 +667,27 @@ GREEN.** Three folds:
 The Evidence Auditor's census returned five of six rows solid with specific claim-to-evidence links, and
 flagged exactly one. A census produces a checkable answer where "does the evidence hold?" would have
 produced an adjective.
+
+### AGY-AFTER adversarial panel — round 5
+
+Seats: Fold Auditor (round 4's edits, traced on concrete numbers), Contradiction Hunter (pairs of
+statements in DISTANT sections that cannot both be true — the failure mode of a document accreted over
+five rounds), Disposition Challenger second pass (aimed at the STRENGTH and PLACEMENT of rounds 2-4's
+folds rather than their truth). Report: `.clavity/scratch/item8-panel/agy-round5.md`. **Verdict: NOT
+GREEN.** Four folds:
+
+- **The empty-intersection guard was reading as resize-handling when it only prevents a crash** — fifth
+  consecutive round in which the previous round's fix carried a gap. The common resize leaves the stale
+  rect in bounds and silently crops the wrong pixels. Folded with a stronger remedy than was proposed:
+  under this backend a size change is DETECTABLE for free, because the plan already calls `GetWindowRect`
+  to size the bitmap and can compare it against the rect the UIA walk implied.
+- **§1 justified its coordinate math by a caller need §5 forbids.** The math is right; the reason was
+  wrong. Restated on the two reasons that actually hold — `Encode`'s arithmetic is absolute, and a
+  `bounds` that does not match the pixels is a false statement.
+- **A correct fold sat where nobody would act on it** — the tool-description enumeration requirement was
+  argued in the failure-policy section, while the engineer changing the contract reads §5. Recorded in
+  both.
+- **An item the peer filed BELOW its own floor was above this project's** — accepting an unmitigated
+  privacy risk on a test that cannot refute is the operator's ratification, not the plan's. The
+  below-floor list has now produced a real finding in several reviews across this project; it is worth
+  reading first, not last.
