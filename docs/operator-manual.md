@@ -128,7 +128,7 @@ Use `--config <path>` with any command to override the target config file. Use `
 | Variable | What it does | Default |
 |---|---|---|
 | `FLAUI_MCP_DATA_DIR` | Overrides the root directory for generic configs and presence states. | `%USERPROFILE%\.flaui-mcp` |
-| `FLAUI_MCP_STATE_DIR` | Overrides the location for state files (e.g. uninstall warnings). | `%LOCALAPPDATA%\FlaUI.Mcp\state` |
+| `FLAUI_MCP_STATE_DIR` | Overrides the location for state files: uninstall warnings, and the [restore record](#conflicting-plugins-and-the-restore-record) for any plugin the installer disabled. | `%LOCALAPPDATA%\FlaUI.Mcp\state` |
 | `FLAUI_MCP_STAGING_DIR` | Overrides the staging dir the installer generates the unified plugin into (server config + skill), which is then registered with both agents. | `{app}\plugin` |
 | `FLAUI_MCP_AGY_PLUGINS_DIR` | agy's managed plugins dir. `status` reads it to report the deployed seed skill, and install/uninstall use it to sweep the retired hand-written agy config. Not the install *target* — `agy plugin install` chooses that itself. | `%USERPROFILE%\.gemini\config\plugins` |
 | `FLAUI_MCP_CLAUDE_CONFIG_DIR` | Overrides the path for Claude Code's config/skills directory. | `%USERPROFILE%\.claude` |
@@ -278,9 +278,40 @@ absolute path. Everything else is extracted byte-for-byte from resources embedde
 
 | Target | Change |
 |---|---|
-| **Claude Code** | Registers via `claude plugin marketplace add`/`plugin install`; Claude copies the staging dir into its own versioned plugin cache. Sweeps the retired `claude mcp` server + legacy `~/.claude/skills/flaui-mcp/` dir. Disables conflicting old marketplace plugins. |
+| **Claude Code** | Registers via `claude plugin marketplace add`/`plugin install`; Claude copies the staging dir into its own versioned plugin cache. Sweeps the retired `claude mcp` server + legacy `~/.claude/skills/flaui-mcp/` dir. Disables conflicting marketplace copies and records them — see [Conflicting plugins](#conflicting-plugins-and-the-restore-record). |
 | **Antigravity (agy)** | Registers via `agy plugin install "<staging-dir>"`, which agy copies into its own managed plugins dir. Sweeps the retired hand-written agy config. |
 | **Generic MCP** | Writes the command snippet to `~/.flaui-mcp/generic-mcp.json`. |
+
+## Conflicting plugins and the restore record
+
+If you already installed `flaui-mcp` from your own marketplace, both copies ship a skill named
+`driving-flaui-mcp` and the collision is silent. The installer **disables** your copy — never uninstalls
+it — and records what it disabled at:
+
+```
+%LOCALAPPDATA%\FlaUI.Mcp\state\disabled-plugins.json
+```
+
+(the state dir, overridable with `FLAUI_MCP_STATE_DIR`.) That location is deliberate: it sits outside both
+`{app}` and the data dir, so neither the uninstaller nor `--purge-data` destroys the record before it can
+be used. It holds each entry's id, scope, project path, and the marketplace it came from.
+
+Uninstall consumes the record and puts your copy back:
+
+| Situation | What uninstall does |
+|---|---|
+| Copy still installed | Re-enables it at its own scope |
+| Copy was removed by something else | Re-adds its marketplace, reinstalls it, then re-enables |
+| That marketplace alias now points elsewhere | **Refuses**, and names both sources. An alias is a local name you control — installing blind would deliver software you did not ask for |
+| No marketplace was recorded for it | Says so, and prints the exact command to put it back yourself |
+
+The record is deleted once consumed, so a later uninstall cannot re-enable something you have since
+disabled deliberately.
+
+⚠ **Downgrading.** The record is schema `version: 2`. A **older** flaui-mcp cannot read it: it leaves the
+file untouched, says so, and names every plugin still disabled plus the `claude plugin enable` command for
+each. Running the newer build again fixes it completely. Nothing is lost — but the older build will not
+restore for you.
 
 ## Uninstall
 
@@ -292,7 +323,7 @@ agy plugin uninstall flaui-mcp
 The shared staging dir is deleted only on a full `--agent all` uninstall, and only if both agents deregistered cleanly. On failure it's left in place and the uninstaller warns. Unrelated settings are untouched.
 
 ### Windows Settings
-Uninstall "FlaUI.Mcp" from **Settings → Apps**. The uninstaller deregisters every agent via its CLI, re-enables any disabled plugins, and deletes the binaries.
+Uninstall "FlaUI.Mcp" from **Settings → Apps**. The uninstaller deregisters every agent via its CLI, restores any plugin it disabled (see [Conflicting plugins](#conflicting-plugins-and-the-restore-record)), and deletes the binaries.
 
 ### Manual uninstall
 Run the CLI uninstaller, then delete the executable:
