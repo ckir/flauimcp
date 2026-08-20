@@ -138,8 +138,10 @@ drafts left here to follow by mistake.
 The `PrintWindow` bitmap is a standalone image whose `(0,0)` corresponds to `W2`'s top-left — which is
 `GetWindowRect.left/top`, and by F6 the window's own UIA origin.
 
-**The algorithm — ELEMENT SCOPE ONLY.** Window scope needs none of it: `captureBounds` is the window
-rect, the bitmap is the window, and `src.Size == captureBounds.Size` holds without a crop.
+**The algorithm — ELEMENT SCOPE.** Window scope needs no CROP, but it does need the same reconciliation;
+see "window scope" immediately after the block. Saying window scope "needs none of it" would leave it
+handing `Encode` a `W1`-sized `captureBounds` alongside a `W2`-sized bitmap the moment a resize occurs,
+which is the invariant violation this whole subsection exists to prevent.
 
 ```
 relative  = E offset by W1.Location          // (E.X - W1.X, E.Y - W1.Y, E.Width, E.Height)
@@ -150,10 +152,36 @@ absolute  = effective offset back by W1.Location
 Encode(src, absolute, masks, maxWidth)       // src.Size == absolute.Size, by construction
 ```
 
-⚠ **A DEGENERATE WINDOW is a separate case that precedes all of this, and applies to BOTH scopes.** If
-`W2` has zero or negative extents there is no bitmap to allocate — `PrintWindow` has nothing to render
-into — so the capture cannot proceed on either scope. Guard it where the bitmap is created, before the
-crop, and refuse.
+**Window scope, stated explicitly so it is not left to inference:**
+
+- `absolute = W1` whenever `W1.Size == W2.Size`. Not `W2` — for the same reason element scope uses `W1`:
+  the masks were sampled alongside `W1`, so translating against it makes a pure MOVE harmless. Sizes
+  match, so `src.Size == absolute.Size` holds and no crop is needed.
+- `W1.Size != W2.Size` is the resize case, decided below. There is no path on which window scope hands
+  `Encode` a rectangle whose size differs from the bitmap's.
+
+⚠ **A DEGENERATE WINDOW is a separate case, applies to BOTH scopes, and must be checked at TWO points.**
+
+- **On `W2`, where the bitmap is created.** Zero or negative extents mean there is nothing to allocate —
+  `PrintWindow` has nothing to render into — so the capture cannot proceed. Refuse.
+- ⚠ **On `W1`, at the GEOMETRY stage, BEFORE the yardstick is computed.** This one is a leak, not a
+  crash. §2 makes the yardstick the unclipped `captureBounds` under this backend; if `W1` is itself
+  degenerate then the yardstick is degenerate, and `PerceptionManager.cs:947`'s window-scoped branch
+  falls back to `yardstick = captureBounds` — still degenerate. Every mask is then judged against a rect
+  nothing intersects, the whole set is dropped, and the repo's own comment at `:942-946` names the
+  outcome: *"every mask dropped, capture returned unmasked. A guard producing a leak."* If the window
+  then returns to a valid size before capture, `W2` is fine, the `W2` guard passes, and an **unmasked
+  image is returned as a success**. Ordering is the whole defence: reject a degenerate `W1` before the
+  yardstick can turn it into an empty mask set. *(Panel round 9, Fold Auditor.)*
+
+⚠ **A MINIMIZED window is NOT caught by an extents check, and must be re-tested at capture time.** F6
+measured the placeholder rect Windows gives a minimized window: `-32000,-32000` with extents `160x28` —
+**positive**. `ScreenshotTools.cs:55` already refuses `geo.Minimized` before capture, but that test
+happens at geometry time; a window minimized in the interval passes the extents guard and yields a
+160x28 placeholder that is not the window's content at all. Re-check the minimized state where `W2` is
+taken, and refuse there too. *(Panel round 9, Adversary of the Reviewer — asked which fold was most
+likely wrong, it named round 8's degenerate guard and produced the repository's own F6 row as the
+counter-example. It was right.)*
 
 That refusal is **not** an exception to "window scope captures and warns on a resize" below. That rule
 governs a window that resized to a different VALID size, where the pixels are real and merely newer than
@@ -235,8 +263,21 @@ Movement and internal relayout without a size change remain undetectable and are
 **What a detected size change DOES, settled here rather than deferred** — because it is the tool's
 behavioural contract, not an implementation detail, and the two scopes need different answers:
 
-- **Window scope: capture and warn.** The bitmap is the window's own current content. A resize does not
-  make it wrong, only newer than expected. Refusing would block a capture that is perfectly good.
+- **Window scope: refuse if there are masks; capture and warn only if there are none.** An earlier
+  version of this spec said "capture and warn" unconditionally, on the grounds that the pixels are the
+  window's own current content and merely newer than expected. **That was wrong, and it was a leak.** The
+  mask rects were computed against the PRE-resize layout. After a resize the controls have moved, so the
+  masks no longer cover what they were sampled to cover, and the image comes back with sensitive regions
+  partly or wholly unredacted — the exact failure class SP4 existed to close, arriving through the door
+  this design opened. "Newer than expected" describes the pixels; it does not describe the masks.
+  So the rule follows the hazard:
+  - **mask set NON-EMPTY → REFUSE**, with a retry hint. There is no honest image to return.
+  - **mask set EMPTY → capture, and warn `windowResized`.** Nothing was going to be redacted, so no
+    misalignment is possible, and refusing would block a capture that really is fine.
+
+  *(Panel round 9, Fold Auditor. It reached this by a different route — that labelling the algorithm
+  element-scope-only left window scope with no reconciled `absolute` — and the invariant violation it
+  named is the mechanism by which the masks scramble.)*
 - **Element scope: REFUSE, with a retry hint.** The element's rect is from before the resize, so its
   offset within the window may no longer locate it. The crop can land on the wrong content and be masked
   consistently — the "flawless-looking PNG of the wrong region" this subsection exists to prevent. This
@@ -592,8 +633,16 @@ for each failure, or NONE — not whether the area was "covered".)*
    practice, so the feature's primary use case is also its worst failure case.
    **UNMEASURED — this is documented Win32 behaviour, not a probe result, and this spec's standard is
    measured-not-assumed.** The plan must stage a window that stops pumping (a fixture with a blocking
-   sleep on its UI thread), call `PrintWindow` against it, and time the call. If it blocks, the design
-   needs a bounded wait and a decision about what to return on timeout. *(Panel round 1, CA-1 + RV-2.)*
+   sleep on its UI thread), call `PrintWindow` against it, and time the call. *(Panel round 1, CA-1 +
+   RV-2.)*
+
+   ⚠ **The timeout CONTRACT is settled here, so only the bound is a measurement.** If the call can block,
+   the plan bounds it — and **on expiry the capture REFUSES**. It does not return a blank image, a
+   partial image, or a warning. A target that is not pumping has not rendered anything, so there is no
+   image to annotate; returning one would be a graceful-looking wrong answer, and §3's warn-rather-than-
+   refuse asymmetry does not apply because there are no pixels to weigh against a false refusal. The
+   measurement chooses the bound; it does not choose the behaviour. *(Panel round 9, Completeness Critic:
+   this was one of two items marked NEITHER — not specified, and not deferred with a criterion either.)*
 3. **Stale composition.** `PW_RENDERFULLCONTENT` may return the last frame DWM composed rather than
    forcing a fresh render. If the pixels are older than the UIA tree the masks were computed from, masks
    can miss data that IS in the image — a leak with a different shape from the ones above.
@@ -620,6 +669,13 @@ for each failure, or NONE — not whether the area was "covered".)*
 4. **`Capture.Rectangle` also handles the DC lifecycle** that the new path must own: `CreateCompatibleDC`,
    `CreateCompatibleBitmap`, `SelectObject`, and their release. A leak here runs inside a long-lived
    server. The plan owns the exact ownership pattern.
+
+   ⚠ **With a checkable acceptance criterion, not just an instruction to be careful:** GDI handle count
+   and user-object count for the server process must return to their starting values after a run of
+   repeated captures, including runs that hit each refusal path above (degenerate window, minimized
+   mid-capture, empty crop, timeout). Those are the paths where a handle leaks, because they exit early.
+   Measure with the process's handle counters before and after; flat is the pass condition.
+   *(Panel round 9, Completeness Critic: the second of two items marked NEITHER.)*
 5. **The uniform-colour detector's sampling** — full-bitmap versus a grid — is a cost/accuracy tradeoff
    the plan settles, with a measurement, not a guess.
 6. **`ScreenCapture.CaptureRectangle` has one other caller** (full-desktop, `ScreenshotTools.cs:49`). The
@@ -869,3 +925,39 @@ constraint goes missing.
 **Also settled this round:** Risk 8's claim that `PopupRootCoverageTests` pins `PopupFinder.SearchRoots`
 had been flagged as unverified in three consecutive rounds' "what did you not check" answers. Verified and
 annotated in place.
+
+### AGY-AFTER adversarial panel — round 9
+
+Seats: Fold Auditor (round 8's edits), **Completeness Critic** (enumerate everything an implementer must
+DECIDE OR BUILD and mark each SPECIFIED / DEFERRED-WITH-A-CRITERION / NEITHER — the third bucket is the
+finding), **Adversary of the Reviewer** (aimed at the DRIVER: which of eight rounds' folds is most likely
+WRONG). Report: `.clavity/scratch/item8-panel/agy-round9.md`. **Verdict: NOT GREEN, and this was the
+round that most justified continuing.** Four folds, one of them a design correction rather than polish:
+
+- **The window-scope resize policy was WRONG, and it was a leak.** Rounds 6-8 said window scope should
+  "capture and warn" on a detected resize because the pixels are merely newer than expected. True of the
+  pixels; false of the MASKS — they were sampled against the pre-resize layout, so after a resize they
+  no longer cover what they were computed to cover, and the image returns with sensitive regions
+  unredacted. Now: refuse if the mask set is non-empty, capture and warn only if it is empty.
+- **Round 8's "ELEMENT SCOPE ONLY" label created that hole's mechanism.** Exempting window scope from the
+  algorithm left it handing `Encode` a `W1`-sized `captureBounds` beside a `W2`-sized bitmap. Window
+  scope's reconciliation is now stated explicitly: `absolute = W1` when the sizes match, and the size
+  mismatch is the resize case above. Ninth consecutive round finding a defect in the previous fix.
+- **A degenerate `W1` is a LEAK, and ordering is the whole defence.** Verified against source: with the
+  yardstick unclipped under this backend, a degenerate `W1` produces a degenerate yardstick, and
+  `PerceptionManager.cs:947`'s window-scoped fallback keeps it degenerate — dropping the entire mask set,
+  which the repo's own comment at `:942-946` calls "a guard producing a leak". If the window then returns
+  to a valid size, the `W2` guard passes and an UNMASKED image is returned as a success. The degenerate
+  check must run on `W1` before the yardstick, not only on `W2` at the bitmap.
+- **Minimized is not degenerate.** Asked which fold was most likely wrong, the Adversary seat named round
+  8's degenerate guard and produced this spec's OWN F6 row as the counter-example: a minimized window is
+  `-32000,-32000` with extents `160x28` — positive, so an extents check never fires. A window minimized
+  after the geometry read yields a 160x28 placeholder. The minimized state is now re-tested at capture.
+- **Two items were deferred with no criterion at all** — neither specified nor measurable. The hung-target
+  timeout now has its CONTRACT settled here (refuse on expiry; only the bound is a measurement), and the
+  DC lifecycle now has a pass condition (handle counts flat across repeated captures, including every
+  early-exit refusal path).
+
+**The seat aimed at the reviewer's own judgement paid for itself.** Eight rounds of folds had been checked
+independently only once. Pointed at them and asked which was WRONG rather than whether they were fine, it
+found one that was — using evidence already in the document.
