@@ -420,4 +420,26 @@ public class ClaudeCollisionRestoreTests
         Assert.Contains("newer flaui-mcp", warning);                // still says WHAT happened
         Assert.True(File.Exists(CollisionMarker.PathIn(s)), "a future-version marker must be left in place");
     }
+
+    // ⚠ TWO DIFFERENT EMPTIES. A FutureVersion marker whose ENTRY SHAPE changed - a v3 that renames
+    // `id`, say - projects to an EMPTY list, because ParseEntries drops every entry it cannot read. The
+    // message must not then blame the user's deleted projects for what is really a schema we could not
+    // read. This is FutureVersion-only: the Present path returns early when recorded.Count == 0, so an
+    // empty INPUT list can reach ManualEnableRecourse from nowhere else.
+    [Fact]
+    public void A_future_version_marker_with_unreadable_entries_does_not_blame_missing_projects()
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+            { "version": 3,
+              "disabled": [ { "pluginId": "flaui-mcp@flaui-mcp", "installScope": "user" } ] }
+            """);
+
+        var warning = new ClaudeCollisionRemedy(new FakeCli().Run, s, _ => true).Restore();
+
+        Assert.NotNull(warning);
+        Assert.Contains("newer flaui-mcp", warning!);                  // still says WHAT happened
+        Assert.DoesNotContain("no longer exist", warning);             // NOT the user's disk's fault
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)), "a future-version marker must be left in place");
+    }
 }

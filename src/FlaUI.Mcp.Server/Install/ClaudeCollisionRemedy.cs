@@ -443,6 +443,19 @@ public sealed class ClaudeCollisionRemedy
     /// inventory-unreadable path so the two recourses can never drift.</summary>
     private string ManualEnableRecourse(IReadOnlyList<DisabledEntry> entries)
     {
+        // ⚠ TWO DIFFERENT EMPTIES, and conflating them makes the tool blame the USER for its own limit.
+        // An empty INPUT means we could not read any entries at all — a newer marker whose entry shape
+        // this build does not understand, which ParseEntries drops one by one. An empty RECOVERABLE set
+        // means we DID read entries and every one of their projects is gone. Only the second is the
+        // user's disk. Saying "the recorded projects no longer exist" for the first is a confident lie
+        // about a directory we never even had a path for.
+        //
+        // Reachable ONLY from the FutureVersion branch: the Present path returns early when
+        // recorded.Count == 0, so no other caller can pass an empty list here.
+        if (entries.Count == 0)
+            return "We could not read any entries from that record, so there is nothing to list here — " +
+                   "run `claude plugin list` and re-enable whatever is still disabled.";
+
         var recoverable = entries.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
         if (recoverable.Count == 0) return "No manual action is possible (the recorded projects no longer exist).";
         return "To re-enable manually: " + string.Join("; ", recoverable.Select(e =>
