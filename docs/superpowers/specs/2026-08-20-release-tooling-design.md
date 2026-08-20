@@ -167,6 +167,24 @@ record it does not understand, rather than half-acting on it. Bumping to 2 uses 
 marker written by this one.** It will say so plainly rather than failing silently, and running the newer
 build again fixes it completely.
 
+⚠⚠ **THE `FutureVersion` MESSAGE IS NOW LOAD-BEARING AND MUST BE REWRITTEN — THE v2 DECISION IS WHAT MAKES
+IT SO.** Panel round 3 (Blindspot Auditor / open question 1). Today it reads, at
+`ClaudeCollisionRemedy.cs:156-158`:
+
+> *"the restore record at `<path>` was written by a newer flaui-mcp; it was left in place and not acted on."*
+
+Before this change that message was nearly unreachable. After it, **any user who downgrades hits it during
+UNINSTALL** — the worst possible moment, because they have just removed the tool, their plugin is still
+disabled, and the message tells them nothing they can act on. It explains what happened and not what to do.
+
+It must name the recourse: the plugin id(s) still disabled, the `claude plugin enable <id> --scope <scope>`
+command for each, and that reinstalling the newer flaui-mcp and uninstalling again would also do it. The
+data for this is already in hand — the entries were read before the version check rejected them.
+
+⚠ **A message the user cannot act on is the same failure class as the warning that started this whole
+defect** — the tool describing its own state instead of the user's problem. This one is a real behaviour
+requirement, not documentation polish.
+
 ### Marketplace sources — all three kinds, not just `github`
 
 Panel round 2 (open question 2) found the spec handled only `github`. MEASURED on the operator's own
@@ -251,6 +269,31 @@ proceed.
 same bounded runner, and a timeout degrades to the same "here is the command to run yourself" recourse as
 any other failure. **A restore that cannot finish must never trap the user in an uninstall.**
 
+⚠⚠ **NOTHING THE RESTORE DOES MAY ABORT AN UNINSTALL. THIS IS THE HARDEST CONSTRAINT IN THE SPEC.**
+Panel round 3 (Cascade Analyst). The new steps read and parse a THIRD-PARTY file
+(`known_marketplaces.json`) inside `uninstall` — and `installer/flaui-mcp.iss:44-47` runs that with
+`Flags: runhidden waituntilterminated`. A malformed, locked, or ACL-blocked file that throws an unhandled
+`JsonException` would fail the uninstall and **trap the user with software they cannot remove.**
+
+The codebase already knows this hazard and states it at `CliRouter.cs:577`:
+*"best-effort: the warning channel itself must never throw and abort uninstall"*. The requirement is to
+extend that same discipline to every new read:
+
+- Reading or parsing `known_marketplaces.json` **cannot throw** — a failure means "live source unknown",
+  which is treated exactly like an unrecognised kind: skip the reinstall, report, continue.
+- **No new code on the uninstall path may propagate an exception.** A restore that cannot run is a warning;
+  it is never a failed uninstall.
+- The plan owns a test that puts DELIBERATELY MALFORMED JSON at that path and asserts `uninstall` still
+  exits 0.
+
+⚠ **Comparing a `directory` source is a PATH comparison, and naive string equality gets it wrong.**
+Panel round 3 (open question 2). `C:\path` vs `c:\path`, `\` vs `/`, a trailing separator, or a relative
+vs absolute form all denote the same location while comparing unequal — and an unequal compare triggers the
+"source DIFFERS" branch, which **aborts a restore that should have proceeded.** `CollisionMarker.cs:45-49`
+already faces exactly this problem for `projectPath` and solves it with a case-insensitive, normalised
+comparison; `SameEntry` is the precedent to follow. `github` and `git` sources compare ordinally — only
+`directory` needs path normalisation.
+
 ⚠ Panel round 2 also asked whether any halfway failure leaves the user WORSE off than the current defect.
 Traced: re-add fails → same as today; reinstall fails → better (marketplace is back); enable fails →
 better still (plugin is installed, one command from working). **No partial state is worse than the defect
@@ -325,9 +368,20 @@ is an existing precedent — a test that walks the source tree and enforces an i
 one asserting **no `.csproj` in the repo overrides `TreatWarningsAsErrors`**. It is a few lines, it runs
 headless in CI, and it converts a convention into something that fails loudly.
 
-⚠ The sweep must permit the props file itself to SET the property while forbidding a project from
-overriding it — assert on `.csproj` files specifically, not on every file that mentions the string, or the
-test fails on `Directory.Build.props` and on this spec.
+⚠⚠ **THE SWEEP MUST COVER NESTED `Directory.Build.props`, NOT JUST `.csproj` — MEASURED.** Panel round 3
+(Mechanism Gamer) claimed a nested props file bypasses a `.csproj`-only sweep, and a live test CONFIRMS it:
+a root props setting `true` plus `sub/Directory.Build.props` setting `false` produced
+`1 Warning(s) / 0 Error(s)` and **Build succeeded** — the warning stayed a warning. MSBuild honours the
+NEAREST props file, so the obvious sweep would have been trivially bypassable.
+
+The sweep therefore asserts: **no `.csproj` AND no `Directory.Build.props` other than the repository root
+one sets `TreatWarningsAsErrors`.** Scope it to build files by name rather than to any file containing the
+string, or it fails on the root props file and on this spec.
+
+⚠ Honest limit, stated so nobody mistakes the sweep for a proof: `Directory.Build.targets`, an
+`<Import>`, a `.props` included by another name, or `-p:TreatWarningsAsErrors=false` on the command line
+all still bypass it. The sweep raises the cost of an accidental or lazy override; it does not make the
+gate tamper-proof, and it is not worth pretending otherwise.
 
 **On test-project warnings** — panel round 1 asked whether `TreatWarningsAsErrors` is wrong for the test
 project, citing `CS0618` (deliberate `[Obsolete]` use) and `CS1591` (missing XML docs). MEASURED, both are
@@ -443,3 +497,26 @@ to three network/CLI operations) — plus the two core seats. Four open question
 **PANEL VERDICT — round 2: NEGOTIATE-then-fold. Six findings folded including one that refuted a round-1
 fold; one accepted as a real gap for the plan; two adjudicated (one partially refuted, one filed as
 out-of-scope).**
+
+---
+
+## Panel ledger — round 3 (folded; do NOT re-raise)
+
+Rotation seats: **Blindspot Auditor** (a human must now diagnose a `FutureVersion` warning mid-uninstall),
+**Dependency Cynic** (the spec now depends on three CLI behaviours and a third-party JSON schema) — plus
+Axiom Breaker, Cascade Analyst, Mechanism Gamer. Four open questions.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 21 | **Nothing the restore does may abort an uninstall** — it now reads/parses a third-party JSON file inside `uninstall`, which Inno runs with `waituntilterminated` (`flaui-mcp.iss:44-47`). Malformed or locked JSON would throw and trap the user with un-removable software | **FOLDED — the most severe of the round.** The codebase already states this discipline at `CliRouter.cs:577`; the spec now extends it to every new read, with a malformed-JSON test asserting `uninstall` still exits 0 |
+| 22 | Comparing a `directory` source by string equality gets it WRONG — casing, separators, trailing slash, relative-vs-absolute all denote the same path unequally, and an unequal compare ABORTS a restore that should proceed | **FOLDED.** `CollisionMarker.cs:45-49` already solves this for `projectPath`; `SameEntry` is the precedent. Only `directory` needs normalisation |
+| 23 | **A nested `Directory.Build.props` bypasses a `.csproj`-only sweep** | **FOLDED — CONFIRMED BY MEASUREMENT.** A live test (root `true` + `sub/Directory.Build.props` `false`) produced `1 Warning(s) / 0 Error(s)`, **Build succeeded**. The sweep now covers nested props files, with its residual bypasses stated honestly rather than oversold |
+| 24 | The `FutureVersion` message explains what happened but not what to DO — and the v2 decision makes it reachable during UNINSTALL, the worst moment | **FOLDED.** It is now a behaviour requirement: name the disabled ids and the exact `enable` command. Same failure class as the warning that started this defect |
+| 25 | Q4 (weakest section): the v2 writer still hardcodes fields into `DisabledEntry`, so a future v3 field would be stripped the same way — the structural flaw is deferred, not fixed | **ACCEPTED AS A KNOWN LIMIT, not folded as a change.** Correct diagnosis. Making the marker generically forward-compatible is a larger refactor than this subproject warrants, and the v2 bump plus the `FutureVersion` guard means a v3 marker is REFUSED by a v2 build rather than silently stripped — the failure mode is already the safe one. Recorded here so v3 does not rediscover it |
+| 26 | Blindspot: the unrecognised-kind diagnostic is logged at INSTALL time but the failure surfaces at UNINSTALL, weeks later | **FOLDED IMPLICITLY by finding 24's requirement** — the restore message must name what it could not restore and why, at the moment it fails. The `kind` recorded in the marker is what makes that possible |
+| 27 | Dependency Cynic: `known_marketplaces.json` is an undocumented internal format that upstream may change | **ACCEPTED, already covered.** The spec's testing section states the gate depends on third-party CLI behaviour and requires recording `claude --version` with each run. Finding 21's "must not throw" requirement is precisely what makes a schema change degrade instead of crash |
+| 28 | Axiom Breaker: if the user registered the same source under a DIFFERENT alias, `add` may error on a duplicate source | **NOT FOLDED — speculative and self-flagged.** The seat offered no measurement and the claim rests on an assumed CLI uniqueness rule. If it holds, finding 21's rule already covers the consequence: the add fails, is reported, and the uninstall proceeds. The plan may measure it cheaply while implementing |
+| 29 | Cascade Analyst: `ProcessRunner`'s timeout was tuned for local IPC and would guarantee timeouts on a network `git clone` | **PARTIALLY ACCEPTED.** The concern is real, but the fix is a per-call timeout rather than abandoning the bounded runner. The plan owns choosing a longer bound for `marketplace add` specifically — and finding 21 means a timeout is a warning, never a failed uninstall |
+
+**PANEL VERDICT — round 3: NEGOTIATE-then-fold. Four findings folded (one measurement-confirmed), three
+accepted as known limits with reasoning, one not folded as speculative, one partially accepted.**
