@@ -200,3 +200,24 @@ it is still alive — requires `PopupFinder.SearchRoots` to yield HWNDs alongsid
 which changes a shared API used by paths outside the mask walk. That is an increment, not a detail.
 ⚠ **Honest limit:** A1 closes the fail-open where a redact-worthy ELEMENT contributed no mask. It does not
 close the fail-open where an entire popup SUBTREE was never walked.
+
+### AB-12 — bare `catch` blocks still swallow CRITICAL failures repo-wide  *(SP4 capstone round 4)*
+**Behaviour:** SP4 filtered `OutOfMemoryException` / `OperationCanceledException` out of every catch on the
+redaction paths it touched, and out of `ToolResponse.Guard` / `GuardImage`. **MEASURED: 108 bare catches
+remain across more than 20 files** in `src/` — `Interaction`, `Watch`, `Session`, `TerminalTabReader`,
+`DpiHelper`, `RefRegistry`, `WindowManager` and others. Any of them can still swallow a critical.
+**Why not fixed here:** the capstone peer reported "19" and listed only the files adjacent to SP4. The real
+count is 108, which makes this a repo-wide refactor touching input, watch, session and geometry code that
+this increment never opened. Doing it as a tail-end change to a redaction branch would be exactly the
+unreviewed sprawl the branch has otherwise avoided.
+**Compensation + anchor:** partial and specific. Every catch on the SP4 pixel path — the mask walk's four
+former bare catches, the three converting catches, the blanket conversion, `AllMaskRectsAsync`, and both
+`ToolResponse` boundaries — now excludes criticals. So a critical raised anywhere in the redaction flow
+propagates rather than being laundered into a redaction verdict or an argument error.
+⚠ **Honest limit:** a critical raised in code SP4 did not touch is still swallowed, and the process still
+carries on. Tracked as ROADMAP item 13.
+⚠ **Also rejected at that round, and recorded so it is not re-proposed:** filtering
+`StaThreadContext.RunAsync`'s catch. It does not swallow — it marshals the exception to the caller via
+`tcs.SetException`, and after this branch that reaches the caller uncaught. Filtering it would kill the
+single shared query STA thread AND leave the caller's `TaskCompletionSource` never completed, so the caller
+would hang forever on a dead dispatcher. That is strictly worse than delivering the exception.

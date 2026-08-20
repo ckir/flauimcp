@@ -26,13 +26,24 @@ public static class PopupFinder
     public static IReadOnlyList<AutomationElement> FindOwnerPopups(AutomationElement desktop, AutomationElement targetWindow)
     {
         var found = new List<AutomationElement>();
-        int ownerPid = SafePid(targetWindow);
-        if (ownerPid < 0) return found;
+
+        // ⚠⚠ NOT GUARDED, DELIBERATELY, AND THIS READ USED TO BE THE MOST FRAGILE POINT IN THE FILE.
+        // It was `SafePid(targetWindow)` with `if (ownerPid < 0) return found;` — so ONE failed ProcessId
+        // read on the target window returned an EMPTY popup set, and the caller could not tell that from
+        // "this window genuinely has no popups". On the mask path that meant every desktop-level popup
+        // went unmasked while the capture SUCCEEDED: an A1-class fail-open on a path A1 never touched.
+        // Found at SP4 capstone round 4. Letting it throw makes the mask walk convert it to
+        // RedactionUnmaskable, and makes every other caller fail loudly instead of silently seeing
+        // "no popups".
+        int ownerPid = targetWindow.Properties.ProcessId.ValueOrDefault;
         int[] targetRid = SafeRuntimeId(targetWindow);
 
         // Path 1 — desktop-level children: Win32 #32768 menus and older HwndWrapper WPF hosts.
-        AutomationElement[] desktopChildren;
-        try { desktopChildren = desktop.FindAllChildren(); } catch { desktopChildren = Array.Empty<AutomationElement>(); }
+        // ⚠ NOT GUARDED (capstone round 4). This enumeration IS Path 1 — swallowing it substituted an
+        // empty array, so Win32 #32768 menus and older WPF popup hosts silently vanished from the search
+        // roots. Those are DESKTOP children, so `win.FindAllDescendants()` does not cover them and nothing
+        // downstream could notice they were missing.
+        AutomationElement[] desktopChildren = desktop.FindAllChildren();
         foreach (var c in desktopChildren)
         {
             try
@@ -52,14 +63,23 @@ public static class PopupFinder
                     || c.ControlType == FlaUI.Core.Definitions.ControlType.Menu;
                 if (looksPopup) found.Add(c);
             }
-            catch { /* transient — skip */ }
+            // ⚠ THIS PER-CHILD CATCH STAYS LENIENT, and the asymmetry with the three reads above is the
+            // point. This loop iterates EVERY top-level window on the desktop, most of them belonging to
+            // unrelated applications. Making it strict would tie the success of a capture to reading
+            // properties on every other app's windows — one misbehaving unrelated process would refuse
+            // captures machine-wide. Skipping one CANDIDATE also loses at most one popup, whereas the
+            // three unguarded reads above each lost an entire class of them.
+            catch { /* transient — skip: see the note above on why this one is not strict */ }
         }
 
         // Path 2 — window direct children: WPF/.NET 10 ContextMenu/Popup hosts surface as
         // CT=Window, cls=Popup direct children of the owner window (not as desktop-level entries).
         // Guarded the same way: no tooltips, no offscreen, no zero-size.
-        AutomationElement[] winChildren;
-        try { winChildren = targetWindow.FindAllChildren(); } catch { winChildren = Array.Empty<AutomationElement>(); }
+        // ⚠ NOT GUARDED (capstone round 4), same reasoning as Path 1. Path-2 popups ARE window children,
+        // so the window's own descendant walk happens to cover them for MASKING — but not for ref
+        // resolution or the action path, where losing them silently means a ref into a popup stops
+        // resolving with no explanation.
+        AutomationElement[] winChildren = targetWindow.FindAllChildren();
         foreach (var c in winChildren)
         {
             try
@@ -80,11 +100,6 @@ public static class PopupFinder
         }
 
         return found;
-    }
-
-    private static int SafePid(AutomationElement el)
-    {
-        try { return el.Properties.ProcessId.ValueOrDefault; } catch { return -1; }
     }
 
     private static int[] SafeRuntimeId(AutomationElement el)
