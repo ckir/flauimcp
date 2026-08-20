@@ -333,7 +333,7 @@ stamped** — v1.0.0 ships with no known defects.
 | 9 | per-field redaction | SP3 | ✅ shipped — merged `ef17ed9` (`--no-ff`) |
 | 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower |
 | 11 | redaction completeness (A1 pixel-mask fail-open · A5 focused-window title · A2 stats rename · A6 token constant) | SP4 | ✅ shipped — merged `079aebd` (`--no-ff`). Capstone GREEN after 7 rounds; test audit complete. 16 accepted boundaries ledgered in `docs/coverage-debt.md` |
-| 12 | the repo's 0-warning gate does not enforce itself | — | ⬜ not started — `dotnet build FlaUI.Mcp.slnx -c Release` is INCREMENTAL and does not re-report warnings for up-to-date projects. MEASURED during SP4: it printed `0 Warning(s)` on a tree where `--no-incremental` printed `2 Warning(s)`. A warning introduced by one commit is therefore invisible to every later build gate. Promoted from a captured anomaly; SP4 works around it per-plan by passing `--no-incremental`, which is not a repo-wide fix |
+| 12 | the repo's 0-warning gate does not enforce itself | — | ✅ shipped — release-tooling subproject. `dotnet build FlaUI.Mcp.slnx -c Release` is INCREMENTAL and does not re-report warnings for up-to-date projects. MEASURED during SP4: it printed `0 Warning(s)` on a tree where `--no-incremental` printed `2 Warning(s)`. Fixed by a new root `Directory.Build.props` setting `TreatWarningsAsErrors` (`54b1dc5`), which fixes it MECHANICALLY rather than by discipline — MSBuild never marks a FAILED project up to date, so an error re-reports on every build. MUTANT PROVEN: an unused local (CS0219) turns `Build succeeded` into `Build FAILED`. `BuildPropertySweepTests` (`f43d546`) forbids any `.csproj` or nested props file from overriding it — nested props MEASURABLY win over the root, so a csproj-only sweep would be trivially bypassable |
 | 13 | bare `catch` blocks swallow CRITICAL failures repo-wide | — | ⬜ not started — MEASURED at SP4 capstone round 4: **108** bare catches across 20+ files in `src/` can swallow `OutOfMemoryException`. SP4 filtered every catch on its own pixel path and both `ToolResponse` boundaries; the rest are untouched. Repo-wide refactor across input, watch, session and geometry code. Ledgered as AB-12 |
 | 14 | `CollisionMarker.Record()` has no cross-process lock | — | ⬜ not started — `Record()` reads the marker, merges, and rewrites the whole file (`CollisionMarker.cs:62-91`) with no `Mutex` and no file lock. `WriteAtomically` (`:114-121`) prevents a TORN file, not a lost update: two installers that both read the same baseline each write their own entry and the second overwrites the first, so one user's disabled plugin is never restored. CONFIRMED by reading the code during the D1 review (spec `2026-08-20-release-tooling-design.md`, round-2 finding 19). Requires two simultaneous installs, which is why it has never been observed. Pre-existing and deliberately NOT fixed in the D1 subproject — filed here rather than silently widening that scope. |
 
@@ -342,10 +342,18 @@ Also fixed en route, though never one of the ten: `value-and-find-paths-miss-des
 
 ⚠ **Items 4, 8, 9 and 10 are HARDENING, not defects.** The "no known defects at v1.0.0" bar is therefore
 **not** gated on finishing SP3/SP4 — it is gated on emptying the backlog directory.
-✅ **That bar is now MET: `docs/fix-the-tool-backlog/` holds no defect files** (only `_template.md`, the blank
-filing form the `flaui-curate` skill fills — scaffolding, never delete it). The last one,
-`negative-timeout-disables-the-sta-watchdog`, was fixed as its own standalone piece of work rather than folded
-into a subproject, and its file deleted per the repo convention that fixing a defect deletes its entry.
+✅ **That bar is MET: `docs/fix-the-tool-backlog/` holds no defect files** (only `_template.md`, the blank
+filing form the `flaui-curate` skill fills — scaffolding, never delete it).
+
+The bar was briefly UNMET when `install-removes-conflicting-marketplace-copy-and-never-restores-it` was
+filed — the installer deregistered a user's conflicting marketplace copy while announcing it would restore
+it. Fixed in the release-tooling subproject and its file deleted per the repo convention that fixing a
+defect deletes its entry. ⚠ **Its filed diagnosis was WRONG**, and that correction is worth more than the
+filing: it blamed the disable/restore machinery, but MEASURED, `claude plugin disable` worked perfectly and
+the marker was written correctly. The destroyer was an idempotency sweep in `ClaudePluginRegistrar` running
+`claude plugin uninstall` with the BARE plugin name, which matched the user's copy moments after the remedy
+had carefully disabled and recorded it. Both subsystems were individually correct; the defect existed only
+in their sequence. Before it, `negative-timeout-disables-the-sta-watchdog` was fixed the same way.
 
 - **Phase 3b-1 perception leftovers:** occlusion-aware capture (`PrintWindow`, vs the current
   focus-first screen-scrape); full-desktop *per-field* redaction for non-denied windows (denylist
