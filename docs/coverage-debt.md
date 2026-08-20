@@ -221,3 +221,21 @@ carries on. Tracked as ROADMAP item 13.
 `tcs.SetException`, and after this branch that reaches the caller uncaught. Filtering it would kill the
 single shared query STA thread AND leave the caller's `TaskCompletionSource` never completed, so the caller
 would hang forever on a dead dispatcher. That is strictly worse than delivering the exception.
+
+### AB-13 — a window whose PID cannot be read loses its DESKTOP-level popups  *(SP4 capstone round 6)*
+**Behaviour:** `PopupFinder` Path 1 attributes desktop-level popups (Win32 `#32768` menus, older WPF
+`HwndWrapper` hosts) to a window by comparing process ids. If the target window's `ProcessId` cannot be
+read — `ValueOrDefault` answers 0 for an unset property without throwing — Path 1 is SKIPPED entirely and
+those popups are not masked. Path 2 (window CHILDREN, which needs no pid) still runs.
+**Why it is inherent rather than a choice:** without a pid there is no way to tell that window's popups from
+any other process's. The alternative the code used to have was to compare against 0, which matched every
+OTHER unattributable window and grafted them in — a mis-graft, and on the ACTION path a ref could then
+resolve into an unrelated application's window and be clicked.
+**Why not a refusal:** capstone round 5 DID throw here, and round 6 showed that was wrong: a window with an
+unreadable pid and no popups at all is perfectly capturable, and throwing denied service to it on all
+twelve `PopupFinder` call sites — snapshot, find, wait, action — to prevent a mis-graft only Path 1 can
+commit.
+**Compensation + anchor:** none directly. Reachability is low: `ProcessId` is essentially always readable
+for a real top-level window, and `ValueOrDefault` returns 0 only for a genuinely unsupported property.
+⚠ **Honest limit:** unlike AB-9 there is no wire signal for this one. A capture of such a window is missing
+its desktop-level popups and says nothing about it.
