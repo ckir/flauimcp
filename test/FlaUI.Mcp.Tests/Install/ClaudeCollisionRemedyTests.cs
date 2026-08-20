@@ -103,8 +103,9 @@ public class ClaudeCollisionRemedyTests
 
     // dirExists defaults to always-true: the fakes use synthetic projectPaths that do not exist on the
     // test machine, and only the deleted-project test cares about the guard.
-    private static ClaudeCollisionRemedy Remedy(FakeClaude cli, string state, Func<string, bool>? dirExists = null)
-        => new(cli.Run, state, dirExists ?? (_ => true));
+    private static ClaudeCollisionRemedy Remedy(FakeClaude cli, string state, Func<string, bool>? dirExists = null,
+        string? claudeConfigDir = null)
+        => new(cli.Run, state, dirExists ?? (_ => true), claudeConfigDir);
 
     // Guard the guard: prove the fake actually reproduces the measured CWD-resolution bug, so the
     // regression test below is not vacuously green against a fake that lists the true state everywhere.
@@ -425,5 +426,63 @@ public class ClaudeCollisionRemedyTests
         Assert.NotNull(warning);
         Assert.Contains("they will be re-enabled if you uninstall", warning);
         Assert.Equal(new DisabledEntry("flaui-mcp@flaui-mcp", "user", null), Assert.Single(CollisionMarker.Read(s)));
+    }
+
+    private static string TempClaudeConfigWith(string json)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "flaui-claude-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(Path.Combine(dir, "plugins"));
+        File.WriteAllText(KnownMarketplaces.PathIn(dir), json);
+        return dir;
+    }
+
+    private const string LiveRegistry = """
+        { "flaui-mcp": { "source": { "source": "github", "repo": "ckir/flauimcp" } } }
+        """;
+
+    [Fact]
+    public void A_disabled_entry_records_the_marketplace_it_came_from()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
+        var state = TempState();
+
+        Remedy(cli, state, claudeConfigDir: TempClaudeConfigWith(LiveRegistry)).Apply();
+
+        var e = Assert.Single(CollisionMarker.Read(state));
+        Assert.NotNull(e.Marketplace);
+        Assert.Equal("flaui-mcp", e.Marketplace!.Name);
+        Assert.Equal("github", e.Marketplace.Kind);
+        Assert.Equal("ckir/flauimcp", e.Marketplace.Source);
+    }
+
+    // RULE 1: a record written WITHOUT a usable source must not promise a reinstall. The whole defect
+    // began as a message that promised more than the code delivered.
+    [Fact]
+    public void With_no_readable_source_the_promise_is_re_enable_only()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
+        var state = TempState();
+
+        // A registry that does not know this alias: nothing to record, and nothing to promise about it.
+        var warning = Remedy(cli, state,
+            claudeConfigDir: TempClaudeConfigWith("""{ "someone-else": { "source": { "source": "github", "repo": "a/b" } } }""")).Apply();
+
+        Assert.Null(Assert.Single(CollisionMarker.Read(state)).Marketplace);
+        Assert.Contains("re-enabled if you uninstall", warning);
+        Assert.DoesNotContain("reinstall", warning, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // The alias is DERIVED from the id (`<plugin>@<alias>`), never assumed. An unknown alias records
+    // nothing rather than falling back to some other marketplace's source.
+    [Fact]
+    public void An_alias_absent_from_the_registry_records_no_source()
+    {
+        var cli = new FakeClaude().Install("flaui-mcp@flaui-mcp", "user", null, enabled: true);
+        var state = TempState();
+
+        Remedy(cli, state,
+            claudeConfigDir: TempClaudeConfigWith("""{ "other": { "source": { "source": "directory", "path": "C:\\x" } } }""")).Apply();
+
+        Assert.Null(Assert.Single(CollisionMarker.Read(state)).Marketplace);
     }
 }

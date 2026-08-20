@@ -308,7 +308,9 @@ public static class CliRouter
             results.Add(Isolate("claude", () =>
             {
                 var sw2 = System.Diagnostics.Stopwatch.StartNew(); // preserve the live budget clock (was :255-256)
-                var remedy = new ClaudeCollisionRemedy(ClaudeRunner(() => sw2.Elapsed, ClaudeBudget), paths.StateDir);
+                var remedy = new ClaudeCollisionRemedy(
+                    ClaudeRunner(() => sw2.Elapsed, ClaudeBudget), paths.StateDir,
+                    claudeConfigDir: paths.ClaudeConfigDir);
                 if (install)
                 {
                     new PluginArtifactWriter(stagingDir).Generate(exePath, ThisVersion()); // idempotent if agy already ran

@@ -34,16 +34,28 @@ public sealed class ClaudeCollisionRemedy
     private readonly Func<string, string[], string?, RunResult> _run;
     private readonly string _stateDir;
     private readonly Func<string, bool> _dirExists;
+    private readonly string? _claudeConfigDir;
+    private readonly Func<string, string[], string?, RunResult> _longRun;
 
     /// <param name="dirExists">Injected for testability; defaults to <see cref="Directory.Exists"/>.
     /// A non-user entry whose project directory is gone cannot load the plugin, and `disable` would
     /// have nowhere valid to run from — such entries are skipped.</param>
+    /// <param name="claudeConfigDir">Where `plugins/known_marketplaces.json` lives, so a disable can
+    /// RECORD the source it came from and a restore can compare it against the live one. Null means
+    /// "no registry" — every read then reads as FileAbsent, which is the correct answer for a caller
+    /// that has no config dir to offer.</param>
+    /// <param name="longRun">Runner for the ONE call that touches the network (`marketplace add` does a
+    /// git clone). Defaults to <paramref name="run"/>, which keeps every existing caller and test
+    /// unchanged; CliRouter passes a runner with a longer per-call bound.</param>
     public ClaudeCollisionRemedy(Func<string, string[], string?, RunResult> run, string stateDir,
-        Func<string, bool>? dirExists = null)
+        Func<string, bool>? dirExists = null, string? claudeConfigDir = null,
+        Func<string, string[], string?, RunResult>? longRun = null)
     {
         _run = run;
         _stateDir = stateDir;
         _dirExists = dirExists ?? Directory.Exists;
+        _claudeConfigDir = claudeConfigDir;
+        _longRun = longRun ?? run;
     }
 
     /// <summary>Install side: disable each enabled colliding entry and record it. Returns a warning
@@ -61,9 +73,13 @@ public sealed class ClaudeCollisionRemedy
         var recorded = CollisionMarker.Read(_stateDir);
         var justDisabled = new List<DisabledEntry>();
 
+        // Read the marketplace registry ONCE per pass, not per entry: it is the same file for every
+        // entry and re-reading it inside the loop would multiply the failure surface for no gain.
+        var marketplaces = KnownMarketplaces.Read(_claudeConfigDir);
+
         foreach (var e in matching)
         {
-            var entry = new DisabledEntry(e.Id, e.Scope, e.ProjectPath);
+            var entry = new DisabledEntry(e.Id, e.Scope, e.ProjectPath, SourceFor(e.Id, marketplaces));
 
             // A non-user entry whose project directory is gone cannot load the plugin (no collision),
             // and `disable` would have nowhere valid to run from. Skip it; a stale marker record for
@@ -134,13 +150,25 @@ public sealed class ClaudeCollisionRemedy
         if (recordWarning is not null) warnings.Add(recordWarning);
 
         if (justDisabled.Count > 0)
+        {
             // Only PROMISE a restore if we actually recorded it. If Record failed, recordWarning
             // already tells the user it will NOT be re-enabled — promising the opposite in the same
             // concatenated line is worse than saying nothing. (agy panel round 2.)
-            warnings.Insert(0, recordWarning is null
-                ? $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
-                  "(they will be re-enabled if you uninstall flaui-mcp)."
-                : $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill.");
+            //
+            // ⚠ RULE 1, D1: the promise must not overstate what a two-layer restore can do. We can only
+            // REINSTALL an evicted copy for entries whose marketplace source we actually captured; for
+            // the rest the honest promise is a re-enable. The whole defect began as a message that
+            // promised more than the code delivered, and a richer restore makes that easier to repeat.
+            var restorable = justDisabled.Count(d => d.Marketplace is not null);
+            warnings.Insert(0, recordWarning is not null
+                ? $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill."
+                : restorable == justDisabled.Count
+                    ? $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
+                      "(they will be re-enabled if you uninstall flaui-mcp, and reinstalled first if anything " +
+                      "has removed them)."
+                    : $"disabled {justDisabled.Count} conflicting marketplace copy/copies of the driving skill " +
+                      "(they will be re-enabled if you uninstall flaui-mcp).");
+        }
 
         return warnings.Count == 0 ? null : string.Join(" ", warnings);
     }
@@ -294,6 +322,21 @@ public sealed class ClaudeCollisionRemedy
 
     private static bool Same(ClaudePluginEntry p, DisabledEntry e) =>
         CollisionMarker.SameEntry(new DisabledEntry(p.Id, p.Scope, p.ProjectPath), e);
+
+    /// <summary>The marketplace an installed plugin came from, or null when we cannot know it.
+    ///
+    /// A plugin id is `&lt;plugin&gt;@&lt;marketplace-alias&gt;`, so the alias is DERIVED from the id rather
+    /// than assumed. Null when the id has no alias segment, when the registry could not be read, or when
+    /// the alias's source kind is one we do not recognise. ⚠ NEVER GUESSED: an entry with no source
+    /// degrades to re-enable-only, and Apply's promise narrows to match (rule 1). Guessing would let a
+    /// restore install something the user did not ask for.</summary>
+    private static MarketplaceSource? SourceFor(string id, MarketplacesSnapshot marketplaces)
+    {
+        var at = id.LastIndexOf('@');
+        if (at < 0 || at == id.Length - 1) return null;
+        var alias = id[(at + 1)..];
+        return marketplaces.ByName.TryGetValue(alias, out var src) ? src : null;
+    }
 
     private static string Where(DisabledEntry e) => e.ProjectPath is null ? $"scope {e.Scope}" : $"scope {e.Scope} in {e.ProjectPath}";
 
