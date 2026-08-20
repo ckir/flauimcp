@@ -184,6 +184,42 @@ public class ClaudeCollisionReinstallTests
         Assert.DoesNotContain(cli.Calls, c => c.Contains("enable"));   // never enable a phantom
     }
 
+    // ⚠ THE 90s TIMEOUT SPLIT EXISTS FOR EXACTLY ONE CALL, and nothing pinned WHICH one. `marketplace
+    // add` does a git clone and gets the long runner; every other call keeps the 30s local-IPC default.
+    // If the two were swapped, or the long runner quietly dropped, no test noticed — the capstone's
+    // complement lens MEASURED that no test injects `longRun` at all, so the whole dependency was
+    // unexercised.
+    [Fact]
+    public void Only_the_marketplace_add_goes_through_the_long_runner()
+    {
+        var shortCalls = new List<string[]>();
+        var longCalls = new List<string[]>();
+
+        RunResult Short(string file, string[] args, string? cwd)
+        {
+            if (args.Length >= 2 && args[0] == "plugin" && args[1] == "list") return new RunResult(0, "[]");
+            shortCalls.Add(args);
+            return new RunResult(0, "");
+        }
+        RunResult Long(string file, string[] args, string? cwd)
+        {
+            longCalls.Add(args);
+            return new RunResult(0, "");
+        }
+
+        var s = TempState();
+        CollisionMarker.Record(s, new[] { Recorded });
+
+        new ClaudeCollisionRemedy(Short, s, _ => true, TempClaudeConfig(null), Long).Restore();
+
+        // The ONE network call goes long...
+        Assert.Equal(new[] { "plugin", "marketplace", "add", "ckir/flauimcp" }, Assert.Single(longCalls));
+        // ...and nothing else does.
+        Assert.DoesNotContain(shortCalls, c => c.Contains("marketplace"));
+        Assert.Contains(shortCalls, c => c.Contains("install"));
+        Assert.Contains(shortCalls, c => c.Contains("enable"));
+    }
+
     // ⚠⚠ THE UNINSTALL-SAFETY TEST (in-process half). Malformed registry JSON must degrade to a warning,
     // never an exception - Inno runs uninstall waituntilterminated. MUTANT: neuter the catch in
     // KnownMarketplaces.Read and this goes RED.

@@ -69,11 +69,17 @@ try {
     Write-Host "`n== version lockstep ==" -ForegroundColor Cyan
     $exeVer      = (& $Exe --version) -replace '^flaui-mcp\s+',''
     $manifestVer = if ($root) { (Get-Content (Join-Path $root 'plugin.json') -Raw | ConvertFrom-Json).version } else { '<no manifest>' }
-    Check "manifest $manifestVer matches exe $exeVer" ($exeVer.StartsWith($manifestVer))
+    # ⚠ NOT StartsWith. MEASURED: '1.10.0'.StartsWith('1.1') is TRUE, so a stale 1.1 payload would PASS
+    # against a 1.10.0 exe — a gate reporting success while the condition it names is false, which is the
+    # exact false-GREEN class this file exists to catch. StartsWith was here to tolerate a 4-part exe
+    # version (0.20.0.0); normalise to three parts and compare exactly instead, so the tolerance costs no
+    # accuracy. A version with fewer than three parts fails the compare, which is the safe direction.
+    $exeVer3 = ($exeVer -split '\.')[0..2] -join '.'
+    Check "manifest $manifestVer matches exe $exeVer" ($manifestVer -eq $exeVer3)
     # The payload DIRECTORY is named for the version too - a third place that must agree, and the one a
     # stale cache would betray.
     Check "payload dir $(if ($root) { Split-Path $root -Leaf } else { '<none>' }) matches exe $exeVer" `
-          ($null -ne $root -and $exeVer.StartsWith((Split-Path $root -Leaf)))
+          ($null -ne $root -and (Split-Path $root -Leaf) -eq $exeVer3)
 
     Write-Host "`n== the skill actually LOADS (validate would not catch this) ==" -ForegroundColor Cyan
     $list = claude plugin list --json | ConvertFrom-Json

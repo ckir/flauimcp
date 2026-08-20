@@ -189,7 +189,12 @@ public sealed class ClaudeCollisionRemedy
                 // as the warning that started this defect: the tool describing its own state instead of
                 // the user's problem. So name the ids and the exact command for each.
                 return $"the restore record at {CollisionMarker.PathIn(_stateDir)} was written by a newer " +
-                       "flaui-mcp, so it was left in place and not acted on — the plugin(s) below are still " +
+                       // ⚠ "any plugin(s) we disabled", NOT "the plugin(s) below": this prefix is
+                       // concatenated with a recourse that legitimately lists NOTHING in two of its three
+                       // forms (nothing readable in the record, or every recorded project gone). Promising
+                       // a list and then not producing one is the same defect class that started this
+                       // whole subproject — a message claiming more than the code delivers.
+                       "flaui-mcp, so it was left in place and not acted on — any plugin(s) we disabled are still " +
                        "DISABLED. " + ManualEnableRecourse(recorded) +
                        " Reinstalling the newer flaui-mcp and uninstalling it again would also do this.";
             if (state == MarkerState.Corrupt)
