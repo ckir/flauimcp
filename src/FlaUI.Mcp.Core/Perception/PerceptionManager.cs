@@ -882,7 +882,11 @@ public sealed class PerceptionManager
             // RefNotFound is a deliberate, already-classified outcome — re-wrapping it would destroy the
             // code an agent branches on, exactly as in the blanket conversion below.
             catch (ToolException) { throw; }
-            catch (System.Exception ex)
+            // ⚠ A CRITICAL failure is not a redaction outcome — same filter, same reason as the blanket
+            // catch below: telling the agent to "retry once the UI has settled" while the process is dying
+            // would hide the real cause. Added at capstone round 2; the plan filtered only the blanket one.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException)
             {
                 throw new ToolException(ToolErrorCode.RedactionUnmaskable,
                     $"Could not resolve the capture target in window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
@@ -904,7 +908,11 @@ public sealed class PerceptionManager
             // failure worth naming precisely in the message an operator reads.
             System.Drawing.Rectangle captureBounds;
             try { captureBounds = target.BoundingRectangle; }
-            catch (System.Exception ex)
+            // ⚠ A CRITICAL failure is not a redaction outcome — same filter, same reason as the blanket
+            // catch below: telling the agent to "retry once the UI has settled" while the process is dying
+            // would hide the real cause. Added at capstone round 2; the plan filtered only the blanket one.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException)
             {
                 throw new ToolException(ToolErrorCode.RedactionUnmaskable,
                     $"Could not read the capture bounds of window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
@@ -1004,7 +1012,11 @@ public sealed class PerceptionManager
                     // AllMaskRectsAsync's `catch { }` on the full-desktop path and turn this strictness
                     // into a SILENT SKIP - the precise opposite of the decision this branch encodes.
                     try { descendants = roots[rootIndex].FindAllDescendants(); }
-                    catch (System.Exception ex)
+                    // ⚠ A CRITICAL failure is not a redaction outcome — same filter, same reason as the blanket
+                    // catch below: telling the agent to "retry once the UI has settled" while the process is dying
+                    // would hide the real cause. Added at capstone round 2; the plan filtered only the blanket one.
+                    catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                                      and not System.OperationCanceledException)
                     {
                         throw new ToolException(ToolErrorCode.RedactionUnmaskable,
                             $"Could not enumerate window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
@@ -1191,6 +1203,20 @@ public sealed class PerceptionManager
                 //
                 // The process NAME is not withheld content — desktop_list_windows already publishes handle,
                 // process and title for every window.
+                // ⚠ THIS EMPTY-CHECK CANNOT FIRE TODAY, and saying so is the point of writing it down — a
+                // capstone round argued the opposite and the argument was worth answering precisely.
+                // The claim was: a window whose process name is unreadable reaches here, is dropped by this
+                // check, and is therefore photographed WITHOUT appearing in unmaskedProcesses — a silent
+                // incomplete capture. It rests on `IsDenied(null)` being false. It is TRUE:
+                // PerceptionPolicy.cs:48 is `string.IsNullOrWhiteSpace(processName) || DeniedProcesses
+                // .Contains(...)`, deliberately fail-closed since SP3's capstone. So such a window is
+                // skipped by the denylist test ABOVE this try, and never reaches this line — and
+                // DenylistedWindowsVisibleAsync uses the same predicate, so ScreenshotTools refuses the
+                // whole full-desktop capture before the walk even starts. Fail-closed twice over.
+                //
+                // Kept as defence-in-depth against a future change to IsDenied's null handling, which is
+                // exactly the change that would make this reachable. Do not write a test for it — nothing
+                // can reach it — and do not "simplify" it away without re-checking that predicate first.
                 if (!string.IsNullOrEmpty(w.ProcessName)) unmasked.Add(w.ProcessName);
             }
         }
