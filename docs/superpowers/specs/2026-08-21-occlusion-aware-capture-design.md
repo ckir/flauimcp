@@ -25,7 +25,12 @@ that no longer existed: it works until someone doesn't.
 
 **Success criterion, checkable:** capture a window that is behind another window and get that window's
 pixels, with redaction masks still landing on the right regions, and with no case where a wrong image is
-returned as if it were correct.
+returned **without a machine-readable indication that it may be wrong**.
+
+⚠ That last clause is deliberately weaker than "no wrong image is ever returned as if it were correct".
+Section 3 chooses not to gate on image content, so a wrong image CAN be returned; what the design owes is
+that it never arrives unlabelled. Stating the criterion the other way would contradict the design it is
+supposed to judge. *(Panel round 1, AB-1.)*
 
 ## Evidence — MEASURED, not assumed
 
@@ -58,6 +63,21 @@ A darkness heuristic would have rejected a flawless capture.
 was 1366x768. `PrintWindow` returns pixels that are on no monitor. This is the fact that forces the
 yardstick change below.
 
+**F6. UIA `BoundingRectangle` equals `GetWindowRect` exactly — origin AND size — and does NOT equal the
+DWM extended frame bounds.** Probe `.clavity/scratch/item8-panel/rect-probe.ps1`, run DPI-aware, compared
+against `desktop_list_windows` at the same instant:
+
+| Window | UIA bounds | `GetWindowRect` | `DWMWA_EXTENDED_FRAME_BOUNDS` |
+|---|---|---|---|
+| WindowsTerminal (maximized) | `-8,-8` 1936x1036 | `-8,-8` 1936x1036 | `0,0` 1920x1020 |
+| PowerToys.QuickAccess (restored, WPF, has a shadow) | `966,204` 400x516 | `966,204` 400x516 | `973,204` 386x509 |
+| explorer | `-32000,-32000` 160x28 | `-32000,-32000` 160x28 | 144x28 |
+
+The invisible border is real — 7-8px per side — but UIA reports the **outer** rect, the same one
+`GetWindowRect` reports and the same one `PrintWindow` sizes its bitmap from. So the two coordinate
+systems agree and there is no shadow-induced mask offset. This measurement exists because the panel
+raised the opposite claim; see the decision record.
+
 ## The change
 
 ### 1. Acquisition
@@ -69,13 +89,39 @@ has no full-desktop analogue.
 This introduces the repo's first native interop of this kind: `grep -rn "PrintWindow|BitBlt|GetWindowDC"
 src/` currently returns nothing.
 
-**Masking is untouched.** `ScreenCapture.Encode` translates mask rects by `clip.X - captureBounds.X`
-(`ScreenCapture.cs:61-62`), keyed on `captureBounds` and not on the acquisition backend. Acquisition
-(`Capture.Rectangle`) and masking (`Encode`) are a clean seam; only the former changes.
+#### The invariant that keeps masking correct — state it, do not assume it
+
+`ScreenCapture.Encode` translates mask rects by `clip.X - captureBounds.X` (`ScreenCapture.cs:61-62`),
+which is indeed keyed on `captureBounds` and not on the acquisition backend. But it also computes the
+downscale factor from **`src.Width`** (`:48`). Both together mean masking is correct only while:
+
+```
+src.Size == captureBounds.Size          // and src's origin corresponds to captureBounds.X/Y
+```
+
+Under the scrape that invariant is **structural**: `Capture.Rectangle(absolute, null)` returns exactly
+that rectangle, so it cannot be violated. Under `PrintWindow` it becomes an **assumption**, and for
+element scope it is **false by construction**:
+
+- `PerceptionManager.cs:883` — with a `@ref`, `target` is the resolved ELEMENT, not the window.
+- `PerceptionManager.cs:915` — `captureBounds = target.BoundingRectangle`, so it is the ELEMENT's rect.
+- `PrintWindow` is per-window: the bitmap is WINDOW-sized.
+
+Hand that pair to `Encode` and the scale factor comes off the wrong width, every mask lands at the wrong
+offset, and the returned `W/H` describe a rectangle the PNG is not. **The plan must crop the window
+bitmap to `captureBounds` before `Encode`**, restoring the invariant explicitly.
+
+For WINDOW scope the invariant holds, and F6 is what establishes it: `captureBounds` is the window's UIA
+rect, which equals the `GetWindowRect` the bitmap is sized from.
+
+So "masking is untouched" is true — but only because of a precondition that the scrape guaranteed for
+free and this backend must re-establish by hand. *(Panel round 1, AB-2.)*
+
+#### DPI
 
 The server is `PerMonitorV2` DPI-aware (`src/FlaUI.Mcp.Server/app.manifest:5`), so `GetWindowRect` returns
-physical pixels that match today's `geo.Bounds`. The probe reproduced this: run DPI-aware, its sizes
-matched `desktop_list_windows` exactly (1920x1020, 400x516); run DPI-unaware they were scaled to 80%.
+physical pixels that match `geo.Bounds`. The probe reproduced this: run DPI-aware, its sizes matched
+`desktop_list_windows` exactly; run DPI-unaware they were scaled to 80%.
 
 ### 2. The yardstick correction — a leak if skipped
 
@@ -103,7 +149,13 @@ unclipped for `PrintWindow`. The method cannot infer which caller it serves; tha
 `skipIfNoRenderableOverlap` parameter beside it, and the plan follows that existing precedent rather than
 inventing a new mechanism.
 
-### 3. Failure policy — no gate, a diagnostic warning
+⚠ **The new parameter's default MUST be the mask-preserving one (unclipped).** This is not a style
+preference — it is inherited from the precedent being cited. `skipIfNoRenderableOverlap` already defaults
+to `false`, and `PerceptionManager.cs:958` says why: the window-scoped value is the safe one, so a
+forgotten call site fails safe. A parameter defaulting the other way would let a missed call site silently
+reinstate the leak this whole section exists to close. *(Panel round 1, AB-3.)*
+
+### 3. Failure policy — no gate, a diagnostic with recourse
 
 Given F2 (the API cannot report failure) and F4 (the obvious detector is unsound), the design does **not**
 attempt to gate on image content.
@@ -112,21 +164,33 @@ attempt to gate on image content.
 - Emit a **diagnostic** when the full window bitmap is effectively a single colour.
 - **Never refuse** on that signal.
 
-**The diagnostic is an ALWAYS-PRESENT metadata field, not a conditional message.** There is no warning
-channel in any tool response today — `ToolResponse.Image(png, metadata)` takes an anonymous object of
-named fields — so this follows the AB-9 precedent already in this same method:
+**The diagnostic is ALWAYS PRESENT, not conditional.** There is no warning channel in any tool response
+today — `ToolResponse.Image(png, metadata)` takes an anonymous object of named fields — so this follows
+the AB-9 precedent already in this same method:
 
 > ⚠ AB-9: ALWAYS present, empty when nothing was skipped … a diagnostic that appears only on failure
 > teaches consumers to ignore its absence.
 
-So a boolean that is present on every capture, `false` in the normal case — not a sentence that shows up
-only when something is wrong. agy proposed appending a warning to the text response; the repo's own
-convention is better and is followed instead.
+**But a bare boolean is not enough, and the spec previously contradicted itself on this.** Section 3 said
+"a boolean, not a sentence"; the rationale below said the warning's value is "telling the agent to fall
+back to the tree is guidance it would otherwise lack". A silent `true` conveys no such instruction. A flag
+whose meaning is never stated is a flag the consumer ignores — which is the same failure mode AB-9 exists
+to prevent, arriving by a different route.
 
-⚠ **The exact predicate is the PLAN's to settle, by measurement.** "Effectively a single colour" is not
-implementable as written. The plan chooses the predicate and its sampling strategy, and proves it against
-both a known-blank (flag 0) and a known-good dark render (see the unverified-signal note in the decision
-record).
+**So the diagnostic carries its RECOURSE, not just its state.** The repo already does this everywhere it
+matters: every `ToolException` carries an actionable hint string, and the installer's
+`ManualEnableRecourse` is literally a recourse sentence. The metadata field follows that convention.
+*(Panel round 1, MG-1 — raised by the agy seat, and it is a genuine internal contradiction.)*
+
+⚠ **The tool description must ENUMERATE the new fields.** `ScreenshotTools.cs:17` lists the metadata
+contract explicitly — `{bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses}`.
+A field in the payload but absent from that list is one the model has no reason to read, and the whole
+diagnostic then costs effort and changes nothing. *(Panel round 1, PP-2.)*
+
+⚠ **The exact predicate is the PLAN's to settle, by measurement** — but its PURPOSE is settled here, or
+the plan has nothing to measure against: the detector exists to tell an agent that this image may not be
+usable and that the UIA tree is the fallback. It is not a correctness gate and must not grow into one.
+*(Panel round 1, LI-1.)*
 
 **Why not refuse.** The instinct comes from SP4's `RedactionUnmaskable`, which refuses rather than
 returning an all-black image (`PerceptionManager.cs:894`). That precedent does **not** transfer, and the
@@ -146,21 +210,46 @@ An incorrect warning is cheap; an incorrect refusal is not.
 panel — a spacer, a blank text area, a flat background — is genuinely one colour. Evaluating the signal
 post-crop would warn constantly on valid captures.
 
-⚠ **Known false-positive, accepted:** a window that is genuinely one uniform colour (a colour-calibration
-app, a black loading screen) will be warned about incorrectly. Accepted precisely because the consequence
-is a spurious sentence, not a blocked capture.
+**The two errors that choice accepts, stated symmetrically:**
 
-### 4. Contract changes
+- **False POSITIVE:** a window that is genuinely one uniform colour (a colour-calibration app, a black
+  loading screen) is warned about incorrectly. Accepted — the consequence is a spurious sentence.
+- **False NEGATIVE:** an ELEMENT crop that is entirely black inside a window that rendered fine — a
+  hardware-accelerated child viewport that failed to draw — passes with the flag `false`, because the
+  detector never saw the crop. Accepted for the same reason the pre-crop choice was made, but it is the
+  price of that choice and the spec previously stated only the other half. *(Panel round 1, BA-1, agy
+  seat.)*
+
+### 4. Failure mapping — the existing error path does not reach the new backend
+
+`ScreenCapture.cs:40-41` maps `COMException`/`ExternalException` from `Capture.Rectangle` onto
+`ToolErrorCode.CaptureUnavailable`, with the actionable hint "reconnect to restore rendering". **GDI does
+not throw.** `CreateCompatibleDC`, `CreateCompatibleBitmap` and `SelectObject` return null/zero handles on
+failure, so on the new path that catch never fires and nothing else takes its place.
+
+The plan owns an explicit mapping. Null-handle checks are not optional — given ROADMAP item 13 (108 bare
+catches) the realistic outcome of skipping them is an NRE surfacing as something unhelpful, or a garbage
+bitmap returned as a capture. *(Panel round 1, CA-2.)*
+
+The session-level guard is unaffected and still runs first: `ScreenshotTools.cs:27-28` throws
+`CaptureUnavailable` when `IsDesktopRenderable()` is false, which covers the locked/disconnected desktop
+before either backend is reached.
+
+### 5. Contract changes
 
 Two fields join the JSON metadata, both ALWAYS present:
 
 | Field | Meaning |
 |---|---|
 | `captureMethod` | which backend produced the image. Window/element report the `PrintWindow` path; full-desktop reports the scrape |
-| the uniform-canvas diagnostic (§3) | `false` on a normal capture |
+| the uniform-canvas diagnostic (§3) | `false` on a normal capture; when true, carries its recourse |
 
 `captureMethod` matters because the two scopes now produce images by different mechanisms, and a caller
 comparing them needs to know which it holds.
+
+⚠ **Enumerate `captureMethod`'s values in the spec-to-plan handoff.** A contract field with an
+unspecified value set cannot be branched on. Two values, spelled out. Casing follows the existing metadata,
+which is camelCase throughout (`ScreenshotTools.cs:71-83`). *(Panel round 1, PP-4.)*
 
 Both are carried on `CaptureResult`, which today is:
 
@@ -169,11 +258,34 @@ Both are carried on `CaptureResult`, which today is:
 public sealed record CaptureResult(byte[] Png, int X, int Y, int W, int H, double ScaleApplied, int Redactions);
 ```
 
-⚠ **Exact field names, types and the record's parameter order are the PLAN's**, not settled here. What is
-settled: both are always present, and neither is conditional on something having gone wrong.
+⚠ **Exact field names and types are the PLAN's**, but the parameter order is NOT open: `CaptureResult` is
+a POSITIONAL record, constructed positionally at `ScreenCapture.cs:69`. **Append only, never insert** — a
+field added mid-list silently rebinds arguments wherever the types happen to line up. *(Panel round 1,
+PP-3.)*
+
+#### `bounds` stops supporting image→screen coordinate mapping
+
+`ScreenshotTools.cs:60,73` publish `bounds{x,y,w,h}` and a `dpiScale` derived from `result.X, result.Y`.
+A consumer maps image coordinates to screen coordinates through those, then clicks.
+
+Under `PrintWindow` that mapping is **wrong for exactly the windows this feature exists to serve**. An
+occluded window's pixels are at those screen coordinates only in the sense that something else is drawn
+there, so a click computed from the image lands on the OCCLUDER. F5 is the extreme case: the coordinates
+may be on no monitor at all.
+
+`captureMethod` is necessary but not sufficient. The contract must say plainly that image-derived
+coordinates are not clickable when the method is `PrintWindow` — act through the UIA tree instead.
+*(Panel round 1, PP-1.)*
+
+#### Documentation that goes stale with this change
 
 The tool description loses **"Focus the window first (no occlusion handling)"** — it stops being true, and
 a stale instruction in a tool description is read by every agent on every call.
+
+The same claim also sits in the class doc at `ScreenCapture.cs:11-14` ("no occlusion handling — callers
+focus-first"), and that comment's closing promise — "Headless/disconnected sessions are detected before
+capture so we never hand back a black frame" — is exactly what stops being guaranteed. Both are in the
+plan's edit list. *(Panel round 1, LI-3.)*
 
 ## Out of scope
 
@@ -184,6 +296,20 @@ a stale instruction in a tool description is read by every agent on every call.
   unsound detector F4 rules out, and a silent backend switch is worse than a known one.
 - **ROADMAP item 13** (bare catches) and any redaction-rule change.
 
+## Privacy posture — an unstated widening, named here so it is ratified deliberately
+
+Today a screenshot can only contain pixels that were actually on the physical screen. That is the model
+the entire redaction design was built against.
+
+After this change, `desktop_screenshot` can extract the current contents of a window that is **fully
+covered, moved off-screen, or on another virtual desktop** — content the human at the console cannot see
+and has no cue is being read. That is the feature working as intended, and it is why the feature is worth
+building. It is still a posture change.
+
+The existing guards continue to hold: `geo.Denied` blocks denylisted processes (`ScreenshotTools.cs:54`),
+and the full-desktop denylist refusal is untouched. So this is not a hole. It is a widening the operator
+should accept knowingly rather than inherit silently. *(Panel round 1, BS-1.)*
+
 ## Testing
 
 - **Headless** cannot exercise `PrintWindow` — it needs a real window. The seam makes this tractable:
@@ -192,6 +318,9 @@ a stale instruction in a tool description is read by every agent on every call.
 - **The yardstick correction needs a headless test** proving an off-screen window's masks SURVIVE under
   the `PrintWindow` yardstick and are dropped under the scrape yardstick. This is the leak-shaped case and
   must not be Desktop-only.
+- **The element-crop invariant needs a headless test** proving that a window-sized bitmap cropped to an
+  element-sized `captureBounds` puts masks in the right place — the AB-2 case. Also leak-shaped, also not
+  Desktop-only.
 - **Desktop-category:** capture an occluded window and assert it is not the occluder's pixels. The probe
   shows this is stageable — a second window over the target, then compare against a known control.
 - **Every new gate needs a logic mutant** that turns that specific test red. Repo rule, no exceptions.
@@ -201,13 +330,49 @@ a stale instruction in a tool description is read by every agent on every call.
 1. **App classes beyond the five measured.** The probe covered DirectX, Win32, XAML/UWP, WPF and the
    shell. Electron/Chromium was NOT measured — VS Code was not running. **The plan must measure at least
    one Chromium-family window before this ships**, since it is a common agent target.
-2. **`Capture.Rectangle` also handles the DC lifecycle** that the new path must own: `CreateCompatibleDC`,
+2. **`PrintWindow` depends on the TARGET's message loop, and nothing here bounds that wait.** It renders
+   by sending `WM_PRINT`/`WM_PRINTCLIENT` synchronously to the target window. The scrape has no such
+   dependency — it reads the composited desktop and a hung app cannot block it. Consequences: a hung or
+   busy target blocks with no timeout and no cancellation; `ScreenshotTools.cs:58` puts that block on a
+   THREADPOOL thread which is never returned; and a blocked call never reaches its `using`, so it holds an
+   HDC, a GDI bitmap and a managed bitmap permanently. "Occluded" and "not pumping" are correlated in
+   practice, so the feature's primary use case is also its worst failure case.
+   **UNMEASURED — this is documented Win32 behaviour, not a probe result, and this spec's standard is
+   measured-not-assumed.** The plan must stage a window that stops pumping (a fixture with a blocking
+   sleep on its UI thread), call `PrintWindow` against it, and time the call. If it blocks, the design
+   needs a bounded wait and a decision about what to return on timeout. *(Panel round 1, CA-1 + RV-2.)*
+3. **Stale composition.** `PW_RENDERFULLCONTENT` may return the last frame DWM composed rather than
+   forcing a fresh render. If the pixels are older than the UIA tree the masks were computed from, masks
+   can miss data that IS in the image — a leak with a different shape from the ones above.
+   **UNMEASURED, and the experiment is specified:** drive a Chromium-family window to change a sensitive
+   region's state (reveal/hide a password field, switch tabs), then call `PrintWindow` and walk the UIA
+   tree with zero delay. TRUE if the image shows the old state while the tree reports the new one; FALSE
+   if they always agree. This can be folded into risk 1's Chromium measurement — same window, same probe.
+   *(Panel round 1, agy Q2. The peer raised it and said plainly it could not determine the answer without
+   running the probe, which is the correct answer.)*
+4. **`Capture.Rectangle` also handles the DC lifecycle** that the new path must own: `CreateCompatibleDC`,
    `CreateCompatibleBitmap`, `SelectObject`, and their release. A leak here runs inside a long-lived
    server. The plan owns the exact ownership pattern.
-3. **The uniform-colour detector's sampling** — full-bitmap versus a grid — is a cost/accuracy tradeoff
+5. **The uniform-colour detector's sampling** — full-bitmap versus a grid — is a cost/accuracy tradeoff
    the plan settles, with a measurement, not a guess.
-4. **`ScreenCapture.CaptureRectangle` has one other caller** (full-desktop, `ScreenshotTools.cs:49`). The
-   plan must confirm the signature change does not alter its behaviour.
+6. **`ScreenCapture.CaptureRectangle` has one other caller** (full-desktop, `ScreenshotTools.cs:49`). The
+   plan must confirm the signature change does not alter its behaviour — and must SPECIFY that change,
+   which this spec deliberately does not: whether the new path is a parameter, an overload, or a separate
+   method is a decomposition decision the plan makes explicitly rather than by implication.
+   *(Panel round 1, LI-2.)*
+7. **The width ceiling bounds the payload, never the allocation.** `MaxCaptureWidth = 1920`
+   (`ScreenCapture.cs:17`) is applied inside `Encode` (`:47-50`), after the source bitmap exists. Under
+   the scrape that changed nothing; under `PrintWindow` the allocation is dictated by the window's own
+   size, so a 4K-wide window is a ~33 MB managed bitmap plus its GDI twin, per capture, in a long-lived
+   server. Not a defect — a property the plan should state rather than discover. *(Panel round 1, RV-1.)*
+8. **Popup masks and popup pixels come apart.** This repo grafts masks from popup roots into a window's
+   mask set (`PopupFinder.SearchRoots`, pinned by `PopupRootCoverageTests`). A popup is a SEPARATE
+   top-level HWND: the scrape includes its pixels and the grafted mask covers them, but `PrintWindow`
+   renders one window and its CHILD windows, so the popup's pixels are absent while its mask rect
+   survives. The result is a black rectangle over ordinary window content and a `redactions` count that
+   corresponds to nothing visible. The direction is fail-safe — over-masking, never under-masking — so
+   this is not a leak, but it is a visible behaviour change and "masking is untouched" is not true of it
+   at the semantic level. *(Panel round 1, BS-2.)*
 
 ## Decision record
 
@@ -228,3 +393,33 @@ to the tree is guidance it would otherwise lack.
 ⚠ **agy's unique-colour signal was never verified** — the probe that would have measured it was stopped.
 If the plan wants to use unique-colour count as the warning trigger, **it must measure the claim first**:
 that a failed render yields exactly one unique ARGB value while a dark-themed success yields hundreds.
+
+### AGY-AFTER adversarial panel — round 1
+
+Solo floor (`.clavity/scratch/item8-panel/solo-round1.md`) plus agy escalation
+(`.clavity/scratch/item8-panel/agy-round1.md`). Seats: Axiom Breaker, Cascade Analyst, Boundary Smuggler,
+Resource Vampire, Protocol Pedant, Literal Implementer (solo); Blindspot Auditor, Dependency Cynic,
+Mechanism Gamer (agy). **Verdict: NOT GREEN.** Fifteen findings folded above, each tagged at its site.
+
+**Rejected by measurement, do NOT re-raise:**
+
+- **The DWM shadow mask-shift leak** — the peer's headline finding, and its answers to three of the four
+  open questions rested on it. It argued `GetWindowRect` includes an invisible ~7px border while UIA
+  tracks the visible frame, shifting every mask. **F6 refutes it:** UIA reports the OUTER rect, identical
+  to `GetWindowRect` in origin and size, on maximized, restored-with-shadow, and minimized-placeholder
+  windows alike. The repo's own comment at `PerceptionManager.cs:927-930` says the same thing — the UIA
+  rect is the one that bleeds past the monitor. Shown the file and asked what it concluded, the peer read
+  it and withdrew the finding.
+- **"Two yardsticks means `clip` may be constrained by `VirtualScreenBounds`, misaligning masks."** Wrong
+  mechanism: `clip` is `Rectangle.Intersect(r, captureBounds)` computed inside `Encode`
+  (`ScreenCapture.cs:60`) and has nothing to do with the yardstick, which only gates the blacks-out and
+  escalation decisions in `PerceptionManager`. The real yardstick hazard is the default-direction one
+  folded into §2.
+- **`PW_RENDERFULLCONTENT` needs Windows 8.1+.** Moot: the TFM is `net10.0-windows10.0.19041.0`.
+- **Metadata might need snake_case.** It does not; `ScreenshotTools.cs:71-83` is camelCase throughout.
+
+**Process note worth keeping.** The peer's single most confident finding was false, and its most valuable
+one (§3's diagnostic contradiction) was raised almost in passing. Its answer to "name the failure mode of
+your own design" was the false one restated. Score the claim and the evidence separately — and give the
+peer the FILE rather than your measurement: pointed at `PerceptionManager.cs:927-930` and asked what it
+concluded, it reversed itself and cited the line that did it.
