@@ -93,8 +93,9 @@ public static class CollisionMarker
         var (state, existing) = ReadState(stateDir);
         if (state == MarkerState.FutureVersion)
             return $"the restore record at {PathIn(stateDir)} was written by a newer flaui-mcp and was " +
-                   "left unchanged; this install's disable was NOT recorded. If you did not expect this, " +
-                   $"remove {PathIn(stateDir)}.";
+                   "left unchanged; this install's disable was NOT recorded, so uninstalling flaui-mcp " +
+                   "will not re-enable it automatically. If you did not expect this, remove " +
+                   $"{PathIn(stateDir)} and run `flaui-mcp install --agent claude` again.";
 
         try
         {

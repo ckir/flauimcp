@@ -182,8 +182,16 @@ public sealed class ClaudeCollisionRemedy
 
             if (state == MarkerState.Absent) return null;
             if (state == MarkerState.FutureVersion)
+                // ⚠ THIS MESSAGE IS LOAD-BEARING, and the v2 marker bump is what made it so. Before that
+                // it was nearly unreachable; now any user who downgrades hits it during UNINSTALL — the
+                // worst moment, because they have just removed the tool and their plugin is still
+                // disabled. Explaining WHAT happened without saying what to DO is the same failure class
+                // as the warning that started this defect: the tool describing its own state instead of
+                // the user's problem. So name the ids and the exact command for each.
                 return $"the restore record at {CollisionMarker.PathIn(_stateDir)} was written by a newer " +
-                       "flaui-mcp; it was left in place and not acted on.";
+                       "flaui-mcp, so it was left in place and not acted on — the plugin(s) below are still " +
+                       "DISABLED. " + ManualEnableRecourse(recorded) +
+                       " Reinstalling the newer flaui-mcp and uninstalling it again would also do this.";
             if (state == MarkerState.Corrupt)
                 return $"the restore record at {CollisionMarker.PathIn(_stateDir)} is unreadable, so any " +
                        "conflicting plugin(s) we disabled may still be disabled and could not be re-enabled " +
@@ -213,12 +221,7 @@ public sealed class ClaudeCollisionRemedy
                 // directory is gone is moot AND a `cd` into a deleted path is impossible, so listing it
                 // would resurrect the same bad-recourse defect the in-loop guard below fixes. (agy panel
                 // round 2 — the early return bypassed that guard.)
-                var recoverable = recorded.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
-                var recourse = recoverable.Count == 0
-                    ? "No manual action is possible (the recorded projects no longer exist)."
-                    : "To restore manually: " + string.Join("; ", recoverable.Select(e =>
-                        $"claude plugin enable {e.Id} --scope {e.Scope}" +
-                        (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})")));
+                var recourse = ManualEnableRecourse(recorded);
                 return $"{listWarning} Your conflicting plugin(s) are still disabled and were NOT re-enabled. " +
                        "The record is kept at " + CollisionMarker.PathIn(_stateDir) + ". " + recourse;
             }
@@ -336,6 +339,21 @@ public sealed class ClaudeCollisionRemedy
         if (at < 0 || at == id.Length - 1) return null;
         var alias = id[(at + 1)..];
         return marketplaces.ByName.TryGetValue(alias, out var src) ? src : null;
+    }
+
+    /// <summary>The exact commands a human must run to undo our disable themselves.
+    ///
+    /// Entries whose project directory is gone are OMITTED, not listed with an impossible "run it from
+    /// &lt;deleted path&gt;" — the same bad-recourse defect the in-loop guard fixes. An empty result says so
+    /// rather than printing an empty list. Shared by the FutureVersion path and the
+    /// inventory-unreadable path so the two recourses can never drift.</summary>
+    private string ManualEnableRecourse(IReadOnlyList<DisabledEntry> entries)
+    {
+        var recoverable = entries.Where(e => e.ProjectPath is null || _dirExists(e.ProjectPath)).ToList();
+        if (recoverable.Count == 0) return "No manual action is possible (the recorded projects no longer exist).";
+        return "To re-enable manually: " + string.Join("; ", recoverable.Select(e =>
+            $"claude plugin enable {e.Id} --scope {e.Scope}" +
+            (e.ProjectPath is null ? "" : $" (run from {e.ProjectPath})"))) + ".";
     }
 
     private static string Where(DisabledEntry e) => e.ProjectPath is null ? $"scope {e.Scope}" : $"scope {e.Scope} in {e.ProjectPath}";

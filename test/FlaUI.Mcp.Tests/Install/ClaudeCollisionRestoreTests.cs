@@ -397,4 +397,27 @@ public class ClaudeCollisionRestoreTests
         Assert.Empty(cli.Calls);
         Assert.False(File.Exists(CollisionMarker.PathIn(s)), "an all-malformed marker should be consumed, not left forever");
     }
+
+    // A message the user cannot act on is the same failure class as the warning that started this whole
+    // defect: the tool describing its own state instead of the user's problem. The v2 bump is what makes
+    // this reachable - a downgraded build hits it during UNINSTALL, with the plugin still disabled.
+    [Fact]
+    public void A_future_version_marker_names_every_disabled_id_and_its_enable_command()
+    {
+        var s = TempState();
+        File.WriteAllText(CollisionMarker.PathIn(s), """
+            { "version": 3,
+              "disabled": [ { "id": "flaui-mcp@flaui-mcp", "scope": "user", "projectPath": null },
+                            { "id": "other@mkt", "scope": "local", "projectPath": "C:\\Proj" } ] }
+            """);
+
+        var warning = new ClaudeCollisionRemedy(new FakeCli().Run, s, _ => true).Restore();
+
+        Assert.NotNull(warning);
+        Assert.Contains("claude plugin enable flaui-mcp@flaui-mcp --scope user", warning);
+        Assert.Contains("claude plugin enable other@mkt --scope local", warning);
+        Assert.Contains(@"C:\Proj", warning);                       // where to run the local one FROM
+        Assert.Contains("newer flaui-mcp", warning);                // still says WHAT happened
+        Assert.True(File.Exists(CollisionMarker.PathIn(s)), "a future-version marker must be left in place");
+    }
 }
