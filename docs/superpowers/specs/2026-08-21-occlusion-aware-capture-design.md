@@ -120,32 +120,51 @@ offset, and the returned `W/H` describe a rectangle the PNG is not. **The plan m
 bitmap to `captureBounds` before `Encode`**, restoring the invariant explicitly.
 
 **Two coordinate spaces meet at that crop, and the spec must not leave the conversion implied.**
-*(Panel round 2, Fold Auditor.)*
 
-- `captureBounds` is in **absolute screen** coordinates.
-- The `PrintWindow` bitmap is a standalone image whose origin is **`(0,0)`**, corresponding to the
-  window's top-left — which is `GetWindowRect.left/top`, and by F6 the window's own UIA origin.
-- So the crop rectangle is `captureBounds` **offset by the window origin**:
-  `(captureBounds.X - windowRect.X, captureBounds.Y - windowRect.Y, captureBounds.Width, captureBounds.Height)`.
-- **`Encode` receives an ABSOLUTE rectangle**, not a window-relative one. Its mask arithmetic
-  (`clip.X - captureBounds.X`) works on absolute rects and must keep doing so. Translating the value
-  passed to `Encode` as well would double-apply the offset.
+⚠ **Read this subsection as the single source for the crop. It has been rewritten as one block on
+purpose.** Six review rounds each corrected it by appending a paragraph, and the appended correction
+twice failed to reach the instruction it was correcting — leaving a superseded version sitting above a
+fix that a reader working top-to-bottom would implement before ever seeing it. There are no earlier
+drafts left here to follow by mistake.
 
-⚠ **CLAMP ONCE, THEN DERIVE BOTH FROM THE SAME RECTANGLE.** This is the rule, and it is stated this way
-because the obvious two-sentence version of it is wrong — an earlier draft of this spec said "intersect
-the crop with the bitmap" and "`Encode` still receives the unchanged `captureBounds`" in the same
-breath, which silently reintroduces the exact misalignment this subsection exists to prevent. If the
-clamp shrinks the crop and `Encode` is still handed the original larger rect, the scale factor comes off
-the smaller `src.Width` while masks translate against the larger origin. Same bug, new cause.
+**Notation, used consistently below.** Three observations, and which one you use is the whole game:
 
-So:
+| | |
+|---|---|
+| `W1` | the WINDOW rect as observed during the UIA walk |
+| `E` | the element rect from that SAME walk — this is `captureBounds`, absolute screen coordinates |
+| `W2` | the `GetWindowRect` taken at capture time, which sizes the bitmap |
+
+The `PrintWindow` bitmap is a standalone image whose `(0,0)` corresponds to `W2`'s top-left — which is
+`GetWindowRect.left/top`, and by F6 the window's own UIA origin.
+
+**The algorithm:**
 
 ```
-effective = Intersect(cropRectRelativeToWindow, new Rectangle(0, 0, bitmap.Width, bitmap.Height))
+relative  = E offset by W1.Location          // (E.X - W1.X, E.Y - W1.Y, E.Width, E.Height)
+effective = Intersect(relative, new Rectangle(0, 0, bitmap.Width, bitmap.Height))
+if (effective.Width <= 0 || effective.Height <= 0) -> refuse           // see the empty case below
 src       = bitmap cropped to `effective`
-absolute  = effective offset back by the window origin
-Encode(src, absolute, masks, maxWidth)     // src.Size == absolute.Size, by construction
+absolute  = effective offset back by W1.Location
+Encode(src, absolute, masks, maxWidth)       // src.Size == absolute.Size, by construction
 ```
+
+**Three rules that block is enforcing, each of which was a defect in an earlier draft:**
+
+1. **`W1` on BOTH translations, never `W2`.** The element rect and the origin that translates it must
+   come from the same observation, going in and coming back out. Use `W2` on the way in and a pure MOVE
+   misaligns the crop by the movement delta; use `W2` on the way back and the masks land off-target by
+   the same amount, because `Encode`'s arithmetic is absolute and the masks were sampled alongside `E`.
+   *(Panel rounds 5-7. Round 7's fold auditor traced it: window at `(-8,-8,1936,1036)` moving to
+   `(92,92,...)` with an element at `(100,200,300,50)` gives `absolute = (200,300)` under `W2` against
+   masks at `(100,200)` — every mask 100px off.)*
+2. **`Encode` gets an ABSOLUTE rectangle**, not a window-relative one, because its mask arithmetic
+   (`clip.X - captureBounds.X`) is absolute and the masks arrive as absolute screen rects.
+3. **Clamp once, then derive both operands from that one rectangle.** An earlier draft said "intersect
+   the crop with the bitmap" and "`Encode` still receives the unchanged `captureBounds`" in the same
+   breath: the scale factor then comes off the clamped `src.Width` while masks translate against the
+   unclamped origin — the very misalignment this subsection exists to prevent, reintroduced by its own
+   fix. `absolute` is derived FROM `effective`, so it cannot drift from it.
 
 `CaptureResult`'s `X/Y/W/H` then describe the region actually captured rather than the region that was
 requested. *(Panel round 3, Fold Auditor — a defect introduced by round 2's own fix.)*
@@ -190,25 +209,12 @@ result is a flawless-looking PNG of the wrong region, returned as success. That 
 this whole design — a wrong answer that reads as right. *(Panel round 5, Fold Auditor — a gap in round
 4's own fix, the fifth consecutive round in which this has happened.)*
 
-**But this backend makes the resize DETECTABLE, which the scrape did not**, and — separately — it makes
-pure MOVEMENT harmless, which it is not in the obvious implementation. Both follow from one rule:
+**But this backend makes the resize DETECTABLE, which the scrape did not** — and the `W1` rule above has
+already made a pure MOVE harmless rather than merely undetected.
 
-⚠⚠ **THE ELEMENT RECT AND THE WINDOW ORIGIN THAT TRANSLATES IT MUST COME FROM THE SAME OBSERVATION.**
-
-Write `W1` for the window rect observed during the UIA walk, `E` for the element rect from that same
-walk, and `W2` for the `GetWindowRect` taken at capture time to size the bitmap. The bitmap's `(0,0)`
-corresponds to `W2`.
-
-- **The crop offset is `E - W1.Location`, NOT `E - W2.Location`.** If the window merely MOVED between the
-  two reads, the element moved with it, so its offset *within* the window is unchanged — and `E - W1` is
-  that offset. Translating by `W2` instead introduces an error of exactly the movement delta, silently
-  cropping the wrong region. An earlier draft of this section said "offset by the window origin" without
-  saying which one, which is the same ambiguity that has now produced a defect in this section four
-  rounds running.
-- **Compare `W1.Size` against `W2.Size` to detect a RESIZE.** Sizes, not rectangles: a pure move changes
-  the origin and nothing else, and flagging that would be a false positive on a case the rule above has
-  already made safe. *(Panel round 6, Fold Auditor: round 5's text said "any difference", which would
-  have flagged every moved window.)*
+**Compare `W1.Size` against `W2.Size`.** Sizes, not rectangles: a pure move changes only the origin, and
+flagging it would be a false positive on a case the algorithm already handles correctly. *(Panel round 6,
+Fold Auditor: an earlier draft said "any difference", which would have flagged every moved window.)*
 
 Movement and internal relayout without a size change remain undetectable and are accepted as such, per
 §2. A size change does not have to be.
@@ -402,7 +408,7 @@ structurally incomplete, and that criticism was correct.)*
 | Field | Type | Meaning |
 |---|---|---|
 | `captureMethod` | string, exactly `"printWindow"` or `"screenScrape"` | which backend produced the image. Window and element scope report `printWindow`; full-desktop reports `screenScrape` |
-| `captureWarnings` | array of strings, **empty in the normal case** | one sentence per condition that may make this image unusable, each naming its recourse |
+| `captureWarnings` | array of `{code, recourse}` objects, **empty in the normal case** | one entry per condition that may make this image unusable. `code` is a stable identifier to branch on; `recourse` is the sentence telling an agent what to do instead |
 
 `captureMethod` matters because the two scopes now produce images by different mechanisms, and a caller
 comparing them needs to know which it holds. Casing follows the existing metadata, which is camelCase
@@ -410,10 +416,17 @@ throughout (`ScreenshotTools.cs:71-83`).
 
 **`captureWarnings` is deliberately shaped like `unmaskedProcesses`, not like a boolean.** That field is
 already an always-present list which is empty when nothing is wrong and actionable when it is not, and
-this repo's AB-9 reasoning is why. A list solves three problems a `bool` did not: it carries the recourse
-text as its content rather than needing a second field beside it, it does not force a new field per future
-condition, and "empty" reads as an answer rather than as an absence. Its first two entries are §3's
-uniform-canvas diagnostic and §1's window-scope resize warning.
+this repo's AB-9 reasoning is why. A list solves three problems a `bool` did not: it carries its recourse
+alongside its state rather than needing a second field, it does not force a new field per future
+condition, and "empty" reads as an answer rather than as an absence. Its first two `code` values are the
+§3 uniform-canvas diagnostic and the §1 window-scope resize warning.
+
+⚠ **Entries are `{code, recourse}` objects, NOT bare sentences — the analogy to `unmaskedProcesses` holds
+only if they are.** That field carries stable programmatic identifiers (process names); an agent branches
+on them. A list of English prose would force a consumer to regex wording that will drift, which is a
+worse contract than the boolean it replaced, not a better one. `code` is what a caller branches on;
+`recourse` is what §3 requires so the signal arrives with its instruction. *(Panel round 7, Contract
+Integrity — the seat was right that the analogy was being claimed on the axis where it broke.)*
 
 ⚠ **A warning is never a substitute for a refusal where §1 or §4 specifies one.** `captureWarnings`
 annotates an image that was returned; it does not downgrade a case the design decided to refuse.
@@ -534,7 +547,10 @@ for each failure, or NONE — not whether the area was "covered".)*
 
 1. **App classes beyond the five measured.** The probe covered DirectX, Win32, XAML/UWP, WPF and the
    shell. Electron/Chromium was NOT measured — VS Code was not running. **The plan must measure at least
-   one Chromium-family window before this ships**, since it is a common agent target.
+   one Chromium-family window before this ships**, since it is a common agent target. ⚠ **Measure a
+   browser AND an Electron app, not one as a proxy for the other** — Electron embeds Chromium but drives
+   its own compositor and window chrome, so a result from one does not transfer to the other.
+   *(Panel round 7, below-floor item promoted.)*
 2. **`PrintWindow` depends on the TARGET's message loop, and nothing here bounds that wait.** It renders
    by sending `WM_PRINT`/`WM_PRINTCLIENT` synchronously to the target window. The scrape has no such
    dependency — it reads the composited desktop and a hung app cannot block it. Consequences: a hung or
@@ -765,3 +781,29 @@ enumerated all five paths on which a capture now refuses or degrades, quoted eac
 one is an edge case — the ordinary target, a static window simply sitting behind another, still takes a
 path with no clamping and no refusal and returns that window's pixels with masks aligned. Five rounds of
 hardening did not make the common case fragile, which was the specific risk of hardening this hard.
+
+### AGY-AFTER adversarial panel — round 7
+
+Seats: Fold Auditor (round 6's edits, with a three-case numeric trace to run), Contract Integrity (the
+brand-new `captureWarnings` field), First Reader (the whole document read top-to-bottom by someone with
+no memory of the review). Report: `.clavity/scratch/item8-panel/agy-round7.md`. **Verdict: NOT GREEN.**
+Three folds:
+
+- **The fix was appended below the text it was correcting, so the superseded version was still the live
+  instruction.** Two seats found this independently: round 6 introduced the `W1`/`W2` rule at the bottom
+  of §1 while the pseudocode block sixty lines above still said "offset by the window origin" without
+  saying which — and an engineer reading in order implements the wrong one before reaching the fix. The
+  numeric trace was correct and verified by hand: window `(-8,-8,1936,1036)` moving to `(92,92,…)` with
+  an element at `(100,200,300,50)` yields `absolute = (200,300)` against masks at `(100,200)`, every mask
+  100px off. **§1's crop subsection has been REWRITTEN as one block** with the notation defined up front
+  and used throughout, and its three rules stated as consequences. Appending a seventh correction would
+  have repeated the failure.
+- **`captureWarnings` claimed the `unmaskedProcesses` analogy on the axis where it broke.** That field
+  carries stable identifiers an agent branches on; a list of English sentences would force consumers to
+  regex prose that drifts — a worse contract than the boolean it replaced. Entries are now
+  `{code, recourse}`: `code` to branch on, `recourse` to carry §3's required instruction.
+- **Promoted from below the floor:** Electron is not a proxy for a browser. Risk 1 now requires both.
+
+**The First Reader seat is worth keeping in the rotation.** Every other seat reviewed this document
+knowing its history; that one read it as an executing engineer would, and it caught a correction that had
+never reached the thing it corrected — a failure invisible to anyone who already knew what the fix said.
