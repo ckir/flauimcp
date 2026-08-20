@@ -79,6 +79,7 @@ public class RedactionSurfaceInventoryTests
         ["FindQuerySpec.HasNameConstraint"] = "not a UIA read: _q.Name is the CALLER'S SEARCH TERM (FindQuery.Name), never an element property",
         ["FindQuerySpec.MatchesPostFilter"] = "not a UIA read: _q.Name is the caller's search term; the `name` argument compared against it was already redacted by the caller",
         ["RedactionRuleFile.Parse"] = "not a UIA read: r.Name is the RULE's configured name from the operator's own JSON file",
+        ["CollisionMarker.BuildJson"] = "not a UIA read: m.Name is MarketplaceSource.Name, and MarketplaceSource is constructed at exactly two production sites - KnownMarketplaces.Read (a JSON property KEY from Claude Code's known_marketplaces.json) and CollisionMarker.ParseMarketplace (our own marker file, written from the first). No AutomationElement is involved on either path; the whole Install namespace never touches UIA except CheckRedactionRulesCommand, which never constructs one. Re-verify with: grep -rn \"new MarketplaceSource(\" src/",
         ["SensitivityClassifier.Classify"] = "not a UIA read: rule.Name is the matched rule's configured name, which becomes Sensitivity.RuleName",
         ["SnapshotEngine.IsInteractiveNode"] = "reads SnapshotNode.Name but ONLY as IsNullOrWhiteSpace emptiness; exposes no content, not even via branching on it",
         ["SnapshotEngine.SupportedPatterns"] = "not a UIA read: c.Name is a hardcoded pattern label from a (string Name, Func<bool>) tuple - Invoke, Value, etc.",
