@@ -165,6 +165,10 @@ bitmap. **MEASURED on this runtime:** `Bitmap.Clone` with a zero-width, zero-hei
 rectangle throws **`ArgumentException`**, which `ScreenCapture.cs:40` does NOT catch — its filter is
 `COMException or ExternalException`. So the unguarded case escapes as a raw, unmapped exception.
 
+**The requirement is behavioural: the guard must reject a rectangle with no AREA, including one whose
+coordinates are non-zero.** The concrete form follows, and it is named rather than left open because this
+repo has already shipped the wrong form of this exact guard once.
+
 **Guard on EXTENTS, not `IsEmpty`.** This repo has already been bitten by exactly that distinction and
 documents it at `PerceptionManager.cs:942-946`: `Rectangle.Intersect` yields a zero-extent rect at
 NON-ZERO coordinates for rects that merely touch along an edge, and `IsEmpty` is false there. The
@@ -186,16 +190,43 @@ result is a flawless-looking PNG of the wrong region, returned as success. That 
 this whole design — a wrong answer that reads as right. *(Panel round 5, Fold Auditor — a gap in round
 4's own fix, the fifth consecutive round in which this has happened.)*
 
-**But this backend makes the resize DETECTABLE, which the scrape did not.** §2 calls the moving-window
-race inherent, and for MOVEMENT it is. A SIZE change is different: the plan already calls `GetWindowRect`
-to size the bitmap, so it holds a second, later observation of the same window. Comparing it against the
-window rect implied by the UIA walk is free, and any difference is positive evidence that the window
-changed shape between the two reads — at which point the element's stale rect is untrustworthy whether or
-not it happens to be in bounds.
+**But this backend makes the resize DETECTABLE, which the scrape did not**, and — separately — it makes
+pure MOVEMENT harmless, which it is not in the obvious implementation. Both follow from one rule:
 
-The plan owns what to DO with that signal — refuse, or capture and flag — but it does not get to leave
-the signal unread. Note the asymmetry that makes this worth doing: detecting a size change is cheap and
-certain, whereas detecting a pure move or an internal relayout is neither.
+⚠⚠ **THE ELEMENT RECT AND THE WINDOW ORIGIN THAT TRANSLATES IT MUST COME FROM THE SAME OBSERVATION.**
+
+Write `W1` for the window rect observed during the UIA walk, `E` for the element rect from that same
+walk, and `W2` for the `GetWindowRect` taken at capture time to size the bitmap. The bitmap's `(0,0)`
+corresponds to `W2`.
+
+- **The crop offset is `E - W1.Location`, NOT `E - W2.Location`.** If the window merely MOVED between the
+  two reads, the element moved with it, so its offset *within* the window is unchanged — and `E - W1` is
+  that offset. Translating by `W2` instead introduces an error of exactly the movement delta, silently
+  cropping the wrong region. An earlier draft of this section said "offset by the window origin" without
+  saying which one, which is the same ambiguity that has now produced a defect in this section four
+  rounds running.
+- **Compare `W1.Size` against `W2.Size` to detect a RESIZE.** Sizes, not rectangles: a pure move changes
+  the origin and nothing else, and flagging that would be a false positive on a case the rule above has
+  already made safe. *(Panel round 6, Fold Auditor: round 5's text said "any difference", which would
+  have flagged every moved window.)*
+
+Movement and internal relayout without a size change remain undetectable and are accepted as such, per
+§2. A size change does not have to be.
+
+**What a detected size change DOES, settled here rather than deferred** — because it is the tool's
+behavioural contract, not an implementation detail, and the two scopes need different answers:
+
+- **Window scope: capture and warn.** The bitmap is the window's own current content. A resize does not
+  make it wrong, only newer than expected. Refusing would block a capture that is perfectly good.
+- **Element scope: REFUSE, with a retry hint.** The element's rect is from before the resize, so its
+  offset within the window may no longer locate it. The crop can land on the wrong content and be masked
+  consistently — the "flawless-looking PNG of the wrong region" this subsection exists to prevent. This
+  is the case where §3's usual asymmetry inverts: there is no cheap warning available, because the wrong
+  answer is indistinguishable from the right one.
+
+*(Panel round 6, Altitude Auditor and direct question 1: the peer stuck at this exact abdication twice,
+and it was right to. "The plan owns what to do with that signal" was the spec declining to specify its
+own contract.)*
 
 ⚠ **The window rect is not currently available at that site.** `CaptureGeometry`
 (`PerceptionManager.cs:1275`) carries `Bounds` — which for element scope IS the element rect — and no
@@ -363,19 +394,29 @@ before either backend is reached.
 
 ### 5. Contract changes
 
-Two fields join the JSON metadata, both ALWAYS present:
+Two fields join the JSON metadata, both ALWAYS present. **Their names and shapes are settled here, not
+deferred** — they are a wire contract every consuming agent reads, which makes them this spec's business
+rather than the plan's. *(Panel round 6, Altitude Auditor: an API design that delegates its own schema is
+structurally incomplete, and that criticism was correct.)*
 
-| Field | Meaning |
-|---|---|
-| `captureMethod` | which backend produced the image. Window/element report the `PrintWindow` path; full-desktop reports the scrape |
-| the uniform-canvas diagnostic (§3) | `false` on a normal capture; when true, carries its recourse |
+| Field | Type | Meaning |
+|---|---|---|
+| `captureMethod` | string, exactly `"printWindow"` or `"screenScrape"` | which backend produced the image. Window and element scope report `printWindow`; full-desktop reports `screenScrape` |
+| `captureWarnings` | array of strings, **empty in the normal case** | one sentence per condition that may make this image unusable, each naming its recourse |
 
 `captureMethod` matters because the two scopes now produce images by different mechanisms, and a caller
-comparing them needs to know which it holds.
+comparing them needs to know which it holds. Casing follows the existing metadata, which is camelCase
+throughout (`ScreenshotTools.cs:71-83`).
 
-⚠ **Enumerate `captureMethod`'s values in the spec-to-plan handoff.** A contract field with an
-unspecified value set cannot be branched on. Two values, spelled out. Casing follows the existing metadata,
-which is camelCase throughout (`ScreenshotTools.cs:71-83`). *(Panel round 1, PP-4.)*
+**`captureWarnings` is deliberately shaped like `unmaskedProcesses`, not like a boolean.** That field is
+already an always-present list which is empty when nothing is wrong and actionable when it is not, and
+this repo's AB-9 reasoning is why. A list solves three problems a `bool` did not: it carries the recourse
+text as its content rather than needing a second field beside it, it does not force a new field per future
+condition, and "empty" reads as an answer rather than as an absence. Its first two entries are §3's
+uniform-canvas diagnostic and §1's window-scope resize warning.
+
+⚠ **A warning is never a substitute for a refusal where §1 or §4 specifies one.** `captureWarnings`
+annotates an image that was returned; it does not downgrade a case the design decided to refuse.
 
 Both are carried on `CaptureResult`, which today is:
 
@@ -691,3 +732,36 @@ GREEN.** Four folds:
   privacy risk on a test that cannot refute is the operator's ratification, not the plan's. The
   below-floor list has now produced a real finding in several reviews across this project; it is worth
   reading first, not last.
+
+### AGY-AFTER adversarial panel — round 6
+
+Seats: Fold Auditor (round 5's edits), **Goal Auditor** (does the design still achieve its goal after
+five rounds of hardening — count the refusal paths), **Altitude Auditor** (is a 693-line spec now doing
+the plan's job, and conversely what has it left open that it should not have). Report:
+`.clavity/scratch/item8-panel/agy-round6.md`. **Verdict: NOT GREEN.** Three folds, one rejection, and one
+seat clean:
+
+- **Round 5's resize detection said "any difference", which would flag every MOVED window.** Correct as
+  far as it went — and tracing it revealed something worse that neither the peer nor the previous round
+  had: translating the element rect by the CAPTURE-TIME window origin misaligns the crop by exactly the
+  movement delta. Fixed by a rule that makes movement harmless rather than merely undetected: the element
+  rect and the origin that translates it must come from the same observation. Sixth consecutive round in
+  which the previous round's fix carried a defect, and the fourth of those in this one subsection.
+- **The spec was abdicating its own wire contract.** Field names, and the refuse-versus-flag branch for a
+  detected resize, were both left to the plan. The peer stuck at that branch in two successive rounds'
+  "furthest point" answers. Both are now settled: §1 gives window scope a warning and element scope a
+  refusal, and §5 names `captureMethod` and `captureWarnings` with their exact shapes.
+- **`captureWarnings` replaced the planned boolean**, reusing `unmaskedProcesses`' always-present-list
+  idiom. A list carries its own recourse text, absorbs the resize warning without a new field, and makes
+  "empty" an answer rather than an absence.
+
+**Rejected:** that naming the extents guard (`Width <= 0 || Height <= 0`) over-constrains the plan. The
+form is named because the repo has already shipped the wrong form of this exact guard and documents the
+resulting leak at `PerceptionManager.cs:942-946`. A known-recurrence is worth one line of prescription.
+The behavioural requirement is now stated first, with the concrete form as its consequence.
+
+**The Goal Auditor seat came back CLEAN, and that is the most reassuring result of the review.** It
+enumerated all five paths on which a capture now refuses or degrades, quoted each, and confirmed every
+one is an edge case — the ordinary target, a static window simply sitting behind another, still takes a
+path with no clamping and no refusal and returns that window's pixels with masks aligned. Five rounds of
+hardening did not make the common case fragile, which was the specific risk of hardening this hard.
