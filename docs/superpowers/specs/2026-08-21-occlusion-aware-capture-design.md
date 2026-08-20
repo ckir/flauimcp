@@ -138,7 +138,8 @@ drafts left here to follow by mistake.
 The `PrintWindow` bitmap is a standalone image whose `(0,0)` corresponds to `W2`'s top-left — which is
 `GetWindowRect.left/top`, and by F6 the window's own UIA origin.
 
-**The algorithm:**
+**The algorithm — ELEMENT SCOPE ONLY.** Window scope needs none of it: `captureBounds` is the window
+rect, the bitmap is the window, and `src.Size == captureBounds.Size` holds without a crop.
 
 ```
 relative  = E offset by W1.Location          // (E.X - W1.X, E.Y - W1.Y, E.Width, E.Height)
@@ -148,6 +149,18 @@ src       = bitmap cropped to `effective`
 absolute  = effective offset back by W1.Location
 Encode(src, absolute, masks, maxWidth)       // src.Size == absolute.Size, by construction
 ```
+
+⚠ **A DEGENERATE WINDOW is a separate case that precedes all of this, and applies to BOTH scopes.** If
+`W2` has zero or negative extents there is no bitmap to allocate — `PrintWindow` has nothing to render
+into — so the capture cannot proceed on either scope. Guard it where the bitmap is created, before the
+crop, and refuse.
+
+That refusal is **not** an exception to "window scope captures and warns on a resize" below. That rule
+governs a window that resized to a different VALID size, where the pixels are real and merely newer than
+expected. A window with no extents has no pixels at all, and the two cases must not be conflated.
+*(Panel round 8, Integration Auditor: it read the algorithm's refusal as contradicting the window-scope
+policy. The refusal is element-scoped, which the block now says — but tracing that surfaced a real gap,
+because nothing guarded the degenerate window on either path.)*
 
 **Three rules that block is enforcing, each of which was a defect in an earlier draft:**
 
@@ -418,8 +431,18 @@ throughout (`ScreenshotTools.cs:71-83`).
 already an always-present list which is empty when nothing is wrong and actionable when it is not, and
 this repo's AB-9 reasoning is why. A list solves three problems a `bool` did not: it carries its recourse
 alongside its state rather than needing a second field, it does not force a new field per future
-condition, and "empty" reads as an answer rather than as an absence. Its first two `code` values are the
-§3 uniform-canvas diagnostic and the §1 window-scope resize warning.
+condition, and "empty" reads as an answer rather than as an absence.
+
+**The two `code` values it ships with, spelled out** — naming them by their section number left the wire
+contract undefined, which is the same abdication §5 exists to close:
+
+| `code` | fires when | `recourse` says, in substance |
+|---|---|---|
+| `uniformCanvas` | §3's detector finds the full window bitmap effectively one colour | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
+| `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture | the window changed size mid-capture, so this image is newer than the request; re-capture if the exact prior state mattered |
+
+Codes are camelCase, matching every other field in this response. *(Panel round 8, Fold Auditor: round
+7 settled the SHAPE and dropped the VALUES.)*
 
 ⚠ **Entries are `{code, recourse}` objects, NOT bare sentences — the analogy to `unmaskedProcesses` holds
 only if they are.** That field carries stable programmatic identifiers (process names); an agent branches
@@ -468,13 +491,22 @@ capture so we never hand back a black frame" — is exactly what stops being gua
 plan's edit list. *(Panel round 1, LI-3.)*
 
 ⚠ **The tool description's metadata ENUMERATION must be extended too — this is the third required edit to
-that same string, and it is repeated here deliberately.** `ScreenshotTools.cs:17` lists the contract
-explicitly as `{bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses}`. A
-field present in the payload but missing from that list is one the model has no reason to read. The
-requirement is argued in §3, where it belongs alongside the diagnostic's rationale — but an engineer
+that same string, and it is repeated here deliberately.** `ScreenshotTools.cs:17` currently lists the
+contract as `{bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses}`. A
+field present in the payload but missing from that list is one the model has no reason to read.
+
+**The REQUIRED end state, so nobody copies the line above by mistake:**
+
+```
+{bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses,captureMethod,captureWarnings}
+```
+
+The requirement is argued in §3, where it belongs alongside the diagnostic's rationale — but an engineer
 working through the contract changes will be reading THIS section, not the failure policy, so the
 obligation is recorded in both. *(Panel round 5, Disposition Challenger: a correct fold placed where the
-person who has to act on it would not look.)*
+person who has to act on it would not look. Panel round 8, First Reader: the paragraph then quoted the
+OLD string as its only concrete artifact, so a reader following it literally would paste back exactly the
+omission it warns against.)*
 
 ## Out of scope
 
@@ -601,7 +633,9 @@ for each failure, or NONE — not whether the area was "covered".)*
    size, so a 4K-wide window is a ~33 MB managed bitmap plus its GDI twin, per capture, in a long-lived
    server. Not a defect — a property the plan should state rather than discover. *(Panel round 1, RV-1.)*
 8. **Popup masks and popup pixels come apart.** This repo grafts masks from popup roots into a window's
-   mask set (`PopupFinder.SearchRoots`, pinned by `PopupRootCoverageTests`). A popup is a SEPARATE
+   mask set (`PopupFinder.SearchRoots`, pinned by `PopupRootCoverageTests` — VERIFIED: that test's own
+   doc comment at `:9` states it routes find through `PopupFinder.SearchRoots` so a window-child popup is
+   reachable, and `SearchRoots` is called from nine sites in `PerceptionManager.cs`). A popup is a SEPARATE
    top-level HWND: the scrape includes its pixels and the grafted mask covers them, but `PrintWindow`
    renders one window and its CHILD windows, so the popup's pixels are absent while its mask rect
    survives. The result is a black rectangle over ordinary window content and a `redactions` count that
@@ -807,3 +841,31 @@ Three folds:
 **The First Reader seat is worth keeping in the rotation.** Every other seat reviewed this document
 knowing its history; that one read it as an executing engineer would, and it caught a correction that had
 never reached the thing it corrected — a failure invisible to anyone who already knew what the fix said.
+
+### AGY-AFTER adversarial panel — round 8
+
+Seats: First Reader second pass (on the rewritten text), Fold Auditor (round 7's rewrite, with the
+three-case numeric trace re-run against the NEW wording), Integration Auditor (how the design's pieces
+interact with EACH OTHER rather than whether each is individually right). Report:
+`.clavity/scratch/item8-panel/agy-round8.md`. **Verdict: NOT GREEN.** Three folds:
+
+- **A degenerate window was unguarded on BOTH paths.** The Integration Auditor read §1's empty-crop
+  refusal as contradicting "window scope captures and warns on a resize". It does not — that refusal is
+  element-scoped, which the algorithm block now says explicitly. But tracing the supposed conflict
+  surfaced a real gap: a window whose rect has zero or negative extents has no bitmap to allocate, and
+  nothing guarded it on either scope. A finding whose framing was wrong and whose direction was right.
+- **Round 7 settled `captureWarnings`' SHAPE and dropped its VALUES.** `uniformCanvas` and
+  `windowResized` are now named, with what each `recourse` must convey.
+- **The tool-description paragraph was a copy-paste trap.** It told the implementer to extend the
+  enumeration while quoting the OLD string as its only concrete artifact — so a reader following it
+  literally reproduces the omission it warns against. The required end state is now written out in full.
+
+**The Fold Auditor re-ran the numeric trace against the rewritten algorithm and it came back correct in
+all three cases** — move, resize, and both — with `absolute` landing exactly on `E` in the move case,
+which is the property that makes movement harmless. The rewrite dropped no constraint. That was the check
+that mattered: consolidating six rounds of scattered corrections into one block is exactly where a
+constraint goes missing.
+
+**Also settled this round:** Risk 8's claim that `PopupRootCoverageTests` pins `PopupFinder.SearchRoots`
+had been flagged as unverified in three consecutive rounds' "what did you not check" answers. Verified and
+annotated in place.
