@@ -30,7 +30,12 @@ public sealed class ClaudePluginRegistrar
         if (add.Code != 0)
             return new AgentResult("claude", AgentChange.Failed, $"marketplace add failed (exit {add.Code}): {add.Output}");
 
-        _cli.Invoke(Claude, "plugin", "uninstall", PluginIds.PluginName);                            // swallow
+        // D1: QUALIFIED, never the bare name. `PluginIds.PluginName` matches a plugin named `flaui-mcp`
+        // from ANY marketplace — including the user's own `flaui-mcp@flaui-mcp` copy that
+        // ClaudeCollisionRemedy has just carefully disabled and recorded, which this swallowed sweep then
+        // destroyed (MEASURED 2026-08-20: exit 0, "Successfully uninstalled", list becomes EMPTY). Both
+        // subsystems were individually correct; the defect lived only in their sequence.
+        _cli.Invoke(Claude, "plugin", "uninstall", PluginIds.InstallTarget);                          // swallow
         var install = _cli.Invoke(Claude, "plugin", "install", PluginIds.InstallTarget, "--scope", "user");
         if (install.Code != 0)
             return new AgentResult("claude", AgentChange.Failed, $"plugin install failed (exit {install.Code}): {install.Output}");
@@ -58,7 +63,7 @@ public sealed class ClaudePluginRegistrar
     {
         if (!_cli.IsPresent(Claude))
             return new AgentResult("claude", AgentChange.NotFound, "claude CLI not found — skipped");
-        _cli.Invoke(Claude, "plugin", "uninstall", PluginIds.PluginName);                            // swallow
+        _cli.Invoke(Claude, "plugin", "uninstall", PluginIds.InstallTarget);                          // swallow
         var mkt = _cli.Invoke(Claude, "plugin", "marketplace", "remove", PluginIds.MarketplaceName);
         return mkt.Code == 0
             ? new AgentResult("claude", AgentChange.Removed, "claude plugin + marketplace removed")
