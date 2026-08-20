@@ -285,7 +285,7 @@ public class ClaudeCollisionRestoreTests
     {
         var cli = new FakeCli();
         var s = TempState();
-        File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 2, "disabled": [] }""");
+        File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 3, "disabled": [] }""");
 
         var warning = new ClaudeCollisionRemedy(cli.Run, s).Restore();
 
@@ -311,7 +311,7 @@ public class ClaudeCollisionRestoreTests
         {
             case "absent":  break;                                                             // no marker file
             case "corrupt": File.WriteAllText(CollisionMarker.PathIn(s), "{ torn"); break;
-            case "future":  File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 2, "disabled": [] }"""); break;
+            case "future":  File.WriteAllText(CollisionMarker.PathIn(s), """{ "version": 3, "disabled": [] }"""); break;
             case "present": CollisionMarker.Record(s, new[] { new DisabledEntry("flaui-mcp@flaui-mcp", "user", null) }); break;
         }
 
