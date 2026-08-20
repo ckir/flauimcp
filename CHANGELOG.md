@@ -3,6 +3,62 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### BREAKING
+
+- **`desktop_snapshot_stats.redacted` is now `osPasswordCount`.** It always counted OS-flagged password
+  nodes only, never the rule-redacted ones — `redactedCount` is the total and is unchanged. Two same-rooted
+  names for two different quantities mislead by default, and this was the last moment to fix it for free.
+  This break is LOUD: a consumer reading `redacted` gets a missing field immediately. No alias is kept,
+  because an alias would preserve exactly the ambiguity being removed.
+
+- **`desktop_get_focused_element`'s `window.title` changed MEANING, and this break is SILENT.** It used to
+  carry the focused ELEMENT's name; it now carries the owning WINDOW's title, which is what the field name
+  always claimed. Unlike the rename above, this sails through deserialization and simply returns different
+  data — an agent waiting on `window.title == "Submit"` does not fail, it waits forever. The field name was
+  kept deliberately: `title` is the correct name for a window title, and renaming it would surrender the
+  right name permanently just to manufacture a compile-time break. **If you have a script keyed on the old
+  value, change it now.** The element's name is still available, through `descriptor` (rendered classified)
+  and through `ref` + `desktop_get_text`.
+
+### Security
+
+- **The screenshot mask no longer fails open.** A redacted element whose `BoundingRectangle` could not be
+  read contributed no mask rect and its pixels were captured — the same fail-open shape as DEF-1, on the
+  other half of the same line, and it survived the SP3 fix. The mask now escalates to an ancestor, and
+  REFUSES the capture (`RedactionUnmaskable`) when no usable ancestor remains. Refusing beats returning a
+  successful all-black image, which an agent would hallucinate contents for or loop on.
+  The refusal reaches all three pixel paths, including full-desktop capture and the `desktop_find_text` OCR
+  path, both of which previously swallowed it.
+
+- **`desktop_get_focused_element` no longer publishes element content as a window title.** See BREAKING
+  above; the leak and the contract fix are the same change.
+
+- **A full-desktop capture now says which windows it could not inspect.** A window whose geometry could not
+  be resolved — typically an ELEVATED one, unbindable by a non-elevated UIA client — was skipped silently
+  and photographed anyway. It is still skipped, because refusing would break any desktop with an admin
+  terminal open, but the new `unmaskedProcesses` metadata field names those processes. A non-empty list
+  means the image is not fully redacted. UIA could never read those windows' contents, so no redaction ever
+  applied to them; this makes that visible rather than implied.
+
+### Added
+
+- **`desktop_screenshot` metadata gains `maskEscalations`, `escalated` and `unmaskedProcesses`**, all three
+  always present (0 / empty when nothing happened), because a diagnostic that appears only on failure
+  teaches consumers to ignore its absence. `escalated` carries `{automationId, controlType}` and never the
+  element's name — that is the identity the mask exists to hide.
+
+- **New error code `RedactionUnmaskable`**, distinct from `CaptureUnavailable` so a script never has to
+  scrape message text to tell "the desktop is unavailable" from "this cannot be masked safely".
+
+- **⚠ RETROSPECTIVE DISCLOSURE — DEF-3 was reachable in the DEFAULT configuration of every prior release.**
+  Before SP3, a `desktop_find` name query containing the redaction token matched redacted elements, so one
+  `contains` query returned the full set of password-field refs and bounds. This needed **no** operator
+  redaction rules: the OS `IsPassword` flag alone was enough, which is the shipping default. Every install
+  before SP3 was affected, not only adopters of the SP3 rule feature. Fixed in SP3; disclosed here because
+  the original note understated the population as rule-adopters only.
+
 ## [0.20.0] - 2026-07-29
 
 ### Added

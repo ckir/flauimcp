@@ -618,11 +618,32 @@ public sealed class WindowManager : IDisposable, IHwndSource
             // True top-level window via Win32 GA_ROOT; fall back to the foreground window
             // (a focused element is always in it) when the element exposes no own HWND.
             hwnd = hwnd != IntPtr.Zero ? GetAncestor(hwnd, GA_ROOT) : GetForegroundWindow();
-            int pid = -1; string title = "";
+            int pid = -1;
             try { pid = focused.Properties.ProcessId.ValueOrDefault; } catch { }
-            try { title = focused.Properties.Name.ValueOrDefault ?? ""; } catch { }
             if (hwnd == IntPtr.Zero) return null;
-            var handle = Register(_automation.FromHandle(hwnd).AsWindow(), pid);
+            var root = _automation.FromHandle(hwnd).AsWindow();
+
+            // A5: `title` is the OWNING WINDOW's title. It used to be `focused.Properties.Name` — the
+            // focused ELEMENT's Name, i.e. element content, published as `window.title` with no classifier
+            // touchpoint. Win32 first, for the reason this file already documents at :340: a UIA property
+            // read on the query STA can block with NO timeout on an unresponsive window; GetWindowText
+            // cannot.
+            string title = WindowTitle(hwnd) ?? "";
+
+            // Some frameworks draw their own title bar, leaving the Win32 caption empty while the visible
+            // title exists only in the UIA tree; returning empty there would silently blind the agent to
+            // those windows' titles. The WINDOW ROOT's Name IS the window's title — this is NOT a return to
+            // the defect above, which read the FOCUSED ELEMENT's Name. It is ordered second because it is
+            // the slower, blockable source, not because it is the wrong one.
+            //
+            // ⚠ EXCEPTION-GUARDED DELIBERATELY: this is a cross-process COM call and throws on an
+            // unresponsive or tearing-down window. Unguarded, a harmless captionless window would crash
+            // desktop_get_focused_element outright — reintroducing the exact unhandled-UIA failure mode that
+            // moving to GetWindowText exists to escape. A throw degrades to an empty title, as an empty read
+            // does.
+            if (title.Length == 0) { try { title = root.Properties.Name.ValueOrDefault ?? ""; } catch { } }
+
+            var handle = Register(root, pid);
             return (handle, title, pid);
         });
 

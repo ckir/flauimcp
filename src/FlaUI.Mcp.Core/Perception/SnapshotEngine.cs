@@ -185,7 +185,7 @@ public static class SnapshotEngine
         // Fail-closed, identity unreadable (capstone L2). Marked so an operator can tell this apart from a
         // rule they wrote; an OS password still carries no marker, only the [REDACTED] name.
         else if (n.Sensitivity.Source == RedactionSource.Unreadable) state.Add("redacted:unreadable");
-        string shownName = n.Sensitivity.Redact ? "[REDACTED]" : n.Name;
+        string shownName = n.Sensitivity.Redact ? ElementContent.RedactedToken : n.Name;
         var sb = new StringBuilder();
         sb.Append(n.Indent).Append('[').Append(n.Ref).Append("] ").Append(n.ControlType).Append(' ')
           .Append('"').Append(shownName).Append('"')

@@ -59,7 +59,7 @@ public sealed class FindTextTools
             var geo = await _perception.ResolveTextCaptureGeometryAsync(new WindowHandle(window), region); // Step 0 shape
             if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"OCR of windows owned by '{geo.DeniedProcess}' is blocked.", "target a non-sensitive window");
             if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
-            var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.PasswordRects, maxWidth: 0)); // maxWidth:0 -> best OCR accuracy (still 1920-clamped)
+            var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.MaskRects, maxWidth: 0)); // maxWidth:0 -> best OCR accuracy (still 1920-clamped)
             var matches = await _finder.FindAsync(query, cap.Png, mode, all,
                 cap.ScaleApplied, cap.X, cap.Y, geo.WindowLeft, geo.WindowTop, geo.WindowWidth, geo.WindowHeight);
             return ToolResponse.Ok(new
@@ -101,9 +101,13 @@ public sealed class FindTextTools
                 // ~50-150ms CAPTURE, which stays on Task.Run). If the window vanished mid-wait, treat as not-found.
                 TextCaptureGeometry geo;
                 try { geo = await _perception.ResolveTextCaptureGeometryAsync(new WindowHandle(window), region); }
-                catch (ToolException) { return false; } // window vanished/closed mid-wait -> not found; an UNEXPECTED exception propagates (surfaced by ToolResponse.Guard) so a real bug isn't hidden as a timeout
+                // A1: a RedactionUnmaskable refusal must NOT degrade to "not found". This path captures the
+                // same pixels the screenshot path refused to show and OCRs them, so swallowing the refusal
+                // would read back in plaintext exactly what the mask was there to withhold. Every OTHER
+                // ToolException still means the window vanished/closed mid-wait -> not found.
+                catch (ToolException ex) when (ex.Code != ToolErrorCode.RedactionUnmaskable) { return false; }
                 if (geo.Denied || geo.Minimized) return false;
-                var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.PasswordRects, maxWidth: 0));
+                var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.MaskRects, maxWidth: 0));
                 var matches = await _finder.FindAsync(query, cap.Png, MatchMode.Fuzzy, all: false,
                     cap.ScaleApplied, cap.X, cap.Y, geo.WindowLeft, geo.WindowTop, geo.WindowWidth, geo.WindowHeight);
                 if (matches.Count > 0) { found = matches; return true; }

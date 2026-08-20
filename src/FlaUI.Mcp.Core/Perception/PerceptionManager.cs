@@ -207,7 +207,7 @@ public sealed class PerceptionManager
                 // — a selector must not be usable as a password-field name oracle.
                 var sens = ElementContent.SensitivityOf(el, _classifier, procName);
                 string rawName = SafeRead(() => el.Name, "") ?? string.Empty;
-                string name = sens.Redact ? "[REDACTED]" : rawName;
+                string name = sens.Redact ? ElementContent.RedactedToken : rawName;
                 bool enabled = SafeRead(() => el.IsEnabled, false);
                 // DEF-3: withhold a redacted element from NAME search only — matching it on the token made
                 // the selector a locator oracle for every password field. Driven by the ELEMENT's
@@ -845,30 +845,285 @@ public sealed class PerceptionManager
             nodes.GroupBy(n => n.ControlType.ToString()).ToDictionary(g => g.Key, g => g.Count()));
     }
 
-    public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref) =>
+    /// <param name="skipIfNoRenderableOverlap">TRUE only for the full-desktop mask sweep, where a window with no
+    /// renderable overlap contributes no pixels and may be skipped. FALSE for a caller that NAMED this
+    /// window and will photograph its rect regardless — suppressing that window's masks would hand back an
+    /// unmasked image of the named target, which is the one thing this feature must not do.</param>
+    public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref,
+                                                                   bool skipIfNoRenderableOverlap = false) =>
         _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
             var procName = SafeProcessName(win);
             if (PerceptionPolicy.IsDenied(procName))
-                return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), false, true, procName);
+                return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), false, true, procName, System.Array.Empty<MaskEscalationEntry>());
             try
             {
                 var wp = win.Patterns.Window.PatternOrDefault;
                 if (wp is not null && wp.WindowVisualState.ValueOrDefault == FlaUI.Core.Definitions.WindowVisualState.Minimized)
-                    return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), true, false, null);
+                    return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), true, false, null, System.Array.Empty<MaskEscalationEntry>());
             }
-            catch { }
-            var target = string.IsNullOrEmpty(@ref) ? (AutomationElement)win : _refs.Resolve(handle.Id, @ref!, PopupFinder.SearchRoots(win, desktop));
-            var pw = new List<System.Drawing.Rectangle>();
-            foreach (var rootEl in PopupFinder.SearchRoots(win, desktop))
+            // ⚠ Criticals excluded: a bare catch here swallowed OutOfMemoryException too, which defeated the
+            // filters on every converting catch below it. Added at capstone round 3.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException) { _ = ex; }
+            // ⚠ THE REF RESOLUTION IS GUARDED TOO, and it was NOT until a capstone round pointed at it.
+            // `PopupFinder.SearchRoots` is a UIA walk of its own, and it sits OUTSIDE the blanket
+            // conversion further down — so on a tearing-down window it threw a raw COMException that
+            // escaped this method entirely. That is not a mask leak (no image is returned), but it is two
+            // real defects: the agent gets `INTERNAL` instead of `RedactionUnmaskable` and so cannot branch
+            // on it, and ToolResponse.GuardImage puts `ex.Message` on the wire — UNCLASSIFIED third-party
+            // text, which is the exact thing this increment removed from the diagnostics below.
+            //
+            // ⚠ Evaluated ONLY when @ref is non-empty: the ternary short-circuits, so the full-desktop
+            // path (which passes @ref = null and whose caller swallows) never reaches SearchRoots here.
+            // That is why this was not also a silent full-desktop leak.
+            AutomationElement target;
+            try
             {
-                // DEF-1: this read used to be RAW (`d.Properties.IsPassword.ValueOrDefault`) inside the inner
-                // catch, so a provider that THREW yielded no rect — text redacted, PIXELS CAPTURED, while all
-                // eleven text sites failed closed. SensitivityOf routes through the same classifier, which
-                // fails closed on a throw AND honours configured rules, not just the OS password flag.
-                try { foreach (var d in rootEl.FindAllDescendants()) { try { if (ElementContent.SensitivityOf(d, _classifier, procName).Redact) pw.Add(d.BoundingRectangle); } catch { } } } catch { }
+                target = string.IsNullOrEmpty(@ref) ? (AutomationElement)win : _refs.Resolve(handle.Id, @ref!, PopupFinder.SearchRoots(win, desktop));
             }
-            return new CaptureGeometry(target.BoundingRectangle, pw, false, false, null);
+            // RefNotFound is a deliberate, already-classified outcome — re-wrapping it would destroy the
+            // code an agent branches on, exactly as in the blanket conversion below.
+            catch (ToolException) { throw; }
+            // ⚠ A CRITICAL failure is not a redaction outcome — same filter, same reason as the blanket
+            // catch below: telling the agent to "retry once the UI has settled" while the process is dying
+            // would hide the real cause. Added at capstone round 2; the plan filtered only the blanket one.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException)
+            {
+                throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                    $"Could not resolve the capture target in window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
+                    "retry once the UI has settled, or capture a different window");
+            }
+            // ⚠ EVERY FAILURE FROM HERE TO THE RETURN MUST BECOME RedactionUnmaskable, NEVER A RAW
+            // EXCEPTION. AllMaskRectsAsync (the FULL-DESKTOP path) wraps this call in a skip-and-continue
+            // catch and rethrows ONLY RedactionUnmaskable. (That catch is no longer bare - it excludes
+            // criticals since capstone round 2, and records the process in unmaskedProcesses since AB-9 -
+            // but it still SKIPS, which is what matters here.) So a raw COMException
+            // escaping here does not fail the capture — it silently drops this window's ENTIRE mask set and
+            // photographs it in the clear. That is a leak, and it defeats two decisions at once: A1's
+            // refusal, and the strict-on-roots[0] rule below, whose whole point is that a dead target must
+            // not be quietly skipped.
+            //
+            // Note this hazard PREDATES SP4 — the old code read target.BoundingRectangle unguarded at its
+            // return statement, with the same swallow downstream. It is fixed here because A1 is what makes
+            // the difference between "no mask" and "refuse" load-bearing.
+            //
+            // This read keeps its OWN guard even though a blanket conversion follows, because it is the one
+            // failure worth naming precisely in the message an operator reads.
+            System.Drawing.Rectangle captureBounds;
+            try { captureBounds = target.BoundingRectangle; }
+            // ⚠ A CRITICAL failure is not a redaction outcome — same filter, same reason as the blanket
+            // catch below: telling the agent to "retry once the UI has settled" while the process is dying
+            // would hide the real cause. Added at capstone round 2; the plan filtered only the blanket one.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException)
+            {
+                throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                    $"Could not read the capture bounds of window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
+                    "retry once the UI has settled, or capture a different window");
+            }
+
+            // The yardstick is the capture clipped to the RENDERABLE desktop. A maximized window's rect
+            // bleeds past the monitor by its invisible resize border, and comparing against that bleed is
+            // what let a full-monitor mask pass the blacks-out check. Read once, so the rect the decision
+            // judges against is the same rect returned as Bounds and ultimately captured.
+            // ⚠ It does NOT eliminate movement-induced misalignment: if the window moves mid-walk, live mask
+            // rects land against a stale capture rect. Reading it AFTER the walk just inverts which side is
+            // stale. That race is inherent to capturing a moving window — do not read this as claiming
+            // otherwise.
+            var yardstick = System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds());
+
+            // ⚠ A window with NO renderable overlap contributes no pixels to any capture, so there is
+            // nothing here to withhold and nothing to refuse over. Returning early is not a shortcut: it is
+            // what stops one invisible off-screen window with a broken provider from refusing — and, on the
+            // full-desktop path, FATALLY FAILING — a capture it could not have appeared in.
+            //
+            // ⚠ Tested on EXTENTS, not Rectangle.IsEmpty. IsEmpty requires all four fields to be zero, while
+            // Rectangle.Intersect compares with `>=` and so yields a zero-width rect at NON-ZERO coordinates
+            // — (100, 50, 0, 30) — for two rects that merely touch along an edge. IsEmpty is false there,
+            // and the walk would then judge every mask against a degenerate yardstick that nothing
+            // intersects: every mask dropped, capture returned unmasked. A guard producing a leak.
+            if (yardstick.Width <= 0 || yardstick.Height <= 0)
+            {
+                // ⚠⚠ TWO CALLERS, TWO CORRECT ANSWERS, AND THEY ARE NOT THE SAME ANSWER. This is why the
+                // parameter exists: the method cannot infer which caller it is serving, and guessing was
+                // wrong in BOTH directions across two review rounds.
+                //
+                // FULL-DESKTOP (skipIfNoRenderableOverlap: true): a window with no renderable overlap contributes no
+                // pixels to a virtual-screen capture, so there is nothing to withhold. Return an empty mask
+                // set. This is what stops ONE invisible off-screen window with a broken provider from
+                // refusing — and so fatally failing — a whole-desktop capture it could not have appeared in.
+                //
+                // WINDOW- OR ELEMENT-SCOPED (false, the default): the caller NAMED this window and will
+                // photograph its rect whatever is or is not rendered there. Suppressing its masks would
+                // hand back an unmasked image of the named target, which is the one thing this feature must
+                // not do. Fall back to the unclipped rect and compute masks normally — the maximized-bleed
+                // case the clipping exists for cannot arise when nothing is on screen to bleed over.
+                if (skipIfNoRenderableOverlap)
+                    return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
+                                               false, false, null, System.Array.Empty<MaskEscalationEntry>());
+                // ⚠ The UNCLIPPED rect becomes the yardstick here, and MaskEscalation's parameter contract
+                // says that is allowed: the requirement is NON-DEGENERATE, not "clipped". Clipping has
+                // already produced a degenerate rect for this target, and judging every mask against THAT
+                // would discard them all and return an unmasked image of a window the caller named.
+                yardstick = captureBounds;
+            }
+
+            var pw = new List<System.Drawing.Rectangle>();
+            var escalations = new List<MaskEscalationEntry>();
+
+            // ⚠ ONE BLANKET CONVERSION, not a guard per read. Round 4 wrapped the capture-bounds read and
+            // the roots[0] enumeration individually and STILL missed PopupFinder.SearchRoots, which is a
+            // UIA walk of its own. Any raw exception escaping this region is swallowed by
+            // AllMaskRectsAsync's skip-and-continue catch on the full-desktop path and becomes a window
+            // photographed with NO mask set — so the safe default has to be structural, not a list of remembered sites.
+            //
+            // A ToolException passes through UNCHANGED: those are deliberate, already-classified outcomes
+            // (RefNotFound from the ref resolution above, and the RedactionUnmaskable refusals raised
+            // inside the loop), and re-wrapping them would destroy the code an agent branches on.
+            //
+            // ⚠ THE EXCEPTION'S TYPE NAME GOES ON THE WIRE, NEVER ITS MESSAGE. An earlier revision
+            // interpolated ex.Message, which is UNCLASSIFIED THIRD-PARTY TEXT of unknown provenance being
+            // written into a payload an agent reads — a direct violation of this increment's own binding
+            // constraint 1 ("no content may reach the wire unclassified"), inside the one feature whose
+            // whole subject is that constraint. A type name is bounded, diagnostic enough to route an
+            // investigation, and cannot carry an element's Name or value.
+            //
+            // Nothing on the query path is cancellable, so this broad catch reclassifies no cancellation:
+            // VERIFIED at AutomationDispatcher.cs:61, RunQueryAsync is `_query.RunAsync(func)` with no
+            // timeout and no CancellationToken (only the ACTION path has AwaitWithTimeout).
+            try
+            {
+            var roots = PopupFinder.SearchRoots(win, desktop);
+            for (int rootIndex = 0; rootIndex < roots.Count; rootIndex++)
+            {
+                // ⚠ ONE SOURCE PER ROOT, and it is CONSTRUCTED FROM THAT ROOT. The root is what bounds the
+                // ancestor climb: without it the walk sails through the window into the desktop, masks
+                // everything, and returns a successful all-black image instead of refusing. Ancestor chains
+                // never cross a root boundary, so a per-root cache is exactly as coherent as a per-capture
+                // one and its bound is unambiguous.
+                var ancestors = new AncestorRectSource(roots[rootIndex], rootIsWindow: rootIndex == 0);
+                AutomationElement[] descendants;
+                if (rootIndex == 0)
+                {
+                    // roots[0] IS the window (PopupFinder.cs:16). A failure here is the TARGET dying, not a
+                    // popup closing mid-scan, and swallowing it returns a capture whose mask set is empty
+                    // because the tree could not be read — a leak dressed as a successful screenshot.
+                    // FindAsync (:583-596) and EvaluateSelectorValueAsync (:745-760) already draw exactly
+                    // this line for exactly this reason; this makes the third sibling agree with them.
+                    //
+                    // ⚠ CONVERTED, not propagated raw. Letting a COMException escape would be caught by
+                    // AllMaskRectsAsync's skip-and-continue catch on the full-desktop path and turn this
+                    // strictness into a SKIP - the precise opposite of the decision this branch encodes.
+                    // (Since AB-9 the skip is reported in unmaskedProcesses rather than silent, but a
+                    // REPORTED skip is still not the REFUSAL this branch exists to produce.)
+                    try { descendants = roots[rootIndex].FindAllDescendants(); }
+                    // ⚠ A CRITICAL failure is not a redaction outcome — same filter, same reason as the blanket
+                    // catch below: telling the agent to "retry once the UI has settled" while the process is dying
+                    // would hide the real cause. Added at capstone round 2; the plan filtered only the blanket one.
+                    catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                                      and not System.OperationCanceledException)
+                    {
+                        throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                            $"Could not enumerate window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
+                            "retry once the UI has settled, or capture a different window");
+                    }
+                }
+                else
+                {
+                    // PER-ROOT isolation, POPUPS only: a tooltip or menu closing mid-scan must not fail the
+                    // window's own capture. A root that throws contributes nothing.
+                    // ⚠ Criticals excluded (capstone round 3). The LENIENCY here is deliberate - see AB-11
+                    // and decision D3 - but it was leniency toward EVERYTHING, including a dying process.
+                    try { descendants = roots[rootIndex].FindAllDescendants(); }
+                    catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                                      and not System.OperationCanceledException)
+                    { _ = ex; continue; }
+                }
+
+                foreach (var d in descendants)
+                {
+                    // DEF-1: this read used to be RAW (`d.Properties.IsPassword.ValueOrDefault`) inside a
+                    // swallowing catch, so a provider that THREW yielded no rect — text redacted, PIXELS
+                    // CAPTURED, while all eleven text sites failed closed. SensitivityOf routes through the
+                    // same classifier, which fails closed on a throw AND honours configured rules.
+                    // ⚠ THIS CATCH IS UNREACHABLE TODAY, and saying so is the point of writing it down.
+                    // TRACED at ef17ed9: every path inside SensitivityOf swallows — RedactionPolicy
+                    // .IsPasswordOrFailClosed (RedactionPolicy.cs:10), ElementContent.SafeIdentity
+                    // (ElementContent.cs:137), RedactionRule.Safe and RedactionRule.IsMatch
+                    // (RedactionRules.cs:66,73, the latter `catch { return true; }`). It is kept as
+                    // defence-in-depth against a future change INSIDE the classifier, and it fails CLOSED,
+                    // because the failure it guards against is a silent pixel leak. Do not read it as
+                    // evidence that SensitivityOf throws, and do not write a test for it — nothing can
+                    // reach it.
+                    //
+                    // The sharper reason to LABEL it rather than delete it: an unlabelled catch here reads
+                    // as "the CALLER provides the fail-closed guarantee". A future developer who believed
+                    // that could strip the fail-closed logic from inside ElementContent and leave the eleven
+                    // TEXT egress sites - which have no such catch - silently leaking, while the pixel path
+                    // kept working and hid the regression.
+                    Sensitivity sens;
+                    // ⚠ Criticals excluded (capstone round 3): failing CLOSED is right for a classifier
+                    // error, but an OOM is not a classification outcome and must not be laundered into one.
+                    try { sens = ElementContent.SensitivityOf(d, _classifier, procName); }
+                    catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                                      and not System.OperationCanceledException)
+                    { _ = ex; sens = Sensitivity.UnreadableIdentity; } // an element we cannot CLASSIFY is
+                                                                       // masked, never skipped
+                    if (!sens.Redact) continue;
+
+                    // A1: the rect read used to sit in that same swallowing catch, so a redact-worthy
+                    // element whose BoundingRectangle THREW contributed NO mask and its pixels were
+                    // captured — the identical fail-OPEN shape as DEF-1, on the other half of one line.
+                    // ⚠ Criticals excluded (capstone round 3). Failure-as-absence is A1's DESIGN - a throw
+                    // here is what triggers escalation - but that reasoning covers UIA faults, not a dying
+                    // process. An OOM laundered into "no bounds" would silently become a mask decision.
+                    System.Drawing.Rectangle? own = null;
+                    try { own = d.BoundingRectangle; }
+                    catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                                      and not System.OperationCanceledException)
+                    { _ = ex; }
+
+                    var resolution = MaskEscalation.Resolve(own, ancestors.For(d), yardstick);
+                    string aid = SafeRead(() => d.AutomationId, "") ?? string.Empty;
+                    string ct = SafeRead(() => d.ControlType, FlaUI.Core.Definitions.ControlType.Custom).ToString();
+                    if (resolution.Refused)
+                        // Escalating to the root and masking IT would return a SUCCESSFUL all-black image,
+                        // which is worse than an error: an agent hallucinates its contents or loops on it.
+                        //
+                        // The message names automationId and controlType, NEVER the Name — that is the
+                        // identity the mask exists to hide. It ALSO names the window handle and process,
+                        // because this same method backs the FULL-DESKTOP capture: without them an operator
+                        // whose whole-desktop screenshot just refused sees `controlType='Edit',
+                        // automationId=''` for a desktop of a dozen windows and has nothing to act on. The
+                        // window is not withheld content — desktop_list_windows publishes handle, process
+                        // and title already.
+                        throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                            $"A redact-worthy element in window '{handle.Id}' (process '{procName}') could not be masked (automationId='{aid}', controlType='{ct}'): neither it nor any ancestor reported usable bounds.",
+                            "capture that window alone to confirm, or retry once the UI has settled");
+
+                    pw.Add(resolution.Rect);
+                    if (resolution.Escalated) escalations.Add(new MaskEscalationEntry(aid, ct));
+                }
+            }
+            return new CaptureGeometry(captureBounds, pw, false, false, null, escalations);
+            }
+            catch (ToolException) { throw; }
+            // ⚠ A CRITICAL failure is NOT a redaction outcome. Reclassifying OutOfMemoryException — or a
+            // cancellation, if this path ever gains one — as RedactionUnmaskable would tell the agent to
+            // "retry once the UI has settled" while the process is actually dying, and would hide the real
+            // cause from every log above. (Measured: the query path has no cancellation today —
+            // AutomationDispatcher.cs:61 is `_query.RunAsync(func)` with no timeout and no
+            // CancellationToken; only the ACTION path has AwaitWithTimeout. The filter is there so that
+            // stays true by construction if the query path ever gains one.)
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException)
+            {
+                throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                    $"Could not determine the redacted regions of window '{handle.Id}' (process '{procName}'): {ex.GetType()}",
+                    "retry once the UI has settled, or capture a different window");
+            }
         });
 
     /// <summary>Phase 9 Task 10 (§6): resolve BOTH the capture rect (the whole window, or a region sub-rect of it)
@@ -881,11 +1136,11 @@ public sealed class PerceptionManager
         var geo = await ResolveWindowCaptureGeometryAsync(handle, null);
         if (geo.Denied || geo.Minimized)
             return new TextCaptureGeometry(geo.Denied, geo.DeniedProcess, geo.Minimized,
-                geo.Bounds, geo.PasswordRects, geo.Bounds.X, geo.Bounds.Y, geo.Bounds.Width, geo.Bounds.Height);
+                geo.Bounds, geo.MaskRects, geo.Bounds.X, geo.Bounds.Y, geo.Bounds.Width, geo.Bounds.Height);
 
         var win = geo.Bounds; // full window physical rect (target was `win` itself since @ref is null)
         var capture = TextCaptureGeometry.ComputeCaptureBounds(win, region);
-        return new TextCaptureGeometry(false, null, false, capture, geo.PasswordRects, win.X, win.Y, win.Width, win.Height);
+        return new TextCaptureGeometry(false, null, false, capture, geo.MaskRects, win.X, win.Y, win.Width, win.Height);
     }
 
     /// <summary>DEF-2: full-desktop capture passed Array.Empty&lt;Rectangle&gt;() and so masked NOTHING — the one
@@ -895,22 +1150,100 @@ public sealed class PerceptionManager
     ///
     /// A window that fails to resolve is SKIPPED rather than fatal: one unreadable window must not fail the
     /// whole capture. That is not a hole — ScreenshotTools already REFUSES a full-desktop capture outright
-    /// when any denylisted credential window is visible, so this path only ever runs when none is.</summary>
-    public async Task<IReadOnlyList<System.Drawing.Rectangle>> AllPasswordRectsAsync()
+    /// when any denylisted credential window is visible, so this path only ever runs when none is.
+    ///
+    /// ⚠ The skip is NOT unconditional: a RedactionUnmaskable refusal is rethrown. Skipping a window we
+    /// cannot BIND is right; skipping one we can see and cannot MASK would photograph it in the clear.</summary>
+    public async Task<DesktopMaskSet> AllMaskRectsAsync()
     {
         var rects = new List<System.Drawing.Rectangle>();
+        var escalations = new List<MaskEscalationEntry>();
+        // AB-9: the processes whose windows contributed NO masks. See the catch below and DesktopMaskSet.
+        var unmasked = new List<string>();
         var windows = await _windows.ListWindowsAsync(includeBounds: false, includeHandles: true);
         foreach (var w in windows)
         {
+            // ⚠ THE ORIGINAL REASON GIVEN FOR KEEPING THIS CHECK WAS FALSE, and the correction is recorded
+            // because the false version was persuasive. It claimed that deleting it would ENUMERATE a
+            // denylisted window's entire tree. MEASURED at PerceptionManager.cs:852 (line as of the branch point, before this task's own +198): the callee tests
+            // PerceptionPolicy.IsDenied FIRST and returns immediately, well before PopupFinder.SearchRoots
+            // at :861 — so no tree is ever walked for a denied window, with or without this line.
+            //
+            // What it actually saves is smaller and worth stating accurately: one
+            // RunWithWindowAndDesktopAsync dispatch per denied window — binding the handle to a live
+            // element on the query STA, plus SafeProcessName — for an answer already known here. Kept for
+            // that, and because stating the denylist at the enumeration site keeps the policy visible where
+            // windows are chosen rather than only where they are resolved. A reviewer who wants it gone has
+            // a defensible case; the case must just not be the false one above.
             if (w.Handle is null || PerceptionPolicy.IsDenied(w.ProcessName)) continue;
             try
             {
-                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null);
-                if (!geo.Denied && !geo.Minimized) rects.AddRange(geo.PasswordRects);
+                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null,
+                                                                  skipIfNoRenderableOverlap: true);
+                // ⚠ KEPT DELIBERATELY. A review seat proposed deleting this condition because the callee
+                // guarantees empty lists when Denied or Minimized, making the AddRange calls harmless
+                // no-ops. True today — and it is precisely the "caller relies on the callee's internals"
+                // coupling that produced this review's round-9 finding, one frame in the other direction.
+                // If a future change ever returned a non-empty rect alongside Denied, deleting this would
+                // turn that into a silent mask of a window we refused to inspect.
+                if (!geo.Denied && !geo.Minimized)
+                {
+                    rects.AddRange(geo.MaskRects);
+                    escalations.AddRange(geo.Escalations);
+                }
             }
-            catch { } // a window that closed mid-enumeration, or one we cannot bind: skip it
+            // A1: a REFUSAL is not a window we failed to bind — it is a window we CAN see and CANNOT mask.
+            // Swallowing it here would skip that window's mask set and photograph the whole desktop
+            // anyway, making A1 inert on precisely the capture mode DEF-2 was about. Rethrown so the
+            // full-desktop capture refuses as a window-scoped one does.
+            catch (ToolException ex) when (ex.Code == ToolErrorCode.RedactionUnmaskable) { throw; }
+            // ⚠ THE SKIP MUST NOT SWALLOW A CRITICAL FAILURE, and this is the edge round 6's own fix cut.
+            // That round stopped the mask walk reclassifying OutOfMemoryException as RedactionUnmaskable —
+            // correct — but the exception then propagates OUT of the walk and lands HERE, where a bare
+            // `catch { }` swallowed it, skipped the window, and let the full-desktop capture proceed and
+            // photograph it. Filtering the misclassification without filtering the swallow just moved the
+            // leak one frame up the stack.
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                              and not System.OperationCanceledException)
+            {
+                // AB-9: the skip STAYS — refusing here would break an ordinary desktop, because an elevated
+                // Task Manager, admin terminal, regedit or MMC snap-in is steady state on a developer
+                // machine, and a tooltip fading out mid-capture lands in this same clause. But the skip is
+                // no longer SILENT, which is this increment's binding constraint 2: fail closed, never
+                // silently. Without this, an agent reads a full-desktop screenshot as fully redacted when
+                // one window on it was never inspected at all.
+                //
+                // ⚠ THE FIELD MEANS "CONTRIBUTED NO MASKS", NOT "ELEVATED", and the distinction is forced
+                // rather than chosen. This clause catches BOTH a window UIA cannot BIND (most often an
+                // elevated one) and a window that CLOSED mid-enumeration, and the exceptions are
+                // indistinguishable here — both surface as the same COM/UIA failures from the same native
+                // boundary. Naming the field for elevation would be a claim the code cannot support.
+                // Reporting the honest union is still correct, because both causes have the identical
+                // consequence for the caller: that window's pixels are in the image and its redactions
+                // are not.
+                //
+                // The process NAME is not withheld content — desktop_list_windows already publishes handle,
+                // process and title for every window.
+                // ⚠ THIS EMPTY-CHECK CANNOT FIRE TODAY, and saying so is the point of writing it down — a
+                // capstone round argued the opposite and the argument was worth answering precisely.
+                // The claim was: a window whose process name is unreadable reaches here, is dropped by this
+                // check, and is therefore photographed WITHOUT appearing in unmaskedProcesses — a silent
+                // incomplete capture. It rests on `IsDenied(null)` being false. It is TRUE:
+                // PerceptionPolicy.cs:48 is `string.IsNullOrWhiteSpace(processName) || DeniedProcesses
+                // .Contains(...)`, deliberately fail-closed since SP3's capstone. So such a window is
+                // skipped by the denylist test ABOVE this try, and never reaches this line — and
+                // DenylistedWindowsVisibleAsync uses the same predicate, so ScreenshotTools refuses the
+                // whole full-desktop capture before the walk even starts. Fail-closed twice over.
+                //
+                // Kept as defence-in-depth against a future change to IsDenied's null handling, which is
+                // exactly the change that would make this reachable. Do not write a test for it — nothing
+                // can reach it — and do not "simplify" it away without re-checking that predicate first.
+                if (!string.IsNullOrEmpty(w.ProcessName)) unmasked.Add(w.ProcessName);
+            }
         }
-        return rects;
+        // DISTINCT, first-seen order: the actionable question is WHICH processes went unmasked, not how many
+        // windows each contributed. Deterministic, so the field is stable across repeat captures.
+        return new DesktopMaskSet(rects, escalations, unmasked.Distinct(StringComparer.Ordinal).ToArray());
     }
 
     public async Task<bool> DenylistedWindowsVisibleAsync()
@@ -939,7 +1272,28 @@ public sealed class PerceptionManager
 
 public sealed record FocusedElementInfo(string Ref, string DescriptorLine, string Title, int Pid, string? WindowHandle);
 
-public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> PasswordRects, bool Minimized, bool Denied, string? DeniedProcess);
+public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects, bool Minimized, bool Denied, string? DeniedProcess,
+    IReadOnlyList<MaskEscalationEntry> Escalations);
+
+/// <summary>The mask set for a FULL-DESKTOP capture: every visible non-denied window's rects, plus the
+/// elements across all of them whose mask came from an ancestor. Lists rather than a tuple so the
+/// screenshot tool's metadata reads the same on both capture paths.
+///
+/// <paramref name="UnmaskedProcesses"/> — AB-9. The DISTINCT process names whose windows contributed no
+/// masks at all, because resolving their geometry failed. Two causes land here and the code cannot tell
+/// them apart: a window UIA cannot BIND (most often an ELEVATED one — a non-elevated UIA client cannot bind
+/// it at all), and a window that CLOSED mid-enumeration. Both have the same consequence for the caller, so
+/// the field is named for the consequence rather than for either cause.
+///
+/// ⚠ A NON-EMPTY LIST MEANS THE IMAGE IS NOT FULLY REDACTED. Those windows' pixels are in the capture and
+/// their redactions are not, so a caller must not treat the screenshot as exhaustively masked. This does
+/// not REFUSE, deliberately: refusing on an unbindable window would break an ordinary developer desktop,
+/// where an elevated terminal or Task Manager is steady state. The highest-value case is covered by a
+/// different mechanism — ScreenshotTools refuses full-desktop capture outright when a DENYLISTED window is
+/// visible, and that guard enumerates by PROCESS (ListWindowsAsync + PerceptionPolicy.IsDenied), never by
+/// UIA binding, so it still fires for a denylisted window that is elevated.</summary>
+public sealed record DesktopMaskSet(IReadOnlyList<System.Drawing.Rectangle> Rects, IReadOnlyList<MaskEscalationEntry> Escalations,
+    IReadOnlyList<string> UnmaskedProcesses);
 
 public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword,
     bool Redacted, string? RedactedBy);

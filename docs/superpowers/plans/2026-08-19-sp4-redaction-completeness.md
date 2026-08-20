@@ -96,6 +96,13 @@ facts, in Task 10.
    signature change is allowed. Changing an assertion, an expected string, or an expected count is not.
 4. **The build must stay at 0 warnings.** `dotnet build FlaUI.Mcp.slnx -c Release` must report
    `0 Warning(s)` and `0 Error(s)`.
+   ⚠⚠ **THAT COMMAND ALONE IS NOT A GATE, AND THIS BIT DURING TASK 3.** MSBuild does not re-report
+   warnings for projects it considers up to date, so a warning introduced by task N is invisible to every
+   later task's build. MEASURED on this branch: the slnx build printed `0 Warning(s)` on the very tree
+   where `dotnet build src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj -c Release --no-incremental` printed
+   `2 Warning(s)` (CS8629). A subagent only caught it because it happened to run `dotnet clean` first.
+   **Add `--no-incremental` whenever the task changed source**, or the 0-warning rule silently stops being
+   enforced partway through the plan. Captured as a `[process]` anomaly.
 5. **Headless gate after every task** — where "task" means a numbered `## Task N`. Task 5 is ONE task with
    two interior halves (5a, 5b); its gate runs at the end of 5b, and the tree is expected not to compile in
    between. No other task has an interior.
@@ -291,6 +298,20 @@ others:
 | `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:843` | the tally that produces it |
 | `src/FlaUI.Mcp.Server/Tools/SnapshotTools.cs:108` | the wire projection (plus the description at `:99`) |
 | `test/FlaUI.Mcp.Tests/Perception/RedactionStatsTests.cs:32` | the mutually-discriminating assertion |
+| `test/FlaUI.Mcp.Tests/Server/SnapshotStatsTests.cs:25` | ⚠ **MISSED BY THIS TABLE FOR FIFTEEN ROUNDS.** A DESKTOP test reading the WIRE key `GetProperty("redacted")` |
+
+⚠⚠ **THE D2 GREP ENUMERATED THE C# MEMBER, NOT THE WIRE KEY, AND SAID "no consumer outside them".** It
+missed `SnapshotStatsTests.cs:25`, which reads `doc.RootElement.GetProperty("redacted")` — a JSON key, so
+no search for `.Redacted` or `SnapshotStats.Redacted` could ever have found it. It is also a
+`[Trait("Category", "Desktop")]` test, so **it did not run once during Tasks 1-9** — the headless gate is
+what every task gates on, and this only surfaced at the Task 10 Desktop run, eight tasks after the rename
+that broke it (`KeyNotFoundException` at that line). A rename that changes a WIRE name must be grepped for
+the wire name in test JSON assertions too, not only for the C# identifier.
+
+Fixed as a key rename with the expected `1` untouched. The full re-enumeration found exactly this one site:
+the other `"redacted"` matches in `test/` are `VerifyOutcome.Reason`'s string VALUE (`PasteFlowTests.cs:160`,
+`VerifyResultTests.cs:100-101`) and a comment, which belong to the DIFFERENT field this table already warns
+must not be renamed.
 
 ⚠ **Do NOT rename these — they are a DIFFERENT field with the same name.** `VerifyRead.Redacted`
 (`src/FlaUI.Mcp.Core/Interaction/VerifyReader.cs:12`), `GridCellInfo.Redacted` and
@@ -660,14 +681,35 @@ public class MaskEscalationTests
     /// arrives here. (The full-desktop sweep is the path that returns early instead, because a window with
     /// no renderable overlap contributes no pixels to a virtual-screen capture.) Were this branch ever
     /// unreachable it would be a false-GREEN, so if a future change makes the caller always pre-filter,
-    /// delete this fact rather than leaving it asserting a guard nothing can reach.</summary>
+    /// delete this fact rather than leaving it asserting a guard nothing can reach.
+    ///
+    /// ⚠ THE ANCESTOR RECT IS PER-ROW, AND THAT IS THE ONLY REASON THIS FACT PINS ANYTHING. It originally
+    /// used the shared `Other` fixture, and MEASURED, the fact was then VACUOUS on both non-zero rows: the
+    /// `IsEmpty` mutant this exists to catch left every row green. `Other` = (1,2,300,400) CONTAINS both
+    /// degenerate yardsticks, so once the mutant let execution reach the loop the candidate was rejected by
+    /// the blacks-out guard instead — the same Refused outcome by a different route, which an assertion on
+    /// `Refused` alone cannot see. A rect that OVERLAPS the yardstick without CONTAINING it is what makes
+    /// the two guards disagree, and disagreement is the only thing a single-point mutant can detect.
+    ///
+    /// ⚠ Row 1 is deliberately NOT discriminating and cannot be made so — do not "fix" it. For
+    /// Rectangle.Empty the mutant's `IsEmpty` is genuinely TRUE, so it refuses at the same point the real
+    /// guard does; the mutant is simply CORRECT for that one input. No ancestor rect changes that, because
+    /// the ancestor is never consulted. The row earns its place by covering the all-zero shape, not by
+    /// killing the mutant. Rows 2 and 3 do the killing.</summary>
     [Theory]
-    [InlineData(0, 0, 0, 0)]        // Rectangle.Empty
-    [InlineData(100, 50, 0, 30)]    // ⚠ NOT IsEmpty: Rectangle.Intersect compares with `>=`, so two rects
-    [InlineData(100, 50, 30, 0)]    //   touching along an edge yield a degenerate rect at non-zero coords
-    public void A_degenerate_yardstick_refuses_rather_than_dropping_every_mask(int x, int y, int w, int h)
+    //          yardstick     |  level-1 ancestor  | why
+    [InlineData(0, 0, 0, 0,      1, 2, 300, 400)]  // Rectangle.Empty — see the row-1 note above
+    [InlineData(100, 50, 0, 30,  90, 40, 20, 20)]  // ⚠ NOT IsEmpty: Rectangle.Intersect compares with `>=`,
+    [InlineData(100, 50, 30, 0,  90, 40, 20, 20)]  //   so two rects touching along an edge yield a
+                                                   //   degenerate rect at NON-ZERO coords. The ancestor
+                                                   //   overlaps without containing, so under the mutant it
+                                                   //   is ACCEPTED as a mask and this fact goes red.
+    public void A_degenerate_yardstick_refuses_rather_than_dropping_every_mask(
+        int x, int y, int w, int h, int ax, int ay, int aw, int ah)
     {
-        var r = MaskEscalation.Resolve(null, Source(new List<int>(), (1, Other)), new Rectangle(x, y, w, h));
+        var ancestor = new Rectangle(ax, ay, aw, ah);
+
+        var r = MaskEscalation.Resolve(null, Source(new List<int>(), (1, ancestor)), new Rectangle(x, y, w, h));
 
         Assert.True(r.Refused);
     }
@@ -729,6 +771,7 @@ Create `src/FlaUI.Mcp.Core/Perception/MaskEscalation.cs`:
 
 ```csharp
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 
 namespace FlaUI.Mcp.Core.Perception;
@@ -791,8 +834,15 @@ public static class MaskEscalation
     public const int MaxAncestorLevels = 32;
 
     /// <summary>A rect is usable only with positive area. A provider unable to report bounds may return
-    /// zeros rather than throw, and a zero-area rect paints nothing — a silent leak, not a mask.</summary>
-    public static bool HasArea(Rectangle? r) => r is not null && r.Value.Width > 0 && r.Value.Height > 0;
+    /// zeros rather than throw, and a zero-area rect paints nothing — a silent leak, not a mask.
+    ///
+    /// ⚠ <see cref="NotNullWhenAttribute"/> is load-bearing, not decoration. Nullable flow analysis cannot
+    /// carry a null-check across a method boundary, so without it every caller that reads <c>.Value</c>
+    /// after a true return raises CS8629 and the build leaves 0-warnings. The attribute states the
+    /// invariant this method actually guarantees — a true return means the value is present — rather than
+    /// suppressing the warning at each call site with <c>!</c>, which would tell the next reader nothing.
+    /// Verified: this works for a nullable VALUE type, not only for reference types.</summary>
+    public static bool HasArea([NotNullWhen(true)] Rectangle? r) => r is not null && r.Value.Width > 0 && r.Value.Height > 0;
 
     /// <summary>Resolve one redact-worthy element to the rect that should be painted black.
     ///
@@ -927,26 +977,54 @@ public static class MaskEscalation
 Run: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
 Expected: `Passed!  - Failed: 0, Passed: 16`.
 
-- [ ] **Step 5: Prove the pins are non-vacuous (three temporary LOGIC MUTANTS)**
+- [ ] **Step 5: Prove the pins are non-vacuous (EIGHT temporary LOGIC MUTANTS)**
+
+⚠ This heading said "three" over a table of seven for fifteen review rounds. It is **eight** — the seven
+below plus the cap mutant. The table is authoritative; run every row.
+
+⚠ Two rows quote the shape by INTENT, not literally: the implementation splits `HasArea` into
+`if (!HasArea(r)) continue;` plus a later return, and the parameter is `captureYardstick`, not `yardstick`.
+A mutant instruction is not a STATE-VERIFY block — do not report `STATE_MISMATCH` against it.
 
 Apply each mutant on its own, run the named command, confirm the NAMED test is the one that goes red, then
 REVERT before applying the next.
 
 | Mutant | Edit | Test that must go red |
 |---|---|---|
-| Drop the escalate branch | change `if (HasArea(r)) return new MaskResolution(r.Value, Escalated: true, Refused: false);` to `if (HasArea(r)) return new MaskResolution(r.Value, Escalated: false, Refused: false);` | `An_unreadable_own_rect_escalates_to_the_first_usable_ancestor` |
-| Drop the root-refusal branch | change `return MaskResolution.Refusal;` to `return new MaskResolution(default, false, false);` | `No_usable_ancestor_refuses_rather_than_returning_a_rect` |
-| Weaken the usability rule | change `HasArea` to `r is not null` | `A_zero_size_own_rect_is_unusable_and_escalates` |
-| Drop the blacks-out guard | change `BlacksOutTheCapture` to `=> false` | `An_escalated_rect_that_covers_the_capture_is_rejected_and_the_walk_continues` |
+| Drop the escalate branch | on the escalation return, change `Escalated: true` to `Escalated: false` | `An_unreadable_own_rect_escalates_to_the_first_usable_ancestor` |
+| Drop the root-refusal branch | change the final `return MaskResolution.Refusal;` to `return new MaskResolution(default, false, false);` | `No_usable_ancestor_refuses_rather_than_returning_a_rect` |
+| Weaken the usability rule | change `HasArea`'s body to `r is not null` | `A_zero_size_own_rect_is_unusable_and_escalates` |
+| Drop the blacks-out guard | change `BlacksOutTheCapture`'s body to `=> false` | `An_escalated_rect_that_covers_the_capture_is_rejected_and_the_walk_continues` |
 | Apply the guard to the element's OWN rect too | move the `!BlacksOutTheCapture(...)` test onto the `HasArea(ownRect)` branch | `An_elements_OWN_capture_covering_rect_is_masked_not_refused` |
-| Restore the outside-capture DROP | change the `IntersectsWith` guard to `return new MaskResolution(default, true, false);` | `An_element_whose_every_ancestor_misses_the_capture_refuses` |
-| Use `IsEmpty` for the degenerate yardstick | change the extents test to `if (yardstick.IsEmpty)` | `A_degenerate_yardstick_refuses_rather_than_dropping_every_mask` (the two non-zero-origin rows) |
+| Restore the outside-capture DROP | change the `IntersectsWith` guard's `continue;` to `return new MaskResolution(default, true, false);` | `An_element_whose_every_ancestor_misses_the_capture_refuses` |
+| Use `IsEmpty` for the degenerate yardstick | change the extents test to `if (captureYardstick.IsEmpty)` | `A_degenerate_yardstick_refuses_rather_than_dropping_every_mask` — **rows 2 and 3 ONLY** (see below) |
+| Widen the cap | change `level <= MaxAncestorLevels` to `level <= MaxAncestorLevels + 1` | `The_walk_stops_at_the_depth_cap_and_refuses` (on the call count) |
 
 Run each as: `dotnet test FlaUI.Mcp.slnx -c Release --filter "FullyQualifiedName~MaskEscalationTests"`
 
-⚠ Do NOT mutate the loop bound to `while (true)` — that hangs the suite rather than failing it. To pin the
-cap, change `level <= MaxAncestorLevels` to `level <= MaxAncestorLevels + 1` and confirm
-`The_walk_stops_at_the_depth_cap_and_refuses` goes red on the call count. Revert.
+⚠ Do NOT mutate the loop bound to `while (true)` — that hangs the suite rather than failing it.
+
+⚠⚠ **THE `IsEmpty` ROW EXPECTED A RED THAT COULD NOT OCCUR, and the correction is recorded because the
+original was persuasive.** As first written, the degenerate-yardstick theory used the shared `Other`
+fixture, and MEASURED, the mutant left all 16 tests GREEN. `Other` = (1,2,300,400) CONTAINS both degenerate
+yardsticks, so the candidate reached the loop and was rejected by the blacks-out guard instead — the same
+`Refused` outcome by a different route, invisible to an assertion on `Refused` alone. The theory now
+carries a PER-ROW ancestor rect for exactly this reason; with `(90,40,20,20)` the mutant turns rows 2 and 3
+red as intended.
+
+⚠ **Row 1 `(0,0,0,0)` can NEVER catch this mutant and must not be "fixed".** `Rectangle.IsEmpty` is
+genuinely true for `Rectangle.Empty`, so the mutant refuses at the same point the real guard does — it is
+simply CORRECT for that one input, and the ancestor is never consulted. Verified against a live .NET 10
+runtime: `IsEmpty` is `False` for `(100,50,0,30)` and `(100,50,30,0)`, i.e. it does require all four fields
+to be zero. (That is `Rectangle`; `RectangleF.IsEmpty` is the `W<=0||H<=0` one — a subagent asserted the
+latter definition for `Rectangle` and was wrong.)
+
+⚠ **The guard is outcome-load-bearing, not merely a cost short-circuit** — which the surrounding comment
+half-concedes and which is worth stating flatly. Measured against yardstick `(100,50,0,30)`: ancestor
+`(1,2,300,400)` intersects AND contains, so it is skipped either way; ancestor `(90,40,20,20)` intersects
+and does NOT contain, so without the extents check it is ACCEPTED as a mask instead of refusing. The two
+guards disagree on a reachable input, and `Rectangle.Intersect` really does yield degenerate rects at
+non-zero origins (measured: `Intersect((0,0,1920,1080), (1920,50,300,30))` = `(1920,50,0,30)`).
 
 - [ ] **Step 6: Run the headless gate and commit**
 
@@ -1282,7 +1360,7 @@ Rename the member on both records and at every use site:
 | `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:884,888` | the two `geo.PasswordRects` reads in `ResolveTextCaptureGeometryAsync` |
 | `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:899` | `AllPasswordRectsAsync` → `AllMaskRectsAsync` |
 | `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:41,49` | the call and the `geo.PasswordRects` read |
-| `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:106` | `geo.PasswordRects` passed to `CaptureRectangle` |
+| `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62,106` | the TWO `geo.PasswordRects` reads. ⚠ This row said `:106` alone for fifteen rounds; `:62` (`DesktopFindText`, the non-polling OCR tool) is a second call site and the build does not compile without it |
 | `test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs:49` | `Assert.NotEmpty(geo.PasswordRects)` |
 
 ⚠ The test edit is a RENAME ONLY — `Assert.NotEmpty` and its subject are unchanged, so standing rule 3 is
@@ -1346,7 +1424,7 @@ with:
             catch (System.Exception ex)
             {
                 throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                    $"Could not read the capture bounds of window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType().Name})",
+                    $"Could not read the capture bounds of window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
                     "retry once the UI has settled, or capture a different window");
             }
 
@@ -1446,7 +1524,7 @@ with:
                     catch (System.Exception ex)
                     {
                         throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                            $"Could not enumerate window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType().Name})",
+                            $"Could not enumerate window '{handle.Id}' (process '{procName}'), so its redacted regions cannot be located ({ex.GetType()})",
                             "retry once the UI has settled, or capture a different window");
                     }
                 }
@@ -1527,10 +1605,32 @@ with:
                                               and not System.OperationCanceledException)
             {
                 throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                    $"Could not determine the redacted regions of window '{handle.Id}' (process '{procName}'): {ex.GetType().Name}",
+                    $"Could not determine the redacted regions of window '{handle.Id}' (process '{procName}'): {ex.GetType()}",
                     "retry once the UI has settled, or capture a different window");
             }
 ```
+
+⚠⚠ **THE THREE DIAGNOSTICS INTERPOLATE `ex.GetType()`, NOT `ex.GetType().Name`, AND THE REASON IS THE
+SOURCE SWEEP.** Round 6 replaced `ex.Message` here with a bounded type name — correct, and its reasoning
+stands. But `.Name` is `.Name`, and RULE 1 of `RedactionSurfaceInventoryTests` flags EVERY `.Name` member
+access **syntactically**: `CheckNameOrValue` has no semantic model and cannot tell `System.Type.Name` from
+an element's. `PerceptionManager.ResolveWindowCaptureGeometryAsync` is not in `AllowedMembers`, so the
+plan's own code turned the plan's own oracle RED — MEASURED: `Failed: 1, Passed: 885` with exactly three
+RULE-1 violations, one per site. Nine review rounds read this block and none of them ran the sweep.
+
+`$"{ex.GetType()}"` renders the namespace-qualified name (measured:
+`System.Runtime.InteropServices.COMException` rather than `COMException`). It is still bounded, still
+carries no element content, and so still satisfies round 6's actual decision, which was *type name instead
+of message* — not *short name instead of full name*.
+
+⚠ The three rejected alternatives are recorded because each will look attractive to someone later:
+allowlisting the whole member would blind RULE 1 across a 200-line UIA traversal whose loop reads
+`d.AutomationId` and `d.ControlType` — disproportionate, and it would hide a future genuine `.Name` read in
+the one method whose job is masking; teaching the sweep a `.GetType()` shape exemption is defensible and
+mirrors `IsCapabilityOrWriteShape`, but it edits the file whose exact line numbers **Tasks 8 and 9 pin in
+their STATE-VERIFY blocks** (`:85`, `:151-153`, `:230-234`, `:454`, `:567`), so it must not be done without
+re-pointing those anchors in the same commit; a `Diag.TypeName` helper has the same anchor problem for a
+smaller win. Operator decided; agy consulted and agreed.
 
 ⚠ **Escalation depth is NOT uniform, and the implementer must not be surprised by it.** The walk enumerates
 `FindAllDescendants()`, so an element's parent may BE the window root. On deep trees (WPF, Electron, modern
@@ -2146,7 +2246,12 @@ Add these three `[Fact]` methods INSIDE the `RedactionSurfaceInventoryTests` cla
     private static List<string> Rule5Over(string source, string relPath = "src/Fake.cs")
     {
         var tree = CSharpSyntaxTree.ParseText(source, path: relPath);
-        Assert.Empty(tree.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error));
+        // ⚠ NOT Assert.Empty(...Where(...)). That is what this line said for fifteen rounds, and it emits
+        // analyzer warning xUnit2029 ("Do not use Assert.Empty to check if a value does not exist in a
+        // collection"), which breaks standing rule 4. MEASURED: restoring the Where-form makes
+        // `dotnet build test/FlaUI.Mcp.Tests/FlaUI.Mcp.Tests.csproj -c Release --no-incremental` report
+        // `1 Warning(s)` at this exact line. The two forms assert the identical condition.
+        Assert.DoesNotContain(tree.GetDiagnostics(), d => d.Severity == DiagnosticSeverity.Error);
         var visitor = new SweepVisitor(relPath, "Fake", AllowedMembers);
         visitor.Visit(tree.GetRoot());
         return visitor.Rule5;
@@ -2526,7 +2631,6 @@ third is the `WindowTitle` assertion moved here from Task 1, because a headless 
         Assert.Null(mgr.WindowTitle(System.IntPtr.Zero));
     }
 
-```csharp
 
     /// <summary>SP4/A5 — the load-bearing half of this fact is the NotEqual. `window.title` used to be the
     /// focused ELEMENT's Name, so under the pre-fix code focusing OkButton made title == "OK". It is now
@@ -3052,15 +3156,15 @@ Run by the author against the spec, after the plan was written.
 | §3 contracts | `maskEscalations`, `escalated`, `RedactionUnmaskable`, refusal message names id+type never Name | 4 (code) + 5 (metadata) |
 | §3 testability seam (lazy · failure-as-absence · injectable) | all three | 3 |
 | §3 cost + termination (memoize, non-element key, cap) | all three | 3 (cap) + 4 (memoize) |
-| §3 ledger consequence (re-validate AB-3) | done, with a recorded outcome | 12 |
+| §3 ledger consequence (re-validate AB-3) | done, with a recorded outcome | 11 |
 | §4 A5 fix steps 1, 2, 4 | GetWindowText · no new field · guarded root fallback | 1 |
-| §4 A5 fix step 3 | allowlist REWRITE, not delete | 10 |
-| §4 out-of-band announcement (CHANGELOG · agent-contract · `[Description]`) | all three | 5 (description) + 12 |
+| §4 A5 fix step 3 | allowlist REWRITE, not delete | 9 |
+| §4 out-of-band announcement (CHANGELOG · agent-contract · `[Description]`) | all three | 5 (description) + 11 |
 | §5 A2 rename + no alias + pin preserved | all three | 2 |
-| §6 A6 (3 executable · 4 attributes · allowlist-independent rule · one exemption) | all four | 7, 8, 9 |
-| §7 A3, A4 dispositions | both | 12 |
-| §8 test table (10 rows) | every row has a task and a named mutant | 2, 3, 9, 11 |
-| §8a order (source → attributes → rules → allowlist) | task order is 1-2, 3-6, 7-8, 9, 10 | — |
+| §6 A6 (3 executable · 4 attributes · allowlist-independent rule · one exemption) | all four | 6, 7, 8 |
+| §7 A3, A4 dispositions | both | 11 |
+| §8 test table (10 rows) | every row has a task and a named mutant | 2, 3, 8, 10 |
+| §8a order (source → attributes → rules → allowlist) | task order is 1-2, 3-5, 6-7, 8, 9 | — |
 | §9 gates | G1-G6 | — |
 | §10 binding constraints (4) | see below | — |
 
@@ -3190,6 +3294,33 @@ answers from a cached parent, was ASSERTED by the peer and NOT measured. If it a
 largely evaporates. Measuring it costs one Desktop experiment and would settle the question before Task 4
 is written.
 
+**MEASURED 2026-08-20 — and the answer DEPENDS ON WHICH DEATH, which neither the peer's assertion nor this
+paragraph anticipated.** Both cases are pinned in
+`test/FlaUI.Mcp.Tests/Perception/StaleElementParentMeasurementTests.cs` (`Desktop` + `Measurement` traits).
+
+| probe on the dead element | process KILLED | element REMOVED, app alive |
+|---|---|---|
+| `BoundingRectangle` | THREW `COMException 0x80040201` | **ANSWERED `{0,0,0,0}`** |
+| `RuntimeId` | THREW | **ANSWERED**, unchanged |
+| `GetParent` (raw view) | THREW | **ANSWERED → the `ItemList` container** |
+
+**THE FREQUENT CASE DOES NOT REFUSE.** A tooltip, menu or list item vanishing during an ordinary UI
+transition leaves a LIVE provider that answers every read: the element reports a ZERO-AREA rect, `HasArea`
+rejects it, `GetParent` hands back the container, and escalation SUCCEEDS. The outcome is a black box over
+the container — precisely the *"occasional black boxes over benign content"* the spec signed off on, and
+NOT the harsher refusal this OPEN was raised about.
+
+Refusal is confined to whole-PROCESS death, where every read throws. That is rare, and refusing there is
+defensible: nothing about that window can be inspected at all.
+
+⚠ Two design choices are VALIDATED by this rather than merely argued. `HasArea` tests EXTENTS instead of
+null — the real removed-element rect is `{0,0,0,0}`, which a null-check would have accepted as a usable
+mask that paints nothing, the exact "silent leak wearing a mask's clothes" its doc describes. And
+`MaskEscalation.Resolve` treats failure-as-absence uniformly, so the two cases need no separate handling:
+one presents as a zero-area rect, the other as a null, and both route to the same rule.
+
+**Disposition: no code change. OPEN #1 is CLOSED on measurement.**
+
 ### OPEN #2 — a window UIA cannot BIND is skipped, and the desktop is photographed anyway
 
 Raised at panel round 9 and ledgered as AB-9. On the full-desktop path, a window that cannot be bound —
@@ -3210,6 +3341,37 @@ visible, so the highest-value case is covered by a different mechanism.
 (b) refuse full-desktop capture when any visible window cannot be bound, trading availability for
 strictness; or (c) narrow (b) to windows whose process is elevated, which needs a new elevation probe and
 is its own increment.
+
+**RESOLVED 2026-08-19 — option (d), which none of a/b/c had listed. Implemented as Task 9b.** The peer
+proposed it on a second consult and the operator chose it: do not refuse, but REPORT. `DesktopMaskSet`
+gains `UnmaskedProcesses` and `desktop_screenshot` metadata gains `unmaskedProcesses`, always present and
+empty when nothing was skipped.
+
+Why (d) rather than (a): AB-9 is the one SILENT incompleteness left in an increment whose binding
+constraint 2 is *fail closed, but never silently* — and it sits on the full-desktop path, exactly the mode
+DEF-2 was about. An agent reading such a screenshot would believe it fully redacted.
+
+Why not (b): MEASURED against the code — the clause that swallows the bind failure
+(`catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)`) cannot
+distinguish a window UIA cannot BIND from one that CLOSED mid-enumeration; both surface as the same COM
+failures. So (b) would fire on ordinary UI churn as well as on every elevated Task Manager, admin terminal,
+regedit and MMC snap-in — near-total loss of availability on a developer desktop.
+
+⚠ That same indistinguishability is why the field is named for the CONSEQUENCE, not the cause. It reports
+"contributed no masks", which is true of both, rather than "elevated", which the code cannot establish.
+The first reading of this was that indistinguishability made (d) *noisy*; it does not — both causes have
+the identical consequence for the caller, so the union is the honest field.
+
+⚠ VERIFIED while deciding, and it is what makes this a boundary rather than a hole:
+`DenylistedWindowsVisibleAsync` (`PerceptionManager.cs:1154-1158`) is `ListWindowsAsync()` +
+`PerceptionPolicy.IsDenied(w.ProcessName)` — Win32 process enumeration, never UIA binding — so the
+denylist refusal still fires for a denylisted window that is ELEVATED and therefore unbindable. The
+highest-value case was already covered.
+
+⚠ The tool description has a 1500-char budget (`ToolTrapFactInvariantTests.No_tool_description_exceeds_the_budget`,
+`DescriptionBudget = 1500`). The first draft of this field's documentation blew it by 344 chars and the
+headless suite caught it. The description now carries a one-line pointer at 1477 chars; the reasoning lives
+on `DesktopMaskSet`'s XML doc, which is where it belongs.
 
 
 ### Round 2 (rotation seat: Fix-Edge Hunter) - folded; do NOT re-raise

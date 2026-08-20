@@ -1,6 +1,7 @@
 // src/FlaUI.Mcp.Server/Tools/WatchTools.cs
 using System.ComponentModel;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Watch;
 using FlaUI.Mcp.Server.Watch;
 using ModelContextProtocol.Server;
@@ -27,7 +28,7 @@ public sealed class WatchTools
         "Optional scope=<a live ref> narrows structure_changed to that element's subtree. Returns " +
         "{subscriptionId, window, events, scope?}. Each notification payload is " +
         "{subscriptionId, event, window, ref?, controlType?, name?, bounds?, coalescedCount, timestampUtc} " +
-        "(name is [REDACTED] for any redacted element - OS password field or operator rule; ref/name/bounds " +
+        "(name is " + ElementContent.RedactedToken + " for any redacted element - OS password field or operator rule; ref/name/bounds " +
         "may be absent, e.g. window_closed). The " +
         "payload 'ref' is EPHEMERAL - minted into a small bounded pool, so it returns REF_NOT_FOUND if you wait " +
         "too long to act; re-desktop_snapshot for a durable ref. ReadOnly + lease-exempt. " +

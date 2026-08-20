@@ -21,7 +21,21 @@ public static class ToolResponse
             return JsonSerializer.Serialize(
                 new { error = ex.Code.ToString(), message = ex.Message, suggestedRecovery = ex.SuggestedRecovery }, Json);
         }
-        catch (Exception ex)
+        // ⚠⚠ CRITICAL FAILURES ARE NOT TOOL ERRORS, and this boundary used to say they were. An
+        // OutOfMemoryException was caught here, reported to the agent as `INTERNAL` with the advice
+        // "re-check arguments and retry", and the server carried on in a state where it had just failed to
+        // allocate. Re-checking arguments cannot help, and the real cause was hidden from every log above.
+        // Now it propagates: the process terminates rather than lying about what happened.
+        //
+        // Found at SP4 capstone round 3, one frame further out than round 2's fix reached - the mask walk
+        // stopped MISCLASSIFYING criticals as redaction outcomes, and they arrived here to be
+        // misclassified as argument errors instead.
+        //
+        // ⚠ OperationCanceledException is filtered too, though nothing in src/ throws one today: VERIFIED,
+        // there is no CancellationToken anywhere in src/, and the ACTION path's AwaitWithTimeout throws
+        // ToolException(ActionBlockedPending), not a cancellation. The filter is here so that stays true by
+        // construction if cancellation is ever introduced.
+        catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
         {
             return JsonSerializer.Serialize(
                 new { error = "INTERNAL", message = ex.Message, suggestedRecovery = (string?)"re-check arguments and retry" }, Json);
@@ -32,7 +46,9 @@ public static class ToolResponse
     {
         try { return await body(); }
         catch (ToolException ex) { return ErrResult(ex.Code.ToString(), ex.Message, ex.SuggestedRecovery); }
-        catch (Exception ex) { return ErrResult("INTERNAL", ex.Message, "re-check arguments and retry"); }
+        // ⚠ Same critical filter as Guard above, and for the same reason - see the comment there.
+        catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
+        { return ErrResult("INTERNAL", ex.Message, "re-check arguments and retry"); }
     }
 
     private static CallToolResult ErrResult(string code, string message, string? recovery) => new()

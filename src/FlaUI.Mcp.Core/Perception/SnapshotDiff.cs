@@ -24,7 +24,7 @@ public static class SnapshotDiff
     /// already closes (INV-5). Identity keying keeps the RAW name (internal, never serialized) so a redacted
     /// node still matches itself across baseline/current. Per spec §5.3 the diff emits NO provenance field —
     /// stated explicitly so this reads as a decision, not an omission.</summary>
-    private static string ShownName(SnapshotNode n) => n.Sensitivity.Redact ? "[REDACTED]" : n.Name;
+    private static string ShownName(SnapshotNode n) => n.Sensitivity.Redact ? ElementContent.RedactedToken : n.Name;
     private static DiffDescriptor Desc(SnapshotNode n) => new(n.Ref, n.ControlType.ToString(), n.AutomationId, ShownName(n));
     private static NodeState State(SnapshotNode n) => new(ShownName(n), n.Enabled, n.Focused, n.Selected);
 

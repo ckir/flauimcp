@@ -55,10 +55,10 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 |---|---|---|
 | `desktop_snapshot` | ReadOnly | Walk tree into ref-tagged snapshot. **Params:** `root` (subtree scope), `maxDepth`, `interactiveOnly`, `fullProperties`, `includeOffscreen`, `timeoutMs`. |
 | `desktop_snapshot_diff` | ReadOnly | Diff CURRENT tree against baseline `snapshotId`. **Params:** `scope` (subtree ref). |
-| `desktop_snapshot_stats` | ReadOnly | Control counts. **Params:** `snapshotId` (offline stats) OR `window`. |
-| `desktop_get_focused_element` | ReadOnly | Return UIA-focused element's ref and descriptor. |
+| `desktop_snapshot_stats` | ReadOnly | Control counts. **Params:** `snapshotId` (offline stats) OR `window`. ⚠ The `redacted` field is now `osPasswordCount` (v1.0.0 BREAKING). |
+| `desktop_get_focused_element` | ReadOnly | Return UIA-focused element's ref and descriptor. ⚠ `window.title` is the OWNING WINDOW's title. Before v1.0.0 it carried the focused ELEMENT's name — a silent BREAKING change, see the CHANGELOG. The element's name is in `descriptor`. |
 | `desktop_find` | ReadOnly | Query window for refs without full walk. **Params:** `timeoutMs`. |
-| `desktop_screenshot` | ReadOnly | PNG capture. Masks redacted elements (see **Redaction on the wire**). **Params:** `window`, `ref`, `maxWidth` (default 1600). |
+| `desktop_screenshot` | ReadOnly | PNG capture. Masks redacted elements (see **Redaction on the wire**). **Params:** `window`, `ref`, `maxWidth` (default 1600). Metadata carries `maskEscalations` + `escalated` + `unmaskedProcesses`; can fail `RedactionUnmaskable`. |
 | `desktop_get_bounds` | ReadOnly | Get absolute screen bounds, dpiScale, isOffscreen status. |
 | `desktop_wait_for` | ReadOnly | Poll until selector condition holds. **Params:** `by`, `value`, `until`, `equals`, `pollIntervalMs`, `timeoutMs`, `includeOffscreen`. |
 | `desktop_wait_for_stable` | ReadOnly | Poll until tree stops changing. **Params:** `by`, `value`, `includeText`, `quietMs`, `pollIntervalMs`, `timeoutMs`, `scopeRef`, `includeOffscreen`. |
@@ -75,9 +75,30 @@ Content is withheld for two independent reasons, and the payload tells you which
 | `redactedBy` | same | `"os"` (UIA password field), `"rule:<name>"` (operator rule), or `"unreadable"` (rules are configured but the element's identity could not be read, so it was withheld rather than guessed at). Absent when not redacted. |
 | `isPassword` | snapshot nodes | **Deprecated signal.** Kept with its original meaning — OS password fields **only** — so existing consumers do not change behaviour. It is `false` for rule-redacted elements. Read `redacted` instead. |
 | `redactedCount` | `desktop_snapshot_stats` | Count of **all** redacted nodes. |
-| `redacted` | `desktop_snapshot_stats` | ⚠ Counts **OS password nodes only**, unchanged for back-compat. Not the same number as `redactedCount`. |
+| `osPasswordCount` | `desktop_snapshot_stats` | Count of OS password nodes **only**. A different number from `redactedCount`. Called `redacted` before v1.0.0. |
 
 Withheld content reads `[REDACTED]`. This is uniform across the snapshot tree, diffs, text reads, grid cells, watch events and terminal tab titles; screenshots mask the pixels.
+
+**When a screenshot cannot mask.** If a redacted element cannot report usable bounds, its mask is taken
+from an ancestor: `maskEscalations` counts those **elements** (not levels climbed) and `escalated` lists
+their `{automationId, controlType}` so you can tell which control has a broken provider — never their name.
+If no ancestor is usable either, the capture is **refused** with `RedactionUnmaskable` rather than returning
+an all-black image you would be tempted to interpret.
+
+⚠ **This lands differently on deep and flat trees, and the difference is expected.** On WPF / Electron /
+modern XAML a redacted control usually sits many levels down, so one unreadable rect degrades gracefully —
+a local container is masked and you still get a usable screenshot. On classic Win32 dialogs, where controls
+are direct children of the window, the parent IS the root, so one unreadable rect refuses the whole capture
+on the first escalation step. If screenshots of one particular older app always fail this way, that is the
+mechanism, not a bug — capture a different window, or use `desktop_snapshot` for that one.
+
+**When a full-desktop screenshot could not even look at a window.** `unmaskedProcesses` lists the
+processes whose windows contributed **no** masks — usually an ELEVATED one, which a non-elevated UIA client
+cannot bind at all, or a window that closed mid-capture; the two are indistinguishable. It is always
+present and is empty for window/element scope. ⚠ **A non-empty list means the image is NOT fully
+redacted:** those windows' pixels are in it and their redactions are not, so do not treat such a capture as
+exhaustively masked. A visible DENYLISTED credential window still refuses the whole capture outright, which
+is a separate and stronger guard.
 
 ⚠ **A redacted element cannot be found by NAME** — not by its real name, and not by `"[REDACTED]"`. Confirming a guessed name is itself a leak, so name search excludes it even though no value crosses the wire. It remains findable by `controlType` / `automationId`, keeps real bounds, and its ref resolves normally. **To act on a redacted field, target it by `automationId` or `controlType`, then use the ref** — typing into a password box still works.
 

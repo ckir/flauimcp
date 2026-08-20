@@ -316,7 +316,7 @@ numbering and the SP→item mapping lived only in one session's local agent-memo
 "item 3" or "item 7" without any document defining the list, so losing that memory would have left no way to
 reconstruct which bullet is item 4 versus item 8. The numbering below is now the repo's own record.
 
-Scope of the increment: **the 2 filed defects + ALL 8 opportunistic items = 10**. Sequence between
+Scope of the increment: **the 2 filed defects + ALL 8 opportunistic items = 10, plus item 11 added by SP4 and item 12 promoted from a captured anomaly**. Sequence between
 subprojects does not matter; what matters is that **`docs/fix-the-tool-backlog/` is EMPTY before v1.0.0 is
 stamped** — v1.0.0 ships with no known defects.
 
@@ -330,8 +330,11 @@ stamped** — v1.0.0 ships with no known defects.
 | 6 | JSON-shape tripwires | SP0 | ✅ merged (`015f23c`) |
 | 7 | redact descriptor `Name` for `IsPassword` | SP2 | ✅ RETIRED as invalid; the real guarantee is now pinned |
 | 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ⬜ not started |
-| 9 | per-field redaction | SP3 | ✅ implemented + MEASURED + gated (see the item-9 entry below) — awaiting the final AGY-CAPSTONE before merge |
+| 9 | per-field redaction | SP3 | ✅ shipped — merged `ef17ed9` (`--no-ff`) |
 | 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower |
+| 11 | redaction completeness (A1 pixel-mask fail-open · A5 focused-window title · A2 stats rename · A6 token constant) | SP4 | 🔄 in progress — spec `docs/superpowers/specs/2026-08-18-sp4-redaction-completeness-design.md`, plan `docs/superpowers/plans/2026-08-19-sp4-redaction-completeness.md` |
+| 12 | the repo's 0-warning gate does not enforce itself | — | ⬜ not started — `dotnet build FlaUI.Mcp.slnx -c Release` is INCREMENTAL and does not re-report warnings for up-to-date projects. MEASURED during SP4: it printed `0 Warning(s)` on a tree where `--no-incremental` printed `2 Warning(s)`. A warning introduced by one commit is therefore invisible to every later build gate. Promoted from a captured anomaly; SP4 works around it per-plan by passing `--no-incremental`, which is not a repo-wide fix |
+| 13 | bare `catch` blocks swallow CRITICAL failures repo-wide | — | ⬜ not started — MEASURED at SP4 capstone round 4: **108** bare catches across 20+ files in `src/` can swallow `OutOfMemoryException`. SP4 filtered every catch on its own pixel path and both `ToolResponse` boundaries; the rest are untouched. Repo-wide refactor across input, watch, session and geometry code. Ledgered as AB-12 |
 
 Also fixed en route, though never one of the ten: `value-and-find-paths-miss-desktop-level-popups`
 (deleted in `94e932a`).
@@ -504,6 +507,9 @@ into a subproject, and its file deleted per the repo convention that fixing a de
   therefore breaks **both** mechanisms at once. To settle it, measure on a machine with a WebView2 host or a
   running UWP app; if heterogeneous, fix the denylist in its own commit and resolve `processName` per HWND
   boundary.
+  **Unchanged by SP4 (spec §2, explicitly out of scope).** A5 makes the window-title surface consistent with
+  `desktop_list_windows`, which is what allows "should window titles be redactable" (`titlePattern`) to be
+  asked once, coherently, later — but neither touches the homogeneity assumption.
 
 ---
 

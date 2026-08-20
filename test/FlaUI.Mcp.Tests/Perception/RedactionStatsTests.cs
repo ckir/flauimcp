@@ -29,7 +29,7 @@ public class RedactionStatsTests
         var stats = PerceptionManager.Tally("w1:1", model);
 
         Assert.Equal(3, stats.Total);
-        Assert.Equal(1, stats.Redacted);       // OS only — the shipped meaning must NOT change
+        Assert.Equal(1, stats.OsPasswordCount); // OS only — a DIFFERENT number from RedactedCount below
         Assert.Equal(2, stats.RedactedCount);  // both redacted nodes
     }
 
