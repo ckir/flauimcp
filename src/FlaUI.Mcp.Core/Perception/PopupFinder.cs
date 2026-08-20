@@ -38,6 +38,22 @@ public static class PopupFinder
         int ownerPid = targetWindow.Properties.ProcessId.ValueOrDefault;
         int[] targetRid = SafeRuntimeId(targetWindow);
 
+        // ⚠⚠ AN UNESTABLISHABLE OWNER PID IS NOT A PID OF ZERO — it is "I do not know", and treating it as
+        // a value is a MIS-GRAFT, not a miss. `ValueOrDefault` answers 0 for an unset property WITHOUT
+        // throwing, and the Path-1 filter below is `c.ProcessId != ownerPid`. So with ownerPid == 0 every
+        // desktop window whose own pid is also unreadable compares EQUAL and is considered for grafting
+        // into THIS window's popup set. For the mask path that over-masks (harmless); for ref resolution
+        // and the ACTION path it is not harmless at all — a ref could resolve into an unrelated
+        // application's window and be clicked.
+        //
+        // ⚠ PRE-EXISTING, and the previous guard did not cover it: `SafePid` returned -1 only when the read
+        // THREW, and the `< 0` test caught only that. A successful read of an UNSET property returned 0 and
+        // sailed through. Found at SP4 capstone round 5.
+        if (ownerPid <= 0)
+            throw new InvalidOperationException(
+                "Cannot establish the owning process of the target window, so its popup set cannot be " +
+                "attributed. Refusing rather than grafting every unattributable window.");
+
         // Path 1 — desktop-level children: Win32 #32768 menus and older HwndWrapper WPF hosts.
         // ⚠ NOT GUARDED (capstone round 4). This enumeration IS Path 1 — swallowing it substituted an
         // empty array, so Win32 #32768 menus and older WPF popup hosts silently vanished from the search
@@ -49,7 +65,16 @@ public static class PopupFinder
             try
             {
                 if (c.Properties.ProcessId.ValueOrDefault != ownerPid) continue;
-                if (SafeRuntimeId(c).AsEnumerable().SequenceEqual(targetRid)) continue; // skip the window itself
+                // ⚠ THE LENGTH TEST IS LOAD-BEARING: without it, TWO EMPTIES COMPARE EQUAL. `SafeRuntimeId`
+                // answers an empty array when the read fails, so if the TARGET window's RuntimeId is
+                // unreadable, every desktop child whose RuntimeId is ALSO unreadable satisfies
+                // SequenceEqual and is skipped as "the window itself" — silently dropping a real popup
+                // from the mask set while the capture succeeds. Pre-existing; found at capstone round 5.
+                //
+                // An empty targetRid means the self-exclusion simply cannot be performed. That is safe to
+                // proceed without: the window itself does not match the `looksPopup` class/control-type
+                // test below, so it is not grafted into its own popup set.
+                if (targetRid.Length > 0 && SafeRuntimeId(c).AsEnumerable().SequenceEqual(targetRid)) continue; // skip the window itself
                 if (c.ControlType == FlaUI.Core.Definitions.ControlType.ToolTip) continue;
                 if (c.Properties.IsOffscreen.ValueOrDefault) continue;
                 var rect = SafeRect(c);
