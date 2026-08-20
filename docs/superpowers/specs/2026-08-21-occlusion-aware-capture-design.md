@@ -51,8 +51,16 @@ physical console. "non-black" is the fraction of a 40x40 sample grid that is not
 all-black one. Whatever failure handling this design chooses, it cannot be driven by the return value.
 
 **F3. Console and RDP agree exactly** — 0.951 / 1 / 0.044 / 0.975 identical in both. The one differing
-row is a display-resolution change (1920x1080 → 1366x768), not a transport difference. So the mechanism
-does not depend on the session type, and the Desktop-suite console requirement adds nothing here.
+row is a display-resolution change (1920x1080 → 1366x768), not a transport difference. So the rendering
+does not depend on which TRANSPORT is presenting an active session, and the Desktop-suite console
+requirement adds nothing here.
+
+⚠ **F3 does NOT establish independence from session STATE.** Both endpoints measured were ACTIVE
+sessions; a locked or disconnected desktop was never measured, and transport parity does not generalise
+to it. That gap is closed by a guard rather than by evidence: `ScreenshotTools.cs:27-28` refuses with
+`CaptureUnavailable` when `IsDesktopRenderable()` is false, before either backend is reached. So the
+unmeasured case is unreachable, not assumed away. *(Panel round 4, Evidence Auditor — the only row of the
+F1-F6 census that needed more than it had.)*
 
 **F4. A darkness-based blank detector is UNSOUND, and this was proven rather than reasoned.** The 0.044
 row looked like a failure. The PNG was dumped and inspected: it is a pixel-perfect render of the occluded
@@ -142,6 +150,25 @@ Encode(src, absolute, masks, maxWidth)     // src.Size == absolute.Size, by cons
 `CaptureResult`'s `X/Y/W/H` then honestly describe the region actually captured, which is what a caller
 needs when a resize truncated it. *(Panel round 3, Fold Auditor — a defect introduced by round 2's own
 fix.)*
+
+⚠ **`effective` can be EMPTY, and that case needs a defined outcome — not a crash.** If the window shrinks
+enough between the UIA read and the capture, a stale element rect can fall entirely outside the new
+bitmap. **MEASURED on this runtime:** `Bitmap.Clone` with a zero-width, zero-height, or zero-both
+rectangle throws **`ArgumentException`**, which `ScreenCapture.cs:40` does NOT catch — its filter is
+`COMException or ExternalException`. So the unguarded case escapes as a raw, unmapped exception.
+
+**Guard on EXTENTS, not `IsEmpty`.** This repo has already been bitten by exactly that distinction and
+documents it at `PerceptionManager.cs:942-946`: `Rectangle.Intersect` yields a zero-extent rect at
+NON-ZERO coordinates for rects that merely touch along an edge, and `IsEmpty` is false there. The
+existing yardstick guard at `:947` tests `Width <= 0 || Height <= 0` for that reason; this one does the
+same. (Measured: fully disjoint rects do give `IsEmpty=true` at `0,0` — which is precisely why testing
+`IsEmpty` looks correct until the touching case arrives.)
+
+**The outcome on empty is a defined refusal, not a degraded image.** The named element is not in the
+pixels that were captured, so there is nothing honest to return. A `1x1` placeholder or a silently
+substituted window capture would both be graceful-looking wrong answers, which this project rejects on
+principle. Refuse with a retry hint naming the cause — the window changed size mid-capture.
+*(Panel round 4, Fold Auditor — a defect introduced by round 3's own fix.)*
 
 ⚠ **The window rect is not currently available at that site.** `CaptureGeometry`
 (`PerceptionManager.cs:1275`) carries `Bounds` — which for element scope IS the element rect — and no
@@ -447,10 +474,17 @@ for each failure, or NONE — not whether the area was "covered".)*
    can miss data that IS in the image — a leak with a different shape from the ones above.
    **UNMEASURED, and the experiment is specified:** drive a Chromium-family window to change a sensitive
    region's state (reveal/hide a password field, switch tabs), then call `PrintWindow` and walk the UIA
-   tree with zero delay. TRUE if the image shows the old state while the tree reports the new one; FALSE
-   if they always agree. This can be folded into risk 1's Chromium measurement — same window, same probe.
+   tree with zero delay. This can be folded into risk 1's Chromium measurement — same window, same probe.
    *(Panel round 1, agy Q2. The peer raised it and said plainly it could not determine the answer without
    running the probe, which is the correct answer.)*
+
+   ⚠ **The probe is one-sided, and the plan must not read it as two-sided.** A positive result — image
+   showing the old state while the tree reports the new — CONFIRMS the race. A negative result does NOT
+   refute it: this is a timing race between an asynchronous compositor and a separate tree walk, so a
+   finite number of runs failing to catch it means "not observed at these timings", never "cannot
+   happen". **A negative therefore licenses shipping with the risk documented and unmitigated; it does
+   not license deleting this risk entry.** Anyone reading a clean probe as proof of safety has drawn the
+   one conclusion the experiment cannot support. *(Panel round 4, Privacy Auditor.)*
 4. **`Capture.Rectangle` also handles the DC lifecycle** that the new path must own: `CreateCompatibleDC`,
    `CreateCompatibleBitmap`, `SelectObject`, and their release. A leak here runs inside a long-lived
    server. The plan owns the exact ownership pattern.
@@ -568,3 +602,25 @@ list, likewise). Report: `.clavity/scratch/item8-panel/agy-round3.md`. **Verdict
 **This is the third consecutive round in which a fix spawned its own defect.** Rounds 1, 2 and 3 each
 found a defect created by the previous round's correction. The fold-auditor seat is doing the work here,
 and it is the reason the round cap was worth waiving.
+
+### AGY-AFTER adversarial panel — round 4
+
+Seats: Fold Auditor (round 3's four edits, enumerated, with an instruction to trace the new pseudocode on
+concrete numbers), Evidence Auditor (a census of F1-F6 against every claim resting on each — the Evidence
+section had never been audited as evidence), Privacy Auditor (the Privacy-posture section and risk 3,
+neither previously reviewed). Report: `.clavity/scratch/item8-panel/agy-round4.md`. **Verdict: NOT
+GREEN.** Three folds:
+
+- **Round 3's pseudocode crashes on an empty intersection** — the fourth consecutive round in which the
+  previous round's fix carried its own defect. Measured: zero-extent `Bitmap.Clone` throws
+  `ArgumentException`, which `ScreenCapture.cs:40`'s filter does not catch. Now guarded on extents, with
+  the repo's own touching-rects hazard cited, and given a defined refusal.
+- **F3 was generalised past its evidence.** It measured two ACTIVE transports and was being read as
+  session-STATE independence. Narrowed to what it measured; the unmeasured locked/disconnected case is
+  closed by the `IsDesktopRenderable()` guard rather than by the data.
+- **Risk 3's experiment is one-sided** and was written as though it were two-sided. A negative result
+  cannot refute a timing race. The entry now says what a negative licenses and what it does not.
+
+The Evidence Auditor's census returned five of six rows solid with specific claim-to-evidence links, and
+flagged exactly one. A census produces a checkable answer where "does the evidence hold?" would have
+produced an adjective.
