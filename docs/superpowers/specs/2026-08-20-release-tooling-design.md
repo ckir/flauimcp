@@ -13,8 +13,20 @@ or the opposite of what it says.** D1 tells the user their plugin will be restor
 prints `0 Warning(s)` from a gate that inspected nothing. Both were found the same way — by running
 something for the first time.
 
-They are batched because they are small, they both land in release tooling, and neither touches the other's
-code. If either grows, split it; nothing here depends on them shipping together.
+They are batched because they both land in release tooling and neither touches the other's code.
+
+⚠ **THE "IF EITHER GROWS, SPLIT IT" CLAUSE WAS TESTED AND THE OPERATOR CHOSE NOT TO SPLIT.** Panel round 4
+argued for a split on the grounds that the original rationale — "both are small" — no longer holds: D1 grew
+from a two-line constant swap into a v2 schema migration, a three-kind source recorder, a three-step
+restore, path normalisation and uninstall-safety rules, while item 12 remained one props file and a sweep.
+The argument is sound and the asymmetry is real.
+
+**Decision: keep them together.** One branch, one review cycle, one merge; the panel work for both is
+already done, and the two changes genuinely do not touch each other's code. The accepted costs, stated
+rather than waved away: a trivial change waits on a risky one, item 12's protection arrives only when D1 is
+finished, and a reviewer must weigh two very different risk profiles in one diff.
+
+⚠ Do not re-raise the split. It was argued, costed and decided.
 
 ---
 
@@ -67,11 +79,20 @@ _cli.Invoke(Claude, "plugin", "uninstall", PluginIds.InstallTarget);   // "flaui
 a first install. That stays true — a qualified id that is not installed exits non-zero exactly as the bare
 name did, and the result is still ignored.
 
-⚠ **The legacy-cleanup risk was raised and is CLOSED by measurement.** A bare-name sweep also cleans up a
-copy registered under some *older* id. `git log -S` over `PluginArtifactWriter.cs` shows
-`MarketplaceName = "flaui-mcp-marketplace"` is the **only value it has ever had** — introduced once at
-`d9a464b`, never changed. There is no legacy id to lose. Had there been one, the fix would have been an
-explicit allowlist of our own ids rather than a single qualified target.
+⚠ **The legacy-cleanup risk is PARTIALLY closed, and the remainder is a PREREQUISITE the plan must
+discharge before fix (a) lands.** A bare-name sweep also cleans up a copy registered under some *older*
+id. `git log -S` over `PluginArtifactWriter.cs` shows `MarketplaceName = "flaui-mcp-marketplace"` is the
+**only value it has ever had** — introduced once at `d9a464b`, never changed.
+
+⚠ **That proves the NAME never changed. It does NOT prove the registration MECHANISM never changed**, and
+panel round 4 caught this section still claiming the risk was fully closed while the round-2 ledger already
+recorded it as an open gap. If an early release registered the plugin some other way — a skills-directory
+deployment, a differently-named local marketplace — the bare-name sweep would have cleaned it up and the
+qualified sweep will not, leaving two plugins named `flaui-mcp` active at once.
+
+**Prerequisite:** check the released tags for any other registration mechanism before landing fix (a). If
+one exists, the fix becomes an explicit allowlist of our own historical ids rather than a single qualified
+target.
 
 **(b) Reinstall fallback — defence in depth.**
 
@@ -195,7 +216,7 @@ implementation would strand the majority case.
 `claude plugin marketplace add` takes *"a URL, path, or GitHub repo"* (measured from its `--help`), so one
 recorded string serves all three:
 
-| `source.source` | field to persist | what `add` receives |
+| `source.source` in `known_marketplaces.json` | field to READ from it | value stored as `marketplace.source` |
 |---|---|---|
 | `github` | `repo` | `ckir/flauimcp` |
 | `git` | `url` | the clone URL |
@@ -254,7 +275,10 @@ the live source, so this is a read, not a guess:
 - alias absent → re-add from the recorded source.
 - alias present, source MATCHES → skip the re-add, proceed.
 - alias present, source DIFFERS → **do not install, and do not overwrite the user's marketplace.** Report
-  it: name the alias, both sources, and stop. The user's own configuration outranks our restore.
+  it: name the alias, both sources, and **skip THIS ENTRY ONLY** (`continue`, never `break`/`return`).
+  ⚠ Panel round 4 (Literal Implementer): "stop" was ambiguous inside `Restore()`'s `foreach`, and reading
+  it as `return` would strand every LATER entry because one alias mismatched. One entry's problem is never
+  another entry's. The user's own configuration outranks our restore — for that entry.
 
 ⚠ Same principle as "never guess a source", one level up: the feature restores what it recorded, or it
 says plainly that it could not.
@@ -279,8 +303,13 @@ The codebase already knows this hazard and states it at `CliRouter.cs:577`:
 *"best-effort: the warning channel itself must never throw and abort uninstall"*. The requirement is to
 extend that same discipline to every new read:
 
-- Reading or parsing `known_marketplaces.json` **cannot throw** — a failure means "live source unknown",
-  which is treated exactly like an unrecognised kind: skip the reinstall, report, continue.
+- Reading or parsing `known_marketplaces.json` **cannot throw**. ⚠ But "cannot read" and "not there" are
+  DIFFERENT ANSWERS and must not collapse into one — panel round 4 (Cascade Analyst):
+  - **File ABSENT** → there are no registered marketplaces, so the alias is definitively absent. Take the
+    **"alias absent → re-add"** branch. Treating this as "unknown" would dead-end the restore in exactly
+    the case where re-adding is both safe and necessary.
+  - **File present but unreadable or malformed** → the live source is genuinely UNKNOWN. Skip the
+    reinstall, report, continue — re-adding blind could overwrite a marketplace the user has repointed.
 - **No new code on the uninstall path may propagate an exception.** A restore that cannot run is a warning;
   it is never a failed uninstall.
 - The plan owns a test that puts DELIBERATELY MALFORMED JSON at that path and asserts `uninstall` still
@@ -402,6 +431,8 @@ explicitly out of scope here.
 |---|---|
 | (a) qualified sweep | `install-smoke.ps1` collision checks go green |
 | (b) reinstall fallback | a NEW smoke check that removes the copy between install and uninstall |
+| the alias-DIFFERS branch | a check that re-points the alias to another source, then asserts restore REFUSES and does not install. ⚠ Panel round 4 found this branch was specified but had NO test — an implementer could claim it worked with no way to check. It is also the only branch that protects the user from a silently wrong install |
+| `directory` path comparison | the same check with a path that differs only in casing or a trailing separator, asserting restore PROCEEDS — the false-negative direction, which aborts a restore that should have run |
 | marker optional field | a v1 marker must still restore under new code — measured, not assumed |
 | item 12 | mutant: a deliberate warning must FAIL the build |
 
@@ -520,3 +551,25 @@ Axiom Breaker, Cascade Analyst, Mechanism Gamer. Four open questions.
 
 **PANEL VERDICT — round 3: NEGOTIATE-then-fold. Four findings folded (one measurement-confirmed), three
 accepted as known limits with reasoning, one not folded as speculative, one partially accepted.**
+
+---
+
+## Panel ledger — round 4 (folded; do NOT re-raise)
+
+Rotation focus: **coherence after heavy patching** rather than missing content — the spec had grown from
+130 lines to 520 across three rounds. Seats: Literal Implementer and Protocol Pedant (re-aimed at
+consistency), Axiom Breaker, Cascade Analyst, Mechanism Gamer. Four open questions.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 30 | **The body still declared the legacy-id risk "CLOSED by measurement" while the round-2 ledger recorded it as an open gap** — a direct self-contradiction introduced by my own folding | **FOLDED.** The body now states what `git log -S` actually proves (the NAME never changed, not the MECHANISM) and carries the prerequisite check explicitly |
+| 31 | **The schema says the key is `source`; the table column said "field to persist" and listed `repo`/`url`/`path`** — an implementer following the table would serialize the wrong key | **FOLDED.** The column is now "field to READ from it" with the destination named. The table always meant extraction; the header said persistence |
+| 32 | **A MISSING `known_marketplaces.json` is "no marketplaces", not "source unknown"** — collapsing them into one rule dead-ends the restore in exactly the case where re-adding is safe and necessary | **FOLDED.** Absent and unreadable are now separate branches with opposite actions |
+| 33 | **"Stop" was ambiguous inside `Restore()`'s `foreach`** — read as `return`, one alias mismatch would strand every later entry | **FOLDED.** Now explicitly `continue`, never `break`/`return` |
+| 34 | The alias-DIFFERS branch was specified with NO test — claimable as done with no way to check | **FOLDED** into the testing table, along with a `directory` path-comparison check for the false-negative direction |
+| 35 | Q2: the subproject should SPLIT — D1 grew, item 12 did not | **RAISED TO THE OPERATOR, WHO CHOSE TO KEEP THEM TOGETHER.** The argument is sound and the asymmetry real; the decision and its accepted costs are recorded in "Why these two are one subproject". Do not re-raise |
+| 36 | Q1: layer (b) is a fallback the spec admits never runs in the primary scenario, yet ~300 lines exist to make it safe | **NOTED, NOT ACTED ON.** A fair characterisation. The operator explicitly chose "qualify AND reinstall" over either alone, knowing (a) fixes the root cause; (b) is defence against evictions not yet foreseen. The observation stands as a reason to keep (b)'s scope disciplined, not to remove it |
+| — | Mechanism Gamer | "no new findings" — the first seat in four rounds to return clean, on gates it called "rigorous and honest about their boundaries" |
+
+**PANEL VERDICT — round 4: NEGOTIATE-then-fold. Five findings folded (three of them self-contradictions
+introduced by earlier folding), one decided by the operator, one noted. One seat clean.**
