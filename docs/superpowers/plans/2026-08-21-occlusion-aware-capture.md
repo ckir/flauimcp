@@ -3082,6 +3082,34 @@ public class BookendWalkTests
         Assert.Equal(4, walks());
     }
 
+    // ⚠ A PURE MOVE MUST NOT TRIP IT. Mask rects are ABSOLUTE screen coordinates, so a user dragging the
+    // window between the two walks shifts every one of them. Compared absolutely, that reads as a total
+    // relayout and a harmless drag becomes a refusal -- contradicting the design's rule, stated in three
+    // places, that a pure move is harmless. The comparison is WINDOW-RELATIVE for exactly this reason.
+    [Fact]
+    public async Task A_pure_window_move_between_the_two_walks_does_not_trip_the_bookend()
+    {
+        var at0   = new Rectangle(0, 0, 400, 300);
+        var at500 = new Rectangle(500, 250, 400, 300);      // dragged, SAME size
+        // The mask sits at the same place INSIDE the window in both walks.
+        var before = new CaptureGeometry(at0, new[] { new Rectangle(10, 10, 50, 20) }, false, false, null,
+            Array.Empty<MaskEscalationEntry>(), at0, new IntPtr(0x1234), false);
+        var after = new CaptureGeometry(at500, new[] { new Rectangle(510, 260, 50, 20) }, false, false, null,
+            Array.Empty<MaskEscalationEntry>(), at500, new IntPtr(0x1234), false);
+
+        int i = 0;
+        var script = new[] { before, after };
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(script[Math.Min(i++, script.Length - 1)]),
+            FakeWindowImageSource.Solid(Color.White), new CaptureRetryOptions(3, 1000),
+            w2Probe: _ => at0, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, m.Count, "screenScrape", warns));
+
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("printWindow", r.Result.CaptureMethod);   // NOT a refusal
+    }
+
     // A window whose masked content animates continuously never settles. Window scope with masks refuses
     // -- the SAME terminal outcome as the resize case, reached by the other detector.
     [Fact]
@@ -3153,7 +3181,7 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
                         return new WindowCaptureOutcome(outcome.Result!, geo);
 
                     var after = await _walk(handle, @ref);
-                    if (MaskSetsMatch(geo.MaskRects, after.MaskRects))
+                    if (MaskSetsMatch(geo, after))
                         return new WindowCaptureOutcome(outcome.Result!, geo);
 
                     if (attempt < _opts.MaxAttempts) continue;
@@ -3164,13 +3192,38 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
 Add the comparison as a private static member:
 
 ```csharp
-    /// <summary>M1 vs M2, as an ORDERED SEQUENCE. Ordered rather than as a set because the walk is
-    /// deterministic -- it enumerates roots and descendants in a fixed order -- so a reordering is itself
-    /// evidence the tree changed under the capture, which is exactly what this is looking for.</summary>
-    private static bool MaskSetsMatch(IReadOnlyList<Rectangle> a, IReadOnlyList<Rectangle> b)
+    /// <summary>M1 vs M2, as an ORDERED SEQUENCE of WINDOW-RELATIVE rectangles.
+    ///
+    /// ⚠⚠ WINDOW-RELATIVE, NOT ABSOLUTE, AND THAT IS THE WHOLE CORRECTNESS OF THIS GUARD. Mask rects are
+    /// absolute SCREEN coordinates. Comparing them absolutely means a user DRAGGING the window between
+    /// the two walks shifts every rect, the bookend reports a mismatch, and a harmless move is treated as
+    /// an internal reflow -- retried, and on exhaustion REFUSED. The design states in three separate
+    /// places that a pure move is harmless and must not be flagged, so an absolute comparison contradicts
+    /// it directly. Normalising each list against ITS OWN walk's window origin isolates internal layout
+    /// from window position, which is the only thing this guard is trying to see.
+    /// *(AGY-AFTER panel over this plan, round 1, Type-Flow Auditor. The bookend walk is not panel-tested
+    /// -- it postdates the spec's thirty rounds -- and this was the first defect found in it.)*
+    ///
+    /// Ordered rather than as a set because the walk is deterministic: it enumerates roots and descendants
+    /// in a fixed order, so a REORDERING is itself evidence the tree changed under the capture.
+    ///
+    /// A window RESIZE between the two walks can also produce a mismatch here. That is correct and not
+    /// double-handling: a resize genuinely may have reflowed the content, and the terminal outcome is the
+    /// same one the resize rule would reach.</summary>
+    private static bool MaskSetsMatch(CaptureGeometry before, CaptureGeometry after)
     {
+        var a = before.MaskRects;
+        var b = after.MaskRects;
         if (a.Count != b.Count) return false;
-        for (int i = 0; i < a.Count; i++) if (a[i] != b[i]) return false;
+
+        var oa = before.WindowBounds.Location;
+        var ob = after.WindowBounds.Location;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].X - oa.X != b[i].X - ob.X) return false;
+            if (a[i].Y - oa.Y != b[i].Y - ob.Y) return false;
+            if (a[i].Size != b[i].Size) return false;
+        }
         return true;
     }
 ```
@@ -3602,9 +3655,25 @@ Confirm the third test from Step 2 is present and reads BOTH sides of the promis
         Assert.Equal(expected, documented);
 
         // THE OTHER DIRECTION. Without this the test passes while the projection emits nothing at all.
+        //
+        // ⚠⚠ COMMENTS ARE STRIPPED FIRST, AND THAT IS LOAD-BEARING. Matching the raw source means
+        // `// captureMethod = result.CaptureMethod,` still satisfies the regex, so the tripwire is
+        // defeated by typing two slashes -- which is EXACTLY the defect item 12 shipped, reappearing
+        // inside the very test written to prevent it. MEASURED: `\bcaptureMethod\s*=` matches the
+        // commented line. Do not "simplify" this back.
+        var code = StripComments(projection);
         foreach (var field in expected)
-            Assert.True(Regex.IsMatch(projection, $@"\b{Regex.Escape(field)}\s*="),
+            Assert.True(Regex.IsMatch(code, $@"\b{Regex.Escape(field)}\s*="),
                 $"the tool description promises '{field}' but the metadata projection never assigns it");
+    }
+
+    /// <summary>Remove block and line comments so a commented-out assignment cannot satisfy a sweep.</summary>
+    private static string StripComments(string source)
+    {
+        var noBlocks = Regex.Replace(source, @"/\*.*?\*/", string.Empty, RegexOptions.Singleline);
+        return string.Join("\n", noBlocks
+            .Split('\n')
+            .Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
     }
 ```
 
@@ -4144,11 +4213,51 @@ On a physical console. `SendInput` does not deliver over RDP and this test needs
 `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~OccludedCaptureTests"`
 Expected: PASS — 1 passed.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Add the RUNTIME metadata assertion**
+
+Task 20's sweep reads the projection's **source text**. That catches a deleted or commented-out field, but it never observes the object the tool actually emits — a shape defect that only appears at runtime would slip through both. This is the one place in the plan with a live desktop, so the runtime half belongs here.
+
+Append to `OccludedCaptureTests`:
+
+```csharp
+    // The RUNTIME half of the metadata contract. Task 20's sweep reads the projection's SOURCE; this
+    // reads the JSON the tool actually produced. Both are needed: the sweep catches a field removed from
+    // the code, this catches a shape that is wrong only once it is serialized.
+    [Fact]
+    public async Task The_emitted_metadata_carries_all_nine_documented_fields()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+
+        var tools = TestHost.ResolveScreenshotTools(mgr);   // see the note below
+        var call = await tools.DesktopScreenshot(window: handle.Id);
+        var json = CallResultJson(call);                     // the JSON block of the CallToolResult
+
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        foreach (var field in new[]
+        {
+            "bounds", "dpiScale", "scaleApplied", "redactions", "maskEscalations", "escalated",
+            "unmaskedProcesses", "captureMethod", "captureWarnings",
+        })
+            Assert.True(doc.RootElement.TryGetProperty(field, out _),
+                $"the emitted metadata is missing '{field}'");
+
+        Assert.Equal("printWindow", doc.RootElement.GetProperty("captureMethod").GetString());
+        // ALWAYS PRESENT, and empty is the normal case -- an absence would read as "nothing to report"
+        // only by accident.
+        Assert.Equal(System.Text.Json.JsonValueKind.Array,
+                     doc.RootElement.GetProperty("captureWarnings").ValueKind);
+    }
+```
+
+⚠ **`TestHost.ResolveScreenshotTools` and `CallResultJson` are helpers this test needs and the repo may not have.** Before writing them, run `grep -rn "ScreenshotTools\|CallToolResult" test/FlaUI.Mcp.Tests/ | head -20` and follow whatever pattern already exists for constructing a tool class in a test. **If no such pattern exists, construct `ScreenshotTools` directly** with a real `PerceptionManager`, a `WindowCaptureCoordinator` over `PrintWindowImageSource`, and a `CaptureAuditSignal` bound to `NullAttentionSignal.Instance` — and extract the JSON from the `CallToolResult`'s text content block. **Do not invent a test host.**
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add test/FlaUI.Mcp.Tests/Capture/
-git commit -m "test(capture): the occlusion success criterion - an occluded window yields its own pixels"
+git commit -m "test(capture): the occlusion success criterion, plus the runtime metadata contract"
 ```
 
 ### Task 25: Full gates, and complete the measurements record
@@ -4201,3 +4310,47 @@ git commit -m "docs(item8): complete the measurement record - five risks plus th
 Per the repo's standing discipline, before declaring this complete: convene a convergent agy review of the **committed implementation** (executable code + tests, not the plan), rounds until green, with a do-not-re-raise ledger. **Point it hardest at §2.5 and §2.6** — they are the only parts of this design that never faced the panel.
 
 Then AGY-TEST-AUDIT, then `finishing-a-development-branch`. **Merge `--no-ff`, KEEP the branch, push NOTHING** — this project's standing rules.
+
+---
+
+## AGY-AFTER panel over this plan — round 1
+
+Brief `.clavity/seams/item8-plan-panel.md`; report `.clavity/scratch/item8-plan-panel/agy-round1.md`.
+Seats: Type-Flow Auditor, Literal Implementer, Mechanism Gamer. **Verdict: RED.** Five findings, of which
+**three were folded and two were REFUTED BY MEASUREMENT.**
+
+**Folded:**
+
+1. **The bookend walk compared ABSOLUTE mask rectangles, so a pure window MOVE tripped it.** Mask rects
+   are absolute screen coordinates; dragging the window between the two walks shifts every one of them, so
+   a harmless drag read as a total relayout — retried, then REFUSED. The design states in three separate
+   places that a pure move is harmless, so the comparison contradicted it directly. Now normalised against
+   each walk's own window origin, with `A_pure_window_move_between_the_two_walks_does_not_trip_the_bookend`
+   pinning it. **This was the first defect found in §2.5, which is the least-reviewed idea in the design.**
+2. **The metadata sweep's regex matched COMMENTED-OUT code**, so the tripwire was defeated by typing two
+   slashes — *the exact defect item 12 shipped, reappearing inside the very test written to prevent it.*
+   MEASURED: `\bcaptureMethod\s*=` matches `// captureMethod = result.CaptureMethod,`. Comments are now
+   stripped before matching. **The severity here is not the regex; it is that an anti-gaming guard was
+   authored, reviewed, and shipped in a plan while being trivially gameable.**
+3. **The sweep reads SOURCE, never the runtime shape.** A serialization-level defect would pass both
+   halves. Task 24 gains a runtime assertion over the JSON the tool actually emits — placed there because
+   it is the only task with a live desktop.
+
+**Refuted by measurement, do NOT re-raise:**
+
+4. **"Task 21 provides no logic mutants and stops at Step 6."** FALSE. Task 21 has **Step 7, "Prove the
+   gates are non-vacuous with two logic mutants"**, followed by Step 8's commit. Verified by reading the
+   task.
+5. **"The plan invents a DEF-2 defect it did not verify: `ScreenshotTools.cs:49` already passes
+   `desk.Rects`."** The line does pass `desk.Rects` — and so does the plan. The `// DEF-2: this passed
+   Array.Empty<Rectangle>()` comment is **pre-existing source at `ScreenshotTools.cs:42-45`**, written in
+   the PAST TENSE, recording a defect that was fixed. The plan reproduces it verbatim because preserving
+   an existing comment is correct. The peer read a historical note as a present-tense claim.
+
+**Already fixed before the report arrived:** the Literal Implementer's finding that Task 20 references
+`CaptureAuditSignal` before Task 21 creates it. The driver's own solo pass caught it in `c5bc0b2`;
+independent agreement is worth recording even though there was nothing left to fold.
+
+⚠ **The round is RED and the panel is NOT closed.** Three folds spawn their own edges — the corrected
+bookend comparison in particular is new code that has been reviewed by nobody. A further round should be
+run against the folded plan before Task 1 begins.
