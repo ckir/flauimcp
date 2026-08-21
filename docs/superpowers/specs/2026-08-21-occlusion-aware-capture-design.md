@@ -302,6 +302,31 @@ it the same grep matches FlaUI's and System.Drawing's compiled assemblies under 
 form would have "refuted" a true claim. Panel round 22 filed this as unverified; verifying it corrected
 the command rather than the claim.)*
 
+#### The components, at a glance — an INDEX, holding no contract of its own
+
+Rounds 27-29 each found a defect in the component decomposition, and the accepted diagnosis is that this
+spec has been specifying that decomposition INCREMENTALLY, a paragraph at a time, in different sections.
+This table exists so the whole of it can be seen at once.
+
+⚠ **It deliberately states NO contract.** Every cell points at where the contract actually lives. A
+summary that restates its sources becomes a third thing to keep in sync, and this document has already
+been bitten three times by claims that drifted from what they summarised. If this table ever disagrees
+with a section it points at, the SECTION is right and this table is the defect.
+
+| Component | Owns | Contract specified in |
+|---|---|---|
+| **caller** (`ScreenshotTools` + `PerceptionManager`) | the geometry walk, the retry loop, the scrape fallback, response assembly | the canonical order (steps 1-6, and the fallback rules in §1) |
+| **geometry walk** | `W1`, `E`, mask rects, `HWND`, the `W1` degeneracy guard, the yardstick | canonical steps 1-3; §2 for the yardstick |
+| **`CaptureWindow`** (new) | `PrintWindow` acquisition, `W2`-side guards, resize DETECTION, the crop | "The problem"; canonical steps 4-7 |
+| **crop geometry** (pure) | `effective`, `absolute`, `reported` | §1's algorithm block and its three rules |
+| **crop extraction** | `src` | canonical step 7 |
+| **`CaptureRectangle`** (existing, scrape) | full-desktop and fallback acquisition, `desktopCanvasUniform` | "The problem"; §3 for the detector gate |
+| **`Encode`** (existing) | masking, downscale, PNG, `CaptureResult` assembly | §1's invariant; §5 for the result shape |
+
+**The two invariants that span all of them**, repeated here because they are what rounds 28-29 were about:
+warnings travel only INWARD and are scoped to the ATTEMPT; and every outcome a component can EXPERIENCE
+must have a representation in what it RETURNS.
+
 #### What crosses each boundary — the DATA FLOW, not just the control flow
 
 Rounds 21-24 traced twelve JOINS and found them sound, but they traced the RULES meeting at each join, not
