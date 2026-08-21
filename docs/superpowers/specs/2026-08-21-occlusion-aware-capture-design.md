@@ -19,10 +19,17 @@ three times. *(Panel round 16, Pattern Hunter — fourth instance.)*
 ```csharp
 // AFTER: window and element scope acquire per-window; the geometry carries W1 (see section 1).
 result = await Task.Run(() => ScreenCapture.CaptureWindow(geo, maxWidth));
-// Full-desktop is unchanged and still scrapes:
-result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth,
-                                                             clipToVirtualScreen: true));
+// Full-desktop's ACQUISITION is unchanged - CaptureRectangle's signature does not move:
+result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth));
 ```
+
+⚠ **`clipToVirtualScreen` is a GEOMETRY parameter, not an acquisition one.** It selects the yardstick,
+which is computed during the UIA walk in `PerceptionManager` — beside `skipIfNoRenderableOverlap`, the
+parameter §2 cites as its precedent. So it rides on the geometry call (`AllMaskRectsAsync` for
+full-desktop, the window/element geometry resolution otherwise), NOT on `ScreenCapture.CaptureRectangle`.
+An earlier version of the block above showed it on `CaptureRectangle`, which would have put a
+geometry-stage decision inside an acquisition seam that runs after the yardstick has already been used.
+*(Panel round 26, direct question raised as a finding — correctly, per this brief's instruction.)*
 
 `CaptureWindow` owns the `PrintWindow` acquisition, the crop, and the **`W2`-side** guards — a failed
 `GetWindowRect`, a degenerate `W2`, minimized-at-capture, and DETECTING a size mismatch.
@@ -479,10 +486,15 @@ requested. *(Panel round 3, Fold Auditor — a defect introduced by round 2's ow
 ⚠ **Why absolute coordinates are load-bearing here, since it is NOT that the caller clicks them.**
 `Encode`'s mask arithmetic is absolute (`clip.X - captureBounds.X`) and the masks arrive as absolute
 screen rects, so the rectangle handed to `Encode` must be absolute or every mask is wrong. That is the
-requirement. The reported `bounds` must then match it because a `bounds` that describes a region the
-pixels are not is simply a false statement in the response. **Neither reason is "so the caller can map
-image coordinates back to the screen" — §5 explains why the caller must not do that at all under this
-backend.** *(Panel round 5, Contradiction Hunter: §1 previously justified this math by a caller need that
+requirement. **Neither reason is "so the caller can map image coordinates back to the screen" — §5
+explains why the caller must not do that at all under this backend.**
+
+⚠ An earlier version of this paragraph continued: *"the reported `bounds` must then MATCH it, because a
+`bounds` that describes a region the pixels are not is simply a false statement."* **That is a fossil and
+it is now backwards.** Round 21 split the two rectangles precisely because making `bounds` match
+`absolute` is what produces the false statement once the window has moved. `absolute` is the mask
+rectangle; `reported` is the bounds; they coincide only when the origin did not change. *(Panel round 26,
+Justification Auditor — a rationale arguing for the exact behaviour the design later reversed.)* *(Panel round 5, Contradiction Hunter: §1 previously justified this math by a caller need that
 §5 forbids. The math stays; the justification was wrong.)*
 
 ⚠ **`effective` can be EMPTY, and that case needs a defined outcome — not a crash.** If the window shrinks
@@ -499,8 +511,11 @@ repo has already shipped the wrong form of this exact guard once.
 documents it at `PerceptionManager.cs:942-946`: `Rectangle.Intersect` yields a zero-extent rect at
 NON-ZERO coordinates for rects that merely touch along an edge, and `IsEmpty` is false there. The
 existing yardstick guard at `:947` tests `Width <= 0 || Height <= 0` for that reason; this one does the
-same. (Measured: fully disjoint rects do give `IsEmpty=true` at `0,0` — which is precisely why testing
-`IsEmpty` looks correct until the touching case arrives.)
+same. **MEASURED on this runtime**, and it is exactly the trap the comment describes: fully disjoint rects give
+`(0,0,0,0)` with `IsEmpty=true`, while rects TOUCHING along an edge give `(100,50,0,30)` and
+`(50,100,30,0)` — zero extents at NON-ZERO coordinates, `IsEmpty=false` in both. Testing `IsEmpty` looks
+correct until the touching case arrives. *(Panel round 26 filed this as unverified; it is now probe
+output rather than a citation.)*
 
 ⚠ **THE RESIZE CHECK RUNS BEFORE THIS BLOCK, and without that ordering the two rules contradict each
 other.** For element scope, the usual way `effective` goes empty is that the window SHRANK until the
@@ -1034,7 +1049,8 @@ omission it warns against.)*
 - **Full-desktop scope.** Keeps the scrape.
 - **Minimized windows.** Still `ElementNotActionable`. `PrintWindow` on a minimized window is unreliable,
   and nothing in item 8 requires changing it.
-- **A scrape fallback when `PrintWindow` disappoints — with ONE exception, the timeout (risk 2).**
+- **A scrape fallback when `PrintWindow` disappoints — with TWO exceptions: the timeout (risk 2) and
+  element-scope retry exhaustion (§1).**
   Rejected everywhere else — **on error-budget grounds, which is a different and better reason than the
   one this spec originally gave.** The original wording said the
   choice "needs the unsound detector F4 rules out"; that is now imprecise, because §3 gives the detector
@@ -1047,7 +1063,9 @@ omission it warns against.)*
   was real and is corrected; the conclusion it implied — that the exclusion should be revisited — is
   rejected.)*
 
-  **The timeout exception falls outside that reasoning rather than weakening it.** The ban is about
+  **Both exceptions fall outside that reasoning rather than weakening it** — and there are two, not one:
+  an earlier version of this entry said "ONE exception, the timeout", written before round 11 made retry
+  exhaustion a fallback as well. *(Panel round 26, Justification Auditor.)* The ban is about
   switching backends on an UNSOUND signal. A timeout has no false-positive mode to re-price: the call
   either returned or it did not, and `captureMethod` plus a `scrapeFallback*` code make the switch
   visible. Risk 2 carries the full argument, including why refusing there would have been a regression
@@ -1658,7 +1676,14 @@ REMOVED without losing a guarantee, since round 10's best outcome was a deletion
   defer a defect for being pre-existing.
 - **The degenerate-`W1` guard's justification was wrong and is corrected.** Traced properly, every path
   from a degenerate `W1` already ends in a refusal, so the guard IS redundant — rounds 11 and 13 were
-  both right about that, and the "element scope has an uncovered path" defence was not. It is kept as
+  both right about that, and the "element scope has an uncovered path" defence was not.
+  ⚠⚠ **THIS PARAGRAPH IS SUPERSEDED AND ITS CENTRAL CLAIM IS FALSE. See round 25.** Element scope's
+  size-mismatch path does NOT end in a refusal — round 11 had already changed it to
+  retry-then-scrape-fallback when this was written. The guard is LOAD-BEARING. The paragraph is kept
+  because the record of how three rounds re-derived a stale claim is worth more than a tidy history, but
+  a reader scanning this record would otherwise absorb the refuted version as fact. *(Panel round 26,
+  Fold Auditor — a reversal must also clean up the historical summaries that still assert the false
+  premise confidently.)* It is kept as
   explicit DEFENCE IN DEPTH, on the grounds that a leak-class guarantee should not rest on a three-rule
   interaction when all three rules have been rewritten during this review. Labelled as a judgement call,
   not as a necessity.
@@ -2077,3 +2102,39 @@ not: it audited the document's CLAIMS rather than its BEHAVIOUR.**
 
 **Verified, not folded:** F6's minimized-placeholder measurement (`-32000,-32000`, extents `160x28`) is
 in this document's own evidence table, measured by `rect-probe.ps1`.
+
+### AGY-AFTER adversarial panel — round 26
+
+Seats: Fold Auditor (round 25's five edits, hardest on the reversal), Completeness Sweep second pass,
+**Justification Auditor** (audit no mechanic — read each rule's stated REASON and ask only whether it
+still describes the design as it stands). Report: `.clavity/scratch/item8-panel/agy-round26.md`.
+**Verdict: NOT GREEN.** Four folds, and one seat came back clean:
+
+- **A historical summary still asserted the claim round 25 refuted.** Round 13's record says the guard
+  "IS redundant — rounds 11 and 13 were both right about that", stated as fact. A reader scanning the
+  decision record absorbs the refuted version. Annotated as superseded rather than deleted: how three
+  rounds re-derived a stale claim is worth keeping, but not at the price of asserting it.
+- **FOSSIL: "with ONE exception, the timeout."** There are TWO — timeout and element-scope retry
+  exhaustion. The sentence was written before round 11 made exhaustion a fallback.
+- **FOSSIL, and now backwards: the reason `absolute` is load-bearing.** It argued the reported `bounds`
+  "must then MATCH it, because a bounds that describes a region the pixels are not is a false statement".
+  Round 21 split the two rectangles precisely because MATCHING them is what produces the false statement
+  once the window has moved. The rationale now argues for the behaviour the design later reversed.
+- **A geometry parameter had been placed on an acquisition seam.** `clipToVirtualScreen` selects the
+  yardstick, which is computed during the UIA walk — beside `skipIfNoRenderableOverlap`, the very
+  parameter §2 cites as its precedent. The "after" block showed it on `ScreenCapture.CaptureRectangle`,
+  which runs after the yardstick has already been used. Corrected: full-desktop's acquisition signature
+  does not move at all.
+
+**The Completeness Sweep returned NO NEW FINDINGS**, re-tracing all four completeness claims round 25
+corrected and confirming each now enumerates what it promises — including the refusal table's nine paths.
+
+**The Justification Auditor found two fossils on its first outing and reported three justifications
+traced STILL TRUE** (why the crop is universal, why window scope refuses on a resize with masks, why the
+detectors are gated to `printWindow`). Both fossils were rationales for rules that are themselves correct
+— which is exactly why twenty-five rounds of auditing MECHANICS never surfaced them.
+
+**Also upgraded from citation to measurement:** `Rectangle.Intersect` on rects touching along an edge
+returns `(100,50,0,30)` and `(50,100,30,0)` — zero extents at NON-ZERO coordinates, `IsEmpty=false` — while
+disjoint rects give `(0,0,0,0)` with `IsEmpty=true`. The repo's warning at `PerceptionManager.cs:942-946`
+is exactly right, and this spec now rests on probe output rather than on that comment.
