@@ -849,8 +849,26 @@ public sealed class PerceptionManager
     /// renderable overlap contributes no pixels and may be skipped. FALSE for a caller that NAMED this
     /// window and will photograph its rect regardless — suppressing that window's masks would hand back an
     /// unmasked image of the named target, which is the one thing this feature must not do.</param>
+    /// <param name="clipToVirtualScreen">TRUE only for the full-desktop scrape. Selects the YARDSTICK the
+    /// mask walk judges against.
+    ///
+    /// ⚠ DEFAULTS TO FALSE — the mask-preserving direction — and that is not a style choice. Evidence F5
+    /// measured a 1920x1020 window captured in full while the physical display was 1366x768: PrintWindow
+    /// returns pixels that are on NO monitor. So a window with no renderable overlap CAN contribute pixels,
+    /// and clipping its yardstick drops the whole mask set for a window whose pixels are in the image.
+    /// The default follows skipIfNoRenderableOverlap's precedent for the same reason given at :958 — the
+    /// window-scoped value is the safe one, so a forgotten call site fails safe.
+    ///
+    /// ⚠ It follows the SCOPE, never the BACKEND. Window and element scope take the default INCLUDING when
+    /// they fall back to the scrape: clipping exists to stop a maximized window's invisible resize-border
+    /// bleed from defeating the full-desktop blacks-out check, which is a property of that CALLER.
+    ///
+    /// ⚠ The OCR path (FindTextTools, via ResolveTextCaptureGeometryAsync at :1136) also takes the default
+    /// and so changes behaviour for a PARTIALLY off-screen window: today it always clips. That is a
+    /// deliberate, tested consequence — see risk 6 — not an oversight.</param>
     public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref,
-                                                                   bool skipIfNoRenderableOverlap = false) =>
+                                                                   bool skipIfNoRenderableOverlap = false,
+                                                                   bool clipToVirtualScreen = false) =>
         _windows.RunWithWindowAndDesktopAsync(handle, (win, desktop) =>
         {
             var procName = SafeProcessName(win);
@@ -932,7 +950,9 @@ public sealed class PerceptionManager
             // rects land against a stale capture rect. Reading it AFTER the walk just inverts which side is
             // stale. That race is inherent to capturing a moving window — do not read this as claiming
             // otherwise.
-            var yardstick = System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds());
+            var yardstick = clipToVirtualScreen
+                ? System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds())
+                : captureBounds;
 
             // ⚠ A window with NO renderable overlap contributes no pixels to any capture, so there is
             // nothing here to withhold and nothing to refuse over. Returning early is not a shortcut: it is
@@ -1179,7 +1199,8 @@ public sealed class PerceptionManager
             try
             {
                 var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null,
-                                                                  skipIfNoRenderableOverlap: true);
+                                                                  skipIfNoRenderableOverlap: true,
+                                                                  clipToVirtualScreen: true);
                 // ⚠ KEPT DELIBERATELY. A review seat proposed deleting this condition because the callee
                 // guarantees empty lists when Denied or Minimized, making the AddRange calls harmless
                 // no-ops. True today — and it is precisely the "caller relies on the callee's internals"
