@@ -59,7 +59,10 @@ public sealed class FindTextTools
             var geo = await _perception.ResolveTextCaptureGeometryAsync(new WindowHandle(window), region); // Step 0 shape
             if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"OCR of windows owned by '{geo.DeniedProcess}' is blocked.", "target a non-sensitive window");
             if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
-            var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.MaskRects, maxWidth: 0)); // maxWidth:0 -> best OCR accuracy (still 1920-clamped)
+            // ⚠ OcrRegion, not Window. This path SCRAPES and always has; it is neither a whole desktop
+            // nor a PrintWindow capture, so it runs NO uniform detector. Item 8 did not change this
+            // path's backend -- it only forced the scope to be named. See risk 6.
+            var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.MaskRects, maxWidth: 0, CaptureScope.OcrRegion, System.Array.Empty<CaptureWarning>())); // maxWidth:0 -> best OCR accuracy (still 1920-clamped)
             var matches = await _finder.FindAsync(query, cap.Png, mode, all,
                 cap.ScaleApplied, cap.X, cap.Y, geo.WindowLeft, geo.WindowTop, geo.WindowWidth, geo.WindowHeight);
             return ToolResponse.Ok(new
@@ -107,7 +110,7 @@ public sealed class FindTextTools
                 // ToolException still means the window vanished/closed mid-wait -> not found.
                 catch (ToolException ex) when (ex.Code != ToolErrorCode.RedactionUnmaskable) { return false; }
                 if (geo.Denied || geo.Minimized) return false;
-                var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.MaskRects, maxWidth: 0));
+                var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.CaptureBounds, geo.MaskRects, maxWidth: 0, CaptureScope.OcrRegion, System.Array.Empty<CaptureWarning>())); // scope: see the note at :62
                 var matches = await _finder.FindAsync(query, cap.Png, MatchMode.Fuzzy, all: false,
                     cap.ScaleApplied, cap.X, cap.Y, geo.WindowLeft, geo.WindowTop, geo.WindowWidth, geo.WindowHeight);
                 if (matches.Count > 0) { found = matches; return true; }

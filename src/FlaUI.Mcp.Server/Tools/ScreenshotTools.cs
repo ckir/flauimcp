@@ -46,7 +46,7 @@ public sealed class ScreenshotTools
                 var desk = await _perception.AllMaskRectsAsync();
                 escalations = desk.Escalations;
                 unmaskedProcesses = desk.UnmaskedProcesses;
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth));
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth, CaptureScope.FullDesktop, System.Array.Empty<CaptureWarning>()));
             }
             else
             {
@@ -55,7 +55,13 @@ public sealed class ScreenshotTools
                 if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
                 escalations = geo.Escalations;
                 unmaskedProcesses = System.Array.Empty<string>();
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth));
+                // ⚠ SCOPE IS NOT CONSTANT HERE. This one call serves BOTH window and element capture,
+                // and the two are not interchangeable: CaptureRectangle emits uniformCanvas for Window
+                // and deliberately NOT for Element, because on an element the captured region is the
+                // ELEMENT and claiming "the window rendered as one colour" would be a statement the tool
+                // never measured. `@ref` is exactly the window-vs-element discriminator the enclosing
+                // branch already used to resolve `geo`.
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth, @ref is null ? CaptureScope.Window : CaptureScope.Element, System.Array.Empty<CaptureWarning>()));
             }
             var dpi = DpiHelper.ScaleForPoint(result.X, result.Y);
             // A1: maskEscalations counts ELEMENTS whose own rect was unusable and whose mask therefore came

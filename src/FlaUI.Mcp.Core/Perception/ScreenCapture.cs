@@ -43,13 +43,78 @@ public static class ScreenCapture
         GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
         GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
 
-    public static CaptureResult CaptureRectangle(Rectangle absolute, IReadOnlyList<Rectangle> redactAbsolute, int maxWidth)
+    /// <summary>Scrape a screen rectangle. Serves THREE KINDS of caller with divergent requirements
+    /// (across FOUR call sites), and cannot tell them apart without being told, which is why `scope`
+    /// has no default:
+    ///   FullDesktop -- runs the desktopCanvasUniform detector.
+    ///   OcrRegion   -- runs no detector; it is neither a whole desktop nor a PrintWindow capture.
+    ///   Window/Element -- a FALLBACK scrape. Runs no detector, and its caller has already decided a
+    ///     scrapeFallback* code, which arrives in `warningsSoFar`.
+    ///
+    /// ⚠ On this path `absolute` and `reported` are the SAME rectangle. The scrape captures exactly the
+    /// region it was asked for, in one observation -- there is no W1/W2 pair, so the two cannot differ.
+    /// Only the PrintWindow path derives them separately.</summary>
+    /// <param name="source">TEST SEAM. Null means grab the real screen, which is what every production
+    /// caller does. A non-null source lets a headless test reach the warning-emission logic below --
+    /// see IScreenImageSource. Both paths funnel into the SAME AssembleScrape, so an injected run and a
+    /// real run cannot diverge in the logic under test.</param>
+    public static CaptureResult CaptureRectangle(Rectangle absolute, IReadOnlyList<Rectangle> redactAbsolute,
+                                                 int maxWidth, CaptureScope scope,
+                                                 IReadOnlyList<CaptureWarning> warningsSoFar,
+                                                 IScreenImageSource? source = null)
     {
+        if (source is not null)
+        {
+            using var injected = source.Acquire(absolute);
+            return AssembleScrape(injected, absolute, redactAbsolute, maxWidth, scope, warningsSoFar);
+        }
+
         CaptureImage cap;
         try { cap = Capture.Rectangle(absolute, null); }
         catch (System.Exception ex) when (ex is COMException or System.Runtime.InteropServices.ExternalException)
         { throw new ToolException(ToolErrorCode.CaptureUnavailable, "Screen capture failed (session may be disconnected/locked).", "reconnect to restore rendering"); }
-        using (cap) return Encode(cap.Bitmap, absolute, absolute, redactAbsolute, maxWidth, "screenScrape", System.Array.Empty<CaptureWarning>());
+        using (cap)
+            return AssembleScrape(cap.Bitmap, absolute, redactAbsolute, maxWidth, scope, warningsSoFar);
+    }
+
+    /// <summary>Decide the scrape's warnings and encode. Split out of CaptureRectangle so the decision is
+    /// reachable without a screen -- this is the logic ScrapeWarningEmissionTests exercises.
+    ///
+    /// ⚠ Does NOT dispose the bitmap. Ownership stays with whoever acquired it: the CaptureImage `using`
+    /// on the real path, the `using var injected` on the seam path.</summary>
+    internal static CaptureResult AssembleScrape(Bitmap bmp, Rectangle absolute,
+                                                 IReadOnlyList<Rectangle> redactAbsolute, int maxWidth,
+                                                 CaptureScope scope, IReadOnlyList<CaptureWarning> warningsSoFar)
+    {
+        var warnings = warningsSoFar;
+        // The detector runs where the bitmap lives, so the seam cannot delegate this decision upward.
+        if (scope.RunsDesktopUniformDetector() && UniformCanvasDetector.IsUniform(bmp))
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.DesktopCanvasUniform));
+        // ⚠⚠ A WINDOW-SCOPE FALLBACK SCRAPE GETS THE WHOLE-IMAGE CHECK TOO, and without it this path
+        // silently returned a black image -- recreating the exact defect the uniformCanvas widening
+        // was folded to close. The TWO-STAGE detector genuinely cannot run on a scrape (there is no
+        // full-window bitmap distinct from the captured region), but the FIRST stage alone needs no
+        // second operand, and "this image is one colour" is as true and as useful here as it is for a
+        // full desktop. *(AGY-AFTER panel over this plan, round 4, Protocol Pedant.)*
+        //
+        // ⚠ WINDOW SCOPE ONLY. On an ELEMENT-scope fallback the captured region is the ELEMENT, so
+        // emitting uniformCanvas would state that the whole WINDOW rendered as one colour -- a claim
+        // the tool cannot support and did not measure. That case stays uncovered, deliberately, and it
+        // is the one gap this fold does not close. `An_element_scope_uniform_scrape_stays_silent` pins
+        // that silence so it reads as a decision rather than an omission.
+        else if (scope == CaptureScope.Window && UniformCanvasDetector.IsUniform(bmp))
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.UniformCanvas));
+        return Encode(bmp, absolute, absolute, redactAbsolute, maxWidth, "screenScrape", warnings);
+    }
+
+    /// <summary>Append one warning. Never mutates the caller's list -- warnings travel INWARD only, and
+    /// nobody unpacks a returned CaptureResult to add one.</summary>
+    internal static IReadOnlyList<CaptureWarning> Append(IReadOnlyList<CaptureWarning> list, CaptureWarning w)
+    {
+        var next = new List<CaptureWarning>(list.Count + 1);
+        next.AddRange(list);
+        next.Add(w);
+        return next;
     }
 
     /// <summary>Mask, downscale, PNG-encode, and assemble the CaptureResult.

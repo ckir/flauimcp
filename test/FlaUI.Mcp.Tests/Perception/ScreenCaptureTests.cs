@@ -25,7 +25,8 @@ public class ScreenCaptureTests : IClassFixture<TestAppFixture>
             var secret = win.FindFirstDescendant(cf => cf.ByAutomationId("Secret"))!;
             return (win.BoundingRectangle, secret.BoundingRectangle);
         });
-        var result = ScreenCapture.CaptureRectangle(winRect, new[] { secretRect }, 1600);
+        var result = ScreenCapture.CaptureRectangle(winRect, new[] { secretRect }, 1600,
+                                                    CaptureScope.Window, System.Array.Empty<CaptureWarning>());
         Assert.True(result.Png.Length > 100);
         Assert.Equal(1, result.Redactions);
         Assert.Equal(0x89, result.Png[0]);
