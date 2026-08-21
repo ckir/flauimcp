@@ -583,11 +583,14 @@ public interface IScreenImageSource
 
 - [ ] **Step 3: Change the signature**
 
-Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 36–43 with:
+Replace the **whole `CaptureRectangle` method** in `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` — find it BY NAME, not by line number — with the following, which also adds two new members after it:
+
+⚠ **This step said "lines 36–43" until execution.** Every line citation in this plan has drifted at least once; Task 6 alone pushed everything below `CaptureResult` down by nine lines.
 
 ```csharp
-    /// <summary>Scrape a screen rectangle. Serves THREE callers with divergent requirements, and cannot
-    /// tell them apart without being told, which is why `scope` has no default:
+    /// <summary>Scrape a screen rectangle. Serves THREE KINDS of caller with divergent requirements
+    /// (across FOUR call sites), and cannot tell them apart without being told, which is why `scope`
+    /// has no default:
     ///   FullDesktop -- runs the desktopCanvasUniform detector.
     ///   OcrRegion   -- runs no detector; it is neither a whole desktop nor a PrintWindow capture.
     ///   Window/Element -- a FALLBACK scrape. Runs no detector, and its caller has already decided a
