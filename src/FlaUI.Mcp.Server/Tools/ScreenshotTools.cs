@@ -46,7 +46,9 @@ public sealed class ScreenshotTools
                 var desk = await _perception.AllMaskRectsAsync();
                 escalations = desk.Escalations;
                 unmaskedProcesses = desk.UnmaskedProcesses;
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth, CaptureScope.FullDesktop, System.Array.Empty<CaptureWarning>()));
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(
+                    vbounds, desk.Rects, maxWidth, CaptureScope.FullDesktop,
+                    System.Array.Empty<CaptureWarning>()));
             }
             else
             {
@@ -61,7 +63,12 @@ public sealed class ScreenshotTools
                 // ELEMENT and claiming "the window rendered as one colour" would be a statement the tool
                 // never measured. `@ref` is exactly the window-vs-element discriminator the enclosing
                 // branch already used to resolve `geo`.
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth, @ref is null ? CaptureScope.Window : CaptureScope.Element, System.Array.Empty<CaptureWarning>()));
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(
+                    geo.Bounds,
+                    geo.MaskRects,
+                    maxWidth,
+                    @ref is null ? CaptureScope.Window : CaptureScope.Element,
+                    System.Array.Empty<CaptureWarning>()));
             }
             var dpi = DpiHelper.ScaleForPoint(result.X, result.Y);
             // A1: maskEscalations counts ELEMENTS whose own rect was unusable and whose mask therefore came

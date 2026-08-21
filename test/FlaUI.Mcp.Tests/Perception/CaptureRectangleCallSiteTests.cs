@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -7,6 +9,8 @@ namespace FlaUI.Mcp.Tests.Perception;
 
 public class CaptureRectangleCallSiteTests
 {
+    private const string Needle = "ScreenCapture.CaptureRectangle(";
+
     private static string RepoRoot()
     {
         var d = new DirectoryInfo(Directory.GetCurrentDirectory());
@@ -15,33 +19,93 @@ public class CaptureRectangleCallSiteTests
         return d!.FullName;
     }
 
+    /// <summary>Blank out comment lines while PRESERVING the line count, so the line numbers this sweep
+    /// reports still match the real file.
+    ///
+    /// ⚠ A source sweep that does not do this is defeated by typing two slashes, and this repo has now
+    /// shipped or nearly shipped that defect FOUR times. `///` starts with `//` so one prefix test covers
+    /// both; `*` covers the interior of a block comment.</summary>
+    private static string BlankComments(string source)
+        => string.Join("\n", source.Split('\n').Select(l =>
+        {
+            var t = l.TrimStart();
+            return t.StartsWith("//", StringComparison.Ordinal) || t.StartsWith("*", StringComparison.Ordinal)
+                ? string.Empty : l;
+        }));
+
+    /// <summary>Every call to the scrape seam, with its FULL argument list — read by balancing
+    /// parentheses across however many physical lines the call happens to span.
+    ///
+    /// ⚠ THIS USED TO BE A PER-LINE CHECK, and that was a booby trap. The sweep required
+    /// `ScreenCapture.CaptureRectangle(` and `CaptureScope.X` to sit on the SAME physical line, so the
+    /// four call sites had to be collapsed to ~200-character lines to satisfy it. Anyone re-wrapping
+    /// them — a formatter, a reviewer, an editor's line-length rule — would have turned this guard red
+    /// with the message "calls CaptureRectangle without naming a CaptureScope" about a call that names
+    /// one perfectly well. A guard whose failure message lies about the cause is worse than no guard.
+    /// Reading the balanced argument list makes the sweep independent of formatting.</summary>
+    private static List<(string File, int Line, string Args)> CallSites(string root)
+    {
+        var sites = new List<(string, int, string)>();
+        foreach (var f in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories))
+        {
+            var text = BlankComments(File.ReadAllText(f).Replace("\r\n", "\n"));
+            for (int i = text.IndexOf(Needle, StringComparison.Ordinal); i >= 0;
+                     i = text.IndexOf(Needle, i + 1, StringComparison.Ordinal))
+            {
+                int open = i + Needle.Length - 1;          // the '(' itself
+                int depth = 0, j = open;
+                for (; j < text.Length; j++)
+                {
+                    if (text[j] == '(') depth++;
+                    else if (text[j] == ')' && --depth == 0) break;
+                }
+                int line = text.Take(i).Count(c => c == '\n') + 1;
+                sites.Add((f, line, text.Substring(open, Math.Min(j, text.Length - 1) - open + 1)));
+            }
+        }
+        return sites;
+    }
+
     // Every production call site must name its scope EXPLICITLY. There is no safe default: the scope
     // decides which detector runs, and a caller that inherits one silently gets the wrong answer. The
     // OCR path (FindTextTools) is the caller this sweep exists for -- it was invisible to the spec until
     // it was measured, and it is the one most likely to be forgotten again.
+    //
+    // ⚠ FOUR CALL SITES, and the DECLARATION is not among them: it reads
+    // `public static CaptureResult CaptureRectangle(` with no `ScreenCapture.` prefix, so the needle
+    // never matches it. An earlier version asserted "1 declaration + 3 call sites" and would have failed
+    // 4 != 3 even with every call site correctly updated.
     [Fact]
     public void Every_production_CaptureRectangle_call_names_its_scope()
     {
-        var root = RepoRoot();
-        var sites = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
-            .SelectMany(f => File.ReadAllLines(f).Select((l, i) => (File: f, Line: i + 1, Text: l)))
-            .Where(x => x.Text.Contains("ScreenCapture.CaptureRectangle("))
-            .ToList();
-
-        // ⚠ FOUR CALL SITES, and the DECLARATION is not among them. The declaration reads
-        // `public static CaptureResult CaptureRectangle(` -- no `ScreenCapture.` prefix -- so the
-        // Contains() filter above never matches it. An earlier version of this test asserted
-        // "1 declaration + 3 call sites" and then filtered for the declaration text that cannot be
-        // present; it would have failed 4 != 3 even with every call site correctly updated.
-        Assert.Equal(4, sites.Count);
-
-        // Kept as a defensive filter in case the declaration is ever rewritten to self-qualify, but it
-        // matches nothing today -- which is why the expected count is unchanged at 4.
-        var calls = sites.Where(x => !x.Text.Contains("public static CaptureResult")).ToList();
+        var calls = CallSites(RepoRoot());
         Assert.Equal(4, calls.Count);
 
         foreach (var c in calls)
-            Assert.True(Regex.IsMatch(c.Text, @"CaptureScope\.\w+"),
+            Assert.True(Regex.IsMatch(c.Args, @"CaptureScope\.\w+"),
                 $"{Path.GetFileName(c.File)}:{c.Line} calls CaptureRectangle without naming a CaptureScope");
+    }
+
+    // ⚠ THE ONE CALL SITE WHOSE SCOPE IS NOT CONSTANT, and the only guard on it.
+    //
+    // ScreenshotTools' window/element call serves BOTH scopes and must choose between them from `@ref`.
+    // The two are NOT interchangeable: CaptureRectangle emits uniformCanvas for Window and deliberately
+    // NOT for Element, because on an element the captured region is the ELEMENT and claiming "the window
+    // rendered as one colour" is a statement the tool never measured.
+    //
+    // MEASURED: collapsing that ternary to a bare `CaptureScope.Window` turned NOTHING red across the
+    // whole 986-test headless suite. Nothing exercises the discriminator -- ScreenshotTools reaches a
+    // live UIA walk and a real screen grab, so there is no headless route to it. This is a structural
+    // guard, not a behavioural one, and it is deliberately narrow: it catches exactly the mutation that
+    // was measured to slip through.
+    [Fact]
+    public void The_window_element_call_site_still_discriminates_on_ref()
+    {
+        var site = CallSites(RepoRoot()).Single(c =>
+            c.File.EndsWith("ScreenshotTools.cs", StringComparison.Ordinal) &&
+            c.Args.Contains("geo.Bounds", StringComparison.Ordinal));
+
+        Assert.Contains("CaptureScope.Window", site.Args);
+        Assert.Contains("CaptureScope.Element", site.Args);
     }
 }
