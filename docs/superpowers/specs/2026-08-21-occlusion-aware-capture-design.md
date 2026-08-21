@@ -19,9 +19,26 @@ three times. *(Panel round 16, Pattern Hunter — fourth instance.)*
 ```csharp
 // AFTER: window and element scope acquire per-window; the geometry carries W1 (see section 1).
 result = await Task.Run(() => ScreenCapture.CaptureWindow(geo, maxWidth));
-// Full-desktop's ACQUISITION is unchanged - CaptureRectangle's signature does not move:
-result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth));
+// Full-desktop still SCRAPES, but CaptureRectangle's signature DOES move - see below:
+result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth,
+                                                             scope, warningsSoFar));
 ```
+
+⚠ **`CaptureRectangle`'s signature DOES change — an earlier version of this block said it does not, and
+that was wrong for a different reason than the one it was fixing.** Round 26 correctly moved
+`clipToVirtualScreen` off it (see immediately below) and then over-claimed that nothing else moves. But
+the scrape path now has two callers with DIVERGENT requirements, and a method that cannot tell them apart
+cannot serve both:
+
+- **full-desktop** must evaluate `desktopCanvasUniform` (§3);
+- **a fallback scrape** must NOT evaluate it, and must carry a `scrapeFallback*` code its CALLER decided.
+
+The detectors have to run where the bitmap lives, so the seam cannot delegate that decision upward. What
+it must therefore be able to do: **know which scope it is serving, and accept the warning list its caller
+has already accumulated so the assembled result carries both its own findings and the caller's.** The
+exact parameter names are the plan's; the two capabilities are not. *(Panel round 27, Convergence
+Assessor — which found it by auditing the seam every round had treated as an unchanged baseline while
+obsessing over the new one.)*
 
 ⚠ **`clipToVirtualScreen` is a GEOMETRY parameter, not an acquisition one.** It selects the yardstick,
 which is computed during the UIA walk in `PerceptionManager` — beside `skipIfNoRenderableOverlap`, the
@@ -40,9 +57,18 @@ invariant and for the clamp path. Both live in the crop. If the crop is insepara
 calls `GetWindowRect` and `PrintWindow`, those tests cannot exist: the spec would be mandating tests
 against an architecture that forbids them. So the decomposition is fixed here rather than left to the plan:
 
-- **The crop is a PURE function** of `(bitmap dimensions, E, W1, W2)` returning `(effective, absolute,
-  reported)`. It touches no OS handle and no bitmap content, so a headless test calls it directly with
-  synthetic numbers and asserts every case the design cares about — grown, shrunk, moved, empty, degenerate.
+- **"The crop" is TWO things, and only naming them separately makes the testing claim true.**
+  - **Crop GEOMETRY — a PURE function** of `(bitmap dimensions, E, W1, W2)` returning `(effective,
+    absolute, reported)`. Rectangles in, rectangles out: no OS handle, no pixels. This is what a headless
+    test calls directly with synthetic numbers, asserting every case the design cares about — grown,
+    shrunk, moved, empty, degenerate.
+  - **Crop EXTRACTION** — one bitmap operation, `src = bitmap cropped to effective`. It obviously touches
+    pixels. It carries no decisions: every rectangle it uses was already computed by the geometry above.
+
+  An earlier version said "the crop touches no bitmap content", which is true of the geometry and false of
+  the extraction, and the algorithm block visibly extracts. *(Panel round 27, Justification Auditor: a
+  justification that reads as contradicting the mechanic it defends. The mechanic was right; one word was
+  doing two jobs.)*
 - **The acquisition is behind an injectable interface**, so `CaptureWindow` itself can also be exercised
   headlessly against a fake that returns a synthetic bitmap.
 - `CaptureWindow` composes those two plus the guards. Only the real acquisition implementation is
@@ -1253,8 +1279,10 @@ for each failure, or NONE — not whether the area was "covered".)*
    the plan settles, with a measurement, not a guess.
 6. **`ScreenCapture.CaptureRectangle` has one other caller** (full-desktop, `ScreenshotTools.cs:49`). The
    plan must confirm the signature change does not alter its behaviour. **The change itself is now
-   SPECIFIED rather than deferred:** the full-desktop call gains `clipToVirtualScreen: true` (§2), and
-   window/element scope move to the `CaptureWindow` seam (see "The problem"). An earlier version of this
+   SPECIFIED rather than deferred, and it is NOT the one an earlier draft named:** `clipToVirtualScreen`
+   rides the GEOMETRY call, not this one (§2). What `CaptureRectangle` actually gains is the ability to
+   tell full-desktop from a fallback scrape, and to accept the caller's accumulated warning list — see
+   "The problem". Window and element scope move to the `CaptureWindow` seam. An earlier version of this
    risk said the spec "deliberately does not" specify it, which stopped being true once those two blocks
    were written out. What remains the plan's is `CaptureWindow`'s internal decomposition and the exact
    member names. *(Panel round 1, LI-2, for the original finding; panel round 17, Fold Auditor, for the
@@ -1280,7 +1308,16 @@ for each failure, or NONE — not whether the area was "covered".)*
    survives. The result is a black rectangle over ordinary window content and a `redactions` count that
    corresponds to nothing visible. The direction is fail-safe — over-masking, never under-masking — so
    this is not a leak, but it is a visible behaviour change and "masking is untouched" is not true of it
-   at the semantic level. *(Panel round 1, BS-2.)*
+   at the semantic level.
+
+   ⚠ **That reasoning describes the `printWindow` backend ONLY, while `popupsNotRendered` fires on BOTH
+   since round 14 — for a DIFFERENT reason on each.** Under `printWindow` the popup's pixels are
+   structurally absent while its grafted mask survives, giving the black-rectangle-over-content effect
+   above. Under a `screenScrape` fallback the opposite holds: the popup's pixels ARE present where it
+   overlaps the window's rect, and the mask correctly covers them — what is missing there is the part of
+   the popup extending BEYOND that rect, which the scrape crops off. Same code, two mechanisms; §5's
+   recourse text already says both, and this risk entry had only ever described the first. *(Panel round
+   27, Justification Auditor.)* *(Panel round 1, BS-2.)*
 
 ## Decision record
 
@@ -2138,3 +2175,34 @@ detectors are gated to `printWindow`). Both fossils were rationales for rules th
 returns `(100,50,0,30)` and `(50,100,30,0)` — zero extents at NON-ZERO coordinates, `IsEmpty=false` — while
 disjoint rects give `(0,0,0,0)` with `IsEmpty=true`. The repo's warning at `PerceptionManager.cs:942-946`
 is exactly right, and this spec now rests on probe output rather than on that comment.
+
+### AGY-AFTER adversarial panel — round 27
+
+Seats: Justification Auditor second pass, Fold Auditor (round 26's four edits), Convergence Assessor sixth
+pass. Report: `.clavity/scratch/item8-panel/agy-round27.md`. **Verdict: NOT GREEN.** Four folds:
+
+- **Round 26's fix created this round's worst defect.** It correctly moved `clipToVirtualScreen` off
+  `CaptureRectangle` and then over-claimed that the seam's "signature does not move". It does: the scrape
+  path now has two callers with divergent requirements — full-desktop must evaluate
+  `desktopCanvasUniform`, a fallback scrape must not and must carry a `scrapeFallback*` code its caller
+  decided — and the detectors run where the bitmap lives, so the seam cannot delegate the decision upward.
+  A method that cannot tell its callers apart cannot serve both. **The Convergence Assessor found this by
+  auditing the seam every round had treated as an unchanged baseline while obsessing over the new one.**
+- **FOSSIL: `popupsNotRendered`'s justification covered one backend while the code fires on two.** Under
+  `printWindow` the popup's pixels are absent and its mask survives; under a `screenScrape` fallback the
+  pixels ARE present where the popup overlaps and what is missing is the part beyond the window's rect.
+  Same code, two mechanisms. §5's recourse already said both; risk 8 had only ever described the first.
+- **FOSSIL, and a word doing two jobs: "the crop touches no bitmap content".** True of the crop GEOMETRY
+  (rectangles in, rectangles out) and false of the crop EXTRACTION, which the algorithm block visibly
+  performs. Split and named separately, which is what makes the headless-testing claim precise rather
+  than merely true-if-you-read-it-generously.
+- **Risk 6 described a signature change that had been eliminated** and missed the one that actually
+  exists.
+
+**The Fold Auditor confirmed three of round 26's four edits and found the fourth defective** — the
+strongest form of that seat's output: it did not report "clean" and it did not report everything broken.
+
+**The Justification Auditor's census again reported three justifications traced STILL TRUE** (why the
+yardstick is unclipped for window/element scope; why the empty-crop refusal survives; why the seam reports
+rather than resolves) alongside its two fossils. Both fossils were, once again, reasons attached to
+mechanics that are correct.
