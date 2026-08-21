@@ -159,3 +159,88 @@ setup; the steady-state cost is below the timer's resolution.
 
 The breaker keeps its `_isHung` recovery check. The plain-cooldown fallback described in Step 5b is
 **not** taken, and a recovered window is **not** skipped for the full five minutes.
+
+---
+
+## Risks 1 and 3 — Chromium and Electron, and the stale composition
+
+### Why the pinned probe was replaced
+
+Task 2 Step 1's probe compared the UIA root `Name` against a **12×12 pixel hash**, with a human toggling
+something by hand while it ran. A hash detects *that* a frame changed; it cannot say *which* frame, so it
+cannot separate a stale composition from ordinary render latency — and there is no verdict a hash can
+support beyond "something moved".
+
+Replaced with a self-animating page (`stale.html`) that **encodes its frame number into the image**, so a
+captured frame decodes to an exact integer and staleness is quantified in frames. Three further changes,
+each of which strengthens the test:
+
+- **The tree is read before *and* after each capture.** The pinned probe read it only after, which biases
+  toward "stale" for the trivial reason that the later read is newer. The verdict uses the **before**
+  read, the order-safe direction.
+- **A screen `BitBlt` is taken beside every `PrintWindow`**, with the grab order alternating so neither
+  source is systematically the fresher one. That is the comparison this feature actually replaces.
+- **The title is published from inside a double `requestAnimationFrame`.** `rAF` fires *before* a paint,
+  so setting the title in a second `rAF` means the title only ever names a frame that has **already
+  painted**. Therefore `titleBefore <= paintedFrame` always holds in a correct system, and a capture
+  decoding to *less* than the title read before it is unambiguously stale rather than merely late.
+
+⚠ **The first version of this probe reported a 100% stale rate, and it was WRONG.** It encoded the frame
+number into the background *colour* as `rgb(n & 255, (n >> 8) & 255, 77)`. Chrome applies a
+colour-management transform, so the captured pixels are not the CSS values: on the frame the probe
+decoded as `163`, the saved PNG plainly reads **419** in both the page text and the window's own title
+bar. The encoding was manufacturing the staleness. Re-encoded as 16 full-height **black/white stripes**
+(threshold at 128), which no smooth colour transform can shift, and **verified by hand against a saved
+frame**: the stripes decode to `89` on a frame whose text and title both read `89`.
+
+### Chromium — Chrome app mode, 900×700, `--force-color-profile=srgb`, 200 iterations
+
+```
+RISK 1  PrintWindow ret=True on 200 / 200
+        all-black frames: 0 / 200      (screen-scrape all-black: 0 / 200)
+RISK 3  pw - treeBefore : min=0  max=3  mean=1.58
+        pw - screenScrape: min=-1 max=1 mean=0     exact agreement: 131 / 200
+        STALE rows (pw frame OLDER than a tree read taken BEFORE the capture): 0 / 200
+```
+
+`pw - treeBefore` is **never negative**: the captured frame is always the same as, or newer than, the
+frame the tree had already published. `pw - screenScrape` sits in `[-1, +1]` around zero, which is the
+~10 ms between the two grabs at a 100 ms animation cadence — `PrintWindow` tracks the live compositor.
+
+### Electron — VS Code 1216×728, extensions disabled, 100 iterations
+
+An Electron app's own UI cannot be pointed at a local URL, so the stripe page does not apply. Animation
+was driven with **no synthetic input**: VS Code auto-reloads an open unmodified file when it changes on
+disk, and a background writer rewrote `counter.txt` every 200 ms.
+
+```
+RISK 1  ret=True on 100 / 100
+        all-black frames: 0 / 100      near-flat (<=2 colours on a 40x30 grid): 0 / 100
+        mean luminance 28.9 (PrintWindow) vs 28.8 (screen)   distinct colours on grid: 48..60
+RISK 3  PrintWindow vs screen-scrape grid disagreement %: min=0 max=1.33 mean=0.035
+        frames agreeing EXACTLY: 94 / 100
+NON-VACUITY  grid change vs the PREVIOUS PrintWindow frame: min=0 max=6.92 mean=0.473
+             frames where the target visibly CHANGED: 75 / 99
+```
+
+⚠ **The non-vacuity line is load-bearing and the first Electron run failed it.** That run reported a
+perfect `0.00%` disagreement on 100/100 frames — from a window covered by a first-run sign-in modal that
+hid the animating editor entirely. **Two identical stills always agree**, so a staleness result measured
+against a static target means nothing. The saved PNG is what exposed it. The run above is the one where
+the target is provably moving, with 75 of 99 frames differing from their predecessor.
+
+The captured Electron frame is the complete UI — editor text, minimap, sidebar, chat panel, a
+notification toast — not a partial or placeholder surface.
+
+### ▶ VERDICT risk 1: **BOTH** render under `PW_RENDERFULLCONTENT`
+
+Chromium and Electron both return real content on every frame. No limitation to add to the tool
+description in Task 22 on this account.
+
+### ▶ VERDICT risk 3: **NOT OBSERVED IN 300 RUNS** (200 Chromium + 100 Electron)
+
+**This probe is ONE-SIDED, and the record says so in those words: a positive result CONFIRMS the race; a
+negative does NOT refute it.** This is a timing race between an asynchronous compositor and a separate
+tree walk, so a finite number of clean runs means **"not observed at these timings"**, never "cannot
+happen". **Risk 3 is NOT deleted from the spec.** It ships documented and unmitigated, and §2.5's bookend
+walk still does not cover it.
