@@ -3,11 +3,33 @@
 Companion to the [implementation plan](2026-08-21-occlusion-aware-capture.md). Phase 0 (Tasks 1–3)
 produces no production code; it answers the questions the design turns on.
 
-**Machine:** Windows 11 Pro 10.0.26200, physical console. All probes run DPI-aware
-(`SetProcessDPIAware`), matching the server's `PerMonitorV2` manifest.
+## Environment — record this, or none of it is reproducible
+
+`PrintWindow`'s behaviour depends on the compositing path, so "it worked on my machine" is not a result
+unless the machine is written down.
+
+| | |
+|---|---|
+| OS | Windows 11 Pro, build **26200** |
+| Session | **`console`, Active** — not RDP (`qwinsta`; `rdp-tcp` is merely listening) |
+| Display | **1366 × 768**, single monitor |
+| GPU | **Intel HD Graphics 3000**, driver 9.17.10.4459 (secondary: NVIDIA GeForce GT 540M) |
+| Compositing | **GPU compositing ACTIVE** — a Chrome `--type=gpu-process` was running and **no** renderer carried `--disable-gpu-compositing`, the flag Chrome adds when it falls back to software |
+| DWM | running |
+| Chrome | **151.0.7922.172** |
+| VS Code | **1.131.0** |
+| DPI | all probes call `SetProcessDPIAware`, matching the server's `PerMonitorV2` manifest |
+
+⚠ **The GPU is 2011-era integrated hardware with a 2011 driver.** GPU compositing was active, so these
+are not software-path numbers — but a modern discrete GPU is a materially different compositing path and
+these results are not evidence about it.
 
 **Probe scripts** live in `.clavity/scratch/item8-plan/` — **gitignored, so they will not survive.**
 Each section below therefore carries the exact command and enough of the mechanism to re-derive it.
+
+**Raw evidence IS committed**, in `2026-08-21-occlusion-aware-capture-evidence/`:
+`chromium-foreground.csv`, `chromium-occluded.csv`, `electron-foreground.csv` — one row per iteration.
+An operator re-checking the risk-3 acceptance later should read those, not this summary of them.
 
 ---
 
@@ -113,15 +135,42 @@ threads still alive: 0
    **window-sized bitmap in memory** for the same duration — at 4K that is the ~33 MB transient the plan
    states as property 1, once **per outstanding abandoned call**, not once per capture.
 
-2. **The leak is NOT permanent. It is reclaimed when the target recovers.** All three abandoned threads
-   returned `True` the moment the window resumed pumping, ran their own cleanup, and GDI fell back to
-   the exact baseline (`0`), USER to `3`, with zero threads alive. Note all three returned at the same
-   wall-clock instant despite being started seconds apart — they were queued on the one message loop and
-   released together.
+2. **The leak lasts exactly as long as the TARGET PROCESS does — no longer, and no shorter.** Two exits
+   were measured, and it is released on either:
+   - **The window resumes pumping.** All three abandoned threads returned `True` the moment it did, ran
+     their own cleanup, and GDI fell back to the exact baseline (`0`), USER to `3`, zero threads alive.
+     All three returned at the same wall-clock instant despite being started seconds apart — queued on
+     the one message loop, released together.
+   - **The target process is killed.** Measured separately: 3 abandoned calls, `GDI=9`, then
+     `Stop-Process -Force` on the target — **every thread returned within 130 ms**, `IsWindow` went
+     false, resources released, `GDI` back to `0`.
+
+⚠ **Both of the absolute statements in play were wrong, in opposite directions, and this is the
+correction.** An earlier draft of this section said the leak "is NOT permanent" — too generous, because
+it assumed every hang ends. The plan's own comment on `CaptureCircuitBreaker`
+(`phase-5-coordinator.md:1305-1309`) says each blocked call keeps its thread and bitmaps
+**"permanently"** — too absolute, because it ignores process exit. **The measured truth: the leak
+persists while the target process stays alive AND wedged, and is reclaimed the moment either of those
+stops being true.** A wedged app that never recovers is normally *killed*, which is a reclaiming event.
+**Task 19 must soften that comment** rather than ship a claim this record contradicts.
 
 **What this changes.** The hazard is **outstanding concurrent abandoned calls against a still-hung
-window**, not a permanent handle leak. That is precisely what a circuit breaker bounds, so the ratified
-containment is the right shape and the out-of-process worker (ROADMAP 17) remains correctly deferred.
+window**. A circuit breaker is the right shape of containment for it — but be precise about what it
+bounds:
+
+⚠ **The breaker is keyed PER-HWND, so it bounds the MULTIPLIER, not the TOTAL.** The plan says so in its
+own words (`phase-5-coordinator.md:1307`): *"What this bounds is the MULTIPLIER: N captures of a hung
+window cost ONE leak instead of N."* Across **M distinct** hung windows the server still pays M
+concurrent leaks, and a per-HWND breaker is blind to that sum. In a server built to run for weeks this
+is the accumulation that is not contained. *(Raised by the AGY-AFTER panel, round 1, Cascade Analyst;
+confirmed against the plan's own text — not a hypothetical.)* The out-of-process worker (ROADMAP 17)
+remains the only fix that reclaims, and stays correctly deferred — but **ROADMAP 17 should record that
+the per-HWND breaker leaves the cross-window total unbounded**, which is not currently written down
+anywhere.
+
+*Not folded:* the panel also asserted a specific figure — 20 hung windows costing "~660 MB". That number
+was never measured by anyone and is a hypothesis, not evidence; the structural finding above stands on
+the plan's own text without it.
 
 **The condition this rests on — and it is a design constraint, not an observation.** Reclamation
 happened because each abandoned thread was left **alive** and freed its own resources on return. It
@@ -152,8 +201,23 @@ t+    22ms  IsHungAppWindow=True  elapsedMs=13
 ```
 
 **Both failure modes named in Step 5b are refuted.** It did not block (13 ms), and it did not report
-`False` for a plainly-hung window. `elapsedMs=13` is a cold first call including P/Invoke marshalling
-setup; the steady-state cost is below the timer's resolution.
+`False` for a plainly-hung window.
+
+⚠ **An earlier draft explained that 13 ms away as "a cold first call; the steady-state cost is below the
+timer's resolution." That was an assertion, not a measurement — one sample, then a conclusion about a
+distribution.** *(Raised by the AGY-AFTER panel, round 1, Blindspot Auditor — my own seat, on my own
+sentence.)* Measured properly, 2000 samples against the same hung window:
+
+```
+first call in a fresh session:  6.1488 ms
+n=2000   mean=0.05208 ms   median=0.02410 ms   p99=0.17320 ms   max=25.79450 ms
+calls taking >1 ms: 3 / 2000
+```
+
+The direction was right and the magnitude is now known: steady state is **~24 µs median**, four orders
+of magnitude under the 110,836 ms it exists to avoid. But **it is not uniformly negligible** — there is
+a tail, `max = 25.79 ms`, and 3 calls in 2000 exceeded 1 ms. That is immaterial against a 110-second
+block and material to nothing else in this design, but it is now written down instead of assumed.
 
 ### ▶ VERDICT: `IsHungAppWindow` is SAFE on a hung window
 
@@ -232,18 +296,116 @@ the target is provably moving, with 75 of 99 frames differing from their predece
 The captured Electron frame is the complete UI — editor text, minimap, sidebar, chat panel, a
 notification toast — not a partial or placeholder surface.
 
-### ▶ VERDICT risk 1: **BOTH** render under `PW_RENDERFULLCONTENT`
+### Chromium, OCCLUDED — the condition the feature actually exists for
 
-Chromium and Electron both return real content on every frame. No limitation to add to the tool
-description in Task 22 on this account.
+⚠ **Every run above brought its target to the FOREGROUND first.** A visible window is being actively
+composited, which is the case *least* likely to go stale — so those 300 runs answered a question
+adjacent to the one the gate asks. **Occlusion is the only condition this entire feature exists for.**
+*(Raised by the AGY-AFTER panel, round 1: my Axiom Breaker and the peer's Dependency Cynic
+independently.)*
 
-### ▶ VERDICT risk 3: **NOT OBSERVED IN 300 RUNS** (200 Chromium + 100 Electron)
+Re-run with the Chrome window left exactly where it was, fully covered by a maximized, `TopMost`,
+opaque window. Same page, same 200 iterations, same decode:
+
+```
+NoForeground: target left where it is (occlusion run)
+RISK 1  PrintWindow ret=True on 200 / 200
+        all-black PrintWindow frames: 0 / 200
+RISK 3  pw - treeBefore : min=0  max=3  mean=1.59
+        pw - screenScrape: min=924 max=1097 mean=1014.69
+        exact agreement pw == screenScrape: 0 / 200
+        STALE rows: 0 / 200
+```
+
+**The screen-scrape column stops being a fairness control here and becomes a POSITIVE CONTROL.** It
+decoded **0 on all 200 frames** — it was photographing the occluder, whose green falls below the stripe
+threshold — while `PrintWindow` decoded the real advancing frame number. `pw − screenScrape ≈ 1015`,
+with **exact agreement 0/200**. That is the proof the window was genuinely and fully covered, and it is
+simultaneously a direct measurement of the feature's entire thesis: **`PrintWindow` sees through
+occlusion where the scrape sees only the occluder.**
+
+Staleness under occlusion is **statistically identical** to the foreground case — `mean 1.59` occluded
+vs `1.58` and `1.64` across two independent foreground runs, never negative in any of them.
+
+### The compositor-throttling mechanism: measured, and REFUTED here
+
+The panel's Dependency Cynic argued the foreground-only result could not transfer because *"Chromium
+aggressively throttles or suspends its compositor for background or fully occluded windows"* — a
+specific, testable mechanism rather than a general doubt, so it was tested rather than accepted.
+
+Wall-clock frame cadence of the same page against a 10.00 f/s target:
+
+```
+OCCLUDED (covered by the TopMost window):   9.46 frames/sec
+VISIBLE  (same window raised):              9.99 frames/sec
+ratio 0.947
+```
+
+**No meaningful throttling.** And the evidence is stronger than the raw ratio: the page publishes its
+title from inside a **double `requestAnimationFrame`** — rAF being precisely the thing Chrome throttles
+for hidden content — and rAF kept firing at ~10 Hz while the window was fully covered.
+
+**Scope of that refutation:** it refutes the mechanism *for an occluded, non-minimized window on this
+configuration*. It is not evidence about a **minimized** window (which this design refuses outright via
+the `IsIconic` guard), a background **tab**, or a machine where Chrome falls back to software
+compositing.
+
+### ▶ VERDICT risk 1: **BOTH** render under `PW_RENDERFULLCONTENT`, occluded included
+
+Chromium (foreground **and** fully occluded) and Electron both return real content on every frame:
+600/600 with zero all-black. Nothing to add to Task 22's tool description **for occlusion**, which was
+the open question.
+
+⚠ **This is not a claim that `PrintWindow` works under all conditions.** Untested and therefore
+unclaimed: RDP sessions, software-compositing fallback, machines with no GPU, and modern discrete GPUs.
+Minimized windows are refused by design, so they need no evidence.
+
+### ▶ VERDICT risk 3: **NOT OBSERVED IN 400 TREE-VS-PIXEL RUNS**
+
+⚠ **An earlier draft of this verdict read "NOT OBSERVED IN 300 RUNS (200 Chromium + 100 Electron)". That
+figure was not supported, and the correction matters more than the arithmetic.** *(Raised
+independently by the panel's State Corruptor and Mechanism Gamer, and by my own State Corruptor.)* The
+runs were not measuring the same thing:
+
+| Runs | What was compared | Can it observe risk 3? |
+|---|---|---|
+| 200 Chromium, foreground | frame number in the `PrintWindow` **pixels** vs the frame number in the **UIA tree** | **Yes** — this is risk 3 as the spec defines it |
+| 200 Chromium, occluded | same | **Yes** |
+| 100 Electron, foreground | `PrintWindow` **pixels** vs screen-scrape **pixels** | **No** — the UIA tree was never read |
+
+The Electron runs compare two pixel-acquisition APIs against each other. That measures render-path
+latency between two capture methods; it is structurally incapable of detecting a race between the visual
+surface and the accessibility tree, which is what risk 3 *is*. Counting them toward a staleness total
+inflated the sample with 100 runs that had **no ability to observe the hazard**. They are re-scoped to
+what they actually support — risk 1 for Electron, plus a secondary freshness signal — and the staleness
+figure now counts only the 400 runs that read the tree.
 
 **This probe is ONE-SIDED, and the record says so in those words: a positive result CONFIRMS the race; a
 negative does NOT refute it.** This is a timing race between an asynchronous compositor and a separate
 tree walk, so a finite number of clean runs means **"not observed at these timings"**, never "cannot
 happen". **Risk 3 is NOT deleted from the spec.** It ships documented and unmitigated, and §2.5's bookend
 walk still does not cover it.
+
+---
+
+## Scope limits — what these numbers do NOT cover
+
+Written down because a measurement record's worst failure is being read as broader than it is.
+
+1. **One hang mechanism was tested.** The fixture blocks its UI thread in `Thread.Sleep(120000)`. Both
+   the `PrintWindow`-blocks result and the `IsHungAppWindow`-is-safe result rest on that single shape.
+   *(Raised by the AGY-AFTER panel, round 1, Axiom Breaker.)* The specific case worth naming: a thread
+   inside a **synchronous cross-apartment COM call** still pumps some messages, so `IsHungAppWindow`
+   could report `False` for a window that is nonetheless unable to service `WM_PRINT` — the breaker
+   would not divert, and the capture would block anyway. **Not measured.** The containments still work
+   (the timeout fires regardless of *why* the call blocked); what degrades is only the breaker's ability
+   to recognise the window *early*, so this is a latency question, not a leak question.
+2. **One machine, one compositing path.** See the environment table. Untested: RDP, software
+   compositing, no-GPU, and modern discrete GPUs.
+3. **Not minimized.** The design refuses minimized windows outright (`IsIconic`), so no evidence is
+   owed — but none exists either.
+4. **The staleness probe is one-sided** — restated here because it is the easiest limit to forget:
+   400 clean tree-vs-pixel runs mean "not observed at these timings", never "cannot happen".
 
 ---
 
@@ -254,12 +416,17 @@ walk still does not cover it.
    -> Tasks 15b and 19b ARE BUILT: the timeout, the dedicated capture thread,
       and the circuit breaker. 110836 ms vs 31 ms, same window, ~3600x.
 
-2. Is the stale composition CONFIRMED?                          NOT OBSERVED IN 300 RUNS
-   -> 200 Chromium + 100 Electron. Does NOT refute the race (one-sided probe).
-      No escalation is triggered. Risk 3 ships documented and unmitigated.
+2. Is the stale composition CONFIRMED?                          NOT OBSERVED IN 400 RUNS
+   -> 200 Chromium foreground + 200 Chromium OCCLUDED, both tree-vs-pixels.
+      The 100 Electron runs are NOT counted here: they never read the tree,
+      so they could not observe this hazard at all.
+      Does NOT refute the race (one-sided probe). No escalation is triggered.
+      Risk 3 ships documented and unmitigated.
 
 3. Do Chromium AND Electron render under PW_RENDERFULLCONTENT?  BOTH
-   -> No limitation to add to the tool description in Task 22.
+   -> Including Chromium FULLY OCCLUDED: 600/600 frames real content, 0 black.
+      No occlusion limitation to add to Task 22. RDP / software-compositing /
+      no-GPU remain untested and therefore unclaimed.
 ```
 
 ### Two answers Phase 0 produced that the gate did not ask for
@@ -268,10 +435,16 @@ walk still does not cover it.
 above-floor unverified assumption that plan-panel round 13 named in its own green verdict. The circuit
 breaker keeps its `_isHung` recovery probe; Step 5b's plain-cooldown fallback is not taken.
 
-**B. An abandoned `PrintWindow` leaks, but the leak is RECLAIMED when the target recovers.** Three GDI
+**B. An abandoned `PrintWindow` leaks for exactly as long as the target process lives.** Three GDI
 objects plus a window-sized bitmap per *outstanding* abandoned call, accumulating linearly with no
-ceiling while the window stays hung — then every abandoned thread returned the instant the window
-resumed, released its own resources, and the process fell back to its exact baseline.
+ceiling while the window stays hung — then released on **either** exit: the window resuming (every
+thread returned at that instant) **or** the target being killed (every thread returned within **130 ms**,
+GDI back to `0`). Permanent only while the target stays alive *and* wedged.
+
+⚠ **And the containment bounds less than the plan's prose implies:** the breaker is **per-HWND**, so it
+bounds N captures of *one* hung window, not M concurrent leaks across M hung windows. **ROADMAP 17
+should say so.** Task 19's own comment calling the leak "permanent" also needs softening — this record
+contradicts it.
 
 ⚠ **This is a constraint on Task 15, not just an observation.** Reclamation depends on all three of:
 
