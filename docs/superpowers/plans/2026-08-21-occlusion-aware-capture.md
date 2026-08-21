@@ -1916,6 +1916,49 @@ There are four, and all must be found — an omission here is a compile error, w
 - `:964` (no renderable overlap, full-desktop) — append `windowBounds, NativeHandleOf(win), false`
 - `:1110` (the success return) — append `windowBounds, NativeHandleOf(win), false`
 
+- [ ] **Step 6b: Close the SAME hole on the OCR path — it is a leak, and the guard above does not reach it**
+
+⚠⚠ `ResolveTextCaptureGeometryAsync` (`PerceptionManager.cs:1134-1144`) is the **third caller** of the geometry walk, and it tests only `geo.Denied || geo.Minimized`. It does **not** test `DegenerateWindow` — so the guard you just added returns an EMPTY mask set and the OCR path uses it happily.
+
+**Why that is a leak and not merely untidy:** the degenerate-window race is the same one the screenshot path guards. The window is degenerate at walk time (mask set empty), valid again by capture time, and `Capture.Rectangle` then photographs a perfectly good window **with no masks at all**. On this path those pixels are fed to OCR, so the redacted text comes back as *plaintext in the response*. `FindTextTools.cs:104-108` already states this hazard in its own words: *"this path captures the same pixels the screenshot path refused to show and OCRs them, so swallowing the refusal would read back in plaintext exactly what the mask was there to withhold."*
+
+Insert after the `Denied || Minimized` early return at `:1137-1139`:
+
+```csharp
+        // ⚠ A DEGENERATE WINDOW MUST REFUSE HERE TOO. The walk returns an EMPTY mask set for one, and this
+        // path OCRs what it captures -- so proceeding would read redacted text back as plaintext once the
+        // window returns to a valid size before the capture. THROWN rather than returned as a flag,
+        // because TextCaptureGeometry has no field for it and the two consumers both do the right thing:
+        // DesktopFindText propagates it, and DesktopWaitForText's catch at FindTextTools.cs:108 degrades
+        // it to "not found" and keeps polling, which is correct for a window that is still opening.
+        if (geo.DegenerateWindow)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "The window reported no renderable area, so its redacted regions cannot be located.",
+                "wait for the window to finish opening, then retry");
+```
+
+- [ ] **Step 6c: Write the headless test for it**
+
+Add to `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryShapeTests.cs`:
+
+```csharp
+    // ⚠ The OCR path is the THIRD caller of the geometry walk and had no degenerate guard, so a window
+    // that was degenerate at walk time and valid at capture time was OCR'd with an EMPTY mask set --
+    // returning redacted text as plaintext. This pins that the flag exists for that caller to act on.
+    [Fact]
+    public void A_degenerate_geometry_is_distinguishable_by_a_caller_that_must_refuse()
+    {
+        var degenerate = new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(),
+            Minimized: false, Denied: false, null, System.Array.Empty<MaskEscalationEntry>(),
+            default, System.IntPtr.Zero, DegenerateWindow: true);
+
+        // The exact test the OCR wrapper performs. Denied/Minimized alone would let this through.
+        Assert.False(degenerate.Denied || degenerate.Minimized);
+        Assert.True(degenerate.DegenerateWindow);
+        Assert.Empty(degenerate.MaskRects);   // ...and this is what would have been OCR'd in the clear
+    }
+```
+
 - [ ] **Step 7: Run the headless suite**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
