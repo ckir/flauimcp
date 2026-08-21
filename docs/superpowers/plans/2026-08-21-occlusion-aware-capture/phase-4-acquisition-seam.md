@@ -743,8 +743,17 @@ All three leave the file compiling, so each must turn a NAMED test red.
 **Report the complete red set for each and revert each.**
 
 1. Delete **half 2** (the post-capture check) at ONE site.
-   Expected: `Both_OCR_capture_sites_are_bracketed_by_a_bookend` FAILS at 3 != 4. **This is the mutant
-   that matters** — half 2 is the half that closes the race, and deleting it is the realistic regression.
+   Expected: **TWO tests FAIL** — `Both_OCR_capture_sites_are_bracketed_by_a_bookend` at 3 != 4, **and**
+   `The_two_halves_keep_distinct_messages`, because deleting half 2 also removes one of its two message
+   occurrences (2 != 1). **This is the mutant that matters** — half 2 is the half that closes the race,
+   and deleting it is the realistic regression.
+
+   ⚠ **This step predicted only the count test until it was executed, and that prediction was mine.**
+   MEASURED: both go red. **Third time in this plan a mutant's predicted red set has been wrong** — Task
+   8's named a test that CANNOT fail, Task 15's missed one that must, and this one missed a second
+   casualty. All three were caught only because the dispatch asked for the COMPLETE red set rather than
+   for confirmation that the expected test failed. **Never predict a red set and then ask whether it
+   matched.**
 2. Give half 2 the SAME message as half 1 at both sites.
    Expected: `The_two_halves_keep_distinct_messages` FAILS. The count check in mutant 1 would NOT catch
    this, which is why both tests exist.
