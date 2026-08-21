@@ -483,8 +483,10 @@ Phase 6, so it was mentally filed as "handled later". But it still has to compil
 - Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` — the `CaptureRectangle` method (find it by NAME; earlier line citations in this plan have already drifted twice)
 - Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:49` **and `:58`**
 - Modify: `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62,110`
+- Create: `src/FlaUI.Mcp.Core/Perception/IScreenImageSource.cs` **(operator decision - the test seam)**
 - Modify: `test/FlaUI.Mcp.Tests/Perception/ScreenCaptureTests.cs:28`
 - Test: `test/FlaUI.Mcp.Tests/Perception/CaptureRectangleCallSiteTests.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/ScrapeWarningEmissionTests.cs` **(operator decision)**
 
 - [ ] **Step 1: Write the failing call-site sweep**
 
@@ -545,6 +547,40 @@ public class CaptureRectangleCallSiteTests
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureRectangleCallSiteTests"`
 Expected: FAIL — no call site names a scope.
 
+- [ ] **Step 2b: Create the injectable screen source — OPERATOR DECISION, 2026-08-21**
+
+⚠ **Why this exists.** The AGY-FIRST consult on the 10/11 ordering found a gap all its options missed,
+and it was verified before folding: **nothing in this plan tests that `CaptureRectangle` actually EMITS a
+uniform warning.** Task 10's only test is a static call-site grep; Task 11 tests the predicate in
+isolation; the wiring between them — which detector fires for which scope, and whether `warningsSoFar`
+survives — would ship unverified. The cause is structural: `CaptureRectangle` calls
+`Capture.Rectangle(absolute, null)`, a real screen grab with no injectable source, so it is not
+headless-testable as written. **The operator chose to add a seam rather than log it as debt.**
+
+Create `src/FlaUI.Mcp.Core/Perception/IScreenImageSource.cs`. It deliberately mirrors
+`IWindowImageSource` (Task 14) — same namespace, same caller-disposes contract — so the two acquisition
+paths read the same way:
+
+```csharp
+using System.Drawing;
+
+namespace FlaUI.Mcp.Core.Perception;
+
+/// <summary>Acquire the pixels for a screen rectangle. The scrape path's counterpart to
+/// IWindowImageSource, and the seam that makes CaptureRectangle's WARNING-EMISSION logic
+/// headless-testable -- without it the only way to reach that logic is to grab a real screen.
+///
+/// ⚠ Unlike IWindowImageSource this returns a NON-nullable bitmap: a scrape has no timeout to express,
+/// so there is no "did not complete in time" case to signal. Failure throws, exactly as the direct call
+/// does today.
+///
+/// The returned bitmap is the CALLER's to dispose.</summary>
+public interface IScreenImageSource
+{
+    Bitmap Acquire(Rectangle absolute);
+}
+```
+
 - [ ] **Step 3: Change the signature**
 
 Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 36–43 with:
@@ -560,35 +596,57 @@ Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 36–43 with:
     /// ⚠ On this path `absolute` and `reported` are the SAME rectangle. The scrape captures exactly the
     /// region it was asked for, in one observation -- there is no W1/W2 pair, so the two cannot differ.
     /// Only the PrintWindow path derives them separately.</summary>
+    /// <param name="source">TEST SEAM. Null means grab the real screen, which is what every production
+    /// caller does. A non-null source lets a headless test reach the warning-emission logic below --
+    /// see IScreenImageSource. Both paths funnel into the SAME AssembleScrape, so an injected run and a
+    /// real run cannot diverge in the logic under test.</param>
     public static CaptureResult CaptureRectangle(Rectangle absolute, IReadOnlyList<Rectangle> redactAbsolute,
                                                  int maxWidth, CaptureScope scope,
-                                                 IReadOnlyList<CaptureWarning> warningsSoFar)
+                                                 IReadOnlyList<CaptureWarning> warningsSoFar,
+                                                 IScreenImageSource? source = null)
     {
+        if (source is not null)
+        {
+            using var injected = source.Acquire(absolute);
+            return AssembleScrape(injected, absolute, redactAbsolute, maxWidth, scope, warningsSoFar);
+        }
+
         CaptureImage cap;
         try { cap = Capture.Rectangle(absolute, null); }
         catch (System.Exception ex) when (ex is COMException or System.Runtime.InteropServices.ExternalException)
         { throw new ToolException(ToolErrorCode.CaptureUnavailable, "Screen capture failed (session may be disconnected/locked).", "reconnect to restore rendering"); }
         using (cap)
-        {
-            var warnings = warningsSoFar;
-            // The detector runs where the bitmap lives, so the seam cannot delegate this decision upward.
-            if (scope.RunsDesktopUniformDetector() && UniformCanvasDetector.IsUniform(cap.Bitmap))
-                warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.DesktopCanvasUniform));
-            // ⚠⚠ A WINDOW-SCOPE FALLBACK SCRAPE GETS THE WHOLE-IMAGE CHECK TOO, and without it this path
-            // silently returned a black image -- recreating the exact defect the uniformCanvas widening
-            // was folded to close. The TWO-STAGE detector genuinely cannot run on a scrape (there is no
-            // full-window bitmap distinct from the captured region), but the FIRST stage alone needs no
-            // second operand, and "this image is one colour" is as true and as useful here as it is for a
-            // full desktop. *(AGY-AFTER panel over this plan, round 4, Protocol Pedant.)*
-            //
-            // ⚠ WINDOW SCOPE ONLY. On an ELEMENT-scope fallback the captured region is the ELEMENT, so
-            // emitting uniformCanvas would state that the whole WINDOW rendered as one colour -- a claim
-            // the tool cannot support and did not measure. That case stays uncovered, deliberately, and it
-            // is the one gap this fold does not close.
-            else if (scope == CaptureScope.Window && UniformCanvasDetector.IsUniform(cap.Bitmap))
-                warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.UniformCanvas));
-            return Encode(cap.Bitmap, absolute, absolute, redactAbsolute, maxWidth, "screenScrape", warnings);
-        }
+            return AssembleScrape(cap.Bitmap, absolute, redactAbsolute, maxWidth, scope, warningsSoFar);
+    }
+
+    /// <summary>Decide the scrape's warnings and encode. Split out of CaptureRectangle so the decision is
+    /// reachable without a screen -- this is the logic ScrapeWarningEmissionTests exercises.
+    ///
+    /// ⚠ Does NOT dispose the bitmap. Ownership stays with whoever acquired it: the CaptureImage `using`
+    /// on the real path, the `using var injected` on the seam path.</summary>
+    internal static CaptureResult AssembleScrape(Bitmap bmp, Rectangle absolute,
+                                                 IReadOnlyList<Rectangle> redactAbsolute, int maxWidth,
+                                                 CaptureScope scope, IReadOnlyList<CaptureWarning> warningsSoFar)
+    {
+        var warnings = warningsSoFar;
+        // The detector runs where the bitmap lives, so the seam cannot delegate this decision upward.
+        if (scope.RunsDesktopUniformDetector() && UniformCanvasDetector.IsUniform(bmp))
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.DesktopCanvasUniform));
+        // ⚠⚠ A WINDOW-SCOPE FALLBACK SCRAPE GETS THE WHOLE-IMAGE CHECK TOO, and without it this path
+        // silently returned a black image -- recreating the exact defect the uniformCanvas widening
+        // was folded to close. The TWO-STAGE detector genuinely cannot run on a scrape (there is no
+        // full-window bitmap distinct from the captured region), but the FIRST stage alone needs no
+        // second operand, and "this image is one colour" is as true and as useful here as it is for a
+        // full desktop. *(AGY-AFTER panel over this plan, round 4, Protocol Pedant.)*
+        //
+        // ⚠ WINDOW SCOPE ONLY. On an ELEMENT-scope fallback the captured region is the ELEMENT, so
+        // emitting uniformCanvas would state that the whole WINDOW rendered as one colour -- a claim
+        // the tool cannot support and did not measure. That case stays uncovered, deliberately, and it
+        // is the one gap this fold does not close. `An_element_scope_uniform_scrape_stays_silent` pins
+        // that silence so it reads as a decision rather than an omission.
+        else if (scope == CaptureScope.Window && UniformCanvasDetector.IsUniform(bmp))
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.UniformCanvas));
+        return Encode(bmp, absolute, absolute, redactAbsolute, maxWidth, "screenScrape", warnings);
     }
 
     /// <summary>Append one warning. Never mutates the caller's list -- warnings travel INWARD only, and
@@ -660,6 +718,103 @@ red here, read the failure before "fixing" it: it may be a test that asserted th
                                                     CaptureScope.Window, System.Array.Empty<CaptureWarning>());
 ```
 
+- [ ] **Step 5b: The emission tests the seam exists for — OPERATOR DECISION, 2026-08-21**
+
+Create `test/FlaUI.Mcp.Tests/Perception/ScrapeWarningEmissionTests.cs`. These go through the real public
+`CaptureRectangle`, not the internal helper, so they test the entry point production uses:
+
+```csharp
+using System.Drawing;
+using System.Linq;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class ScrapeWarningEmissionTests
+{
+    private sealed class FakeScreen : IScreenImageSource
+    {
+        private readonly Color _fill;
+        private readonly bool _speck;
+        public FakeScreen(Color fill, bool speck = false) { _fill = fill; _speck = speck; }
+        public Bitmap Acquire(Rectangle absolute)
+        {
+            var b = new Bitmap(absolute.Width, absolute.Height);
+            using (var g = Graphics.FromImage(b))
+            using (var brush = new SolidBrush(_fill))
+                g.FillRectangle(brush, 0, 0, absolute.Width, absolute.Height);
+            // One contrasting block, big enough that the detector's 64x64 grid cannot step over it.
+            if (_speck)
+                using (var g = Graphics.FromImage(b))
+                using (var brush = new SolidBrush(Color.White))
+                    g.FillRectangle(brush, 0, 0, absolute.Width / 2, absolute.Height / 2);
+            return b;
+        }
+    }
+
+    private static readonly Rectangle Area = new(0, 0, 400, 300);
+    private static string[] Codes(CaptureResult r) => r.CaptureWarnings.Select(w => w.Code).ToArray();
+
+    private static CaptureResult Run(CaptureScope scope, bool uniform, params CaptureWarning[] soFar)
+        => ScreenCapture.CaptureRectangle(Area, System.Array.Empty<Rectangle>(), 0, scope, soFar,
+                                          new FakeScreen(Color.Black, speck: !uniform));
+
+    // The whole point of the seam: a uniform FULL DESKTOP raises desktopCanvasUniform.
+    [Fact]
+    public void A_uniform_full_desktop_scrape_emits_desktopCanvasUniform()
+        => Assert.Equal(new[] { "desktopCanvasUniform" }, Codes(Run(CaptureScope.FullDesktop, uniform: true)));
+
+    [Fact]
+    public void A_normal_full_desktop_scrape_emits_nothing()
+        => Assert.Empty(Codes(Run(CaptureScope.FullDesktop, uniform: false)));
+
+    // A window-scope FALLBACK scrape gets the first-stage check -- the round-4 fold.
+    [Fact]
+    public void A_uniform_window_scope_scrape_emits_uniformCanvas()
+        => Assert.Equal(new[] { "uniformCanvas" }, Codes(Run(CaptureScope.Window, uniform: true)));
+
+    // ⚠ THE DELIBERATE SILENCE. Element scope must NOT claim the whole window rendered as one colour.
+    // Pinned so the gap reads as a decision rather than an omission someone later "fixes".
+    [Fact]
+    public void An_element_scope_uniform_scrape_stays_silent()
+        => Assert.Empty(Codes(Run(CaptureScope.Element, uniform: true)));
+
+    // OCR runs no detector at all: neither a whole desktop nor a PrintWindow capture.
+    [Fact]
+    public void A_uniform_ocr_scrape_stays_silent()
+        => Assert.Empty(Codes(Run(CaptureScope.OcrRegion, uniform: true)));
+
+    // warningsSoFar is the caller's decision (a scrapeFallback* code) and must be PRESERVED, not replaced.
+    [Fact]
+    public void Warnings_from_the_caller_are_appended_to_never_replaced()
+    {
+        var prior = CaptureWarnings.For(CaptureWarnings.ScrapeFallbackTargetUnresponsive);
+        var codes = Codes(Run(CaptureScope.Window, uniform: true, prior));
+        Assert.Equal(new[] { "scrapeFallbackTargetUnresponsive", "uniformCanvas" }, codes);
+    }
+
+    [Fact]
+    public void The_scrape_always_reports_screenScrape_as_its_method()
+        => Assert.Equal("screenScrape", Run(CaptureScope.FullDesktop, uniform: false).CaptureMethod);
+}
+```
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ScrapeWarningEmissionTests"`
+Expected: **7 passed.**
+
+- [ ] **Step 5c: Prove THESE gates are non-vacuous too**
+
+1. In `AssembleScrape`, change `scope == CaptureScope.Window` to `scope.AcquiresPerWindow()`.
+   Expected: **`An_element_scope_uniform_scrape_stays_silent` FAILS** — that mutant is exactly the
+   "element claims the whole window is one colour" defect the comment forbids, and it is the reason this
+   test exists. **Revert.**
+2. Change `warnings = Append(warnings, ...)` to `warnings = new[] { ... }` in the `Window` branch.
+   Expected: **`Warnings_from_the_caller_are_appended_to_never_replaced` FAILS** — the caller's
+   `scrapeFallbackTargetUnresponsive` is dropped. **Revert.**
+
+Both build cleanly. If either produces a BUILD error instead of a red test, say so and stop.
+
 - [ ] **Step 6: Run the sweep and the headless suite**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
@@ -672,7 +827,7 @@ Temporarily revert `FindTextTools.cs:110` to omit `CaptureScope.OcrRegion` (pass
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs src/FlaUI.Mcp.Server/Tools/FindTextTools.cs test/FlaUI.Mcp.Tests/
+git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs src/FlaUI.Mcp.Core/Perception/IScreenImageSource.cs src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs src/FlaUI.Mcp.Server/Tools/FindTextTools.cs test/FlaUI.Mcp.Tests/Perception/
 git commit -m "feat(capture): CaptureRectangle takes an explicit scope; wire the OCR third caller"
 ```
 
