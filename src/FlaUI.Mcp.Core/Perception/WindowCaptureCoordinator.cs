@@ -142,14 +142,72 @@ public sealed class WindowCaptureCoordinator
             switch (outcome.Kind)
             {
                 case CaptureOutcomeKind.Completed:
-                    // Step 9 is added in Task 18, which REPLACES this arm.
-                    // ⚠ FOUR arguments. `WindowCaptureOutcome` carries the unmasked-process list and the
-                    // escalations of the walk that produced the masks ACTUALLY PAINTED; on this path both
-                    // come from the target's own walk. An earlier version passed two here and would not
-                    // have compiled. *(AGY-AFTER round 7, Fold Auditor -- a defect in the driver's own
-                    // round-7 fold, which updated Task 18's copies of this arm and missed Task 17's.)*
-                    return new WindowCaptureOutcome(outcome.Result!, geo,
-                                                    System.Array.Empty<string>(), geo.Escalations);
+                {
+                    // Step 9. THE BOOKEND VALIDATION WALK (§2.5). Closes the relayout leak: a window can
+                    // reflow massively at a CONSTANT outer size -- an SPA navigating, an accordion
+                    // opening, a splitter dragged -- so W1.Size == W2.Size holds, the resize guard never
+                    // fires, and mask rects sampled during the walk are painted over the WRONG REGIONS of
+                    // an image composed afterwards.
+                    //
+                    // ⚠ IT DOES NOT COVER RISK 3's STALE COMPOSITION. There the pixels are older than the
+                    // tree and a value can be revealed IN PLACE, leaving the element's rect mathematically
+                    // identical. M1 == M2 and this walk passes a genuinely stale capture. It closes the
+                    // RELAYOUT leak and nothing else.
+                    //
+                    // ⚠ It CANNOT run between steps 6b and 7 where it would be cheapest: those are both
+                    // inside CaptureWindow, and the walk lives out here. So a mismatch WASTES a full
+                    // encode. Accepted -- the mismatch is the rare path, and the alternative is giving the
+                    // seam the ability to walk the UIA tree.
+                    //
+                    // ⚠ An EMPTY mask set skips the walk entirely. Nothing could have gone stale, and this
+                    // is what keeps the common case free.
+                    if (geo.MaskRects.Count == 0)
+                        return new WindowCaptureOutcome(outcome.Result!, geo,
+                                                        System.Array.Empty<string>(), geo.Escalations);
+
+                    // ⚠ THE BOOKEND WALK IS GUARDED, AND UNGUARDED IT TURNED SUCCESS INTO A REFUSAL.
+                    // This walk can throw for the same reasons the first one can -- a tearing-down window
+                    // raises RedactionUnmaskable from the mask sweep. Letting that escape would discard a
+                    // GOOD image that is already in hand, and would introduce a terminal refusal on
+                    // ELEMENT scope, which the design states has none.
+                    //
+                    // A walk that fails is treated as a MISMATCH, not as an error: we could not confirm
+                    // the mask set survived the capture, and "could not confirm" must not read as
+                    // "confirmed". The retry then re-walks, and on exhaustion the scope's own terminal
+                    // outcome applies -- window-with-masks refuses, element falls back. If the window is
+                    // genuinely gone, the NEXT attempt's step-1 walk throws and that one is deliberately
+                    // unguarded, so the agent still learns the target died.
+                    bool confirmed;
+                    try
+                    {
+                        var after = await _walk(handle, @ref);
+                        confirmed = MaskSetsMatch(geo, after);
+                    }
+                    catch (ToolException) { confirmed = false; }
+
+                    if (confirmed)
+                        return new WindowCaptureOutcome(outcome.Result!, geo,
+                                                        System.Array.Empty<string>(), geo.Escalations);
+
+                    if (attempt < _opts.MaxAttempts) continue;
+
+                    // ⚠⚠ A BOOKEND EXHAUSTION REFUSES ON **BOTH** SCOPES, and it must NOT be routed
+                    // through OnResizeExhausted. That method falls back to the scrape for element scope,
+                    // which is correct for a RESIZE -- there the failure is a geometry mismatch and the
+                    // masks may be perfectly fine. It is WRONG here.
+                    //
+                    // A bookend mismatch is DIRECT EVIDENCE that the mask set moved under the capture.
+                    // Falling back would scrape the window and paint those same rects -- rects we have
+                    // just PROVEN are stale -- producing an under-redacted image. That is the failure
+                    // class SP4 exists to close, and the argument is the identical one that makes window
+                    // scope refuse rather than scrape.
+                    //
+                    // Note this needs no mask-set test: the bookend only runs when M1 is non-empty.
+                    throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                        "The window's redacted regions kept moving during the capture, so they cannot be " +
+                        "reliably located in the image.",
+                        "wait for the window to settle, then retry, or capture a different window");
+                }
 
                 case CaptureOutcomeKind.TimedOut:
                     // A MECHANISM failure: the window is on screen with real pixels and PrintWindow simply
@@ -386,6 +444,57 @@ public sealed class WindowCaptureCoordinator
         if (_isHung(hwnd)) return true;
         _breaker?.Reset(hwnd);
         return false;
+    }
+
+    /// <summary>M1 vs M2, as an ORDER-INSENSITIVE SET of WINDOW-RELATIVE rectangles.
+    ///
+    /// ⚠⚠ WINDOW-RELATIVE, NOT ABSOLUTE, AND THAT IS THE WHOLE CORRECTNESS OF THIS GUARD. Mask rects are
+    /// absolute SCREEN coordinates. Comparing them absolutely means a user DRAGGING the window between
+    /// the two walks shifts every rect, the bookend reports a mismatch, and a harmless move is treated as
+    /// an internal reflow -- retried, and on exhaustion REFUSED. The design states in three separate
+    /// places that a pure move is harmless and must not be flagged, so an absolute comparison contradicts
+    /// it directly. Normalising each list against ITS OWN walk's window origin isolates internal layout
+    /// from window position, which is the only thing this guard is trying to see.
+    /// *(AGY-AFTER panel over this plan, round 1, Type-Flow Auditor. The bookend walk is not panel-tested
+    /// -- it postdates the spec's thirty rounds -- and this was the first defect found in it.)*
+    ///
+    /// ⚠ THIS PARAGRAPH USED TO SAY THE OPPOSITE OF THE CODE BELOW, and the contradiction survived
+    /// into the pinned block. It read: "Ordered rather than as a set because the walk is deterministic:
+    /// it enumerates roots and descendants in a fixed order, so a REORDERING is itself evidence the tree
+    /// changed under the capture." That was round 1's rationale, and **round 4 destroyed it** -- the body
+    /// comment below explains why, and the implementation SORTS both lists before comparing, so it is
+    /// order-insensitive in fact. A doc comment that contradicts its own method is worse than no comment:
+    /// the next reader trusts the summary and never reaches the body.
+    ///
+    /// A window RESIZE between the two walks can also produce a mismatch here. That is correct and not
+    /// double-handling: a resize genuinely may have reflowed the content, and the terminal outcome is the
+    /// same one the resize rule would reach.</summary>
+    private static bool MaskSetsMatch(CaptureGeometry before, CaptureGeometry after)
+    {
+        var a = before.MaskRects;
+        var b = after.MaskRects;
+        if (a.Count != b.Count) return false;
+
+        var oa = before.WindowBounds.Location;
+        var ob = after.WindowBounds.Location;
+
+        // ⚠ ORDER-INSENSITIVE. An earlier version compared by index, on the reasoning that the walk is
+        // deterministic so a reordering would itself be evidence the tree changed. That reasoning is
+        // wrong twice over: UIA enumeration order across two walks is not a guarantee this repo owns, and
+        // -- more importantly -- a REORDERING WITH IDENTICAL GEOMETRY IS NOT A REFLOW. The question this
+        // guard asks is "do the masks still cover the same regions", and the answer does not depend on
+        // the order the walk happened to return them in. Comparing by index only added a false-refusal
+        // mode. *(AGY-AFTER panel over this plan, round 4, direct answer 1.)*
+        static (int X, int Y, int W, int H) Key(Rectangle r, Point o)
+            => (r.X - o.X, r.Y - o.Y, r.Width, r.Height);
+
+        var ka = a.Select(r => Key(r, oa)).OrderBy(k => k.X).ThenBy(k => k.Y)
+                                          .ThenBy(k => k.W).ThenBy(k => k.H).ToList();
+        var kb = b.Select(r => Key(r, ob)).OrderBy(k => k.X).ThenBy(k => k.Y)
+                                          .ThenBy(k => k.W).ThenBy(k => k.H).ToList();
+        for (int i = 0; i < ka.Count; i++)
+            if (ka[i] != kb[i]) return false;
+        return true;
     }
 }
 
