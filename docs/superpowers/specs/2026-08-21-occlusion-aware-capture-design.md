@@ -1280,6 +1280,10 @@ leaving the §1 refusals unmapped — an implementer would have invented a code 
 | **§2.5 bookend mismatch (`M1 != M2`) after retry exhaustion**, either scope | `RedactionUnmaskable` | the mask set moved under the capture, so the rects cannot be reliably located against the pixels that were composed — the same meaning, reached by the other detector |
 | null/zero GDI handle | `CaptureUnavailable` | environmental capture failure, matching the scrape path (`ScreenCapture.cs:40-41`) |
 | desktop not renderable | `CaptureUnavailable` | unchanged; already thrown at `ScreenshotTools.cs:27-28` |
+| **a denylisted window is visible and the capture must FALL BACK to a scrape** | `TargetDenied` | a fallback takes RAW DESKTOP PIXELS of the target's rect, so a credential window overlapping the target lands in the image. `ScreenshotTools.cs:38` refuses a full-desktop capture for exactly this and that guard never reached the fallbacks. Refusing is the only honest option: we are already here because `PrintWindow` could not deliver, so there is no unaffected image to return instead |
+| **the DESKTOP mask walk itself refuses, on a fallback** | `RedactionUnmaskable` | `AllMaskRectsAsync` rethrows for any window it can SEE and cannot MASK (`PerceptionManager.cs:1199`). A fallback uses the desktop mask set, so it inherits that refusal — **including for a window that does not overlap the target and is therefore not in the image.** Stricter than necessary, accepted deliberately: the alternative is scraping with a mask set known to be incomplete |
+| **the OCR path (`desktop_find_text`) meets a degenerate window** | `ElementNotActionable` | the walk returns an EMPTY mask set for one, and that path OCRs what it captures — so proceeding reads redacted text back as PLAINTEXT once the window returns to a valid size before the capture. `ResolveTextCaptureGeometryAsync` had only `Denied \|\| Minimized` |
+| **the fallback denylist guard is not wired** | `CaptureUnavailable` | a defensive terminal, not a target condition. The guard is an optional constructor parameter, and when it was silently absent the whole denylist check did nothing while every test passed. It now refuses rather than skipping, so a wiring defect is loud instead of invisible |
 
 No new `ToolErrorCode` values are introduced. Every refusal reuses a code the agent contract already
 documents, so a caller that branches on today's codes needs no change to handle this feature.
@@ -1289,6 +1293,14 @@ this design ADDS** — that is why the pre-existing guards appear in it. The dis
 the table asserts completeness, and a claim of completeness turns an omission into a contradiction. Two
 rounds running have found it incomplete: round 24 was missing the `GetWindowRect`-FALSE row, round 25 the
 two geometry-time guards. *(Panel round 25, Fold Auditor.)*
+
+⚠⚠ **AND A THIRD TIME — the last four rows were added on 2026-08-21, after the PLAN's panel introduced
+four refusals this table did not list.** Three of them are genuinely new behaviour (the fallback denylist
+guard, the inherited desktop-walk refusal, the OCR degenerate guard) and one is defensive (an unwired
+guard). **The lesson is not "the table was wrong" — it is that this table goes stale every time a fold
+adds a refusal, and nothing mechanically notices.** A reviewer who wants one thing to check on this
+document should diff the set of `ToolErrorCode` throws in the plan against the rows here.
+*(AGY-AFTER panel over the PLAN, round 8, driver's Completeness Sweep.)*
 
 The session-level guard is unaffected and still runs first: `ScreenshotTools.cs:27-28` throws
 `CaptureUnavailable` when `IsDesktopRenderable()` is false, which covers the locked/disconnected desktop
