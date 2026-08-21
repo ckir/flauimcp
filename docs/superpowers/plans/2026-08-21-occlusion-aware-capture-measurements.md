@@ -152,7 +152,25 @@ it assumed every hang ends. The plan's own comment on `CaptureCircuitBreaker`
 **"permanently"** — too absolute, because it ignores process exit. **The measured truth: the leak
 persists while the target process stays alive AND wedged, and is reclaimed the moment either of those
 stops being true.** A wedged app that never recovers is normally *killed*, which is a reclaiming event.
-**Task 19 must soften that comment** rather than ship a claim this record contradicts.
+
+**Task 19 must replace the contradicting sentence. Here is the exact text** — *"soften it" was
+correctly called non-actionable by the AGY-AFTER round-2 Literal Implementer, so this record supplies
+the replacement rather than the intent.* In `WindowCaptureCoordinator.cs`, the
+`CaptureCircuitBreaker` summary currently reads:
+
+> ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. Each blocked call keeps its thread, its HDC, its GDI bitmap and
+> its managed bitmap **permanently** -- a blocked Win32 call cannot be cancelled, so nothing in-process
+> can take them back.
+
+Replace that sentence with:
+
+> ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. Each blocked call keeps its thread, its HDC, its GDI bitmap and
+> its managed bitmap for as long as the TARGET PROCESS lives -- a blocked Win32 call cannot be
+> cancelled, so nothing in-process can take them back. MEASURED (Phase 0): they are released when the
+> target's message loop resumes, and within 130ms of the target process exiting. Treat that as
+> unbounded, because neither event is under this server's control.
+
+The rest of that comment — the multiplier framing and the ROADMAP-17 pointer — is correct and stays.
 
 **What this changes.** The hazard is **outstanding concurrent abandoned calls against a still-hung
 window**. A circuit breaker is the right shape of containment for it — but be precise about what it
@@ -218,6 +236,21 @@ The direction was right and the magnitude is now known: steady state is **~24 µ
 of magnitude under the 110,836 ms it exists to avoid. But **it is not uniformly negligible** — there is
 a tail, `max = 25.79 ms`, and 3 calls in 2000 exceeded 1 ms. That is immaterial against a 110-second
 block and material to nothing else in this design, but it is now written down instead of assumed.
+
+**The HEALTHY window is the common path, and it was not measured either.** *(AGY-AFTER round 2, State
+Corruptor: 2000 tight-loop calls against an already-stably-hung window may only measure a cached flag.)*
+Same sampling against a live, responsive window:
+
+```
+returns False (correct); first call in a fresh session 6.1613 ms
+n=2000   mean=0.08705 ms   median=0.05440 ms   p99=0.42940 ms   max=28.80160 ms
+calls taking >1 ms: 8 / 2000
+```
+
+Same order of magnitude, correct answer, slightly costlier than the hung case (median 54 µs vs 24 µs) —
+consistent with a cached flag being read either way. ⚠ **Still unmeasured: a window at the exact moment
+it crosses into "hung"**, which is the transition the breaker will sometimes catch. Both steady states
+are cheap; the boundary is not characterised.
 
 ### ▶ VERDICT: `IsHungAppWindow` is SAFE on a hung window
 
@@ -320,45 +353,110 @@ RISK 3  pw - treeBefore : min=0  max=3  mean=1.59
 **The screen-scrape column stops being a fairness control here and becomes a POSITIVE CONTROL.** It
 decoded **0 on all 200 frames** — it was photographing the occluder, whose green falls below the stripe
 threshold — while `PrintWindow` decoded the real advancing frame number. `pw − screenScrape ≈ 1015`,
-with **exact agreement 0/200**. That is the proof the window was genuinely and fully covered, and it is
-simultaneously a direct measurement of the feature's entire thesis: **`PrintWindow` sees through
-occlusion where the scrape sees only the occluder.**
+with **exact agreement 0/200**. That is a direct measurement of the feature's entire thesis:
+**`PrintWindow` sees through occlusion where the scrape sees only the occluder.**
+
+⚠ **That control alone does NOT prove full-area occlusion, and an earlier draft claimed it did.** The
+decoder reads 16 points on a single scan line, so an occluder covering only that line would satisfy it
+while the rest of the window stayed exposed. *(AGY-AFTER round 2, Axiom Breaker.)* Replaced with a
+full-area measurement over a 40×30 grid spanning the whole client rect:
+
+```
+OCCLUSION PROOF: 1200/1200 grid points over the FULL CLIENT AREA are occluder = 100%
+```
+
+**That control has already earned its place**: on a later run it reported `0/1200 = 0%` and correctly
+invalidated the run — the occluder process had not finished starting when the probe began, and six
+iterations were captured against a still-visible window. Without it that run would have been recorded
+as a clean occluded result.
 
 Staleness under occlusion is **statistically identical** to the foreground case — `mean 1.59` occluded
 vs `1.58` and `1.64` across two independent foreground runs, never negative in any of them.
 
-### The compositor-throttling mechanism: measured, and REFUTED here
+### The compositor-throttling mechanism — CONFIRMED, and this reverses an earlier conclusion
 
 The panel's Dependency Cynic argued the foreground-only result could not transfer because *"Chromium
 aggressively throttles or suspends its compositor for background or fully occluded windows"* — a
 specific, testable mechanism rather than a general doubt, so it was tested rather than accepted.
 
-Wall-clock frame cadence of the same page against a 10.00 f/s target:
+⚠ **The first test said REFUTED. That was WRONG, and this section is the retraction.** Round 1 measured
+wall-clock cadence right after raising the occluder and recorded `9.46 f/s occluded` vs `9.99 f/s
+visible`, ratio 0.947, and concluded there was no throttling. **Round 2's Adversary-of-the-Reviewer seat
+picked exactly that correction as the one most likely to be wrong, and it was right.** *(AGY-AFTER
+round 2, Adversary of the Reviewer + open question 1.)*
+
+What the same page does under **sustained** occlusion:
 
 ```
-OCCLUDED (covered by the TopMost window):   9.46 frames/sec
-VISIBLE  (same window raised):              9.99 frames/sec
-ratio 0.947
+OCCLUDED, established:    0.00 frames/sec   (frame 214 held for 10s, and across 150 capture iterations)
+un-occluded, +3s later:  10.09 frames/sec   (and it had caught up 214 -> 299 while settling)
 ```
 
-**No meaningful throttling.** And the evidence is stronger than the raw ratio: the page publishes its
-title from inside a **double `requestAnimationFrame`** — rAF being precisely the thing Chrome throttles
-for hidden content — and rAF kept firing at ~10 Hz while the window was fully covered.
+**A fully occluded Chromium window can suspend rendering completely.** Confirmed twice, on separate
+runs and separate frames (frozen at `214`, and later at `2892`). Round 1's cadence number was taken
+during the interval before suspension engaged, so it measured the onset delay, not the steady state.
 
-**Scope of that refutation:** it refutes the mechanism *for an occluded, non-minimized window on this
-configuration*. It is not evidence about a **minimized** window (which this design refuses outright via
-the `IsIconic` guard), a background **tab**, or a machine where Chrome falls back to software
-compositing.
+**Two further facts, both measured, and the first is the one that matters for the tool contract:**
+
+- **`PrintWindow` does NOT wake a suspended renderer.** 150 consecutive `PW_RENDERFULLCONTENT` calls
+  against the frozen window all returned `True` with real content, and the content never advanced past
+  frame `214`. The capture cannot force the frame it wants to be fresh.
+- **The tree suspends WITH the pixels, so this is a freshness hazard and NOT a leak.** Across all 150
+  frozen iterations `dTree = 0` exactly — the UIA tree reported `214` and the pixels showed `214`. Both
+  are produced by the same suspended renderer, so they cannot drift apart. Masks computed from that
+  tree still land correctly on that image.
+
+⚠ **The onset is NOT deterministic and I did not isolate what selects it.** A separate 44-second
+occluded interval, sampled every 2 s, never suspended at all — it held ~10 f/s for the entire time and
+recovered normally. So the honest statement is: **sustained full occlusion can suspend Chromium
+rendering indefinitely, on a trigger this record did not characterise.** Two suspended intervals, one
+unsuspended interval of 44 s.
+
+**Scope:** occluded, non-minimized, this configuration. Not evidence about **minimized** windows (which
+this design refuses outright via the `IsIconic` guard), background **tabs**, or software compositing.
+**Electron did not suspend under the same treatment** — see below.
+
+### Electron, OCCLUDED
+
+⚠ **An earlier draft applied the occlusion result to Electron, which had only ever been tested in the
+foreground.** *(AGY-AFTER round 2, open question 4 — the same "what was measured vs what was claimed"
+rigour had been applied to the tree-read variable and then dropped for the occlusion variable.)* Rather
+than retreat the claim, it was measured. VS Code, fully covered by the same occluder, 60 iterations:
+
+```
+RISK 1  ret=True on 60 / 60      all-black: 0 / 60      near-flat: 0 / 60
+        mean PrintWindow luminance 28.5 vs screen 53      distinct colours on grid: 49..61
+        PrintWindow vs screen-scrape disagreement: 100% on every frame
+NON-VACUITY  frames where the target visibly CHANGED: 54 / 59
+```
+
+Positive control: the screen scrape read a uniform luminance of **53** — the occluder's solid green — on
+every frame, and disagreed with `PrintWindow` on **100%** of grid points. **Electron renders in full
+under occlusion, and — unlike Chromium — it did NOT suspend:** 54 of 59 frames differed from their
+predecessor while fully covered.
 
 ### ▶ VERDICT risk 1: **BOTH** render under `PW_RENDERFULLCONTENT`, occluded included
 
-Chromium (foreground **and** fully occluded) and Electron both return real content on every frame:
-600/600 with zero all-black. Nothing to add to Task 22's tool description **for occlusion**, which was
-the open question.
+| Run | Frames | Real content | All-black |
+|---|---|---|---|
+| Chromium, foreground | 200 | 200 | 0 |
+| Chromium, fully occluded | 200 | 200 | 0 |
+| Electron, foreground | 100 | 100 | 0 |
+| Electron, fully occluded | 60 | 60 | 0 |
+| **Total** | **560** | **560** | **0** |
 
-⚠ **This is not a claim that `PrintWindow` works under all conditions.** Untested and therefore
-unclaimed: RDP sessions, software-compositing fallback, machines with no GPU, and modern discrete GPUs.
-Minimized windows are refused by design, so they need no evidence.
+⚠ **An earlier draft claimed "600/600" here. That figure was simply wrong** — the runs it named summed
+to 500 — and it appeared twice, including inside the DESIGN GATE block. *(AGY-AFTER round 2, open
+question 3.)* The table above is the arithmetic, run by run.
+
+⚠ **THIS VERDICT NOW CARRIES A LIMITATION, and it is a change from the earlier draft's "nothing to
+add".** `PrintWindow` returns *a* real frame under occlusion — but for Chromium that frame can be the
+last one painted before the renderer suspended, arbitrarily old, and no `PrintWindow` call wakes it.
+**Task 22 must say so in the tool description.** The image is not wrong and its masks are not wrong; it
+may simply be *old*, with nothing in the response indicating that.
+
+Still untested and therefore unclaimed: RDP sessions, software-compositing fallback, machines with no
+GPU, and modern discrete GPUs. Minimized windows are refused by design, so they need no evidence.
 
 ### ▶ VERDICT risk 3: **NOT OBSERVED IN 400 TREE-VS-PIXEL RUNS**
 
@@ -379,6 +477,31 @@ surface and the accessibility tree, which is what risk 3 *is*. Counting them tow
 inflated the sample with 100 runs that had **no ability to observe the hazard**. They are re-scoped to
 what they actually support — risk 1 for Electron, plus a secondary freshness signal — and the staleness
 figure now counts only the 400 runs that read the tree.
+
+### Staleness under CPU contention
+
+⚠ **400 clean runs on an idle machine bound nothing about a timing race under contention.** *(AGY-AFTER
+round 2, Boundary Smuggler — and it goes directly to the privacy risk being accepted, so it was
+measured rather than noted.)* Same page, foreground, 150 iterations, with **8 CPU burners against 4
+logical processors — 2× oversubscription** for the whole run:
+
+```
+pw - treeBefore : min=0  max=6  mean=1.65
+pw - screenScrape: min=-1 max=1 mean=0.03    exact agreement: 96 / 150
+STALE rows: 0 / 150
+```
+
+**Contention widened the gap in the SAFE direction.** The maximum tree-to-pixel distance rose from
+**3 (idle) to 6 (loaded)** — the captured frame ran *further ahead* of the tree, never behind it. Zero
+stale rows.
+
+⚠ **Two earlier attempts at this measurement were confounded, and are reported rather than buried.** The
+first ran while the occluder was still starting (`OCCLUSION PROOF: 0/1200`), so six iterations were
+captured against a visible window. The second was fully occluded and **froze**, holding frame `2892` for
+all 150 iterations — which makes it **vacuous for staleness**: nothing changed, so nothing could be
+observed stale. Only the unoccluded run above isolates the load variable with the target provably
+moving. **Staleness under contention *while suspended* is not a meaningful question** — a suspended
+renderer's tree and pixels are frozen together.
 
 **This probe is ONE-SIDED, and the record says so in those words: a positive result CONFIRMS the race; a
 negative does NOT refute it.** This is a timing race between an asynchronous compositor and a separate
@@ -424,10 +547,22 @@ Written down because a measurement record's worst failure is being read as broad
       Risk 3 ships documented and unmitigated.
 
 3. Do Chromium AND Electron render under PW_RENDERFULLCONTENT?  BOTH
-   -> Including Chromium FULLY OCCLUDED: 600/600 frames real content, 0 black.
-      No occlusion limitation to add to Task 22. RDP / software-compositing /
-      no-GPU remain untested and therefore unclaimed.
+   -> Both engines, foreground AND fully occluded: 560/560 frames real
+      content, 0 all-black.
+   -> BUT there IS a limitation to add to Task 22, and it was found in
+      round 2 of the panel, not in the original measurement:
+      a fully occluded CHROMIUM window can SUSPEND rendering, after which
+      PrintWindow returns the last painted frame forever. 150 calls did not
+      wake it. The image and its masks are correct; they may be OLD, and
+      nothing in the response says so. Electron did NOT suspend.
+      This is a FRESHNESS limit, not a leak: the UIA tree freezes with the
+      pixels (dTree = 0 on all 150 frozen iterations).
+   -> RDP / software-compositing / no-GPU remain untested and unclaimed.
 ```
+
+⚠ **Answer 3 changed after the operator first saw it.** The original record said "no limitation to add
+to the tool description". That was wrong: the occlusion case had never been measured, and measuring it
+found a real contract limitation. Answers 1 and 2 are unchanged.
 
 ### Two answers Phase 0 produced that the gate did not ask for
 
