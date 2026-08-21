@@ -407,7 +407,7 @@ Expected: FAIL — no site names `clipToVirtualScreen: true`; the count test fai
 
 - [ ] **Step 3: Change the signature**
 
-Replace `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 848–853 with:
+Replace the `ResolveWindowCaptureGeometryAsync` **signature and its doc-comment block** in `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` — find it BY NAME (it was at `:848-853`, VERIFIED still correct at dispatch time, but every line citation in this plan has drifted at least once) — with:
 
 ```csharp
     /// <param name="skipIfNoRenderableOverlap">TRUE only for the full-desktop mask sweep, where a window with no
@@ -471,8 +471,10 @@ Expected: `Exactly_one_production_call_site_clips_the_yardstick` FAILS with zero
 **Mutant 2 — THE COMMENTED-OUT VARIANT, and it is mandatory here.** Do mutant 1 again, but ALSO paste `// clipToVirtualScreen: true` as a comment anywhere in `PerceptionManager.cs`.
 Expected: **it still FAILS.** If it PASSES, `IsCode` is not filtering and the sweep is defeated by typing two slashes — which is the defect this repo has now shipped or nearly shipped FOUR times (item 12's property sweep, this plan's metadata sweep, its warning-code reachability gate, and this very test). **Revert both.**
 
-**Mutant 3.** Add a line `var x = ResolveWindowCaptureGeometryAsync(h, null);` inside any production method.
+**Mutant 3.** Add `_ = await ResolveWindowCaptureGeometryAsync(handle, null);` immediately after the existing call at `PerceptionManager.cs:1136` — inside `ResolveTextCaptureGeometryAsync`, where `handle` is already in scope and the method is already `async`.
 Expected: `The_geometry_walk_has_exactly_three_production_call_sites` FAILS at 4. **Revert.**
+
+⚠ **Use the DISCARD (`_ =`), not `var x = …`.** An unused local risks a build error under warnings-as-errors, and a mutant that fails the BUILD proves nothing — the test never runs. This plan has already specified two structural mutants that did exactly that (Tasks 6 and 7). If this one produces a build error anyway, say so and stop rather than tuning it.
 
 - [ ] **Step 8: Commit**
 
