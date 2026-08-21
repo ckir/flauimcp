@@ -3110,6 +3110,38 @@ public class BookendWalkTests
         Assert.Equal("printWindow", r.Result.CaptureMethod);   // NOT a refusal
     }
 
+    // ⚠ A BOOKEND WALK THAT THROWS MUST NOT DISCARD A GOOD IMAGE AS AN ERROR. The image is already in
+    // hand; what failed is the CONFIRMATION. Unguarded, this escaped CaptureAsync and turned a successful
+    // capture into a refusal -- and on ELEMENT scope it introduced a terminal refusal the design says
+    // that path does not have. A failed confirmation is treated as a MISMATCH: retry, then the scope's
+    // own terminal outcome.
+    [Fact]
+    public async Task A_bookend_walk_that_throws_falls_back_rather_than_propagating_for_element_scope()
+    {
+        var w1 = new Rectangle(0, 0, 400, 300);
+        var e  = new Rectangle(50, 50, 100, 80);
+        var mask = new Rectangle(60, 60, 20, 10);
+        int call = 0;
+        var walk = new Func<WindowHandle, string?, Task<CaptureGeometry>>((_, _) =>
+        {
+            call++;
+            // Odd calls are the pre-capture walk; even calls are the bookend, which always throws.
+            if (call % 2 == 0)
+                throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                    "could not determine the redacted regions", "retry once the UI has settled");
+            return Task.FromResult(new CaptureGeometry(e, new[] { mask }, false, false, null,
+                Array.Empty<MaskEscalationEntry>(), w1, new IntPtr(0x1234), false));
+        });
+        var c = new WindowCaptureCoordinator(walk, FakeWindowImageSource.Solid(Color.White),
+            new CaptureRetryOptions(2, 1000),
+            w2Probe: _ => w1, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, m.Count, "screenScrape", warns));
+
+        var r = await c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0);
+        Assert.Equal("screenScrape", r.Result.CaptureMethod);   // fell back, did NOT throw
+    }
+
     // A window whose masked content animates continuously never settles. Window scope with masks refuses
     // -- the SAME terminal outcome as the resize case, reached by the other detector.
     [Fact]
@@ -3180,8 +3212,28 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
                     if (geo.MaskRects.Count == 0)
                         return new WindowCaptureOutcome(outcome.Result!, geo);
 
-                    var after = await _walk(handle, @ref);
-                    if (MaskSetsMatch(geo, after))
+                    // ⚠ THE BOOKEND WALK IS GUARDED, AND UNGUARDED IT TURNED SUCCESS INTO A REFUSAL.
+                    // This walk can throw for the same reasons the first one can -- a tearing-down window
+                    // raises RedactionUnmaskable from the mask sweep. Letting that escape would discard a
+                    // GOOD image that is already in hand, and would introduce a terminal refusal on
+                    // ELEMENT scope, which the design states has none.
+                    //
+                    // A walk that fails is treated as a MISMATCH, not as an error: we could not confirm
+                    // the mask set survived the capture, and "could not confirm" must not read as
+                    // "confirmed". The retry then re-walks, and on exhaustion the scope's own terminal
+                    // outcome applies -- window-with-masks refuses, element falls back. If the window is
+                    // genuinely gone, the NEXT attempt's step-1 walk throws and that one is deliberately
+                    // unguarded, so the agent still learns the target died.
+                    CaptureGeometry after;
+                    bool confirmed;
+                    try
+                    {
+                        after = await _walk(handle, @ref);
+                        confirmed = MaskSetsMatch(geo, after);
+                    }
+                    catch (ToolException) { confirmed = false; }
+
+                    if (confirmed)
                         return new WindowCaptureOutcome(outcome.Result!, geo);
 
                     if (attempt < _opts.MaxAttempts) continue;
@@ -3339,6 +3391,25 @@ public class CaptureCircuitBreakerTests
         Assert.Equal(2, src.Calls);           // reopened, and leaked once more
     }
 
+    // ⚠ THE DICTIONARY MUST NOT GROW WITHOUT BOUND. Every window that ever hung would otherwise leave a
+    // permanent entry in a server designed to run for weeks — and because the OS RECYCLES HWND values, a
+    // stale entry can mis-trip the breaker for an unrelated window that reuses the handle.
+    [Fact]
+    public void Expired_entries_are_pruned_so_the_breaker_does_not_grow_without_bound()
+    {
+        var now = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
+        var breaker = new CaptureCircuitBreaker(TimeSpan.FromMinutes(5), () => now);
+
+        for (int i = 1; i <= 50; i++) breaker.Trip(new IntPtr(i));
+        Assert.Equal(50, breaker.TrackedCount);
+
+        now = now.AddMinutes(6);          // every existing entry is now expired
+        breaker.Trip(new IntPtr(9999));   // pruning happens on write
+        Assert.Equal(1, breaker.TrackedCount);
+        Assert.True(breaker.IsTripped(new IntPtr(9999)));
+        Assert.False(breaker.IsTripped(new IntPtr(1)));
+    }
+
     [Fact]
     public async Task A_different_window_is_unaffected()
     {
@@ -3391,10 +3462,28 @@ public sealed class CaptureCircuitBreaker
 
     public static CaptureCircuitBreaker Default => new(TimeSpan.FromMinutes(5), () => DateTime.UtcNow);
 
+    /// <summary>How many windows are currently tracked. Exists so a test can prove the dictionary is
+    /// pruned rather than growing forever — the growth is otherwise invisible until it matters.</summary>
+    public int TrackedCount => _tripped.Count;
+
     public bool IsTripped(IntPtr hwnd)
         => _tripped.TryGetValue(hwnd, out var at) && _clock() - at < _cooldown;
 
-    public void Trip(IntPtr hwnd) => _tripped[hwnd] = _clock();
+    public void Trip(IntPtr hwnd)
+    {
+        // ⚠ PRUNE ON WRITE. Without this the dictionary is UNBOUNDED: every window that ever hung leaves
+        // a permanent entry, in a server designed to run for weeks. The entries are tiny, so this is not
+        // the leak that matters -- but a subproject whose entire subject is not leaking must not ship a
+        // collection that only grows, and HWNDs are recycled by the OS, so a stale entry can also
+        // mis-trip the breaker for an unrelated window that happens to reuse the handle value.
+        //
+        // Pruning on Trip rather than on a timer keeps this allocation-free in the common case: Trip only
+        // runs when a capture actually timed out, which is rare by construction.
+        var now = _clock();
+        foreach (var kv in _tripped)
+            if (now - kv.Value >= _cooldown) _tripped.TryRemove(kv.Key, out _);
+        _tripped[hwnd] = now;
+    }
 }
 ```
 
