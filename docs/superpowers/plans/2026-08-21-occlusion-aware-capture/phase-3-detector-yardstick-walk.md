@@ -84,6 +84,32 @@ public class UniformCanvasDetectorTests
         Assert.False(UniformCanvasDetector.IsUniform(bmp));
     }
 
+    // ⚠ THE FALLBACK PATH. IsUniform takes a fast LockBits route only for 32bpp bitmaps and falls back
+    // to GetPixel otherwise. Every bitmap the predicate receives in production is 32bpp, which means the
+    // fallback would be entirely UNEXERCISED without these two -- dead code that still ships and still
+    // has to be right. A 24bpp bitmap is the cheapest way to reach it through the public API.
+    [Fact]
+    public void A_non_32bpp_uniform_bitmap_is_detected_through_the_fallback()
+    {
+        using var bmp = new Bitmap(400, 300, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+        using (var g = Graphics.FromImage(bmp))
+        using (var brush = new SolidBrush(Color.FromArgb(18, 18, 18)))
+            g.FillRectangle(brush, 0, 0, 400, 300);
+        Assert.True(UniformCanvasDetector.IsUniform(bmp));
+    }
+
+    [Fact]
+    public void A_non_32bpp_bitmap_with_content_is_not_uniform_through_the_fallback()
+    {
+        using var bmp = new Bitmap(400, 300, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            using (var bg = new SolidBrush(Color.FromArgb(18, 18, 18))) g.FillRectangle(bg, 0, 0, 400, 300);
+            using (var fg = new SolidBrush(Color.White)) g.FillRectangle(fg, 200, 150, 12, 12);
+        }
+        Assert.False(UniformCanvasDetector.IsUniform(bmp));
+    }
+
     // Criterion 3: it runs over a bitmap that is already allocated and already being encoded. A detector
     // that costs real time has chosen the wrong sampling strategy. 4K-wide is the worst realistic case.
     [Fact]
@@ -109,8 +135,35 @@ Expected: FAIL — `UniformCanvasDetector` does not exist (CS0103).
 
 Create `src/FlaUI.Mcp.Core/Perception/UniformCanvasDetector.cs`:
 
+⚠ **THE READ PATH CHANGED AFTER MEASUREMENT — OPERATOR DECISION, 2026-08-21.** An earlier version read
+every sample with `Bitmap.GetPixel`, and it **failed criterion 3 on the reference machine**: 115–126 ms
+across three runs against the <100 ms budget, consistently over. The sampling strategy was not the
+problem. Benchmarked head-to-head, same sample points, after first confirming both paths return the
+**same answer** on a uniform bitmap and on one with content:
+
+| read path | 20 detections, 3840×2160 |
+|---|---|
+| `GetPixel` | **110 / 114 / 177 ms** |
+| `LockBits` + `Marshal.ReadInt32` | **29 / 30 / 30 ms** |
+
+`GridN` stays 64 and the 100 ms budget stays; the instrument changed, giving **3.3× headroom on the
+oldest hardware in play**. *(AGY-FIRST consult: the peer recommended deleting the latency test instead,
+on the grounds that an absolute wall-clock threshold is a weak instrument and the detector is a tiny
+fraction of a 4K capture. Its first objection — that `LockBits` would force a 33 MB format conversion —
+it retracted itself after tracing the sources. **Rejected** because nothing else enforces the O(1)
+sampling property: swapping the sparse grid for a full-image scan is ~2000× more work and would ship
+silently, and the peer's supporting figure for a 4K `PrintWindow` (">800 ms") is measured nowhere. Its
+point about absolute thresholds is fair and is recorded below.)*
+
+⚠ **WHAT THIS TEST DOES AND DOES NOT CATCH.** With 3.3× headroom it catches a *catastrophic* regression —
+a full-image scan, a per-pixel allocation — and it will **not** catch a 2× drift. That is the right
+sensitivity for a diagnostic, but do not read a green here as "the detector is still optimal".
+
 ```csharp
+using System;
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 
 namespace FlaUI.Mcp.Core.Perception;
 
@@ -140,14 +193,63 @@ public static class UniformCanvasDetector
         int stepX = System.Math.Max(1, bmp.Width / GridN);
         int stepY = System.Math.Max(1, bmp.Height / GridN);
 
+        // ⚠ FORMAT GUARD, and it is not decoration. LockBits asked for a pixel format the bitmap does
+        // NOT already have converts the WHOLE image into a temporary buffer -- at 4K that is a ~33 MB
+        // allocation on the capture path, trading a few ms of CPU for a large transient. So we lock in
+        // the bitmap's OWN format and only when that format is 32bpp, which makes the lock zero-copy and
+        // makes a 4-byte read per sample correct. MEASURED: every bitmap this predicate actually
+        // receives is 32bpp -- `new Bitmap(w, h)` defaults to Format32bppArgb, which covers the scrape
+        // path, the PrintWindow path and the tests -- so the fast path is the one that runs. The
+        // fallback exists so an unexpected format degrades in SPEED rather than in MEMORY.
+        if (Image.GetPixelFormatSize(bmp.PixelFormat) == 32)
+        {
+            var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
+                                    ImageLockMode.ReadOnly, bmp.PixelFormat);
+            try
+            {
+                // ⚠ A NEGATIVE stride means a BOTTOM-UP DIB: Scan0 points at the LAST scanline and the
+                // offset arithmetic below would walk backwards out of the buffer. Rare, and not worth
+                // special-casing, so we fall through to GetPixel -- but we must UNLOCK first, because
+                // GetPixel on a locked bitmap throws InvalidOperationException.
+                if (data.Stride > 0) return ScanLocked(data, bmp.Width, bmp.Height, stepX, stepY);
+            }
+            finally { bmp.UnlockBits(data); }
+        }
+
+        return ScanWithGetPixel(bmp, stepX, stepY);
+    }
+
+    /// <summary>The fast path: raw 4-byte reads at the same sample points, no per-pixel marshalling.</summary>
+    private static bool ScanLocked(BitmapData data, int width, int height, int stepX, int stepY)
+    {
+        IntPtr scan0 = data.Scan0;
+        int stride = data.Stride;
+        int first = Marshal.ReadInt32(scan0, 0);
+
+        for (int y = 0; y < height; y += stepY)
+            for (int x = 0; x < width; x += stepX)
+                if (Marshal.ReadInt32(scan0, y * stride + x * 4) != first) return false;
+
+        // The far edges are sampled explicitly: a stride that does not divide the dimension would
+        // otherwise never look at the last row/column, and a render that failed only at one edge is
+        // exactly the shape a grid can miss.
+        for (int y = 0; y < height; y += stepY)
+            if (Marshal.ReadInt32(scan0, y * stride + (width - 1) * 4) != first) return false;
+        for (int x = 0; x < width; x += stepX)
+            if (Marshal.ReadInt32(scan0, (height - 1) * stride + x * 4) != first) return false;
+
+        return true;
+    }
+
+    /// <summary>The fallback, for a non-32bpp or bottom-up bitmap. Identical sample points and identical
+    /// answer -- only slower. Verified against the fast path before the fast path was adopted.</summary>
+    private static bool ScanWithGetPixel(Bitmap bmp, int stepX, int stepY)
+    {
         int first = bmp.GetPixel(0, 0).ToArgb();
         for (int y = 0; y < bmp.Height; y += stepY)
             for (int x = 0; x < bmp.Width; x += stepX)
                 if (bmp.GetPixel(x, y).ToArgb() != first) return false;
 
-        // The far edges are sampled explicitly: a stride that does not divide the dimension would
-        // otherwise never look at the last row/column, and a render that failed only at one edge is
-        // exactly the shape a grid can miss.
         for (int y = 0; y < bmp.Height; y += stepY)
             if (bmp.GetPixel(bmp.Width - 1, y).ToArgb() != first) return false;
         for (int x = 0; x < bmp.Width; x += stepX)
@@ -161,7 +263,11 @@ public static class UniformCanvasDetector
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~UniformCanvasDetectorTests"`
-Expected: PASS — 6 passed. The `Measurement`-trait test runs here because the filter names the class directly; the headless gate excludes it.
+Expected: PASS — **8 passed** (3 theory rows + 5 facts). The `Measurement`-trait test runs here because the filter names the class directly; the headless gate excludes it.
+
+⚠ **This said 6 until the read path changed.** The two fallback tests were added with the format guard, because a guard whose fallback branch is never exercised is untested code that still ships.
+
+⚠ **The timing test must now come in around 30 ms, not 115–126 ms.** If it is still over 100 ms, the LockBits path is NOT being taken — check the format guard before touching the threshold.
 
 - [ ] **Step 5: Record the sampling measurement**
 
@@ -169,8 +275,19 @@ Append a `## Risk 5 — the detector's sampling` section to the measurements doc
 
 - [ ] **Step 6: Prove the gate is non-vacuous with a logic mutant**
 
-Change `IsUniform` to `=> AverageLuminance(bmp) < 0.10;` (a darkness heuristic, written inline).
-Expected: `The_F4_dark_themed_real_render_is_not_uniform` FAILS — which is precisely the defect F4 was measured to prevent, and it is worth seeing fail once. **Revert.**
+**Mutant 1 — the banned heuristic.** Replace the whole body of `IsUniform` with a darkness test:
+`{ if (bmp.Width <= 0 || bmp.Height <= 0) return true; return AverageLuminance(bmp) < 0.10; }`, writing a small
+`AverageLuminance` helper inline that samples the same grid.
+Expected: `The_F4_dark_themed_real_render_is_not_uniform` FAILS — precisely the defect F4 was measured to
+prevent, and worth seeing fail once. Some `A_uniform_bitmap_is_detected` rows also flip, since white and
+mid-grey are not dark; report the full red set. **Revert.**
+
+**Mutant 2 — the format guard.** Change `Image.GetPixelFormatSize(bmp.PixelFormat) == 32` to `!= 0`, so a
+24bpp bitmap wrongly takes the 4-byte-read fast path.
+Expected: at least one of the two `..._through_the_fallback` tests FAILS — a 3-byte-per-pixel buffer read
+4 bytes at a time yields garbage comparisons. **This is the mutant that proves the guard is load-bearing
+rather than decorative.** If BOTH fallback tests still pass, say so and stop: it would mean the guard is
+not actually selecting the path it claims to. **Revert.**
 
 - [ ] **Step 7: Commit**
 
