@@ -8,9 +8,26 @@
 `desktop_screenshot` at window scope captures the window's **screen rectangle**:
 
 ```csharp
-// ScreenshotTools.cs:58
+// ScreenshotTools.cs:58 -- BEFORE (today)
 result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth));
 ```
+
+The call site changes shape, so the required end state is written out here rather than left to be
+inferred from §1 — a block that shows only the "before" is a paste trap this document has fallen into
+three times. *(Panel round 16, Pattern Hunter — fourth instance.)*
+
+```csharp
+// AFTER: window and element scope acquire per-window; the geometry carries W1 (see section 1).
+result = await Task.Run(() => ScreenCapture.CaptureWindow(geo, maxWidth));
+// Full-desktop is unchanged and still scrapes:
+result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth,
+                                                             clipToVirtualScreen: true));
+```
+
+`CaptureWindow` owns the `PrintWindow` acquisition, the crop, the resize and degeneracy checks, and the
+scrape fallback, returning the same `CaptureResult` the scrape path returns — now carrying
+`CaptureMethod` and `CaptureWarnings` (§5). Exact member names are the plan's; the SHAPE is not, because
+this is the seam the whole design turns on.
 
 `CaptureRectangle` acquires with `Capture.Rectangle(absolute, null)` — a scrape of that screen region. So
 capturing a background window returns **a photograph of whatever occludes it**, confidently and silently.
@@ -31,6 +48,45 @@ returned **without a machine-readable indication that it may be wrong**.
 Section 3 chooses not to gate on image content, so a wrong image CAN be returned; what the design owes is
 that it never arrives unlabelled. Stating the criterion the other way would contradict the design it is
 supposed to judge. *(Panel round 1, AB-1.)*
+
+## WHAT THE OPERATOR IS BEING ASKED TO RATIFY
+
+**Read this section and nothing else if you are deciding whether to build this.** Everything below is a
+deliberate acceptance, not an oversight, and each is argued at the section named. This section exists
+because a review round pointed out that the spec told itself not to bury these and then buried them.
+*(Panel round 16, Reader of Record.)*
+
+**1. A privacy-posture widening.** Today a screenshot can only contain pixels that were on the physical
+screen. After this change the tool can read a window that is fully covered, moved off-screen, or on
+another virtual desktop — content the person at the console cannot see and gets no cue is being read.
+The existing denylist and refusal guards still hold, so this is not a hole; it is a widening. See
+*Privacy posture*.
+
+**2. Three accepted REGRESSIONS — cases that work today and will not, or will work less well.**
+
+| What regresses | Today | After | Argued in |
+|---|---|---|---|
+| A window that resized mid-capture **and has redactable content** | returns an image | **REFUSED** | §1, resize policy |
+| An element whose hardware-accelerated viewport fails to render | scrape composites it correctly | black crop + `elementCanvasUniform` warning | §3 |
+| An open menu or tooltip belonging to the target | scrape captures it where it overlaps | absent under `PrintWindow`; `popupsNotRendered` warning | risk 8 |
+
+The first is the one to weigh: it is a deliberate choice to refuse rather than return an image whose
+redaction masks may have moved. It also means the design **tolerates stale masks it cannot detect while
+refusing stale masks it can** — defended in §1 as "accepting an undetected risk and shipping a known-bad
+image are different acts", but it is a judgement call and it is yours.
+
+**3. Accepted false positives and false negatives.**
+- A window that is genuinely one uniform colour is warned about incorrectly (§3).
+- An element crop that is legitimately solid is warned about incorrectly (§3).
+- A window that grew without reflowing is refused even though its masks were fine (§1).
+- Movement and internal relayout WITHOUT a size change stay undetectable and unwarned (§2).
+
+Every one of these is paid in a spurious warning or a refusal. **None is paid in a leak** — that is the
+invariant the whole design is built to hold.
+
+**4. Two things the plan must MEASURE before this ships**, either of which could change the design:
+whether `PrintWindow` blocks on a window that is not pumping messages (risk 2), and whether it can return
+a stale composition (risk 3). Both are currently unmeasured and are labelled as such.
 
 ## Evidence — MEASURED, not assumed
 
@@ -146,6 +202,9 @@ relative  = E offset by W1.Location          // (E.X - W1.X, E.Y - W1.Y, E.Width
                                              // window scope: E == W1, so this is (0, 0, W1.W, W1.H)
 effective = Intersect(relative, new Rectangle(0, 0, bitmap.Width, bitmap.Height))
 if (effective.Width <= 0 || effective.Height <= 0) -> refuse           // see the empty case below
+                                             // ORDER MATTERS: the W1.Size vs W2.Size resize check runs
+                                             // BEFORE this block, so a shrink-induced empty crop never
+                                             // reaches this line -- see the ordering note below
 src       = bitmap cropped to `effective`
 absolute  = effective offset back by W1.Location
 Encode(src, absolute, masks, maxWidth, method, warnings)   // src.Size == absolute.Size, by construction
@@ -263,6 +322,20 @@ NON-ZERO coordinates for rects that merely touch along an edge, and `IsEmpty` is
 existing yardstick guard at `:947` tests `Width <= 0 || Height <= 0` for that reason; this one does the
 same. (Measured: fully disjoint rects do give `IsEmpty=true` at `0,0` — which is precisely why testing
 `IsEmpty` looks correct until the touching case arrives.)
+
+⚠ **THE RESIZE CHECK RUNS BEFORE THIS BLOCK, and without that ordering the two rules contradict each
+other.** For element scope, the usual way `effective` goes empty is that the window SHRANK until the
+element fell outside it — which is also `W1.Size != W2.Size`. That condition has its own flow (retry,
+then scrape fallback, **no terminal refusal**). If the crop ran first, its refusal would intercept the
+condition and make that fallback unreachable; if the resize check runs first, the crop's empty case is
+reached only when the sizes AGREE.
+
+So the empty-crop refusal survives for exactly one situation: the sizes match and the element's rect
+still falls outside the window's own bitmap — a provider reporting an element outside its own window.
+That is pathological rather than impossible, this repo's mask-escalation machinery exists because UIA
+does report inconsistent rectangles, and a refusal is the right answer for it. *(Panel round 16, Pattern
+Hunter and Fold Auditor, which reached the same conflict from two directions: the refusal table and the
+no-terminal-refusal flow did not agree on the set.)*
 
 **The outcome on empty is a defined refusal, not a degraded image.** The named element is not in the
 pixels that were captured, so there is nothing honest to return. A `1x1` placeholder or a silently
@@ -436,7 +509,10 @@ Pattern Hunter — third instance of that pattern.)*
 
 ```csharp
 // clipToVirtualScreen defaults to FALSE: the mask-preserving value, so a forgotten call site fails safe.
-// Full-desktop (the scrape) passes true; window and element scope take the default.
+// It follows the SCOPE, never the backend: full-desktop passes true; window and element scope take the
+// default -- INCLUDING when they fall back to the scrape. Clipping exists to stop a maximized window's
+// invisible border bleed from defeating the full-desktop blacks-out check, which is a property of that
+// CALLER, not of the acquisition mechanism; and unclipped is the fail-safe direction either way.
 var yardstick = clipToVirtualScreen
     ? System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds())
     : captureBounds;
@@ -544,7 +620,11 @@ legitimately solid element would fire `uniformCanvas` — telling the agent the 
 the tool never rendered a window bitmap at all. *(Panel round 12, Fold Auditor: the two-stage detector
 silently assumed a two-stage pipeline that the fallback path does not have.)*
 
-⚠ **BUT `uniformCanvas` DOES run on a FULL-DESKTOP scrape, and closing that gap is deliberate.** A
+⚠ **BUT a full-desktop scrape DOES get a uniform-colour check — under its own code,
+`desktopCanvasUniform` (§5) — and closing that gap is deliberate.** *(An earlier draft said
+`uniformCanvas` runs there; round 14 split the code out because the window recourse is a guaranteed
+failure on a secure desktop, and this sentence was not updated with it. Panel round 16, Pattern Hunter —
+fourth instance of a retracted claim left live elsewhere.)* A
 full-desktop capture can come back entirely black for reasons `IsDesktopRenderable()` does not catch — a
 window using `SetWindowDisplayAffinity` to exclude itself from capture, DRM-protected content, a session
 in transition. Today that returns a black image silently, and an agent cannot tell it from a dark screen.
@@ -605,7 +685,7 @@ leaving the §1 refusals unmapped — an implementer would have invented a code 
 |---|---|---|
 | `W1` or `W2` has zero/negative extents | `ElementNotActionable` | the window has no renderable area; the same class as the existing minimized refusal |
 | window is minimized at capture time | `ElementNotActionable` | matches the pre-existing check at `ScreenshotTools.cs:55`, which uses exactly this code |
-| element crop is empty (`effective` degenerate) | `ElementNotActionable` | the named element is not inside the pixels that were captured, so it cannot be acted on from this image |
+| element crop is empty (`effective` degenerate) **with `W1.Size == W2.Size`** | `ElementNotActionable` | the named element is not inside the pixels that were captured, so it cannot be acted on from this image. Scoped to the matching-size case because a shrink-induced empty crop is handled by the resize flow, which does not refuse |
 | window-scope resize with a NON-EMPTY mask set | `RedactionUnmaskable` | this is precisely that code's meaning — the redacted regions cannot be reliably located — and it is the code SP4 established for "refuse rather than return an under-masked image" |
 | null/zero GDI handle | `CaptureUnavailable` | environmental capture failure, matching the scrape path (`ScreenCapture.cs:40-41`) |
 | desktop not renderable | `CaptureUnavailable` | unchanged; already thrown at `ScreenshotTools.cs:27-28` |
@@ -1429,3 +1509,40 @@ Failure-Mode Cartographer second pass. Report: `.clavity/scratch/item8-panel/agy
 no subject-matter question at all — only two failure SHAPES that had recurred — and it found a fresh
 instance of each. Once a defect class has appeared twice in an artifact, hunting the class beats hunting
 the content.
+
+### AGY-AFTER adversarial panel — round 16
+
+Seats: **Pattern Hunter** re-seated with the shape list extended to four, Fold Auditor (round 15's edits,
+checking the new refusal table against the new no-terminal-refusal flow), **Reader of Record** (read it as
+the OPERATOR who must decide whether to build it, not as an implementer or auditor). Report:
+`.clavity/scratch/item8-panel/agy-round16.md`. **Verdict: NOT GREEN.** Five folds:
+
+- **THE RATIFICATIONS WERE BURIED, exactly as the document warned itself not to do.** §1 says the resize
+  regression "belongs in the operator's ratification ... not buried as an implementation detail" — and
+  then left it inside §1, with the other two regressions inside §3 and risk 8, while only the privacy
+  widening had a section of its own. An operator reading for decisions would have read that one section,
+  assumed they had seen the costs, and missed all three regressions. **A top-level "What the operator is
+  being asked to ratify" section now collects every acceptance in one place, near the front.** This is
+  the most useful finding of the round and it came from a seat that read the document as a decision-maker
+  rather than as a reviewer.
+- **Two rules contradicted each other on the same condition.** The empty-crop guard refuses terminally;
+  the element-scope resize flow guarantees no terminal refusal — and a shrink-induced empty crop is BOTH.
+  Resolved by ORDERING: the resize check runs first, so the empty-crop refusal is reached only when the
+  sizes agree, which narrows it to a provider reporting an element outside its own window. The refusal
+  table's row is scoped to match. Two seats reached this from opposite directions.
+- **Retracted claim live elsewhere, FOURTH instance.** §3 still said `uniformCanvas` runs on a
+  full-desktop scrape after round 14 split that into `desktopCanvasUniform`.
+- **"Before" block with no "after", FOURTH instance.** The problem statement's acquisition call had no
+  end state. Written out, including the shape of the new seam.
+- **A rule scoped by backend where it should be scoped by CALLER.** `clipToVirtualScreen` was described
+  as "full-desktop (the scrape) passes true", conflating the scope with the mechanism — leaving an
+  element-scope capture that FALLS BACK to a scrape unclassified. It follows the SCOPE: clipping exists
+  for the full-desktop caller's blacks-out check, not for the acquisition mechanism, and unclipped is the
+  fail-safe direction regardless.
+
+**Verified, not folded:** the peer named `ScreenshotTools.cs:54` as unchecked. Checked — it is exactly
+`if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, ...)`. The spec is correct.
+
+**Both recurring shapes have now been found FOUR times each.** That is no longer a pattern worth noting;
+it is a property of how this document was written, and the Pattern Hunter seat should be considered
+permanent for any artifact revised this many times.
