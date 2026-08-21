@@ -455,7 +455,7 @@ The ordering is the whole defence. Insert immediately after the `captureBounds` 
             // ⚠ The guard sits HERE and not in the caller because there is no point between for a caller
             // to stand: the walk produces the mask rects, producing them REQUIRES the yardstick, so by the
             // time a caller holds W1 the yardstick has already run and the mask set may already be gone.
-            var windowBounds = string.IsNullOrEmpty(@ref) ? captureBounds : SafeWindowRect(win, captureBounds);
+            var windowBounds = string.IsNullOrEmpty(@ref) ? captureBounds : SafeWindowRect(win);
             if (windowBounds.Width <= 0 || windowBounds.Height <= 0)
                 return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
                     false, false, null, System.Array.Empty<MaskEscalationEntry>(),
@@ -468,14 +468,25 @@ Add as private static members of `PerceptionManager`:
 
 ```csharp
     /// <summary>W1 — the WINDOW's own rect, needed even when `target` is an element. Guarded because it
-    /// is a UIA read on a possibly-dying window and this region must never raise a raw exception; a
-    /// failure yields the capture rect, which the degeneracy check above then judges normally.</summary>
-    private static System.Drawing.Rectangle SafeWindowRect(AutomationElement win, System.Drawing.Rectangle fallback)
+    /// is a UIA read on a possibly-dying window and this region must never raise a raw exception.
+    ///
+    /// ⚠⚠ ON FAILURE IT RETURNS `default` — AN EMPTY RECT — NOT THE ELEMENT'S RECT, and an earlier
+    /// version of this plan returned the element's. That looked harmless and POISONED A DOWNSTREAM GUARD:
+    /// the resize check compares `geo.WindowBounds.Size` against a `GetWindowRect` read of the WINDOW, so
+    /// substituting the ELEMENT's size guarantees a mismatch on every element-scope capture whose window
+    /// rect read happened to fail. Every one of them would burn the whole retry budget and then refuse or
+    /// fall back — a total outage for that window, caused by the fallback that was meant to soften a
+    /// failure. *(AGY-AFTER panel over this plan, round 6, Guard-Consistency Auditor.)*
+    ///
+    /// An empty rect flows into the degeneracy check immediately below and becomes
+    /// `DegenerateWindow: true` — a RETRYABLE transient, which is the honest answer: we could not read
+    /// the window's geometry this frame. Signalling failure beats substituting a plausible wrong value.</summary>
+    private static System.Drawing.Rectangle SafeWindowRect(AutomationElement win)
     {
         try { return win.BoundingRectangle; }
         catch (System.Exception ex) when (ex is not System.OutOfMemoryException
                                           and not System.OperationCanceledException)
-        { _ = ex; return fallback; }
+        { _ = ex; return default; }
     }
 
     /// <summary>The native HWND. IntPtr.Zero when unavailable; the acquisition seam treats zero as an

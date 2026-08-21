@@ -118,7 +118,13 @@ Replace `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs` lines 30–59 with:
                 var outcome = await _coordinator.CaptureAsync(new WindowHandle(window!), @ref, scope, maxWidth);
                 result = outcome.Result;
                 escalations = outcome.Geometry.Escalations;
-                unmaskedProcesses = System.Array.Empty<string>();
+                // ⚠ NOT hardcoded empty. On the PrintWindow path this IS empty and that is the truth --
+                // the image contains one window and its own mask set covered it. On a FALLBACK SCRAPE the
+                // image contains whatever overlapped the target, and the coordinator's desktop mask walk
+                // is what fills this in. Hardcoding empty there told the agent "everything needing masking
+                // was masked" while background windows sat unmasked in the pixels.
+                // *(AGY-AFTER panel over this plan, round 6, Guard-Consistency Auditor.)*
+                unmaskedProcesses = outcome.UnmaskedProcesses;
 
                 // §2.6, canonical step 10. AFTER the result is final, never before: a signal raised
                 // earlier can appear in the captured pixels on the scrape path.
@@ -233,7 +239,12 @@ builder.Services.AddSingleton(sp =>
         (h, r) => perception.ResolveWindowCaptureGeometryAsync(h, r),
         sp.GetRequiredService<FlaUI.Mcp.Core.Perception.IWindowImageSource>(),
         FlaUI.Mcp.Core.Perception.CaptureRetryOptions.Default,
-        breaker: sp.GetRequiredService<FlaUI.Mcp.Core.Perception.CaptureCircuitBreaker>());
+        breaker: sp.GetRequiredService<FlaUI.Mcp.Core.Perception.CaptureCircuitBreaker>(),
+        // ⚠⚠ BOTH OF THESE ARE LOAD-BEARING AND BOTH ARE OPTIONAL PARAMETERS. Omitting the first is
+        // what made round 5's denylist fix INERT in production while every test still passed; the seam
+        // now throws rather than silently skipping the guard, but the real fix is passing it here.
+        denylistedVisible: () => perception.DenylistedWindowsVisibleAsync(),
+        desktopMasks: () => perception.AllMaskRectsAsync());
 });
 ```
 

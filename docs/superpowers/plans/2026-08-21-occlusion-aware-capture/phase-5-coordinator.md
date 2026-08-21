@@ -285,7 +285,11 @@ public sealed record CaptureRetryOptions(int MaxAttempts, int TimeoutMs)
 
 /// <summary>What a capture produced, plus the geometry it came from — the tool layer needs both, because
 /// escalations live on the geometry and not on the result.</summary>
-public sealed record WindowCaptureOutcome(CaptureResult Result, CaptureGeometry Geometry);
+/// <param name="UnmaskedProcesses">Populated ONLY on a fallback scrape, from the desktop mask walk that
+/// path performs. Empty on the PrintWindow path, where it is genuinely the truth: that image contains one
+/// window and its own mask set covered it.</param>
+public sealed record WindowCaptureOutcome(CaptureResult Result, CaptureGeometry Geometry,
+                                          IReadOnlyList<string> UnmaskedProcesses);
 
 /// <summary>Canonical steps 1-9: the walk, the retry loop, the bookend validation walk and the scrape
 /// fallbacks. THE CALLER, in the sense the spec uses that word.
@@ -302,6 +306,7 @@ public sealed class WindowCaptureCoordinator
     private readonly Func<IntPtr, bool>? _minimizedProbe;
     private readonly Func<IntPtr, bool> _isHung;
     private readonly Func<Task<bool>>? _denylistedVisible;
+    private readonly Func<Task<DesktopMaskSet>>? _desktopMasks;
     private readonly Func<Rectangle, IReadOnlyList<Rectangle>, int, CaptureScope,
                           IReadOnlyList<CaptureWarning>, CaptureResult> _scrape;
 
@@ -315,9 +320,11 @@ public sealed class WindowCaptureCoordinator
              IReadOnlyList<CaptureWarning>, CaptureResult>? scrape = null,
         CaptureCircuitBreaker? breaker = null,
         Func<IntPtr, bool>? isHungProbe = null,
-        Func<Task<bool>>? denylistedVisible = null)
+        Func<Task<bool>>? denylistedVisible = null,
+        Func<Task<DesktopMaskSet>>? desktopMasks = null)
     {
         _denylistedVisible = denylistedVisible;
+        _desktopMasks = desktopMasks;
         _walk = walk; _source = source; _opts = opts;
         _w2Probe = w2Probe; _minimizedProbe = minimizedProbe;
         _scrape = scrape ?? ScreenCapture.CaptureRectangle;
@@ -388,10 +395,9 @@ public sealed class WindowCaptureCoordinator
                     // could not get a copy because the target's loop is blocked. The scrape reads the
                     // composited desktop and is unaffected, so it genuinely has a better answer than
                     // nothing. Refusing here would take away behaviour that works today.
-                    return new WindowCaptureOutcome(
-                        await ScrapeAsync(geo, scope, maxWidth, warnings,
-                                          CaptureWarnings.ScrapeFallbackTargetUnresponsive),
-                        geo);
+                    var (timeoutImage, timeoutUnmasked) = await ScrapeAsync(
+                        geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive);
+                    return new WindowCaptureOutcome(timeoutImage, geo, timeoutUnmasked);
 
                 case CaptureOutcomeKind.TargetTransient:
                     // The target's geometry was momentarily unusable -- a degenerate W2, or an element
@@ -406,8 +412,9 @@ public sealed class WindowCaptureCoordinator
 
                 case CaptureOutcomeKind.Resized:
                     if (attempt < _opts.MaxAttempts) continue;
-                    return new WindowCaptureOutcome(
-                        await OnResizeExhaustedAsync(geo, scope, maxWidth, warnings), geo);
+                    var (resizeImage, resizeUnmasked) =
+                        await OnResizeExhaustedAsync(geo, scope, maxWidth, warnings);
+                    return new WindowCaptureOutcome(resizeImage, geo, resizeUnmasked);
             }
         }
 
@@ -418,9 +425,8 @@ public sealed class WindowCaptureCoordinator
 
     /// <summary>The terminal outcome when the size never settled. The two scopes differ, and the
     /// difference is NOT inconsistency.</summary>
-    private async Task<CaptureResult> OnResizeExhaustedAsync(CaptureGeometry geo, CaptureScope scope,
-                                                             int maxWidth,
-                                                             IReadOnlyList<CaptureWarning> warnings)
+    private async Task<(CaptureResult Result, IReadOnlyList<string> Unmasked)> OnResizeExhaustedAsync(
+        CaptureGeometry geo, CaptureScope scope, int maxWidth, IReadOnlyList<CaptureWarning> warnings)
     {
         // WINDOW SCOPE WITH MASKS: REFUSE, and never scrape. The mask rects were computed against the
         // pre-resize layout; a resize reflows content, so they no longer necessarily cover what they were
@@ -462,8 +468,9 @@ public sealed class WindowCaptureCoordinator
     /// at one instant while the element rect still comes from a UIA walk that happened earlier. That
     /// staleness is the inherent race §2 documents -- it is today's behaviour, not a new defect -- and the
     /// fallback is justified by "better than nothing", not by synchronisation it does not have.</summary>
-    private async Task<CaptureResult> ScrapeAsync(CaptureGeometry geo, CaptureScope scope, int maxWidth,
-                                                  IReadOnlyList<CaptureWarning> warnings, string code)
+    private async Task<(CaptureResult Result, IReadOnlyList<string> Unmasked)> ScrapeAsync(
+        CaptureGeometry geo, CaptureScope scope, int maxWidth,
+        IReadOnlyList<CaptureWarning> warnings, string code)
     {
         // ⚠⚠ THE DENYLIST GUARD RUNS ON EVERY FALLBACK, and without it this path bypassed a refusal the
         // full-desktop path treats as absolute. A fallback takes RAW DESKTOP PIXELS of the target's rect,
@@ -480,14 +487,62 @@ public sealed class WindowCaptureCoordinator
         //
         // Refusing is the only honest option: we are already here because PrintWindow could not deliver,
         // so there is no unaffected image to return instead.
-        if (_denylistedVisible is not null && await _denylistedVisible())
+        // ⚠⚠ FAIL CLOSED. An earlier version read `if (_denylistedVisible is not null && ...)`, so an
+        // unwired delegate silently DISABLED the guard — and it WAS unwired: Phase 6's DI construction did
+        // not pass it, the parameter is optional, and the whole round-5 fix was therefore inert in
+        // production while every test still passed. A security guard whose absence is indistinguishable
+        // from a pass is worse than no guard, because it reads as protection.
+        // *(AGY-AFTER panel over this plan, round 6, Literal Implementer — the single defect it named as
+        // making the plan not ready to execute.)*
+        if (_denylistedVisible is null)
+            throw new ToolException(ToolErrorCode.CaptureUnavailable,
+                "This capture can only fall back to a screen scrape, and the denylist guard is not wired.",
+                "this is a server wiring defect - report it rather than retrying");
+        if (await _denylistedVisible())
             throw new ToolException(ToolErrorCode.TargetDenied,
                 "A credential/denylisted window is currently visible, and this capture can only fall " +
                 "back to a screen scrape, which would photograph it unmasked.",
                 "dismiss the credential window, then retry");
 
-        return _scrape(geo.Bounds, geo.MaskRects, maxWidth, scope,
-                       ScreenCapture.Append(warnings, CaptureWarnings.For(code)));
+        // ⚠⚠ A FALLBACK SCRAPE USES THE **DESKTOP** MASK SET, NOT THE TARGET'S. This path takes raw
+        // desktop pixels of the target's rect, so every window OVERLAPPING the target is in the image --
+        // and the target's own mask walk knows nothing about them. Painting only the target's rects leaves
+        // every overlapping window's sensitive regions in the clear.
+        //
+        // It also makes `unmaskedProcesses` HONEST. The window path hardcodes it empty, on the comment
+        // "empty on that branch is therefore the truth, not a placeholder" -- true of a PrintWindow
+        // capture, which contains one window, and FALSE of a scrape, which contains whatever overlapped
+        // it. Returning an empty list there tells the agent "everything needing masking was masked" while
+        // background windows sit unmasked in the pixels.
+        //
+        // The cost is one full-desktop mask walk, on a path that is already the slow rare one -- reached
+        // only after retries are spent or an acquisition timed out.
+        // *(AGY-AFTER panel over this plan, round 6, Guard-Consistency Auditor.)*
+        var masks = geo.MaskRects;
+        IReadOnlyList<string> unmasked = System.Array.Empty<string>();
+        if (_desktopMasks is not null)
+        {
+            var desk = await _desktopMasks();
+            masks = desk.Rects;
+            unmasked = desk.UnmaskedProcesses;
+        }
+
+        return (_scrape(geo.Bounds, masks, maxWidth, scope,
+                        ScreenCapture.Append(warnings, CaptureWarnings.For(code))), unmasked);
+    }
+
+    /// <summary>TRUE when the window is still hung and the divert should happen. When the OS says it has
+    /// RECOVERED, this clears the breaker as a side effect and returns false, so the capture takes the
+    /// normal path immediately instead of serving degraded scrapes for the rest of the cooldown.
+    ///
+    /// ⚠ `Reset` existed and was never called until round 6 -- the prose claimed "a recovered window
+    /// RESETS the breaker and takes the normal path" while nothing performed the reset, so a recovered
+    /// window merely waited out the timer. *(AGY-AFTER round 6, Literal Implementer.)*</summary>
+    private bool HungOrReset(IntPtr hwnd)
+    {
+        if (_isHung(hwnd)) return true;
+        _breaker?.Reset(hwnd);
+        return false;
     }
 }
 ```
@@ -770,7 +825,7 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
                     // ⚠ An EMPTY mask set skips the walk entirely. Nothing could have gone stale, and this
                     // is what keeps the common case free.
                     if (geo.MaskRects.Count == 0)
-                        return new WindowCaptureOutcome(outcome.Result!, geo);
+                        return new WindowCaptureOutcome(outcome.Result!, geo, System.Array.Empty<string>());
 
                     // ⚠ THE BOOKEND WALK IS GUARDED, AND UNGUARDED IT TURNED SUCCESS INTO A REFUSAL.
                     // This walk can throw for the same reasons the first one can -- a tearing-down window
@@ -793,7 +848,7 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
                     catch (ToolException) { confirmed = false; }
 
                     if (confirmed)
-                        return new WindowCaptureOutcome(outcome.Result!, geo);
+                        return new WindowCaptureOutcome(outcome.Result!, geo, System.Array.Empty<string>());
 
                     if (attempt < _opts.MaxAttempts) continue;
 
@@ -1160,7 +1215,8 @@ public sealed class CaptureCircuitBreaker
     public void EndAcquisition(IntPtr hwnd) => _inFlight.TryRemove(hwnd, out _);
 
     /// <summary>Forget a window entirely -- called when the OS reports it is no longer hung, so a target
-    /// that recovered stops being penalised for having hung once.</summary>
+    /// that recovered stops being penalised for having hung once. See WindowCaptureCoordinator.HungOrReset,
+    /// which is the ONLY caller and the reason this method exists.</summary>
     public void Reset(IntPtr hwnd)
     {
         _tripped.TryRemove(hwnd, out _);
@@ -1215,7 +1271,7 @@ Before the `ScreenCapture.CaptureWindow` call:
                 && (_breaker.IsTripped(geo.NativeWindowHandle)
                     || _breaker.AnotherAcquisitionIsStuck(geo.NativeWindowHandle,
                                                           TimeSpan.FromMilliseconds(_opts.TimeoutMs)))
-                && _isHung(geo.NativeWindowHandle))
+                && HungOrReset(geo.NativeWindowHandle))
             {
                 // ⚠⚠ THE TARGET-STATE GUARDS STILL RUN. Skipping straight to the scrape also skips
                 // canonical steps 4-5, which live inside CaptureWindow -- and those are the guards that
@@ -1247,10 +1303,9 @@ Before the `ScreenCapture.CaptureWindow` call:
                         "The window changed size, so its redacted regions cannot be reliably located.",
                         "wait for the window to settle, then retry, or capture a different window");
 
-                return new WindowCaptureOutcome(
-                    await ScrapeAsync(geo, scope, maxWidth, warnings,
-                                      CaptureWarnings.ScrapeFallbackTargetUnresponsive),
-                    geo);
+                var (breakerImage, breakerUnmasked) = await ScrapeAsync(
+                    geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive);
+                return new WindowCaptureOutcome(breakerImage, geo, breakerUnmasked);
             }
 ```
 

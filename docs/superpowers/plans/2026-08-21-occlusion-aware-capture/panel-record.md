@@ -205,3 +205,54 @@ Seats: Guard-Consistency Auditor (bespoke), Protocol Pedant, Blindspot Auditor. 
 
 ⚠ **Round 4 is RED. Five folds, and the two leak-class ones were BOTH "a guard that exists on one path
 and not on the adjacent one".** That is the same lens as round 3 and it is still producing.
+
+## AGY-AFTER panel over this plan — rounds 5 and 6
+
+Briefs `.clavity/seams/item8-plan-panel-r{5,6}.md`; reports `.clavity/scratch/item8-plan-panel/agy-round{5,6}.md`.
+
+### Round 5 — **the first clean seats**
+
+Seats: Fold Auditor, Guard-Consistency (2nd), Resource Vampire (2nd). **Verdict: RED**, but **two of three
+seats returned "no new findings"** — the first clean result of the review. The Fold Auditor traced the
+order-insensitive `MaskSetsMatch` on duplicates, a gained mask and a swap and confirmed it; the Resource
+Vampire audited every new allocation and exit and found nothing.
+
+- **⚠ LEAK, folded: fallback scrapes had no denylist guard.** A fallback takes raw desktop pixels of the
+  target's rect while the mask set was walked for the target ONLY, so a credential window overlapping the
+  target was photographed unmasked. `ScreenshotTools.cs:38` refuses a full-desktop capture outright for
+  exactly this, and that guard sits inside `if (string.IsNullOrEmpty(window))`. **Sixth finding of one
+  shape.** ⚠ Stated in the fold: the exposure is PRE-EXISTING and item 8 NARROWS it — after item 8 the
+  primary path renders only the target, so overlapping windows are structurally absent.
+- **Folded from the driver's solo pass:** the breaker emitted `scrapeFallbackTargetUnresponsive` — which
+  tells the agent in the PRESENT TENSE not to click the target — on the strength of a timeout up to five
+  minutes old. It now asks `IsHungAppWindow` and resets on recovery.
+- Also folded from the solo pass: **the OCR path had no degenerate-window guard**, so a window degenerate
+  at walk time and valid at capture time was OCR'd with an EMPTY mask set — returning redacted text as
+  plaintext. The peer's Seat 2 found this independently.
+
+### Round 6 — **four findings, and the headline one made round 5's fix inert**
+
+Seats: Fold Auditor, Guard-Consistency (3rd), Literal Implementer (2nd). **Verdict: RED.** Seat 1 clean.
+
+1. **⚠⚠ `denylistedVisible` WAS NEVER WIRED IN DI, AND THE GUARD FAILED OPEN.** Round 5 added the
+   parameter; Phase 6's DI construction did not pass it; the parameter is optional; the guard read
+   `if (_denylistedVisible is not null && …)`. **So the entire round-5 security fix did nothing in
+   production while every test still passed.** Now: the seam **fails closed** (an unwired guard throws
+   rather than skipping), and DI passes it. *A guard whose absence is indistinguishable from a pass is
+   worse than no guard, because it reads as protection.*
+2. **⚠ LEAK: a fallback scrape used the TARGET's mask set.** The image contains every window overlapping
+   the target, none of which the target's walk knew about. It now uses the **desktop** mask set — which
+   also makes `unmaskedProcesses` honest, where the window path had hardcoded it empty on the comment
+   "empty on that branch is therefore the truth". True of a PrintWindow capture; false of a scrape.
+3. **`SafeWindowRect` returned the ELEMENT's rect when the window rect read failed**, and the resize guard
+   compares that against a `GetWindowRect` of the WINDOW — guaranteeing a mismatch, burning the whole
+   retry budget, and refusing every element-scope capture whose window read happened to fail. It now
+   returns `default`, which the degeneracy check turns into a retryable transient. **Signalling failure
+   beats substituting a plausible wrong value.**
+4. **`Reset` was defined and never called** while the prose claimed "a recovered window RESETS the breaker
+   and takes the normal path". Now called from `HungOrReset`.
+
+⚠ **Rounds 5-6 produced three more leak-class findings, all the same shape.** The count is now **nine**
+findings of "a guard that exists on one path and stops at the adjacent one" — and round 6 added a new
+sibling: *a guard that exists but was never connected.* Both are invisible to tests that only exercise the
+path the guard is on.
