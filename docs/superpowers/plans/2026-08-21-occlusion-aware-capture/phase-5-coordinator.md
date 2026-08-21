@@ -315,6 +315,12 @@ public sealed class WindowCaptureCoordinator
     private readonly Func<IntPtr, Rectangle?>? _w2Probe;
     private readonly Func<IntPtr, bool>? _minimizedProbe;
     private readonly Func<IntPtr, bool> _isHung;
+    // ⚠ DECLARED HERE, and it was missing for five rounds. Task 19 said "add a constructor parameter
+    // stored as `_breaker`" -- an instruction to the implementer that never became a declaration, while
+    // the round-5 fold added `_breaker = breaker;` to the constructor and four uses to the body. CS0103
+    // on the first build. An instruction that names a field is not the same as declaring one.
+    // *(AGY-AFTER panel over this plan, round 10, Literal Implementer.)*
+    private readonly CaptureCircuitBreaker? _breaker;
     private readonly Func<Task<bool>>? _denylistedVisible;
     private readonly Func<Task<DesktopMaskSet>>? _desktopMasks;
     private readonly Func<Rectangle, IReadOnlyList<Rectangle>, int, CaptureScope,
@@ -582,6 +588,19 @@ public sealed class WindowCaptureCoordinator
             // STRICTER THAN NECESSARY and it is accepted deliberately: the alternative is scraping with a
             // mask set we know to be incomplete, which is the leak this fold closed. The hint below is
             // what keeps it actionable rather than baffling.
+        // ⚠ THIS IS THE MOST EXPENSIVE THING ON ANY CAPTURE PATH, and it is worth knowing before you
+        // profile a slow fallback and go looking for the wrong cause. `AllMaskRectsAsync` resolves the
+        // geometry of EVERY VISIBLE WINDOW (`PerceptionManager.cs:1163-1183`), and each of those is a UIA
+        // descendant walk. On a busy desktop that is not milliseconds.
+        //
+        // It is paid on EVERY fallback -- timeout, breaker and resize exhaustion alike -- and it lands on
+        // a request that has already spent its retry budget. Plus two `DenylistedWindowsVisibleAsync`
+        // enumerations, one either side of the shutter. **The tool description now says a fallback costs
+        // more than the retry budget rather than implying it fits inside it**, and Task 25 measures it.
+        //
+        // Not bounded, deliberately: a timeout on this walk would mean scraping with a PARTIAL mask set,
+        // which is the leak it exists to close. The honest options are "pay it" or "refuse", and paying it
+        // on a path already in degraded mode is the better of the two.
         var desk = await _desktopMasks();
         var masks = desk.Rects;
         var unmasked = desk.UnmaskedProcesses;
@@ -1360,7 +1379,7 @@ public sealed class CaptureCircuitBreaker
 
 - [ ] **Step 4: Wire it into the coordinator**
 
-Add a `CaptureCircuitBreaker? breaker = null` constructor parameter stored as `_breaker`, then:
+⚠ **The field and the parameter are BOTH already written into Task 17's class above** — `private readonly CaptureCircuitBreaker? _breaker;` in the field block, `CaptureCircuitBreaker? breaker = null` in the constructor, and `_breaker = breaker;` in its body. Confirm all three are present before continuing; an earlier version of this step described them in prose and none of them existed, which is a CS0103 on the first build. Then add the two uses:
 
 Before the `ScreenCapture.CaptureWindow` call:
 

@@ -521,7 +521,7 @@ Delete `Focus the window first (no occlusion handling).` It stops being true, an
 Append to the description, before `Minimized→ElementNotActionable.`:
 
 ```
-captureMethod says which mechanism produced THIS image, and it is NOT a proxy for scope: 'printWindow' means the window's OWN pixels were rendered, so occlusion is irrelevant; 'screenScrape' means the screen was photographed, so anything overlapping is in the image. Window/element scope normally returns 'printWindow' but FALLS BACK to 'screenScrape' when the target is unresponsive or will not hold still - check captureMethod on every response rather than assuming it from the scope you asked for. Full-desktop is always 'screenScrape'. IMPORTANT: when captureMethod is 'printWindow' the image coordinates are NOT clickable - the pixels may be behind another window or on no monitor at all, so a click computed from bounds lands on whatever is drawn there instead. Act through the UIA tree (desktop_snapshot + desktop_click ref) rather than mapping image coordinates back to the screen. captureWarnings is ALWAYS present and EMPTY when nothing is wrong; each entry is {code,recourse} where code is stable to branch on - uniformCanvas, elementCanvasUniform, desktopCanvasUniform, windowResized, popupsNotRendered, scrapeFallbackTargetUnresponsive, scrapeFallbackTargetChanging. A window that keeps resizing is retried briefly (worst case ~4.5s) and then falls back to a scrape, whose redaction masks are re-measured at capture time so they match the pixels returned. It is REFUSED with RedactionUnmaskable only when the redacted regions are observed to MOVE during the capture itself, which no re-measurement can fix.
+captureMethod says which mechanism produced THIS image, and it is NOT a proxy for scope: 'printWindow' means the window's OWN pixels were rendered, so occlusion is irrelevant; 'screenScrape' means the screen was photographed, so anything overlapping is in the image. Window/element scope normally returns 'printWindow' but FALLS BACK to 'screenScrape' when the target is unresponsive or will not hold still - check captureMethod on every response rather than assuming it from the scope you asked for. Full-desktop is always 'screenScrape'. IMPORTANT: when captureMethod is 'printWindow' the image coordinates are NOT clickable - the pixels may be behind another window or on no monitor at all, so a click computed from bounds lands on whatever is drawn there instead. Act through the UIA tree (desktop_snapshot + desktop_click ref) rather than mapping image coordinates back to the screen. captureWarnings is ALWAYS present and EMPTY when nothing is wrong; each entry is {code,recourse} where code is stable to branch on - uniformCanvas, elementCanvasUniform, desktopCanvasUniform, windowResized, popupsNotRendered, scrapeFallbackTargetUnresponsive, scrapeFallbackTargetChanging. A window that keeps resizing is retried briefly (worst case ~4.5s) and then falls back to a scrape, whose redaction masks are re-measured at capture time so they match the pixels returned. NOTE a fallback costs MORE than the retry budget: re-measuring redactions walks every visible window, so a fallback on a busy desktop can take noticeably longer than a normal capture - budget for it if you are polling. It is REFUSED with RedactionUnmaskable only when the redacted regions are observed to MOVE during the capture itself, which no re-measurement can fix.
 ```
 
 - [ ] **Step 4: Edit 4 — the class doc**
@@ -911,6 +911,27 @@ Expected: all pass, 0 skipped.
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~PopupGrafting"`
 Expected: 1 passed.
+
+- [ ] **Step 4b: Measure the FALLBACK's end-to-end wall clock**
+
+⚠ **The fallback path grew expensive across panel rounds 6-9 and nobody has timed it.** It now performs a
+full-desktop redaction walk (`AllMaskRectsAsync`, a UIA descendant walk per visible window) plus two
+denylist enumerations, on a request that has already spent its retry budget.
+
+Time a window-scope fallback end to end on a **busy** desktop — a dozen or more visible windows, at least
+one Chromium-family — by forcing the timeout path with the `HangProbe` fixture from Task 1. Record:
+
+| | |
+|---|---|
+| retry budget | `MaxAttempts × TimeoutMs` = 3 × 1500 = 4500ms |
+| `AllMaskRectsAsync` alone | measure |
+| 2 × `DenylistedWindowsVisibleAsync` | measure |
+| **fallback, end to end** | measure |
+
+**There is no pass/fail threshold here and that is deliberate** — the walk cannot be bounded without
+scraping a PARTIAL mask set, which is the leak it closes. What the measurement decides is whether the tool
+description's wording is honest enough, and whether the operator wants the fallback gated behind an opt-in
+on very busy desktops. Report the number; the disposition is the operator's.
 
 - [ ] **Step 5: Complete the measurements record**
 

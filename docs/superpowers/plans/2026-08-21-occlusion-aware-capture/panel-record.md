@@ -384,3 +384,35 @@ them as deliberate acceptances* — the fallback capturing overlapping windows, 
 full-desktop refusal. That is the ledger working as intended.
 
 **Refuted:** `ScreenshotTools.cs:38` was verified by grep this session.
+
+### Round 10 — two seats clean, one compile error
+
+Seats: Fold Auditor, Resource Vampire (3rd), Literal Implementer (3rd). **Verdict: RED**, one finding.
+
+**Seat 1 clean.** It confirmed the TOCTOU fix's order and discard: throwing genuinely prevents the tuple
+reaching the caller, `CaptureResult` holds no `IDisposable` so the throw leaks nothing, and no path can
+reach the post-check without having passed the pre-check.
+
+**Seat 2 clean**, with a caveat recorded below.
+
+**Folded — Seat 3:**
+
+- **`_breaker` was assigned and used in five places and NEVER DECLARED.** CS0103 on the first build. Task
+  19 said *"add a `CaptureCircuitBreaker? breaker = null` constructor parameter stored as `_breaker`"* —
+  an instruction to the implementer that never became a declaration — while the round-5 fold added
+  `_breaker = breaker;` to the constructor and four uses to the body. **An instruction that names a field
+  is not the same as declaring one**, and prose describing code is invisible to a compiler. Field
+  declared; Task 19's step rewritten to say *confirm all three exist* rather than describing them.
+
+**⚠ A DISAGREEMENT WORTH RECORDING, because it is unresolved rather than settled.** Seat 2 cleared the
+fallback's cost by estimating the full-desktop walk at "approx. 1-2s" and concluding a fallback
+"comfortably fits the advertised ~4.5s budget". **That is an estimate, not a measurement**, and the
+driver's own solo pass this round reached the opposite concern from the code: `AllMaskRectsAsync` resolves
+the geometry of EVERY VISIBLE WINDOW (`PerceptionManager.cs:1163-1183`), each a UIA descendant walk, and
+it is now paid on every fallback plus two denylist enumerations.
+
+Neither of us has measured it, so neither number is worth anything. **Task 25 Step 4b now measures it** on
+a busy desktop, with no pass/fail threshold — deliberately, because the walk cannot be bounded without
+scraping a PARTIAL mask set, which is the leak it closes. The tool description now says a fallback costs
+MORE than the retry budget rather than implying it fits inside it. What the measurement decides is whether
+that wording is honest enough and whether the operator wants the fallback gated on busy desktops.
