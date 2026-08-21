@@ -508,7 +508,13 @@ For window and element scope, in this order:
    - **window scope, mask set NON-EMPTY** → the caller's retry loop, and **REFUSE on exhaustion — never
      the scrape fallback.** Leaves the sequence. *(Operator ratification 2026-08-21; the design as
      panelled refused here immediately. See ratification item 2.)*
-   - **window scope, mask set EMPTY** → record a `windowResized` warning and **CONTINUE to the crop.**
+   - **window scope, mask set EMPTY** → ⚠ **ALSO leaves the sequence, since 2026-08-21.** This branch
+     used to record a `windowResized` warning and continue to the crop, on the reasoning that nothing was
+     going to be redacted so no misalignment was possible. **That was a LEAK:** an empty mask set means
+     nothing sensitive was found in the PRE-RESIZE layout, not that nothing in the window is sensitive,
+     and a reflow can move content into the cropped region or CREATE it. A resize now always retries,
+     regardless of mask count, and `windowResized` is retired — no image is returned for a window that
+     resized, so a code describing one could never fire. *(Panel over the PLAN, round 11, Leak Hunter.)*
      ⚠ It must continue: the crop is what discards the region a GROWN window added that the walk never
      inspected. Skipping it would hand `Encode` a `W2`-sized bitmap against a `W1`-sized rectangle —
      breaking the `src.Size == absolute.Size` invariant — AND return unscanned pixels, the exact leak the
@@ -859,7 +865,10 @@ behavioural contract, not an implementation detail, and the two scopes need diff
     is otherwise sound, so a scrape genuinely offers something better than nothing. Window-scope-with-masks
     has a MASK failure, and a scrape reproduces it exactly — the same stale rects painted over the same
     reflowed content. Switching backends cannot fix a mask problem.
-  - **mask set EMPTY → capture, and warn `windowResized`.** Nothing was going to be redacted, so no
+  - **mask set EMPTY → ⚠ RETRY TOO, since 2026-08-21 — see the canonical order's step 6.** The text
+    below is the superseded reasoning, kept because it is exactly the shape of the mistake: it argued from
+    MISALIGNMENT (true — an empty set cannot be misaligned) to SAFETY (false — an empty set can be
+    INCOMPLETE after a reflow). ~~Nothing was going to be redacted, so no
     misalignment is possible. No retry: there is nothing to stabilise.
 
   ⚠ **The false-refusal cost is real and is accepted with its eyes open.** A window that grew from its

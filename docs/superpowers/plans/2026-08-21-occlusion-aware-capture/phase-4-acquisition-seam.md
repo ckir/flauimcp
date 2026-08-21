@@ -210,19 +210,18 @@ public class CaptureWindowTests
         Assert.Null(o.Result);
     }
 
-    // WINDOW SCOPE, NO MASKS, RESIZED -> CONTINUE to the crop and warn. It MUST continue: the crop is what
-    // discards the region a GROWN window added that the walk never inspected. Skipping it would hand
-    // Encode a W2-sized bitmap against a W1-sized rect AND return unscanned pixels.
+    // ⚠ WINDOW SCOPE, NO MASKS, RESIZED -> STILL REPORTS. An empty mask set means "nothing sensitive
+    // was found in the T1 layout", NOT "nothing in this window is sensitive" -- a reflow can move content
+    // into the cropped region or CREATE it, and no mask was ever computed for that content. This
+    // continued-and-warned until panel round 11.
     [Fact]
-    public void Window_scope_without_masks_crops_and_warns_on_a_resize()
+    public void Window_scope_without_masks_still_reports_a_resize_rather_than_continuing()
     {
         var w1 = new Rectangle(0, 0, 800, 600);
         var w2 = new Rectangle(0, 0, 1000, 700);
         var o = Run(Geo(w1, w1), w2, CaptureScope.Window, FakeWindowImageSource.Solid(Color.White));
-        Assert.Equal(CaptureOutcomeKind.Completed, o.Kind);
-        Assert.Equal(800, o.Result!.W);        // cropped back to the scanned region
-        Assert.Equal(600, o.Result.H);
-        Assert.Contains(o.Result.CaptureWarnings, w => w.Code == "windowResized");
+        Assert.Equal(CaptureOutcomeKind.Resized, o.Kind);
+        Assert.Null(o.Result);
     }
 
     [Fact]
@@ -391,19 +390,21 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
 
         // Step 6, the resize check. Sizes, not rectangles: a pure move changes only the origin and the
         // crop already makes it harmless, so flagging it would be a false positive.
-        if (w1.Size != w2.Size)
-        {
-            // Element scope: the caller retries and, on exhaustion, falls back to the scrape.
-            // Window scope WITH masks: the caller retries and, on exhaustion, REFUSES -- the masks were
-            // computed against the pre-resize layout and a reflow moves what they were sampled to cover.
-            if (scope == CaptureScope.Element || geo.MaskRects.Count > 0)
-                return CaptureOutcome.Resized;
-
-            // Window scope with NO masks: nothing was going to be redacted, so no misalignment is
-            // possible. Warn and CONTINUE -- the crop below is what discards the region a grown window
-            // added that the walk never inspected.
-            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.WindowResized));
-        }
+        // ⚠⚠ A RESIZE ALWAYS REPORTS, ON EVERY SCOPE, REGARDLESS OF HOW MANY MASKS THE WALK FOUND.
+        //
+        // An earlier version let window scope CONTINUE when `geo.MaskRects.Count == 0`, reasoning that
+        // "nothing was going to be redacted, so no misalignment is possible". The misalignment half was
+        // true and the conclusion was a LEAK, because **an empty mask set does not mean "nothing in this
+        // window is sensitive" — it means "nothing sensitive was found in the T1 LAYOUT".** A resize
+        // reflows: content can move into the cropped region, or be CREATED by the resize itself (a dialog
+        // that expands and reveals a credential field). Those pixels are in the image and no mask was ever
+        // computed for them. The crop only discards the area a GROWN window ADDED; it does nothing about
+        // content that reflowed INTO the region that was already being captured.
+        //
+        // Reporting instead of continuing costs a retry on a benign case and settles it on attempt 2 with
+        // a FRESH walk whose mask set includes anything the reflow produced.
+        // *(AGY-AFTER panel over this plan, round 11, Leak Hunter.)*
+        if (w1.Size != w2.Size) return CaptureOutcome.Resized;
 
         // Step 6b. Allocate at W2's size and render.
         using var bitmap = source.Acquire(geo.NativeWindowHandle, w2.Size, timeoutMs);
@@ -512,8 +513,12 @@ Expected: PASS — 14 passed.
 
 1. Move the `probeMin` check to AFTER the resize branch.
    Expected: `A_window_minimized_at_capture_time_refuses_and_does_not_report_a_resize` FAILS with a `Resized` outcome instead of the refusal — the exact ordering defect the canonical list was written to prevent.
-2. Change `if (scope == CaptureScope.Element || geo.MaskRects.Count > 0)` to `if (scope == CaptureScope.Element)`.
-   Expected: `Window_scope_with_masks_reports_a_resize_rather_than_refusing` FAILS with `Completed`.
+2. Change `if (w1.Size != w2.Size) return CaptureOutcome.Resized;` to
+   `if (w1.Size != w2.Size && geo.MaskRects.Count > 0) return CaptureOutcome.Resized;` — i.e. restore the
+   empty-mask-set shortcut panel round 11 removed.
+   Expected: `Window_scope_without_masks_still_reports_a_resize_rather_than_continuing` FAILS with
+   `Completed`. **That failure is the leak**: an image returned for a window whose layout reflowed, with a
+   mask set computed before the reflow.
 3. Change `if (windowUniform)` back to `if (windowUniform && scope == CaptureScope.Window)` — i.e. restore the hole this design shipped with until 2026-08-21.
    Expected: `An_element_capture_of_a_blank_window_still_warns_uniformCanvas` FAILS with an EMPTY warning list. That empty list is the defect: a black crop returned to an agent with nothing saying so.
 4. Drop `&& !windowUniform` from the `elementCanvasUniform` condition.

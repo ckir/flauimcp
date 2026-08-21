@@ -530,6 +530,54 @@ Insert after the `Denied || Minimized` early return at `:1137-1139`:
                 "wait for the window to finish opening, then retry");
 ```
 
+- [ ] **Step 6b-2: The OCR path also needs a RESIZE guard, and this one leaks PLAINTEXT**
+
+⚠⚠ The OCR path takes its mask rects from the walk and its pixels from `CaptureRectangle` some time later, **with nothing in between comparing the window's geometry.** A reflow in that gap misplaces every mask, and unlike the screenshot path the consequence is not a wrong-looking picture: **`FindAsync` OCRs the unmasked region and returns the redacted text as a string in the response.** `FindTextTools.cs:104-108` already states this hazard in its own words for a different case.
+
+**PRE-EXISTING** — this is today's behaviour, unchanged by item 8. It is fixed here for the same reason the degenerate guard above was: item 8 built a resize guard for the screenshot path, and a guard that stops at the adjacent caller is this review's most-repeated defect. It is cheap: one `GetWindowRect`.
+
+`TextCaptureGeometry` needs the handle to compare against. Extend it with an appended field, mirroring `CaptureGeometry`:
+
+```csharp
+// Appended, never inserted - same positional-record rule as CaptureResult and CaptureGeometry.
+public sealed record TextCaptureGeometry(bool Denied, string? DeniedProcess, bool Minimized,
+    System.Drawing.Rectangle CaptureBounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects,
+    int WindowLeft, int WindowTop, int WindowWidth, int WindowHeight,
+    System.IntPtr NativeWindowHandle);
+```
+
+Populate it from the geometry the wrapper already holds (`geo.NativeWindowHandle`) at both `return` sites in `ResolveTextCaptureGeometryAsync`.
+
+Then guard at **both** OCR capture sites, `FindTextTools.cs:62` and `:110`, immediately before the `Task.Run`:
+
+```csharp
+            // ⚠ A RESIZE BETWEEN THE WALK AND THE CAPTURE MISPLACES EVERY MASK, AND THIS PATH READS THE
+            // RESULT ALOUD. On the screenshot path a misplaced mask returns a wrong-looking image; here
+            // the OCR engine reads the unmasked pixels and returns the redacted text as a STRING. Cheap
+            // to check - one GetWindowRect - and the two consumers both do the right thing with the
+            // refusal: DesktopFindText propagates it, and DesktopWaitForText's catch at :108 degrades it
+            // to "not found" and keeps polling, which is correct for a window that is still settling.
+            if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
+                                                new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "The window changed size between reading its redacted regions and capturing it, so " +
+                    "those regions can no longer be located.",
+                    "wait for the window to settle, then retry");
+```
+
+Add the helper beside `GuardTargetState` in `ScreenCapture`, reusing the P/Invoke already declared there:
+
+```csharp
+    /// <summary>TRUE when the window's CURRENT size differs from <paramref name="asWalked"/>. Used by the
+    /// OCR path, which has no W1/W2 pair of its own. A destroyed window reports changed: it is not safe
+    /// to photograph either.</summary>
+    public static bool WindowSizeChanged(IntPtr hwnd, Size asWalked)
+    {
+        var now = DefaultW2Probe(hwnd);
+        return now is null || now.Value.Size != asWalked;
+    }
+```
+
 - [ ] **Step 6c: Write the headless test for it**
 
 Add to `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryShapeTests.cs`:

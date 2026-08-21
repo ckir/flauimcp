@@ -140,7 +140,6 @@ public class CaptureWarningTests
     [InlineData("uniformCanvas")]
     [InlineData("desktopCanvasUniform")]
     [InlineData("elementCanvasUniform")]
-    [InlineData("windowResized")]
     [InlineData("popupsNotRendered")]
     [InlineData("scrapeFallbackTargetUnresponsive")]
     [InlineData("scrapeFallbackTargetChanging")]
@@ -151,9 +150,37 @@ public class CaptureWarningTests
         Assert.False(string.IsNullOrWhiteSpace(w.Recourse));
     }
 
+    // ⚠ SIX. `windowResized` was retired at panel round 11 when the path that emitted it was found to
+    // be a leak and removed. A code that cannot fire teaches a consumer that its condition never happens.
     [Fact]
-    public void Exactly_seven_codes_ship()
-        => Assert.Equal(7, CaptureWarnings.AllCodes.Count);
+    public void Exactly_six_codes_ship()
+        => Assert.Equal(6, CaptureWarnings.AllCodes.Count);
+
+    // Every shipped code must have at least one emission site in production. This is the other half of
+    // the retirement: it is what would have caught `windowResized` going dead on its own.
+    [Fact]
+    public void No_shipped_code_is_unreachable()
+    {
+        var root = RepoRoot();
+        var src = string.Join("\n", System.IO.Directory.EnumerateFiles(
+            System.IO.Path.Combine(root, "src"), "*.cs", System.IO.SearchOption.AllDirectories)
+            .Select(System.IO.File.ReadAllText));
+        foreach (var c in CaptureWarnings.AllCodes)
+        {
+            var member = char.ToUpperInvariant(c[0]) + c.Substring(1);
+            Assert.True(src.Contains("CaptureWarnings." + member),
+                $"'{c}' is documented but never emitted - retire it or emit it");
+        }
+    }
+
+    private static string RepoRoot()
+    {
+        var d = new System.IO.DirectoryInfo(System.IO.Directory.GetCurrentDirectory());
+        while (d is not null && !System.IO.File.Exists(System.IO.Path.Combine(d.FullName, "FlaUI.Mcp.slnx")))
+            d = d.Parent;
+        Assert.NotNull(d);
+        return d!.FullName;
+    }
 
     // §5: `code` is what a caller branches on, so it must be a stable identifier -- never prose.
     [Fact]
@@ -201,7 +228,6 @@ public static class CaptureWarnings
     public const string UniformCanvas = "uniformCanvas";
     public const string DesktopCanvasUniform = "desktopCanvasUniform";
     public const string ElementCanvasUniform = "elementCanvasUniform";
-    public const string WindowResized = "windowResized";
     public const string PopupsNotRendered = "popupsNotRendered";
     public const string ScrapeFallbackTargetUnresponsive = "scrapeFallbackTargetUnresponsive";
     public const string ScrapeFallbackTargetChanging = "scrapeFallbackTargetChanging";
@@ -229,11 +255,6 @@ public static class CaptureWarnings
             "This element's pixels may have failed to render even though the window as a whole did - a " +
             "hardware-accelerated child viewport is the usual cause. Verify through the UIA tree before " +
             "concluding the control is blank.",
-        [WindowResized] =
-            "The window changed size mid-capture. The image itself is sound - it was cropped back to the " +
-            "region you asked for - but the layout inside it may have reflowed, so any UIA tree or " +
-            "element ref you hold for this window may be geometrically stale. Re-snapshot before acting " +
-            "on cached coordinates.",
         [PopupsNotRendered] =
             "An open menu, dropdown or tooltip belonging to this window is a separate top-level window " +
             "and may be missing from this image - structurally absent under printWindow, and cropped off " +
@@ -248,9 +269,17 @@ public static class CaptureWarnings
             "continuously - it is alive and busy, not stuck; waiting and re-capturing may succeed.",
     };
 
+    // ⚠ SIX, not seven. `windowResized` was retired at panel round 11 and this is not an omission.
+    // It existed for one path: a window-scope capture that resized with an EMPTY mask set, which
+    // continued to the crop and warned. That path was a LEAK -- an empty mask set means "nothing
+    // sensitive was found in the T1 layout", not "nothing in this window is sensitive", and a reflow can
+    // move or create content the walk never masked. A resize now always retries, so no image is ever
+    // returned FOR a window that resized, and a code describing one would never fire.
+    // **A documented code that cannot fire is worse than no code**: a consumer writes a handler for it
+    // and concludes, from its absence, that no window ever resizes.
     public static IReadOnlyList<string> AllCodes { get; } = new[]
     {
-        UniformCanvas, DesktopCanvasUniform, ElementCanvasUniform, WindowResized,
+        UniformCanvas, DesktopCanvasUniform, ElementCanvasUniform,
         PopupsNotRendered, ScrapeFallbackTargetUnresponsive, ScrapeFallbackTargetChanging,
     };
 
@@ -266,11 +295,13 @@ public static class CaptureWarnings
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureWarningTests"`
-Expected: PASS — 10 passed.
+Expected: PASS — 11 passed.
 
 - [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
 
-Temporarily set `[WindowResized]` to `""`. Re-run. Expected: `Every_shipped_code_has_a_recourse` FAILS on the `windowResized` row. **Revert.**
+Temporarily set `[PopupsNotRendered]` to `""`. Re-run. Expected: `Every_shipped_code_has_a_recourse` FAILS on the `popupsNotRendered` row. **Revert.**
+
+Then a second mutant for the reachability gate: temporarily add `"windowResized"` back to `AllCodes` without adding an emission site. Expected: `No_shipped_code_is_unreachable` FAILS naming it, and `Exactly_six_codes_ship` FAILS at 7. **That is the gate that would have caught this code going dead on its own, so see it go red once.** **Revert.**
 
 - [ ] **Step 6: Commit**
 

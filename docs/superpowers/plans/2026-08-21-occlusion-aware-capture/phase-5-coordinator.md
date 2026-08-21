@@ -75,7 +75,7 @@ public class WindowCaptureCoordinatorTests
                      FakeWindowImageSource.Solid(Color.White), _ => settled);
         var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
         Assert.Equal("printWindow", r.Result.CaptureMethod);
-        Assert.DoesNotContain(r.Result.CaptureWarnings, w => w.Code == "windowResized");
+        Assert.Empty(r.Result.CaptureWarnings);   // it settled, so nothing about it is stale
     }
 
     // ...and on exhaustion FALLS BACK, with masks re-measured at capture time.

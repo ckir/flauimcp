@@ -416,3 +416,43 @@ a busy desktop, with no pass/fail threshold — deliberately, because the walk c
 scraping a PARTIAL mask set, which is the leak it closes. The tool description now says a fallback costs
 MORE than the retry budget rather than implying it fits inside it. What the measurement decides is whether
 that wording is honest enough and whether the operator wants the fallback gated on busy desktops.
+
+### Round 11 — the narrowing worked: two leaks and a contract lie
+
+I narrowed this round on purpose: three of the previous four rounds had found COMPILE ERRORS, the one
+defect class a panel is the wrong tool for, since every task ends in `dotnet build`. The round was told to
+hunt only what a compiler and a passing suite cannot catch, and to put compile errors in one unanalysed
+line at the end. **It produced the two best findings since round 6.**
+
+Seats: **Leak Hunter** (bespoke — trace all seven paths an image can reach the caller by, naming for each
+the walk the masks came from and the moment the pixels were taken), **Contract Liar Hunter** (bespoke),
+Convergence Assessor. **Verdict: RED.**
+
+1. **⚠⚠ LEAK — window scope, empty mask set, resized: it warned and CONTINUED.** The reasoning was
+   *"nothing was going to be redacted, so no misalignment is possible"*. The misalignment half is true and
+   **the conclusion is a leak**: an empty mask set means *nothing sensitive was found in the PRE-RESIZE
+   layout*, not that nothing in the window is sensitive. A reflow can move content into the cropped region
+   **or create it** — a dialog that expands and reveals a credential field. Those pixels are returned with
+   no mask ever computed for them. The crop only discards area a GROWN window ADDED; it does nothing about
+   content that reflowed INTO the region already being captured.
+   **A resize now always reports, on every scope, regardless of mask count.**
+   ⚠ **`windowResized` is therefore RETIRED — six codes ship, not seven.** It existed solely for the path
+   just removed, and *a documented code that cannot fire is worse than no code*: a consumer writes a
+   handler and concludes from its silence that windows never resize. A new test,
+   `No_shipped_code_is_unreachable`, is the gate that would have caught it going dead on its own.
+2. **⚠⚠ LEAK — the OCR path has NO resize guard, and it leaks PLAINTEXT.** Masks from the walk, pixels
+   from `CaptureRectangle` later, nothing between comparing geometry. A reflow misplaces every mask and
+   **`FindAsync` OCRs the unmasked region and returns the redacted text as a string.** Pre-existing, fixed
+   here for the same reason as the OCR degenerate guard: item 8 built a resize guard for the screenshot
+   path and a guard that stops at the adjacent caller is this review's most-repeated defect. One
+   `GetWindowRect` via a new `ScreenCapture.WindowSizeChanged`.
+3. **A contract lie, and worse than reported.** `unmaskedProcesses`, `maskEscalations` and `escalated` now
+   carry DESKTOP-wide values on a fallback. The description still said **"unmaskedProcesses
+   (full-desktop only)"** — so it was wrong twice over. Fixed by disclosure, not filtering: `escalated`
+   cannot be region-filtered without adding a rectangle to `MaskEscalationEntry`, and over-reporting is
+   the fail-safe direction, so the honest fix is to make the sentence true.
+
+**The Convergence Assessor's verdict, recorded because it is a fair hit:** *"the panel spent the last four
+rounds distracted by shallow syntax issues, allowing deep semantic leaks and blatant contract lies to
+survive ten rounds of scrutiny."* That is exactly right, and it is an argument for the narrowing rather
+than against it — the narrowing is what surfaced them.

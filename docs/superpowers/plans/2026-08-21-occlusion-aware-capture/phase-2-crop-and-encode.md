@@ -296,12 +296,12 @@ public class EncodeContractTests
     public void The_method_and_warnings_reach_the_result_unchanged()
     {
         using var src = Solid(10, 10, Color.Red);
-        var warn = new[] { CaptureWarnings.For(CaptureWarnings.WindowResized) };
+        var warn = new[] { CaptureWarnings.For(CaptureWarnings.PopupsNotRendered) };
         var r = ScreenCapture.Encode(src, new Rectangle(0, 0, 10, 10), new Rectangle(0, 0, 10, 10),
                                      System.Array.Empty<Rectangle>(), 0, "printWindow", warn);
         Assert.Equal("printWindow", r.CaptureMethod);
         Assert.Single(r.CaptureWarnings);
-        Assert.Equal("windowResized", r.CaptureWarnings[0].Code);
+        Assert.Equal("popupsNotRendered", r.CaptureWarnings[0].Code);
     }
 
     // THE CLAMP PATH. src is SMALLER than the element rect originally requested, because the crop clamped
