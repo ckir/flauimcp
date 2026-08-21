@@ -428,9 +428,15 @@ Replace the `ResolveWindowCaptureGeometryAsync` **signature and its doc-comment 
     /// they fall back to the scrape: clipping exists to stop a maximized window's invisible resize-border
     /// bleed from defeating the full-desktop blacks-out check, which is a property of that CALLER.
     ///
-    /// ⚠ The OCR path (FindTextTools, via ResolveTextCaptureGeometryAsync at :1136) also takes the default
-    /// and so changes behaviour for a PARTIALLY off-screen window: today it always clips. That is a
-    /// deliberate, tested consequence — see risk 6 — not an oversight.</param>
+    /// ⚠ The OCR path (FindTextTools, via ResolveTextCaptureGeometryAsync) also takes the default and so
+    /// CHANGES BEHAVIOUR for a partially off-screen window: it used to always clip. That is deliberate —
+    /// see risk 6 — and it fails in the mask-PRESERVING direction, which is why it is safe to ship.
+    ///
+    /// ⚠ IT IS NOT TESTED, and an earlier version of this comment claimed it was. MEASURED:
+    /// `grep -rn --include=*.cs "ResolveTextCaptureGeometryAsync" test/` returns NOTHING, and no test
+    /// asserts anything about the yardstick this parameter selects. Nothing would go red if this
+    /// behaviour were wrong. Tracked as coverage debt A4; the honest reason is that reaching this path
+    /// needs a live UIA walk, so there is no headless route to it.</param>
     public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref,
                                                                    bool skipIfNoRenderableOverlap = false,
                                                                    bool clipToVirtualScreen = false) =>

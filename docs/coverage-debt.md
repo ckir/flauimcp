@@ -29,6 +29,21 @@ invariants). Its sibling half — an element GENUINELY named the token must stil
 ledgered as AB-2 for the same reason.
 **Owner:** post-v1.0. Captured during SP3, dispositioned in SP4 (spec §7).
 
+### A4 — the OCR path's yardstick change has no test
+**Gap:** item 8 Task 12 gave `ResolveWindowCaptureGeometryAsync` a `clipToVirtualScreen` parameter
+defaulting to FALSE. The OCR path (`ResolveTextCaptureGeometryAsync`, reached from `FindTextTools`) takes
+that default, so for a PARTIALLY OFF-SCREEN window it no longer clips its mask yardstick to the virtual
+screen. Nothing tests it. MEASURED: `grep -rn --include=*.cs "ResolveTextCaptureGeometryAsync" test/`
+returns nothing, and no test asserts anything about the yardstick. The whole headless suite stayed green
+across the behaviour change (987 -> 989, the 2 new tests being the call-site sweep itself).
+**Why deferred:** the path needs a live UIA walk and a real window positioned partly off-screen, so there
+is no headless route; it belongs with the Desktop suite (item 8 Task 24) rather than in a unit test.
+**Mitigating, but NOT a substitute:** the change fails in the mask-PRESERVING direction — an unclipped
+yardstick keeps MORE masks, so being wrong here over-masks rather than leaking. `Exactly_one_production_
+call_site_clips_the_yardstick` pins that exactly one caller opts into clipping, which catches a new caller
+inheriting the wrong yardstick but says nothing about this one's behaviour.
+**Owner:** raise at the item-8 AGY-TEST-AUDIT. Captured 2026-08-21 during item 8 Task 12.
+
 The 2026-08-18 audit of `sp3-per-field-redaction` found two verified gaps and the owner scoped both to
 **close now**; neither was deferred. See the accepted boundaries below for what was ruled out of scope
 rather than deferred.
