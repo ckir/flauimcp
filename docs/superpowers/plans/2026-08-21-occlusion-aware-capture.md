@@ -3045,6 +3045,8 @@ public sealed class WindowCaptureCoordinator
     private readonly CaptureRetryOptions _opts;
     private readonly Func<IntPtr, Rectangle?>? _w2Probe;
     private readonly Func<IntPtr, bool>? _minimizedProbe;
+    private readonly Func<IntPtr, bool> _isHung;
+    private readonly Func<Task<bool>>? _denylistedVisible;
     private readonly Func<Rectangle, IReadOnlyList<Rectangle>, int, CaptureScope,
                           IReadOnlyList<CaptureWarning>, CaptureResult> _scrape;
 
@@ -3055,12 +3057,22 @@ public sealed class WindowCaptureCoordinator
         Func<IntPtr, Rectangle?>? w2Probe = null,
         Func<IntPtr, bool>? minimizedProbe = null,
         Func<Rectangle, IReadOnlyList<Rectangle>, int, CaptureScope,
-             IReadOnlyList<CaptureWarning>, CaptureResult>? scrape = null)
+             IReadOnlyList<CaptureWarning>, CaptureResult>? scrape = null,
+        CaptureCircuitBreaker? breaker = null,
+        Func<IntPtr, bool>? isHungProbe = null,
+        Func<Task<bool>>? denylistedVisible = null)
     {
+        _denylistedVisible = denylistedVisible;
         _walk = walk; _source = source; _opts = opts;
         _w2Probe = w2Probe; _minimizedProbe = minimizedProbe;
         _scrape = scrape ?? ScreenCapture.CaptureRectangle;
+        _breaker = breaker;
+        // Injected so the breaker's recovery behaviour is headless-testable; production uses the OS.
+        _isHung = isHungProbe ?? IsHungAppWindow;
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool IsHungAppWindow(IntPtr hWnd);
 
     public async Task<WindowCaptureOutcome> CaptureAsync(WindowHandle handle, string? @ref,
                                                          CaptureScope scope, int maxWidth)
@@ -3122,7 +3134,8 @@ public sealed class WindowCaptureCoordinator
                     // composited desktop and is unaffected, so it genuinely has a better answer than
                     // nothing. Refusing here would take away behaviour that works today.
                     return new WindowCaptureOutcome(
-                        Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive),
+                        await ScrapeAsync(geo, scope, maxWidth, warnings,
+                                          CaptureWarnings.ScrapeFallbackTargetUnresponsive),
                         geo);
 
                 case CaptureOutcomeKind.TargetTransient:
@@ -3138,7 +3151,8 @@ public sealed class WindowCaptureCoordinator
 
                 case CaptureOutcomeKind.Resized:
                     if (attempt < _opts.MaxAttempts) continue;
-                    return new WindowCaptureOutcome(OnResizeExhausted(geo, scope, maxWidth, warnings), geo);
+                    return new WindowCaptureOutcome(
+                        await OnResizeExhaustedAsync(geo, scope, maxWidth, warnings), geo);
             }
         }
 
@@ -3149,8 +3163,9 @@ public sealed class WindowCaptureCoordinator
 
     /// <summary>The terminal outcome when the size never settled. The two scopes differ, and the
     /// difference is NOT inconsistency.</summary>
-    private CaptureResult OnResizeExhausted(CaptureGeometry geo, CaptureScope scope, int maxWidth,
-                                            IReadOnlyList<CaptureWarning> warnings)
+    private async Task<CaptureResult> OnResizeExhaustedAsync(CaptureGeometry geo, CaptureScope scope,
+                                                             int maxWidth,
+                                                             IReadOnlyList<CaptureWarning> warnings)
     {
         // WINDOW SCOPE WITH MASKS: REFUSE, and never scrape. The mask rects were computed against the
         // pre-resize layout; a resize reflows content, so they no longer necessarily cover what they were
@@ -3181,7 +3196,8 @@ public sealed class WindowCaptureCoordinator
         // ELEMENT SCOPE, NOTHING TO MASK: fall back. Its failure is a GEOMETRY mismatch on an image that
         // is otherwise sound, nothing was going to be redacted, and the scrape is what this tool does for
         // this window today -- so the fallback restores current behaviour rather than returning nothing.
-        return Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetChanging);
+        return await ScrapeAsync(geo, scope, maxWidth, warnings,
+                                 CaptureWarnings.ScrapeFallbackTargetChanging);
     }
 
     /// <summary>The fallback scrape, using the LAST attempt's geometry. Reusing the first attempt's would
@@ -3191,10 +3207,33 @@ public sealed class WindowCaptureCoordinator
     /// at one instant while the element rect still comes from a UIA walk that happened earlier. That
     /// staleness is the inherent race §2 documents -- it is today's behaviour, not a new defect -- and the
     /// fallback is justified by "better than nothing", not by synchronisation it does not have.</summary>
-    private CaptureResult Scrape(CaptureGeometry geo, CaptureScope scope, int maxWidth,
-                                 IReadOnlyList<CaptureWarning> warnings, string code)
-        => _scrape(geo.Bounds, geo.MaskRects, maxWidth, scope,
-                   ScreenCapture.Append(warnings, CaptureWarnings.For(code)));
+    private async Task<CaptureResult> ScrapeAsync(CaptureGeometry geo, CaptureScope scope, int maxWidth,
+                                                  IReadOnlyList<CaptureWarning> warnings, string code)
+    {
+        // ⚠⚠ THE DENYLIST GUARD RUNS ON EVERY FALLBACK, and without it this path bypassed a refusal the
+        // full-desktop path treats as absolute. A fallback takes RAW DESKTOP PIXELS of the target's rect,
+        // but the mask set was walked for the TARGET ONLY -- so a credential window overlapping the
+        // target is photographed completely unmasked. `ScreenshotTools.cs:38` refuses a full-desktop
+        // capture outright when any denylisted window is visible, for exactly this reason, and that guard
+        // sits inside `if (string.IsNullOrEmpty(window))` so it never reached here.
+        //
+        // ⚠ THIS EXPOSURE IS PRE-EXISTING, AND ITEM 8 NARROWS IT RATHER THAN CREATING IT. Today EVERY
+        // window-scope capture is a scrape with this same hole. After item 8 the primary path renders only
+        // the target window, so an overlapping credential window is STRUCTURALLY ABSENT -- the exposure
+        // survives only on the fallbacks. Closing it here means the feature strictly improves the posture
+        // instead of carrying a known hole into its own new code paths.
+        //
+        // Refusing is the only honest option: we are already here because PrintWindow could not deliver,
+        // so there is no unaffected image to return instead.
+        if (_denylistedVisible is not null && await _denylistedVisible())
+            throw new ToolException(ToolErrorCode.TargetDenied,
+                "A credential/denylisted window is currently visible, and this capture can only fall " +
+                "back to a screen scrape, which would photograph it unmasked.",
+                "dismiss the credential window, then retry");
+
+        return _scrape(geo.Bounds, geo.MaskRects, maxWidth, scope,
+                       ScreenCapture.Append(warnings, CaptureWarnings.For(code)));
+    }
 }
 ```
 
@@ -3865,6 +3904,14 @@ public sealed class CaptureCircuitBreaker
     /// thread is still blocked, but Trip() has by then recorded the window and the cooldown takes over.</summary>
     public void EndAcquisition(IntPtr hwnd) => _inFlight.TryRemove(hwnd, out _);
 
+    /// <summary>Forget a window entirely -- called when the OS reports it is no longer hung, so a target
+    /// that recovered stops being penalised for having hung once.</summary>
+    public void Reset(IntPtr hwnd)
+    {
+        _tripped.TryRemove(hwnd, out _);
+        _inFlight.TryRemove(hwnd, out _);
+    }
+
     public void Trip(IntPtr hwnd)
     {
         // ⚠ PRUNE ON WRITE. Without this the dictionary is UNBOUNDED: every window that ever hung leaves
@@ -3895,10 +3942,25 @@ Before the `ScreenCapture.CaptureWindow` call:
             // Two conditions divert to the scrape, and they cover different windows in time: the breaker
             // covers everything AFTER a timeout was observed, the in-flight check covers the gap DURING
             // the first request, before any timeout has been recorded.
+            // ⚠⚠ AND THE BREAKER ASKS WHETHER THE TARGET IS STILL HUNG BEFORE IT DIVERTS. Without this
+            // the path emits `scrapeFallbackTargetUnresponsive`, whose recourse tells the agent in the
+            // PRESENT TENSE that "the target is not pumping messages: it will not respond to input
+            // either, so do not queue clicks against it" -- on the strength of a timeout that may be
+            // almost five minutes old. An app that hung once and recovered would have every capture
+            // degraded to a scrape, and every one of them labelled with a false statement about it.
+            //
+            // `IsHungAppWindow` is the OS's own answer to this question -- it is what Task Manager uses --
+            // and it does not block on the target's message loop, so asking is safe on precisely the
+            // window we are avoiding. A recovered window RESETS the breaker and takes the normal path, so
+            // the cooldown becomes a bound on how long a STILL-hung window is skipped rather than a flat
+            // penalty for having hung once.
+            // *(Driver's solo Guard-Consistency pass, round 5: a warning whose text is false of the image
+            // it annotates is the same defect class as a guard that disagrees with its neighbour.)*
             if (_breaker is not null
                 && (_breaker.IsTripped(geo.NativeWindowHandle)
                     || _breaker.AnotherAcquisitionIsStuck(geo.NativeWindowHandle,
-                                                          TimeSpan.FromMilliseconds(_opts.TimeoutMs))))
+                                                          TimeSpan.FromMilliseconds(_opts.TimeoutMs)))
+                && _isHung(geo.NativeWindowHandle))
             {
                 // ⚠⚠ THE TARGET-STATE GUARDS STILL RUN. Skipping straight to the scrape also skips
                 // canonical steps 4-5, which live inside CaptureWindow -- and those are the guards that
@@ -3931,7 +3993,8 @@ Before the `ScreenCapture.CaptureWindow` call:
                         "wait for the window to settle, then retry, or capture a different window");
 
                 return new WindowCaptureOutcome(
-                    Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive),
+                    await ScrapeAsync(geo, scope, maxWidth, warnings,
+                                      CaptureWarnings.ScrapeFallbackTargetUnresponsive),
                     geo);
             }
 ```

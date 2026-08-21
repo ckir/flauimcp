@@ -647,3 +647,23 @@ injection cure. These are stable, documented behaviors — reference, not backlo
 - The v1 line was drawn to reach a **working, resilient server fast**, then add reactive/perception
   superpowers once the core was proven. With v1 feature-complete, the emphasis shifts to
   *provable correctness* (Track A) before new surface (Track B).
+
+### 18. The OCR path scrapes without the denylist guard — same hole item 8 closed on its own fallbacks
+
+`desktop_find_text` and `desktop_wait_for_text` capture via `ScreenCapture.CaptureRectangle`
+(`FindTextTools.cs:62`, `:110`) with a mask set walked for the TARGET WINDOW ONLY. If a denylisted
+credential window overlaps the target, its pixels land in the scrape completely unmasked — **and this path
+then OCRs them, returning the text in the response.** `ScreenshotTools.cs:38` refuses a full-desktop
+capture outright when any denylisted window is visible; that guard sits inside the full-desktop branch and
+has never covered this path.
+
+**Pre-existing** — item 8 did not create it. Item 8 closed the identical hole on its OWN new fallback
+paths (`WindowCaptureCoordinator.ScrapeAsync`), which is what made the omission here visible.
+
+**Deliberately not fixed in item 8**, for a stated cost reason rather than scope discipline:
+`desktop_wait_for_text` re-resolves geometry on every poll at a 750ms cadence, so adding a
+`DenylistedWindowsVisibleAsync()` call — a full window enumeration — to that path would run it several
+times a second for the whole wait. Closing this needs a cheaper predicate (a cached denylist snapshot with
+a short TTL, or a check hoisted out of the poll loop), which is its own small design.
+
+Found by the AGY-AFTER panel over the item-8 plan, round 5, Guard-Consistency Auditor.
