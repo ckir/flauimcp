@@ -315,7 +315,8 @@ with a section it points at, the SECTION is right and this table is the defect.
 
 | Component | Owns | Contract specified in |
 |---|---|---|
-| **caller** (`ScreenshotTools` + `PerceptionManager`) | the geometry walk, the retry loop, the scrape fallback, response assembly | the canonical order (steps 1-6, and the fallback rules in §1) |
+| **caller** (`ScreenshotTools` + `PerceptionManager`) | the geometry walk, the retry loop, the scrape fallback | the canonical order (steps 1-6) and §1's fallback rules |
+| **caller**, continued | response assembly | §5 and the data-flow table — NOT the canonical order, which says nothing about it |
 | **geometry walk** | `W1`, `E`, mask rects, `HWND`, the `W1` degeneracy guard, the yardstick | canonical steps 1-3; §2 for the yardstick |
 | **`CaptureWindow`** (new) | `PrintWindow` acquisition, `W2`-side guards, resize DETECTION, the crop | "The problem"; canonical steps 4-7 |
 | **crop geometry** (pure) | `effective`, `absolute`, `reported` | §1's algorithm block and its three rules |
@@ -343,7 +344,15 @@ So the boundaries are specified as DATA, once:
 | caller → `CaptureWindow` | that geometry, `maxWidth`, **the scope it serves**, and **this attempt's warning list** | an OUTCOME: a completed `CaptureResult`, a bare "resized" signal, or a bare "timed out" signal |
 | caller → `CaptureRectangle` (scrape) | bounds, mask rects, `maxWidth`, **the scope it serves**, and **this attempt's warning list** | a completed `CaptureResult` |
 | either seam → `Encode` | `src`, `absolute`, `reported`, mask rects, `maxWidth`, `method`, `warnings` | `CaptureResult` |
-| caller → tool response | the `CaptureResult` **and the `CaptureGeometry`** — `escalations` and `unmaskedProcesses` live on the latter, not on the result | the JSON metadata of §5 |
+
+⚠ **On the SCRAPE path, `absolute` and `reported` are both the requested `bounds`.** The scrape captures
+exactly the rectangle it was asked for, in one observation — there is no `W1`/`W2` pair and therefore no
+way for the two to differ. Only the `PrintWindow` path derives them separately. Stated because the table
+requires both of `Encode` while giving `CaptureRectangle` only `bounds`, which left an implementer to
+guess whether passing the same value twice was correct or a mistake. *(Panel round 30, Type-Flow Auditor,
+raised as its furthest-point-before-guessing and correctly filed as a finding.)*
+| caller → tool response (window/element) | the `CaptureResult` **and the `CaptureGeometry`** — `escalations` lives on the latter, not on the result | the JSON metadata of §5 |
+| caller → tool response (full-desktop) | the `CaptureResult` **and the `DesktopMaskSet`** (`PerceptionManager.cs:1295`) — which is where `escalations` AND `unmaskedProcesses` live on that path; there is no `CaptureGeometry` there at all | the JSON metadata of §5 |
 
 ⚠ **Both seams take the SCOPE.** An earlier version of this table gave it only to the scrape seam, while
 canonical step 6 requires `CaptureWindow` to branch window-versus-element on a resize. It cannot infer the
@@ -395,6 +404,16 @@ For window and element scope, in this order:
    ordering is enforceable — immediately after `captureBounds` is read and before the yardstick line
    (`PerceptionManager.cs:915` → `:935`). *(Panel round 29, Type-Flow Auditor: the ordering was right and
    the OWNER was wrong, and the type made the stated ownership impossible.)*
+
+   ⚠ **This refusal must be RETRYABLE, and it must be distinguishable from the minimized one that is
+   NOT.** A window caught mid-open or mid-animation can report a degenerate rect for a frame — exactly the
+   transient the retry loop exists to absorb — but if the walk simply throws, the throw escapes the loop
+   and the capture fails terminally on the first bad frame. And the caller cannot recover by catching,
+   because an ALREADY-MINIMIZED window raises the same `ElementNotActionable` and must NOT be retried:
+   retrying it just fails identically until the budget runs out. So the walk signals the two cases
+   differently to its caller even though both surface to the AGENT as `ElementNotActionable` once retries
+   are exhausted. **The agent-facing code is not the internal signal**, and this is the one place the two
+   deliberately differ. *(Panel round 30, Type-Flow Auditor.)*
 3. **Compute the yardstick and the mask set** (§2), unclipped for these scopes.
 4. **Take `W2`** — `GetWindowRect(HWND)`. A FALSE return means the window is gone: refuse.
 5. **Terminal target-state guards, before anything conditional:** `W2` degenerate → refuse; window
@@ -2385,3 +2404,37 @@ has been churning is its component and type decomposition, which this spec has b
 INCREMENTALLY — the same piecemeal habit that produced the ordering defects rounds 7 and 18 fixed by
 writing a block whole. The data-flow table was the first move toward writing it whole; this round made it
 correct.
+
+### AGY-AFTER adversarial panel — round 30
+
+Seats: Fold Auditor (round 29's edits AND the new components index, audited on its own terms), Type-Flow
+Auditor second pass, Convergence Assessor ninth pass. Report:
+`.clavity/scratch/item8-panel/agy-round30.md`. **Verdict: NOT GREEN.** Four folds, all type-flow again:
+
+- **The components index drifted on the day it was written.** Row 1 claimed the caller owns "response
+  assembly" and pointed at the canonical order and §1's fallback rules — neither of which contains a word
+  about it; the response contract lives in §5 and the data-flow table. The index's own precedence rule
+  worked exactly as designed (the section is right, the index is the defect), and it still shipped with a
+  wrong pointer in its first row. **An index that only points can still point at the wrong thing.**
+- **A degenerate `W1` refusal bypassed the retry loop it should have entered.** A window caught mid-open
+  can report a degenerate rect for a single frame — precisely the transient the loop exists to absorb —
+  but a throw from the walk escapes the loop entirely. And the caller cannot fix it by catching, because
+  an already-minimized window raises the identical `ElementNotActionable` and must NOT be retried. The two
+  are now distinguished internally while still surfacing to the agent as the same code once retries
+  exhaust: **the agent-facing code is not the internal signal.**
+- **Full-desktop has no `CaptureGeometry`**, so the response row's type requirement was unsatisfiable on
+  that path. It carries a `DesktopMaskSet` (`PerceptionManager.cs:1295`), which is where its `escalations`
+  and `unmaskedProcesses` actually live. The row is now split by scope.
+- **The scrape seam could not supply `Encode`'s two rectangles.** It receives one `bounds` and there is no
+  `W1`/`W2` pair on that path, so `absolute` and `reported` are both that rectangle — stated, rather than
+  left to an implementer to guess whether passing the same value twice was correct.
+
+**The Convergence Assessor refused the exit and re-answered the tracking question:** still genuinely new
+defects, still type-flow, and it noted pointedly that adding the index "didn't settle the decomposition;
+it immediately drifted from the text". That is a fair hit and it is recorded rather than argued with.
+
+**What I take from thirty rounds, stated for whoever executes this:** the DESIGN DECISIONS have not moved
+in roughly ten rounds — the backends, the refusal policy, the yardstick, the warning contract and the
+privacy posture have all been stable. What keeps failing is the DECOMPOSITION: who owns which step, and
+whether the types can carry what the rules require. That is exactly the layer a plan is supposed to
+settle, and it is the layer this spec has been least able to settle by prose alone.
