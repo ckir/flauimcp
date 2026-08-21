@@ -156,6 +156,9 @@ builder.Services.AddSingleton<FlaUI.Mcp.Core.Attention.IAttentionSignal>(sp =>
             sp.GetRequiredService<FlaUI.Mcp.Core.Attention.TtsDebounce>()));
     return new FlaUI.Mcp.Core.Attention.CompositeAttentionSignal(channels);
 });
+builder.Services.AddSingleton(sp => new FlaUI.Mcp.Server.Capture.CaptureAuditSignal(
+    sp.GetRequiredService<FlaUI.Mcp.Core.Attention.IAttentionSignal>(),
+    sp.GetRequiredService<ServerOptions>().CaptureAuditSignal));
 builder.Services.AddSingleton<InputTools>();
 
 // --- Phase 8 desktop_watch (UIA event streaming over stdio; push+drain) ---
