@@ -148,7 +148,7 @@ threads still alive: 0
 ⚠ **Both of the absolute statements in play were wrong, in opposite directions, and this is the
 correction.** An earlier draft of this section said the leak "is NOT permanent" — too generous, because
 it assumed every hang ends. The plan's own comment on `CaptureCircuitBreaker`
-(`phase-5-coordinator.md:1305-1309`) says each blocked call keeps its thread and bitmaps
+(in Task 17's Step 4b; grep `THIS CONTAINS; IT DOES NOT RECLAIM` — this was cited as `phase-5-coordinator.md:1305-1309`, stale since the class moved out of Task 19) says each blocked call keeps its thread and bitmaps
 **"permanently"** — too absolute, because it ignores process exit. **The measured truth: the leak
 persists while the target process stays alive AND wedged, and is reclaimed the moment either of those
 stops being true.** A wedged app that never recovers is normally *killed*, which is a reclaiming event.
@@ -177,8 +177,9 @@ window**. A circuit breaker is the right shape of containment for it — but be 
 bounds:
 
 ⚠ **The breaker is keyed PER-HWND, so it bounds the MULTIPLIER, not the TOTAL.** The plan says so in its
-own words (`phase-5-coordinator.md:1307`): *"What this bounds is the MULTIPLIER: N captures of a hung
-window cost ONE leak instead of N."* Across **M distinct** hung windows the server still pays M
+own words — *"What this bounds is the MULTIPLIER: N captures of a hung window cost ONE leak instead of
+N."* (cited as `phase-5-coordinator.md:1307`, stale since the class moved into Task 17's Step 4b; grep
+the sentence rather than the line.) Across **M distinct** hung windows the server still pays M
 concurrent leaks, and a per-HWND breaker is blind to that sum. In a server built to run for weeks this
 is the accumulation that is not contained. *(Raised by the AGY-AFTER panel, round 1, Cascade Analyst;
 confirmed against the plan's own text — not a hypothetical.)* The out-of-process worker (ROADMAP 17)

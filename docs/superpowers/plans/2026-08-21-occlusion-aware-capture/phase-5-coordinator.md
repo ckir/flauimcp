@@ -1311,7 +1311,11 @@ that compiles and is simply never constructed, rather than the `CS0246` that an 
 to a conditionally-defined type used to produce.
 
 **Files:**
-- Modify: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`
+- Modify: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs` — Step 3b corrects the breaker's
+  summary comment, Step 4 wires it into the capture path. The CLASS ITSELF already exists: it is created
+  in **Task 17's Step 4b**, and Step 3 below confirms rather than writes it.
+- Modify: `ROADMAP.md` — Step 7 files item 17. **This line was missing** while Steps 7 and 8 both touch
+  the file, so a scoped implementer would have had to stop and ask for it.
 - Test: `test/FlaUI.Mcp.Tests/Perception/CaptureCircuitBreakerTests.cs`
 
 - [ ] **Step 1: Write the failing test**
@@ -1554,6 +1558,43 @@ whichever way the measurement had gone. *(AGY-FIRST consult, 2026-08-21: the pee
 this same failure mode from the fork brief, and it is the one no option in the brief addressed.)*
 
 
+- [ ] **Step 3b: Correct the breaker's "permanently" sentence — A CARRIED OBLIGATION FROM PHASE 0**
+
+⛔ **THIS STEP EXISTED NOWHERE IN THE PLAN AND WOULD HAVE BEEN SILENTLY DROPPED.** The obligation was
+recorded only in the measurements doc, which this task never told anyone to open. It is one of two;
+the other is in Step 7.
+
+The class's summary comment states a measured falsehood. In
+`src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`, find the `CaptureCircuitBreaker` summary
+(grep for `THIS CONTAINS; IT DOES NOT RECLAIM`) and replace **this sentence**:
+
+```
+/// ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. Each blocked call keeps its thread, its HDC, its GDI bitmap and
+/// its managed bitmap permanently -- a blocked Win32 call cannot be cancelled, so nothing in-process can
+/// take them back.
+```
+
+with **exactly this** — the verbatim text the measurements record supplies, because *"soften it"* was
+correctly called non-actionable by the AGY-AFTER round-2 Literal Implementer:
+
+```
+/// ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. Each blocked call keeps its thread, its HDC, its GDI bitmap and
+/// its managed bitmap for as long as the TARGET PROCESS lives -- a blocked Win32 call cannot be
+/// cancelled, so nothing in-process can take them back. MEASURED (Phase 0): they are released when the
+/// target's message loop resumes, and within 130ms of the target process exiting. Treat that as
+/// unbounded, because neither event is under this server's control.
+```
+
+**The rest of that comment — the multiplier framing and the ROADMAP-17 pointer — is correct and stays.**
+
+**Why it is wrong as written.** MEASURED in Phase 0 (`AbandonProbe.ps1`): three abandoned calls took GDI
+from 0 to 9, and then **every abandoned thread returned and released everything** on either exit — the
+window resuming (all three returned at the same instant) or the target being killed (all returned within
+**130 ms**, GDI back to `0`). "Permanently" ignores process exit, and a wedged app that never recovers
+is normally *killed*, which is a reclaiming event. Note the correction cuts both ways: an earlier draft
+of the record said the leak "is NOT permanent", which was too generous because it assumed every hang
+ends. **The measured truth is the conjunction: it persists while the target stays alive AND wedged.**
+
 - [ ] **Step 4: Wire it into the coordinator**
 
 ⚠ **The field and the parameter are BOTH already written into Task 17's class above** — `private readonly CaptureCircuitBreaker? _breaker;` in the field block, `CaptureCircuitBreaker? breaker = null` in the constructor, and `_breaker = breaker;` in its body. Confirm all three are present before continuing; an earlier version of this step described them in prose and none of them existed, which is a CS0103 on the first build. Then add the two uses:
@@ -1633,7 +1674,8 @@ In the `TimedOut` arm, before returning:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureCircuitBreakerTests"`
-Expected: PASS — 3 passed.
+Expected: PASS — **6 passed**. (The plan said 3; MEASURED by counting `[Fact]` in Step 1, which declares
+SIX tests. Do not "fix" a 6 back down to 3.)
 
 - [ ] **Step 6: Prove the gate is non-vacuous with a logic mutant**
 
@@ -1642,16 +1684,41 @@ Expected: `A_window_that_timed_out_is_not_retried_through_PrintWindow_during_the
 
 - [ ] **Step 7: File the out-of-process worker as ROADMAP debt**
 
-Append to `ROADMAP.md`:
+⛔ **INSERT, DO NOT APPEND.** This step said *"Append to `ROADMAP.md`"*, which would file item **17**
+after items 18 and 19. MEASURED: `grep -n "^### [0-9]" ROADMAP.md` returns exactly two hits — `### 18.`
+and `### 19.`, both already filed by this plan's own panel — and item 17's number was reserved for this
+task. Items 10–16 live in a TABLE further up; 18 and 19 are `###` sections at the end because they are
+long, and item 17 is long too, so a `###` section is the right shape.
+
+**Insert the block below immediately BEFORE the line `### 18. The OCR path scrapes without the denylist
+guard`**, so the file reads 17, 18, 19. Then confirm with `grep -n "^### 1[789]\." ROADMAP.md` —
+expected: three hits, **in ascending order**.
+
+The block to insert:
 
 ```markdown
-### 17. A hung-window `PrintWindow` capture leaks permanently — the containments bound it, nothing reclaims it
+### 17. A hung-window `PrintWindow` capture leaks for as long as the target lives — the containments bound the multiplier, nothing reclaims
 
 `PrintWindow` sends `WM_PRINT` synchronously to the target, so a target whose message loop is blocked
 blocks the call, and a blocked Win32 call cannot be cancelled. Item 8 ships two CONTAINMENTS — a dedicated
 background thread so the leak is a thread rather than a CLR threadpool slot, and a per-HWND circuit
-breaker so N captures of a hung window cost one leak rather than N. **Neither reclaims anything:** the
-blocked call keeps its thread, its HDC, its GDI bitmap and its managed bitmap until the process exits.
+breaker so N captures of a hung window cost one leak rather than N. **Neither reclaims anything in
+process:** the blocked call keeps its thread, its HDC, its GDI bitmap and its managed bitmap for as long
+as the **target** process stays alive and wedged.
+
+MEASURED in Phase 0: three abandoned calls took GDI from 0 to 9 with no ceiling, and everything was
+released on either exit — the target's message loop resuming, or the target process being killed
+(within **130 ms**, GDI back to `0`). Treat it as unbounded anyway: neither event is under this server's
+control. The heading of this item previously said "leaks permanently", which the same measurement
+refuted.
+
+⚠ **AND THE BREAKER BOUNDS THE MULTIPLIER, NOT THE TOTAL — the cross-window sum is UNBOUNDED.** It is
+keyed **per-HWND**, so it makes N captures of one hung window cost one leak instead of N. Across **M
+distinct** hung windows the server still pays M concurrent leaks, and a per-HWND breaker is blind to
+that sum. In a server built to run for weeks, that is the accumulation nothing contains. *(AGY-AFTER
+panel, round 1, Cascade Analyst — confirmed against the plan's own text, not a hypothetical. The panel
+also asserted "20 hung windows = ~660 MB"; that figure was never measured by anyone and is deliberately
+NOT repeated here — the structural finding stands without it.)*
 
 The fix that DOES reclaim is running the acquisition in a sacrificial out-of-process worker terminated on
 timeout, letting the OS take the handles back. It costs IPC, bitmap serialization across a process
