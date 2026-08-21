@@ -24,8 +24,13 @@ result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects
                                                              clipToVirtualScreen: true));
 ```
 
-`CaptureWindow` owns the `PrintWindow` acquisition, the crop, and the guards that need only `W1`/`W2` —
-degeneracy, minimized-at-capture, and DETECTING a size mismatch. It returns the same `CaptureResult` the
+`CaptureWindow` owns the `PrintWindow` acquisition, the crop, and the **`W2`-side** guards — a failed
+`GetWindowRect`, a degenerate `W2`, minimized-at-capture, and DETECTING a size mismatch. **The `W1`-side
+guard is the CALLER's**, because it must run before the yardstick is computed and the yardstick is
+computed before this seam is ever invoked; see the canonical order. *(Panel round 19, Executable-Path
+Auditor: an earlier version said the seam owned "the guards that need only `W1`/`W2`", which assigned it a
+check that has to happen before it receives control — the canonical list had become a second source of
+truth disagreeing with the ownership sentence, which is the specific risk of adding one.)* It returns the same `CaptureResult` the
 scrape path returns, now carrying `CaptureMethod` and `CaptureWarnings` (§5).
 
 ⚠ **It does NOT own the retry loop or the scrape fallback, and an earlier draft said it did — which was
@@ -35,7 +40,21 @@ so the component the spec named as owner could not execute the step it was given
 loop:** it walks geometry, calls `CaptureWindow`, and on a reported size mismatch walks again and
 re-calls, up to the bound — then performs the scrape fallback itself. `CaptureWindow` REPORTS the
 mismatch; it does not resolve it. *(Panel round 18, Executable-Path Auditor: read as a sequence of
-operations rather than as prose, the step had no component able to run it.)* Exact member names are the plan's; the SHAPE is not, because
+operations rather than as prose, the step had no component able to run it.)*
+
+⚠ **"Reports" needs a channel, and the return type as first written had none.** A seam declared to
+return a `CaptureResult` cannot express "no image; the window resized between the walk and the capture,
+and here is the `W2` I saw". The plan chooses the C# encoding, but the CONTRACT is fixed here and two
+encodings are ruled out:
+
+- **Not an exception.** This is ordinary, expected control flow on a path the design explicitly does not
+  refuse; exceptions here would also collide with the `ToolException` conversions that surround this code.
+- **Not `null` or a sentinel `CaptureResult`.** The caller must be able to distinguish "resized" from any
+  other empty outcome, and a sentinel loses the observed `W2` the next attempt wants.
+
+What must cross the boundary: **either a completed `CaptureResult`, or a "resized" report carrying the
+observed `W2`.** *(Panel round 19, Executable-Path Auditor — and its "furthest point before guessing",
+which was this exact gap.)* Exact member names are the plan's; the SHAPE is not, because
 this is the seam the whole design turns on.
 
 ⚠ **The seam needs the native `HWND`, and nothing currently carries it there.** `PrintWindow(hwnd, hdc,
@@ -192,7 +211,13 @@ relative order of two guards was never stated.)*
 For window and element scope, in this order:
 
 1. **Walk the UIA tree** — obtain `W1` (the window rect), `E` (the element rect, or `W1` for window
-   scope), the mask set, and the native `HWND`.
+   scope), the mask rects, and the native `HWND`.
+1b. **The EXISTING geometry-time refusals run here, unchanged:** denylisted process
+   (`ScreenshotTools.cs:54`, `TargetDenied`) and already-minimized (`:55`, `ElementNotActionable`). They
+   are listed because this sequence is meant to be complete — an omission here reads as a deletion.
+   Step 5's minimized check does NOT replace this one; it catches a window that minimizes AFTER the walk.
+   *(Panel round 19, Fold Auditor: the canonical list had left them out while the prose still referred to
+   them, which is the second-source-of-truth failure the list was supposed to end.)*
 2. **Guard `W1` for degeneracy, BEFORE the yardstick is computed.** A degenerate `W1` makes the yardstick
    degenerate, which silently drops the whole mask set. Refuse.
 3. **Compute the yardstick and the mask set** (§2), unclipped for these scopes.
@@ -1692,3 +1717,35 @@ it sound.
 
 **Verified, not folded:** `ScreenCapture.cs:40-41` is exactly as the spec describes —
 `catch (Exception ex) when (ex is COMException or ExternalException)` throwing `CaptureUnavailable`.
+
+### AGY-AFTER adversarial panel — round 19
+
+Seats: Executable-Path Auditor second pass (aimed at the two-component retry boundary round 18 created),
+Fold Auditor (round 18's edits, hardest on the canonical eight-step order), Reader of Record third pass.
+Report: `.clavity/scratch/item8-panel/agy-round19.md`. **Verdict: NOT GREEN.** Three folds — and
+**every one of them is a defect in round 18's own canonical list or the boundary it introduced**, which
+is the clearest sign yet that the design proper has stopped moving and the corrections are now chasing
+the corrections:
+
+- **"Reports the mismatch" had no channel.** A seam declared to return a `CaptureResult` cannot express
+  "no image; the window resized, and here is the `W2` I observed". The contract is now fixed — either a
+  completed result or a resized-report carrying `W2` — with exceptions and `null`/sentinel encodings
+  explicitly ruled out and the C# left to the plan.
+- **The canonical list contradicted the ownership sentence**, which is exactly the failure mode of adding
+  a canonical list. The seam was said to own "the guards that need only `W1`/`W2`", but the `W1`
+  degeneracy guard must run before the yardstick, and the yardstick is computed before the seam is
+  invoked. The seam owns the `W2`-side guards; the `W1` guard is the caller's.
+- **The canonical list omitted the two EXISTING geometry-time refusals** (`TargetDenied` at
+  `ScreenshotTools.cs:54`, already-minimized at `:55`) while the prose elsewhere still referred to them.
+  In a list that presents itself as the complete sequence, an omission reads as a deletion. Added as step
+  1b, with a note that step 5's minimized check catches a DIFFERENT case — a window that minimizes after
+  the walk — rather than replacing it.
+
+**The Reader of Record answered YES for the second consecutive round.** Asked whether ninety added lines
+of execution sequence had pushed the document back out of reach for its actual audience, it said the
+ratification block absorbed the new measurements cleanly and stays segregated from the mechanics: an
+operator can read the widening, the three regressions, the trades and the five measurements without ever
+parsing the eight-step sequence.
+
+**Verified, not folded:** `ScreenshotTools.cs:60` and `:73` are exactly as the spec describes —
+`DpiHelper.ScaleForPoint(result.X, result.Y)` and the `bounds` projection.
