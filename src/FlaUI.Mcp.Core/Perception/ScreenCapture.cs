@@ -163,4 +163,150 @@ public static class ScreenCapture
                                      scale, painted, method, warnings);
         }
     }
+
+    /// <summary>Acquire one window's own pixels via the injected source, guard the capture-time target
+    /// state, detect a resize, crop, and encode. Canonical steps 4-8.
+    ///
+    /// ⚠ It does NOT own the retry loop or the scrape fallback. Retrying means re-walking the UIA tree
+    /// for a fresh W1/E/mask set, and that walk lives in PerceptionManager -- a seam handed a finished
+    /// CaptureGeometry has no way to perform it. This method REPORTS a mismatch; it does not resolve one.
+    ///
+    /// ⚠ ORDER IS LOAD-BEARING. The terminal target-state guards run BEFORE the resize branch, because a
+    /// window that minimizes mid-capture ALSO changes size: if resize won, a minimized window would be
+    /// routed to retry-and-fallback and the scrape would photograph the rect it used to occupy.
+    ///
+    /// w2Probe and minimizedProbe are injected so the whole method is headless-testable; production
+    /// passes the real Win32 reads.</summary>
+    public static CaptureOutcome CaptureWindow(
+        CaptureGeometry geo, int maxWidth, CaptureScope scope,
+        IReadOnlyList<CaptureWarning> warningsSoFar, IWindowImageSource source, int timeoutMs,
+        System.Func<System.IntPtr, Rectangle?>? w2Probe = null,
+        System.Func<System.IntPtr, bool>? minimizedProbe = null)
+    {
+        // Canonical steps 4-5. Extracted so EVERY path about to photograph a named window runs them --
+        // including the coordinator's circuit-breaker path, which skips this method entirely.
+        var w2 = GuardTargetState(geo.NativeWindowHandle, w2Probe, minimizedProbe);
+
+        // A degenerate W2 is REPORTED, not thrown: the window has no renderable area right now, which an
+        // animating window can be true of for a single frame. Same treatment as a degenerate W1.
+        if (w2.Width <= 0 || w2.Height <= 0)
+            return CaptureOutcome.Transient("The target window reported no renderable area.");
+
+        var w1 = geo.WindowBounds;
+        var warnings = warningsSoFar;
+
+        // Step 6, the resize check. Sizes, not rectangles: a pure move changes only the origin and the
+        // crop already makes it harmless, so flagging it would be a false positive.
+        // ⚠⚠ A RESIZE ALWAYS REPORTS, ON EVERY SCOPE, REGARDLESS OF HOW MANY MASKS THE WALK FOUND.
+        //
+        // An earlier version let window scope CONTINUE when `geo.MaskRects.Count == 0`, reasoning that
+        // "nothing was going to be redacted, so no misalignment is possible". The misalignment half was
+        // true and the conclusion was a LEAK, because **an empty mask set does not mean "nothing in this
+        // window is sensitive" — it means "nothing sensitive was found in the T1 LAYOUT".** A resize
+        // reflows: content can move into the cropped region, or be CREATED by the resize itself (a dialog
+        // that expands and reveals a credential field). Those pixels are in the image and no mask was ever
+        // computed for them. The crop only discards the area a GROWN window ADDED; it does nothing about
+        // content that reflowed INTO the region that was already being captured.
+        //
+        // Reporting instead of continuing costs a retry on a benign case and settles it on attempt 2 with
+        // a FRESH walk whose mask set includes anything the reflow produced.
+        // *(AGY-AFTER panel over this plan, round 11, Leak Hunter.)*
+        if (w1.Size != w2.Size) return CaptureOutcome.Resized;
+
+        // Step 6b. Allocate at W2's size and render.
+        using var bitmap = source.Acquire(geo.NativeWindowHandle, w2.Size, timeoutMs);
+        if (bitmap is null) return CaptureOutcome.TimedOut;
+
+        // uniformCanvas: evaluated on the FULL window bitmap, between 6b and 7. §3 requires it to see the
+        // uncropped image, which does not exist after step 7.
+        // ⚠ BOTH SCOPES, not window only. uniformCanvas is a statement about the WINDOW BITMAP, and that
+        // bitmap exists on element scope too. Scoping it to window scope left a HOLE: an element-scope
+        // capture of a window that failed to render emitted NOTHING -- uniformCanvas excluded by scope,
+        // and elementCanvasUniform fires only when the crop is uniform AND the window bitmap was not. A
+        // black crop, silently, in breach of the design's own success criterion. See §5's note.
+        bool windowUniform = UniformCanvasDetector.IsUniform(bitmap);
+        if (windowUniform)
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.UniformCanvas));
+
+        // Step 7, the crop. Its empty case is reachable only when the sizes AGREE, because the resize
+        // check above already left the sequence otherwise.
+        var crop = WindowCropGeometry.Compute(new Size(bitmap.Width, bitmap.Height), geo.Bounds, w1, w2);
+        if (crop is null)
+            // ⚠ RETRYABLE, and an earlier version of this plan refused here on the FIRST occurrence.
+            // Reachable only when W1.Size == W2.Size, so it means a provider reported an element outside
+            // its own window -- and the design's own justification for calling that "pathological rather
+            // than impossible" is that "this repo's mask-escalation machinery exists because UIA does
+            // report inconsistent rectangles". A momentarily bad ELEMENT rect is therefore the same class
+            // of transient as a momentarily degenerate WINDOW rect, which the design already absorbs.
+            // Two guards over one condition class must not disagree.
+            // *(Driver's solo Guard-Consistency pass, round 4.)*
+            return CaptureOutcome.Transient(
+                "The requested element was not inside the pixels that were captured.");
+        var c = crop.Value;
+
+        using var src = bitmap.Clone(c.Effective, bitmap.PixelFormat);
+
+        // elementCanvasUniform: evaluated on `src` AFTER the crop, and ONLY when the full window bitmap
+        // was NOT uniform -- a uniform crop inside a uniform window is just a solid window, already
+        // covered by uniformCanvas.
+        if (scope == CaptureScope.Element && !windowUniform && UniformCanvasDetector.IsUniform(src))
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.ElementCanvasUniform));
+
+        // Step 8. Encode assembles; it does not detect.
+        return CaptureOutcome.Completed(
+            Encode(src, c.Absolute, c.Reported, geo.MaskRects, maxWidth, "printWindow", warnings));
+    }
+
+    /// <summary>Canonical steps 4-5 — the TERMINAL target-state guards — and the W2 they produce.
+    ///
+    /// PUBLIC and extracted because more than one path is about to photograph a named window, and these
+    /// guards are about the TARGET's state rather than about the backend. The coordinator's
+    /// circuit-breaker path skips CaptureWindow entirely and still owes them: without that, a hung window
+    /// that trips the breaker and then minimizes is scraped at the rectangle it used to occupy, returning
+    /// a photograph of whatever is now behind it — the exact failure this feature exists to remove.
+    ///
+    /// ⚠ ORDER IS LOAD-BEARING and these run before ANYTHING conditional. A window that minimizes
+    /// mid-capture also changes size; if the resize check ran first it would route a minimized window
+    /// into retry-and-fallback rather than refusing it.</summary>
+    public static Rectangle GuardTargetState(IntPtr hwnd,
+                                             System.Func<IntPtr, Rectangle?>? w2Probe = null,
+                                             System.Func<IntPtr, bool>? minimizedProbe = null)
+    {
+        // Step 4. A FALSE return means the window is gone. GetWindowRect does not reliably zero the
+        // struct on failure, so relying on the degenerate guard to catch a zeroed rect is relying on a
+        // coincidence.
+        var w2n = (w2Probe ?? DefaultW2Probe)(hwnd);
+        if (w2n is null)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "The target window was destroyed between the UIA walk and the capture.",
+                "re-list windows and retry against a live handle");
+        var w2 = w2n.Value;
+
+        // ⚠ DEGENERATE EXTENTS ARE **NOT** CHECKED HERE, AND THAT IS DELIBERATE. This method raises only
+        // the TERMINAL conditions -- destroyed and minimized -- because a degenerate rect is a RETRYABLE
+        // transient (an animating or mid-open window reports one for a frame), and throwing it from a
+        // shared guard would make it terminal for every caller. Each caller checks extents itself and
+        // routes the case into the retry loop. See CaptureOutcomeKind.TargetTransient.
+        //
+        // ⚠ NOT covered by any extents check anyway. F6 MEASURED a minimized window's placeholder rect as
+        // -32000,-32000 with extents 160x28 -- POSITIVE. It would pass, and yield a 160x28 image that is
+        // not the window's content at all.
+        if ((minimizedProbe ?? DefaultMinimizedProbe)(hwnd))
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "Window is minimized; restore it first.",
+                "desktop_window_transform restore, then retry");
+
+        return w2;
+    }
+
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
+    [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
+
+    private static Rectangle? DefaultW2Probe(IntPtr hwnd)
+        => GetWindowRect(hwnd, out var r)
+            ? new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top)
+            : null;
+
+    private static bool DefaultMinimizedProbe(IntPtr hwnd) => IsIconic(hwnd);
 }
