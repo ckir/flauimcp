@@ -103,6 +103,29 @@ powershell -Command "(Get-Process -Id (Get-Process -Name FlaUI.Mcp.Server -Error
 
 This confirms or refutes the *cumulative* degradation claim in ratification item 3 — the claim the circuit breaker exists to bound. A cumulative rise confirms it.
 
+- [ ] **Step 5b: Measure `IsHungAppWindow` against the SAME hung window — it costs nothing and closes an assumption**
+
+⚠ **The circuit breaker calls `IsHungAppWindow` on a window it suspects is hung, and the plan asserts that call "does not block on the target's message loop, so asking is safe on precisely the window we are avoiding".** That is documented Win32 behaviour rather than a measured fact, and **if it were wrong the breaker would hang on exactly the window it exists to avoid hanging on** — turning a containment into the failure it contains. This project's standard is measured-not-assumed, and the fixture is already running from Step 4.
+
+While the `HANGPROBE` window is still hung, run:
+
+```powershell
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class HP { [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr h); }
+'@
+$p = Get-Process | Where-Object { $_.MainWindowTitle -like '*HANGPROBE*' } | Select-Object -First 1
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$hung = [HP]::IsHungAppWindow($p.MainWindowHandle)
+$sw.Stop()
+Write-Host "IsHungAppWindow=$hung elapsedMs=$($sw.ElapsedMilliseconds)"
+```
+
+**Expected: `IsHungAppWindow=True` with `elapsedMs` at or near 0.** Two failure modes to watch for, and each changes something:
+
+- **It BLOCKS** (elapsed is large) → the breaker's recovery probe is unusable. Drop the `_isHung` check and go back to the plain cooldown, accepting that a recovered window is skipped for the full five minutes. Record that decision.
+- **It returns FALSE for a window that is plainly hung** → the probe is useless in the other direction: the breaker would never divert. Same fallback, same record.
+
 - [ ] **Step 6: Record the result**
 
 Create `docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md` with a `## Risk 2 — does PrintWindow block?` section holding the exact command, the control number, the experiment number, the repeat-run handle counts, and a one-line **VERDICT: BLOCKS** or **VERDICT: DOES NOT BLOCK**.

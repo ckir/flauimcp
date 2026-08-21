@@ -117,7 +117,7 @@ git add src/FlaUI.Mcp.Core/Perception/CaptureScope.cs test/FlaUI.Mcp.Tests/Perce
 git commit -m "feat(capture): CaptureScope - the enum both seams branch on"
 ```
 
-### Task 5: `CaptureWarning` and the seven codes
+### Task 5: `CaptureWarning` and the six codes
 
 **Files:**
 - Create: `src/FlaUI.Mcp.Core/Perception/CaptureWarning.cs`
@@ -235,7 +235,7 @@ namespace FlaUI.Mcp.Core.Perception;
 /// a consumer to regex wording that will drift, which is a worse contract than the boolean it replaced.</summary>
 public sealed record CaptureWarning(string Code, string Recourse);
 
-/// <summary>The seven codes this feature ships, with their recourse text. Centralised so the wire
+/// <summary>The six codes this feature ships, with their recourse text. Centralised so the wire
 /// contract has exactly one definition -- §5 settles these strings, not the implementation.</summary>
 public static class CaptureWarnings
 {

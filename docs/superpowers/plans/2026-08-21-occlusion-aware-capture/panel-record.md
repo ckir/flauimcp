@@ -489,3 +489,35 @@ too small for the new one, so the newly-exposed pixels are photographed in the c
 **This is the first round whose only live finding was already covered on the paths that matter**, with the
 residue a pre-existing gap on a path item 8 does not own. Taken with Seat 3's concession, it is the
 strongest convergence signal the review has produced.
+
+### Round 13 — **GREEN**, and the panel is closed
+
+Seats: Fold Auditor, Blindspot Auditor (2nd), Convergence Assessor (3rd). **All three clean. The
+Convergence Assessor CONFIRMED its round-12 concession.** Direct answer to "is there a defect left that a
+compiler and a passing test suite would not catch": **No.**
+
+The Blindspot Auditor's confirmation is worth keeping, because it is the operator-facing half nothing else
+checked: `TargetDenied` distinguishes a pre-existing blocker from the TOCTOU race; the bookend's
+`RedactionUnmaskable` is distinct from every UIA-walk failure; and `ElementNotActionable` distinguishes
+destroyed / minimized / degenerate / outside-its-parent / continuously-moving. **No two distinct causes
+share a message.**
+
+⚠⚠ **THE GREEN WAS NOT ACCEPTED AS-IS, and this is the standing lesson applied to itself: a green verdict
+is not the whole report.** Two things sat outside the verdict and both were acted on.
+
+1. **Its own direct answer named an unverified assumption that is above the floor.** The plan asserts
+   `IsHungAppWindow` "does not block on the target's message loop, so asking is safe on precisely the
+   window we are avoiding" — documented Win32 behaviour, never measured. **If that is wrong the breaker
+   hangs on exactly the window it exists to avoid hanging on**, turning a containment into the failure it
+   contains. Task 1 already stages a hung window, so **Step 5b now measures it there for free**, with both
+   failure modes and their dispositions written down.
+2. **Seat 1's clean verdict on `No_shipped_code_is_unreachable` was WRONG at the commit it reviewed.** It
+   reasoned the test "is NOT vacuous". It was: the test scanned raw source, so a code named only in a
+   COMMENT satisfied it — and this plan's comments name these codes constantly. **The driver found and
+   fixed it independently at `4d01f92`, before this report arrived.** That is the third appearance of this
+   exact defect in this repository (item 12's property sweep, this plan's metadata sweep, and now the test
+   written to stop a warning code going dead), and it is the clearest argument in the whole review for
+   running a driver-side pass alongside the peer rather than instead of it.
+
+**FINAL DISPOSITION: GREEN at round 13.** Thirteen rounds, ~56 findings folded, thirteen refuted by
+measurement, thirteen leak-class defects closed. The panel is closed and execution begins at Task 1.
