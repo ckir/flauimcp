@@ -117,7 +117,10 @@ Replace `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs` lines 30–59 with:
                 var scope = string.IsNullOrEmpty(@ref) ? CaptureScope.Window : CaptureScope.Element;
                 var outcome = await _coordinator.CaptureAsync(new WindowHandle(window!), @ref, scope, maxWidth);
                 result = outcome.Result;
-                escalations = outcome.Geometry.Escalations;
+                // ⚠ From the OUTCOME, not the geometry. On a fallback scrape the masks come from the
+                // DESKTOP walk, so the target walk's escalations would describe a different mask set from
+                // the one painted. *(Driver's solo pass, round 7.)*
+                escalations = outcome.Escalations;
                 // ⚠ NOT hardcoded empty. On the PrintWindow path this IS empty and that is the truth --
                 // the image contains one window and its own mask set covered it. On a FALLBACK SCRAPE the
                 // image contains whatever overlapped the target, and the coordinator's desktop mask walk

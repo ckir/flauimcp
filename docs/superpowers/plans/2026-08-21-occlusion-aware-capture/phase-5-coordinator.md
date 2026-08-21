@@ -288,8 +288,12 @@ public sealed record CaptureRetryOptions(int MaxAttempts, int TimeoutMs)
 /// <param name="UnmaskedProcesses">Populated ONLY on a fallback scrape, from the desktop mask walk that
 /// path performs. Empty on the PrintWindow path, where it is genuinely the truth: that image contains one
 /// window and its own mask set covered it.</param>
+/// <param name="Escalations">The escalations of the walk that produced the masks ACTUALLY PAINTED -- the
+/// target's on the PrintWindow path, the DESKTOP walk's on a fallback scrape. Reporting the target's
+/// beside a desktop-masked image would describe a mask set that is not the one in the pixels.</param>
 public sealed record WindowCaptureOutcome(CaptureResult Result, CaptureGeometry Geometry,
-                                          IReadOnlyList<string> UnmaskedProcesses);
+                                          IReadOnlyList<string> UnmaskedProcesses,
+                                          IReadOnlyList<MaskEscalationEntry> Escalations);
 
 /// <summary>Canonical steps 1-9: the walk, the retry loop, the bookend validation walk and the scrape
 /// fallbacks. THE CALLER, in the sense the spec uses that word.
@@ -395,9 +399,9 @@ public sealed class WindowCaptureCoordinator
                     // could not get a copy because the target's loop is blocked. The scrape reads the
                     // composited desktop and is unaffected, so it genuinely has a better answer than
                     // nothing. Refusing here would take away behaviour that works today.
-                    var (timeoutImage, timeoutUnmasked) = await ScrapeAsync(
+                    var (timeoutImage, timeoutUnmasked, timeoutEsc) = await ScrapeAsync(
                         geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive);
-                    return new WindowCaptureOutcome(timeoutImage, geo, timeoutUnmasked);
+                    return new WindowCaptureOutcome(timeoutImage, geo, timeoutUnmasked, timeoutEsc);
 
                 case CaptureOutcomeKind.TargetTransient:
                     // The target's geometry was momentarily unusable -- a degenerate W2, or an element
@@ -412,9 +416,9 @@ public sealed class WindowCaptureCoordinator
 
                 case CaptureOutcomeKind.Resized:
                     if (attempt < _opts.MaxAttempts) continue;
-                    var (resizeImage, resizeUnmasked) =
+                    var (resizeImage, resizeUnmasked, resizeEsc) =
                         await OnResizeExhaustedAsync(geo, scope, maxWidth, warnings);
-                    return new WindowCaptureOutcome(resizeImage, geo, resizeUnmasked);
+                    return new WindowCaptureOutcome(resizeImage, geo, resizeUnmasked, resizeEsc);
             }
         }
 
@@ -425,7 +429,8 @@ public sealed class WindowCaptureCoordinator
 
     /// <summary>The terminal outcome when the size never settled. The two scopes differ, and the
     /// difference is NOT inconsistency.</summary>
-    private async Task<(CaptureResult Result, IReadOnlyList<string> Unmasked)> OnResizeExhaustedAsync(
+    private async Task<(CaptureResult Result, IReadOnlyList<string> Unmasked,
+                        IReadOnlyList<MaskEscalationEntry> Escalations)> OnResizeExhaustedAsync(
         CaptureGeometry geo, CaptureScope scope, int maxWidth, IReadOnlyList<CaptureWarning> warnings)
     {
         // WINDOW SCOPE WITH MASKS: REFUSE, and never scrape. The mask rects were computed against the
@@ -468,7 +473,8 @@ public sealed class WindowCaptureCoordinator
     /// at one instant while the element rect still comes from a UIA walk that happened earlier. That
     /// staleness is the inherent race §2 documents -- it is today's behaviour, not a new defect -- and the
     /// fallback is justified by "better than nothing", not by synchronisation it does not have.</summary>
-    private async Task<(CaptureResult Result, IReadOnlyList<string> Unmasked)> ScrapeAsync(
+    private async Task<(CaptureResult Result, IReadOnlyList<string> Unmasked,
+                        IReadOnlyList<MaskEscalationEntry> Escalations)> ScrapeAsync(
         CaptureGeometry geo, CaptureScope scope, int maxWidth,
         IReadOnlyList<CaptureWarning> warnings, string code)
     {
@@ -520,15 +526,30 @@ public sealed class WindowCaptureCoordinator
         // *(AGY-AFTER panel over this plan, round 6, Guard-Consistency Auditor.)*
         var masks = geo.MaskRects;
         IReadOnlyList<string> unmasked = System.Array.Empty<string>();
+        IReadOnlyList<MaskEscalationEntry> escalations = geo.Escalations;
         if (_desktopMasks is not null)
         {
+            // ⚠ THE ESCALATIONS MUST COME FROM THE SAME WALK AS THE MASKS. The tool publishes
+            // `maskEscalations` and `escalated` beside the image; taking the masks from the desktop walk
+            // while reporting the TARGET walk's escalations describes a mask set that is not the one
+            // painted. An operator looking at a giant black box and `maskEscalations: 0` has been handed
+            // a contradiction. *(Driver's solo pass, round 7 -- a consequence of the round-6 fold.)*
+            //
+            // ⚠⚠ AND THIS INHERITS THE FULL-DESKTOP REFUSAL. `AllMaskRectsAsync` RETHROWS
+            // `RedactionUnmaskable` (`PerceptionManager.cs:1199`) for any window it can SEE and cannot
+            // MASK. So a window-scope fallback now refuses when ANY window on the desktop is unmaskable --
+            // including one that does not overlap the target and is therefore not in the image. That is
+            // STRICTER THAN NECESSARY and it is accepted deliberately: the alternative is scraping with a
+            // mask set we know to be incomplete, which is the leak this fold closed. The hint below is
+            // what keeps it actionable rather than baffling.
             var desk = await _desktopMasks();
             masks = desk.Rects;
             unmasked = desk.UnmaskedProcesses;
+            escalations = desk.Escalations;
         }
 
         return (_scrape(geo.Bounds, masks, maxWidth, scope,
-                        ScreenCapture.Append(warnings, CaptureWarnings.For(code))), unmasked);
+                        ScreenCapture.Append(warnings, CaptureWarnings.For(code))), unmasked, escalations);
     }
 
     /// <summary>TRUE when the window is still hung and the divert should happen. When the OS says it has
@@ -825,7 +846,8 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
                     // ⚠ An EMPTY mask set skips the walk entirely. Nothing could have gone stale, and this
                     // is what keeps the common case free.
                     if (geo.MaskRects.Count == 0)
-                        return new WindowCaptureOutcome(outcome.Result!, geo, System.Array.Empty<string>());
+                        return new WindowCaptureOutcome(outcome.Result!, geo,
+                                                        System.Array.Empty<string>(), geo.Escalations);
 
                     // ⚠ THE BOOKEND WALK IS GUARDED, AND UNGUARDED IT TURNED SUCCESS INTO A REFUSAL.
                     // This walk can throw for the same reasons the first one can -- a tearing-down window
@@ -848,7 +870,8 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
                     catch (ToolException) { confirmed = false; }
 
                     if (confirmed)
-                        return new WindowCaptureOutcome(outcome.Result!, geo, System.Array.Empty<string>());
+                        return new WindowCaptureOutcome(outcome.Result!, geo,
+                                                        System.Array.Empty<string>(), geo.Escalations);
 
                     if (attempt < _opts.MaxAttempts) continue;
 
@@ -1303,9 +1326,9 @@ Before the `ScreenCapture.CaptureWindow` call:
                         "The window changed size, so its redacted regions cannot be reliably located.",
                         "wait for the window to settle, then retry, or capture a different window");
 
-                var (breakerImage, breakerUnmasked) = await ScrapeAsync(
+                var (breakerImage, breakerUnmasked, breakerEsc) = await ScrapeAsync(
                     geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive);
-                return new WindowCaptureOutcome(breakerImage, geo, breakerUnmasked);
+                return new WindowCaptureOutcome(breakerImage, geo, breakerUnmasked, breakerEsc);
             }
 ```
 
