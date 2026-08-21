@@ -589,7 +589,7 @@ Expected: FAIL — the constructor has 6 parameters, not 9.
 
 - [ ] **Step 3: Extend the record**
 
-Replace `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 1275–1276 with:
+Replace the **`CaptureGeometry` record declaration** — find it by name; it was `:1275-1276` and Task 12 moved it to `:1302` — with:
 
 ```csharp
 /// <summary>What the geometry walk produces for one window.
@@ -619,7 +619,9 @@ public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyL
 
 - [ ] **Step 4: Add the degenerate guard between the bounds read and the yardstick**
 
-The ordering is the whole defence. Insert immediately after the `captureBounds` read block ends at `PerceptionManager.cs:925` and **before** the yardstick comment at `:927`:
+The ordering is the whole defence. Insert **after the `captureBounds` try/catch block closes and BEFORE the `// The yardstick is the capture clipped...` comment.**
+
+⚠ **Find it by that comment, not by line number.** This step said `:925`/`:927`; Task 12 has since shifted the file by **+24**, putting the yardstick comment at `:951` and the `captureBounds` read at `:938`. Re-measure with `grep -n "var yardstick" src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` rather than trusting either number.
 
 ```csharp
             // ⚠ W1 DEGENERACY, GUARDED BEFORE THE YARDSTICK. LOAD-BEARING, and an earlier design called
@@ -688,10 +690,14 @@ Add as private static members of `PerceptionManager`:
 
 There are four, and all must be found — an omission here is a compile error, which is the good case, but the VALUES matter. Run `grep -n "new CaptureGeometry(" src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` and update each:
 
-- `:858` (denied) — append `default, System.IntPtr.Zero, false`
-- `:863` (minimized) — append `default, System.IntPtr.Zero, false`
-- `:964` (no renderable overlap, full-desktop) — append `windowBounds, NativeHandleOf(win), false`
-- `:1110` (the success return) — append `windowBounds, NativeHandleOf(win), false`
+**MEASURED after Task 12's +24 shift — re-run the grep, do not trust these either:**
+
+- `:882` (denied) — append `default, System.IntPtr.Zero, false`
+- `:887` (minimized) — append `default, System.IntPtr.Zero, false`
+- `:990` (no renderable overlap, full-desktop) — append `windowBounds, NativeHandleOf(win), false`
+- `:1136` (the success return) — append `windowBounds, NativeHandleOf(win), false`
+
+The record declaration itself moved from `:1275` to **`:1302`**.
 
 - [ ] **Step 6b: Close the SAME hole on the OCR path — it is a leak, and the guard above does not reach it**
 
@@ -714,53 +720,24 @@ Insert after the `Denied || Minimized` early return at `:1137-1139`:
                 "wait for the window to finish opening, then retry");
 ```
 
-- [ ] **Step 6b-2: The OCR path also needs a RESIZE guard, and this one leaks PLAINTEXT**
+- [ ] **Step 6b-2: MOVED TO PHASE 4 — it cannot compile here**
 
-⚠⚠ The OCR path takes its mask rects from the walk and its pixels from `CaptureRectangle` some time later, **with nothing in between comparing the window's geometry.** A reflow in that gap misplaces every mask, and unlike the screenshot path the consequence is not a wrong-looking picture: **`FindAsync` OCRs the unmasked region and returns the redacted text as a string in the response.** `FindTextTools.cs:104-108` already states this hazard in its own words for a different case.
+⛔ **The OCR resize guard has moved to Phase 4, immediately after Task 15.** It called
+`ScreenCapture.WindowSizeChanged`, whose specified body is `var now = DefaultW2Probe(hwnd); ...` — and
+MEASURED, `grep -rn "DefaultW2Probe" src/` returns **nothing**. `DefaultW2Probe` and `GuardTargetState`
+are both created in **Task 15**. The plan also told the implementer to reuse "the P/Invoke already
+declared there", but `ScreenCapture.cs`'s only P/Invokes today are `OpenInputDesktop`, `CloseDesktop`
+and `GetSystemMetrics` — **there is no `GetWindowRect` in that file at all** until Task 15 adds it at
+`phase-4-acquisition-seam.md:495`.
 
-**PRE-EXISTING** — this is today's behaviour, unchanged by item 8. It is fixed here for the same reason the degenerate guard above was: item 8 built a resize guard for the screenshot path, and a guard that stops at the adjacent caller is this review's most-repeated defect. It is cheap: one `GetWindowRect`.
+*(AGY-FIRST consult 2026-08-21, option A, peer and driver ALIGNED. Giving Task 13 its own `GetWindowRect`
+was rejected: Task 15 declares that exact P/Invoke in that exact class, so the two would collide as
+**CS0111** — verified against `phase-4-acquisition-seam.md:495`. Deferring costs nothing in
+time-to-remediation: the defect is PRE-EXISTING and every commit on this branch merges together.)*
 
-`TextCaptureGeometry` needs the handle to compare against. Extend it with an appended field, mirroring `CaptureGeometry`:
-
-```csharp
-// Appended, never inserted - same positional-record rule as CaptureResult and CaptureGeometry.
-public sealed record TextCaptureGeometry(bool Denied, string? DeniedProcess, bool Minimized,
-    System.Drawing.Rectangle CaptureBounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects,
-    int WindowLeft, int WindowTop, int WindowWidth, int WindowHeight,
-    System.IntPtr NativeWindowHandle);
-```
-
-Populate it from the geometry the wrapper already holds (`geo.NativeWindowHandle`) at both `return` sites in `ResolveTextCaptureGeometryAsync`.
-
-Then guard at **both** OCR capture sites, `FindTextTools.cs:62` and `:110`, immediately before the `Task.Run`:
-
-```csharp
-            // ⚠ A RESIZE BETWEEN THE WALK AND THE CAPTURE MISPLACES EVERY MASK, AND THIS PATH READS THE
-            // RESULT ALOUD. On the screenshot path a misplaced mask returns a wrong-looking image; here
-            // the OCR engine reads the unmasked pixels and returns the redacted text as a STRING. Cheap
-            // to check - one GetWindowRect - and the two consumers both do the right thing with the
-            // refusal: DesktopFindText propagates it, and DesktopWaitForText's catch at :108 degrades it
-            // to "not found" and keeps polling, which is correct for a window that is still settling.
-            if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
-                                                new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
-                throw new ToolException(ToolErrorCode.ElementNotActionable,
-                    "The window changed size between reading its redacted regions and capturing it, so " +
-                    "those regions can no longer be located.",
-                    "wait for the window to settle, then retry");
-```
-
-Add the helper beside `GuardTargetState` in `ScreenCapture`, reusing the P/Invoke already declared there:
-
-```csharp
-    /// <summary>TRUE when the window's CURRENT size differs from <paramref name="asWalked"/>. Used by the
-    /// OCR path, which has no W1/W2 pair of its own. A destroyed window reports changed: it is not safe
-    /// to photograph either.</summary>
-    public static bool WindowSizeChanged(IntPtr hwnd, Size asWalked)
-    {
-        var now = DefaultW2Probe(hwnd);
-        return now is null || now.Value.Size != asWalked;
-    }
-```
+**Everything else in Task 13 stays here** — the record change, the degenerate guard, the helpers, the
+four construction sites, and Step 6b's OCR *degenerate* refusal, which needs only the flag this task
+introduces and has no such dependency.
 
 - [ ] **Step 6c: Write the headless test for it**
 

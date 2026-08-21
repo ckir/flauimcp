@@ -533,6 +533,90 @@ git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs test/FlaUI.Mcp.Tests/Perc
 git commit -m "feat(capture): the CaptureWindow seam - guards, resize detection, crop, detectors"
 ```
 
+### Task 15b: The OCR path's RESIZE guard — MOVED HERE FROM TASK 13 STEP 6b-2
+
+⛔ **Run this immediately after Task 15, before Task 16.** It was written as Task 13 Step 6b-2 and could
+not compile there: it calls `ScreenCapture.WindowSizeChanged`, whose body needs `DefaultW2Probe`, and
+both that and the `GetWindowRect` P/Invoke it rests on are created by **Task 15** (`:495`, `:499`).
+MEASURED at Task 13 time: `grep -rn "DefaultW2Probe" src/` returned nothing.
+
+*(AGY-FIRST consult 2026-08-21, option A, peer and driver ALIGNED. Giving Task 13 its own `GetWindowRect`
+was rejected — Task 15 declares that exact P/Invoke in that exact class, so they would collide as
+CS0111.)*
+
+⚠⚠ **OPEN QUESTION BEFORE YOU IMPLEMENT THIS — the guard as written is a PRE-CHECK, and a pre-check
+cannot close the race it is aimed at.** It runs `WindowSizeChanged` *immediately before* `Task.Run`, so
+a reflow between that check and the capture is undetected: the pixels come from the new layout while the
+masks describe the old one, and **this path OCRs the result and returns it as a string**. Checking
+*after* the pixels are acquired is what actually closes it, for one extra `GetWindowRect`.
+*(Raised by the AGY-FIRST consult's fourth answer.)*
+
+**This is NOT what ROADMAP 19 already tracks, and the difference is the cost.** Item 19 defers an
+ELEMENT-level bookend because it is "a second full geometry walk" and `desktop_wait_for_text` re-resolves
+geometry every 750 ms, so a walk per poll would roughly double the polling cost. A window-level
+*post-capture* `GetWindowRect` is not a walk and costs microseconds. **Item 19's stated cost objection
+does not apply to it.**
+
+⚠ **The operator has been asked whether to make this a bookend (check after, or before AND after) rather
+than a pre-check. Do not implement it as a pre-check-only until that is answered.**
+
+**Files:** `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` (the `TextCaptureGeometry` record and both
+`return` sites), `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs` (both capture sites),
+`src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` (the `WindowSizeChanged` helper),
+`test/FlaUI.Mcp.Tests/Perception/` as needed.
+
+⚠ **Task 13's Files list and its Step 9 `git add` named NEITHER `FindTextTools.cs` NOR `ScreenCapture.cs`,
+while this step modifies both** — so as originally written Task 13 would have committed a tree that does
+not compile. Staging is listed above rather than inherited.
+
+- [ ] **Step 1: The guard itself**
+
+⚠⚠ The OCR path takes its mask rects from the walk and its pixels from `CaptureRectangle` some time later, **with nothing in between comparing the window's geometry.** A reflow in that gap misplaces every mask, and unlike the screenshot path the consequence is not a wrong-looking picture: **`FindAsync` OCRs the unmasked region and returns the redacted text as a string in the response.** `FindTextTools.cs:104-108` already states this hazard in its own words for a different case.
+
+**PRE-EXISTING** — this is today's behaviour, unchanged by item 8. It is fixed here for the same reason the degenerate guard above was: item 8 built a resize guard for the screenshot path, and a guard that stops at the adjacent caller is this review's most-repeated defect. It is cheap: one `GetWindowRect`.
+
+`TextCaptureGeometry` needs the handle to compare against. Extend it with an appended field, mirroring `CaptureGeometry`:
+
+```csharp
+// Appended, never inserted - same positional-record rule as CaptureResult and CaptureGeometry.
+public sealed record TextCaptureGeometry(bool Denied, string? DeniedProcess, bool Minimized,
+    System.Drawing.Rectangle CaptureBounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects,
+    int WindowLeft, int WindowTop, int WindowWidth, int WindowHeight,
+    System.IntPtr NativeWindowHandle);
+```
+
+Populate it from the geometry the wrapper already holds (`geo.NativeWindowHandle`) at both `return` sites in `ResolveTextCaptureGeometryAsync`.
+
+Then guard at **both** OCR capture sites, `FindTextTools.cs:62` and `:110`, immediately before the `Task.Run`:
+
+```csharp
+            // ⚠ A RESIZE BETWEEN THE WALK AND THE CAPTURE MISPLACES EVERY MASK, AND THIS PATH READS THE
+            // RESULT ALOUD. On the screenshot path a misplaced mask returns a wrong-looking image; here
+            // the OCR engine reads the unmasked pixels and returns the redacted text as a STRING. Cheap
+            // to check - one GetWindowRect - and the two consumers both do the right thing with the
+            // refusal: DesktopFindText propagates it, and DesktopWaitForText's catch at :108 degrades it
+            // to "not found" and keeps polling, which is correct for a window that is still settling.
+            if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
+                                                new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "The window changed size between reading its redacted regions and capturing it, so " +
+                    "those regions can no longer be located.",
+                    "wait for the window to settle, then retry");
+```
+
+Add the helper beside `GuardTargetState` in `ScreenCapture`, reusing the P/Invoke already declared there:
+
+```csharp
+    /// <summary>TRUE when the window's CURRENT size differs from <paramref name="asWalked"/>. Used by the
+    /// OCR path, which has no W1/W2 pair of its own. A destroyed window reports changed: it is not safe
+    /// to photograph either.</summary>
+    public static bool WindowSizeChanged(IntPtr hwnd, Size asWalked)
+    {
+        var now = DefaultW2Probe(hwnd);
+        return now is null || now.Value.Size != asWalked;
+    }
+```
+
 ### Task 16: `PrintWindowImageSource` — the real interop, and the only Desktop-category production file
 
 **Build the timeout and the dedicated thread ONLY if Task 1 measured a block.** If it did not, implement `Acquire` synchronously and note in the file's doc comment that the timeout parameter is honoured but unreachable, citing the measurement.
