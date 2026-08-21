@@ -551,9 +551,18 @@ the right call for the two-stage element/window split and the wrong call for the
 not throw.** `CreateCompatibleDC`, `CreateCompatibleBitmap` and `SelectObject` return null/zero handles on
 failure, so on the new path that catch never fires and nothing else takes its place.
 
-The plan owns an explicit mapping. Null-handle checks are not optional — given ROADMAP item 13 (108 bare
-catches) the realistic outcome of skipping them is an NRE surfacing as something unhelpful, or a garbage
-bitmap returned as a capture. *(Panel round 1, CA-2.)*
+Null-handle checks are not optional — given ROADMAP item 13 (108 bare catches) the realistic outcome of
+skipping them is an NRE surfacing as something unhelpful, or a garbage bitmap returned as a capture.
+*(Panel round 1, CA-2.)*
+
+**The mapping is settled here, not left to the plan:** a null or zero handle from `CreateCompatibleDC`,
+`CreateCompatibleBitmap` or `SelectObject` becomes **`ToolErrorCode.CaptureUnavailable`**, with a hint
+naming GDI resource exhaustion and suggesting the caller retry after closing windows. It is the same
+error class the scrape path already uses for an environmental capture failure
+(`ScreenCapture.cs:40-41`), so a caller that already branches on `CaptureUnavailable` needs no change.
+What the plan owns is the hint's exact wording. *(Panel round 14, direct question 1: the spec said "the
+plan owns an explicit mapping" without naming the code, which is an abdication of contract dressed as a
+deferral — the same shape §5 was corrected for in round 6.)*
 
 The session-level guard is unaffected and still runs first: `ScreenshotTools.cs:27-28` throws
 `CaptureUnavailable` when `IsDesktopRenderable()` is false, which covers the locked/disconnected desktop
@@ -586,9 +595,10 @@ contract undefined, which is the same abdication §5 exists to close:
 
 | `code` | fires when | `recourse` says, in substance |
 |---|---|---|
-| `uniformCanvas` | §3's detector finds the full window bitmap effectively one colour | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
+| `uniformCanvas` | §3's detector finds the full WINDOW bitmap effectively one colour (`printWindow` only) | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
+| `desktopCanvasUniform` | §3's detector finds a FULL-DESKTOP scrape effectively one colour | the whole desktop came back a single colour. The usual causes are a secure desktop (a UAC prompt), DRM-protected content, or a session in transition — **UIA is normally blocked in those states too, so `desktop_snapshot` will not help.** Wait for the condition to clear and re-capture |
 | `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture with an empty mask set | the window changed size mid-capture. The image itself is sound — it was cropped back to the region you asked for — but the layout inside it **may** have reflowed, so any UIA tree or element ref you hold for this window may be geometrically stale. Re-snapshot before acting on cached coordinates |
-| `popupsNotRendered` | this window had one or more popup roots at geometry time (`PopupFinder.SearchRoots` returned more than the window itself) and the backend is `printWindow` | an open menu, dropdown or tooltip belonging to this window is a separate top-level window and is **not in this image**. Its absence is not evidence it failed to open — read the UIA tree to see it |
+| `popupsNotRendered` | this window had one or more popup roots at geometry time (`PopupFinder.SearchRoots` returned more than the window itself). **Fires on BOTH backends** | an open menu, dropdown or tooltip belonging to this window is a separate top-level window and may be **missing from this image** — structurally absent under `printWindow`, and cropped off under `screenScrape` wherever it extends beyond the window's rect. Its absence is not evidence it failed to open — read the UIA tree to see it |
 | `elementCanvasUniform` | element scope only: the CROPPED region is effectively one colour while the full window bitmap was not | this element's pixels may have failed to render even though the window as a whole did — a hardware-accelerated child viewport is the usual cause. Verify through the UIA tree before concluding the control is blank |
 | `scrapeFallbackTargetUnresponsive` | `PrintWindow` timed out because the target's message loop is blocked, and the scrape produced this image instead (risk 2) | this image is a screen scrape, so anything overlapping the window is in it — treat occlusion as possible. **The target is not pumping messages**: it will not respond to input either, so do not queue clicks against it |
 | `scrapeFallbackTargetChanging` | element-scope retries were exhausted because the window kept resizing, and the scrape produced this image instead (§1) | this image is a screen scrape, so treat occlusion as possible. **The target is changing continuously** — it is alive and busy, not stuck; waiting and re-capturing may succeed |
@@ -609,9 +619,23 @@ annotates an image that was returned; it does not downgrade a case the design de
 Both are carried on `CaptureResult`, which today is:
 
 ```csharp
-// ScreenCapture.cs:9 — CURRENT shape; the plan adds the two fields above
+// ScreenCapture.cs:9 — CURRENT shape
 public sealed record CaptureResult(byte[] Png, int X, int Y, int W, int H, double ScaleApplied, int Redactions);
 ```
+
+**The REQUIRED end state, written out rather than described** — the same reason §5's tool-description
+string is written out: a spec that quotes only the "before" and tells you to extend it is a paragraph an
+implementer can satisfy by pasting the before. *(Panel round 14, below-floor item promoted — it is the
+defect class round 8 already found once in this document.)*
+
+```csharp
+public sealed record CaptureResult(byte[] Png, int X, int Y, int W, int H, double ScaleApplied, int Redactions,
+                                   string CaptureMethod, IReadOnlyList<CaptureWarning> CaptureWarnings);
+
+public sealed record CaptureWarning(string Code, string Recourse);
+```
+
+Appended, never inserted — see below. `CaptureWarnings` is never null; empty is the normal case.
 
 ⚠ **Exact field names and types are the PLAN's**, but the parameter order is NOT open: `CaptureResult` is
 a POSITIONAL record, constructed positionally at `ScreenCapture.cs:69`. **Append only, never insert** — a
@@ -791,8 +815,9 @@ for each failure, or NONE — not whether the area was "covered".)*
      reads the composited desktop and is unaffected. It genuinely has a better answer than nothing.
    - **Retry exhaustion on a continuously-changing window — mechanism failure, same shape.** The window
      is on screen with real pixels; what we cannot obtain is a CONSISTENT geometry-and-capture pair. The
-     scrape takes both at one instant and is what the tool does today. See the element-scope retry rule
-     in §1. *(Panel round 11, Regression Auditor: refusing here was a total outage for spinners, progress
+     scrape is what the tool does for this window today, so the fallback restores current behaviour
+     rather than returning nothing. It is NOT synchronised with the geometry — see §1, which retracts
+     that claim — and it is not justified as though it were. See the element-scope retry rule in §1. *(Panel round 11, Regression Auditor: refusing here was a total outage for spinners, progress
      dialogs and expanding windows, which work today.)*
    - **Degenerate, minimized, or empty-crop — TARGET failure.** There are no pixels to get. A minimized
      window has none on screen; a zero-extent window has none at all; an element outside the captured
@@ -1277,3 +1302,41 @@ is reachable and the contract must handle it.
 **The Simplicity Auditor seat produced a correct finding and the right answer was still to keep the
 code** — which is the more useful outcome than either blind deletion or a reflexive defence. Asking what
 can be removed forced the real justification into the open and replaced a wrong one.
+
+### AGY-AFTER adversarial panel — round 14
+
+Seats: Fold Auditor (round 13's edits, with the late scope widening as its hardest target), Simplicity
+Auditor second pass, **Failure-Mode Cartographer** (build the COMPLETE map — every distinct failure mode
+× exactly what the caller receives — as a table, one row per mode, then reason from the table rather than
+the prose). Report: `.clavity/scratch/item8-panel/agy-round14.md`. **Verdict: NOT GREEN.** Five folds:
+
+- **The full-desktop detector's recourse sent the agent into a guaranteed failure.** It inherited the
+  window-scope text — "read the UIA tree via `desktop_snapshot` instead" — but the usual cause of an
+  all-black DESKTOP is a secure desktop, DRM content or a session transition, and **UIA is blocked in
+  exactly those states too**. Split into its own code, `desktopCanvasUniform`, whose recourse says so and
+  tells the agent to wait rather than to query a tree it cannot read.
+- **`popupsNotRendered` was gated to `printWindow` and should not have been.** The Cartographer's table
+  showed a timeout WITH popups and a timeout WITHOUT them producing an identical row. The scrape fallback
+  captures `captureBounds`, so a popup extending beyond the window's rect is cropped off — the image is
+  still missing its menus, and the code that would have said so was suppressed by the backend switch. It
+  now fires on both backends, with recourse covering both mechanisms.
+- **A retracted justification was still live one section away.** §1 explicitly retracts "the scrape takes
+  both at one instant"; risk 2's fallback rule still used it. This is the same failure round 7 found — a
+  correction that does not reach every place the claim appears — and it is the second instance, so it is
+  worth stating as a pattern rather than a one-off.
+- **The `CaptureResult` code block quoted only the "before".** Same defect class round 8 found in §5's
+  tool-description paragraph: a spec that shows the current shape and tells you to extend it can be
+  satisfied by pasting the current shape. The required end state, including the `CaptureWarning` record,
+  is now written out.
+- **§4 named no error code.** "The plan owns an explicit mapping" is an abdication of contract dressed as
+  a deferral — the same shape §5 was corrected for in round 6. A null GDI handle is
+  `ToolErrorCode.CaptureUnavailable`, matching what the scrape path already raises for an environmental
+  failure; only the hint's wording is the plan's.
+
+**Verified, not folded:** the peer named `ScreenshotTools.cs:27-28` as an assertion it had not checked.
+Checked — those lines are exactly `if (!ScreenCapture.IsDesktopRenderable()) throw new
+ToolException(ToolErrorCode.CaptureUnavailable, ...)`. The spec is correct there.
+
+**The Cartographer seat found its defect in the SHAPE of the table, not in any row's content** — two
+rows with materially different causes were textually identical. That is a defect no prose reading
+surfaces, because prose never puts the two cases adjacent.
