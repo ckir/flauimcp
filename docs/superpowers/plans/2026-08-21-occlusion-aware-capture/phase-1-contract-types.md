@@ -581,7 +581,9 @@ Expected: PASS — 5 passed.
 Re-run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureOutcomeTests"`
 Expected: the solution **builds cleanly**, then `There_are_exactly_four_cases` FAILS with `Assert.Equal() Failure: Expected: 4, Actual: 5`, and the other four tests still pass (`Failed: 1, Passed: 4, Total: 5`).
 
-**Revert** with `git checkout -- src/FlaUI.Mcp.Core/Perception/CaptureOutcome.cs` and confirm 5 passed.
+**Revert** by deleting the added member, then confirm 5 passed.
+
+⚠ **`git checkout -- <path>` does NOT work here and it was tried.** The mutant is applied *before* Step 6 commits, so the file is still **untracked** and git answers `pathspec did not match any file(s) known to git`. Edit the member out directly. The same applies to every Phase 1 task that CREATES its file (Tasks 4, 5, 7); `git checkout --` works only in Task 6, whose target `ScreenCapture.cs` was already tracked.
 
 ⚠ **This step also named `There_are_exactly_three_cases` — a test that does not exist.** That, and this task's heading, were fossils from before `TargetTransient` was added as a fourth case; the code block was updated and the prose around it was not.
 
