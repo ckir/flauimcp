@@ -29,6 +29,26 @@ invariants). Its sibling half — an element GENUINELY named the token must stil
 ledgered as AB-2 for the same reason.
 **Owner:** post-v1.0. Captured during SP3, dispositioned in SP4 (spec §7).
 
+### A5 — PW_RENDERFULLCONTENT is not pinned by any test
+**Gap:** `PrintWindowImageSource` passes `PW_RENDERFULLCONTENT` (flag 2). Its only non-vacuity mutant —
+flip the flag to 0 — was RUN and both Desktop tests still passed. MEASURED on the reference machine
+(WPF TestApp, flag the only variable): flag 0 gives 100 distinct colours / mean luminance 233.3 / not
+uniform, flag 2 gives 110 / 236.4 / not uniform, differing on 10% of sampled pixels — and that 10% is
+entirely the non-client chrome. The client area renders correctly under BOTH, so a "not a single
+colour" assertion cannot tell them apart. Evidence row F1 ("flag 0 returns blank for WPF") does not
+reproduce on this hardware.
+**Why deferred:** the two ways to pin it are both worse than the gap. Asserting on chrome pixels is
+theme-, OS-version- and DPI-dependent. Comparing the capture against a screen scrape of the same window
+would work — flag 2 matches the screen, flag 0 does not — but makes a Desktop test depend on the window
+being unoccluded and on screen, trading a vacuous test for a flaky one.
+**Mitigating, but NOT a substitute:** the surviving test still proves the P/Invoke signatures are
+correct, the GDI handle lifecycle neither leaks nor crashes, and the unmanaged-to-managed copy yields a
+correctly-sized non-blank bitmap from a real window. `A_zero_handle_throws_CaptureUnavailable` is
+separately non-vacuous. And a mask-misalignment consequence was specifically checked and REFUTED: a
+per-row diff puts the difference in rows 0-30 plus 1.6% side borders, with a client-area landmark at
+y=77 under BOTH flags, delta 0 — the client area is not displaced, so masks land identically either way.
+**Owner:** raise at the item-8 AGY-TEST-AUDIT. Captured 2026-08-21 during item 8 Task 16.
+
 ### A4 — the OCR path's yardstick change has no test
 **Gap:** item 8 Task 12 gave `ResolveWindowCaptureGeometryAsync` a `clipToVirtualScreen` parameter
 defaulting to FALSE. The OCR path (`ResolveTextCaptureGeometryAsync`, reached from `FindTextTools`) takes

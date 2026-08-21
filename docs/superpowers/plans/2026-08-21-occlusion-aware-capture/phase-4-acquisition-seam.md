@@ -991,8 +991,41 @@ Expected: PASS — 2 passed.
 
 - [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
 
-Change `PW_RENDERFULLCONTENT` to `0`.
-Expected: `It_renders_the_test_app_window_as_something_other_than_one_colour` FAILS with the "check PW_RENDERFULLCONTENT" message — which is evidence row F1 reproducing on this machine. **Revert.**
+⛔ **THIS MUTANT DOES NOT WORK ON THE REFERENCE MACHINE. It was run, and BOTH tests still passed.**
+
+The step read: *"Change `PW_RENDERFULLCONTENT` to `0`. Expected:
+`It_renders_the_test_app_window_as_something_other_than_one_colour` FAILS … which is evidence row F1
+reproducing on this machine."* **F1 does not reproduce here.** MEASURED against the WPF TestApp, same
+acquisition code, flag as the only variable:
+
+| | distinct colours | mean luminance | uniform? |
+|---|---|---|---|
+| flag 0 | 100 | 233.3 | **false** |
+| flag 2 | 110 | 236.4 | **false** |
+
+The two differ on **10% of sampled pixels**, and inspecting both PNGs shows that 10% is **entirely the
+non-client chrome** — flag 0 draws the legacy title bar, flag 2 the modern DWM-composed one. **The client
+area renders correctly under both.** So the "not a single colour" assertion cannot distinguish them and
+the mutant is **structurally incapable of failing here**.
+
+⚠ **The client area is NOT shifted, which was worth checking because a shift would be a leak.** A per-row
+diff puts 100% of the difference in rows 0–30 and 1.6% below that (the side borders), and a client-area
+landmark sits at **y=77 in both**, delta **0**. An AGY-FIRST seat argued flag 0's "thicker" chrome would
+displace the client area by 2–10px and misalign every UIA-derived mask; that was checked against the row
+profile and **REFUTED**.
+
+**The flag STAYS** — it is correct for the hardware-accelerated targets this machine cannot exercise, and
+it matches what the screen actually shows. What changed is that neither the plan nor the production doc
+comment now claims a local measurement it does not have.
+
+**Do not substitute a chrome-pixel assertion** to make a mutant work: it would be theme-, OS-version- and
+DPI-dependent, trading a vacuous test for a flaky one. **Tracked as coverage debt A5**, with the stronger
+option (compare `PrintWindow` output against a screen scrape of the same unoccluded window) recorded
+there rather than adopted.
+
+**What this test DOES still prove**, and it is worth keeping: the P/Invoke signatures are correct, the GDI
+handle lifecycle neither leaks nor crashes, and the unmanaged-to-managed copy yields a correctly-sized,
+non-blank bitmap from a real window. `A_zero_handle_throws_CaptureUnavailable` is separately non-vacuous.
 
 - [ ] **Step 6: Commit**
 
