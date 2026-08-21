@@ -233,14 +233,17 @@ git commit -m "feat(capture): the pure crop geometry - effective, absolute, repo
 `Encode` builds the `CaptureResult`, so it must be HANDED the `W2`-anchored rectangle — it cannot derive one from the other. Both cross the call.
 
 **Files:**
-- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs:45-71`
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` — the `Encode` method (was cited as `:45-71`; Task 6 shifted it to `:55-83`, so find it by NAME)
 - Test: `test/FlaUI.Mcp.Tests/Perception/EncodeContractTests.cs`
 
 - [ ] **Step 1: Make `Encode` internal so it can be tested directly**
 
-`Encode` is currently `private static`. Change it to `internal static` and add to `src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj` inside the existing `<PropertyGroup>` if not already present:
+`Encode` is currently `private static`. **Change it to `internal static`. That is the ENTIRE step.**
+
+~~and add to `src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj` inside the existing `<PropertyGroup>` if not already present:~~
 
 ```xml
+  <!-- STRUCK OUT - DO NOT ADD THIS. See the warning immediately below. -->
   <ItemGroup>
     <InternalsVisibleTo Include="FlaUI.Mcp.Tests" />
   </ItemGroup>
@@ -363,7 +366,9 @@ Expected: FAIL — `Encode` takes 4 parameters, not 7.
 
 - [ ] **Step 4: Rewrite `Encode`**
 
-Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 45–71 with:
+Replace the **whole `Encode` method** in `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` — from its `private static CaptureResult Encode(` signature through its closing brace — with:
+
+⚠ **Anchor on the SYMBOL, not the line numbers.** This step said "lines 45–71" until execution; Task 6 inserted a nine-line doc comment above `CaptureResult` and pushed `Encode` down to **55–83**. It will shift again as later tasks edit this file, so find the method by name rather than trusting any number written here.
 
 ```csharp
     /// <summary>Mask, downscale, PNG-encode, and assemble the CaptureResult.
