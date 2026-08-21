@@ -456,3 +456,36 @@ Convergence Assessor. **Verdict: RED.**
 rounds distracted by shallow syntax issues, allowing deep semantic leaks and blatant contract lies to
 survive ten rounds of scrutiny."* That is exactly right, and it is an argument for the narrowing rather
 than against it — the narrowing is what surfaced them.
+
+### Round 12 — Seat 2 clean, Seat 3 CONCEDES, Seat 1 half right
+
+Seats: Leak Hunter (2nd), Contract Liar Hunter (2nd), Convergence Assessor (2nd). **Verdict: RED**, one
+finding — **and half of it is refuted.**
+
+**Seat 3 CONCEDED: "the design has converged."** Asked to argue against ending the review, it declined for
+the first time in twelve rounds, on the grounds that what remains is "unavoidable TOCTOU races (which are
+properly warned/disclosed) or fundamental limitations of the walk-then-capture architecture".
+
+**Seat 2 clean.** It checked each of the six remaining codes for a reachable emission site and confirmed
+the desktop-wide disclosure is accurate on all four paths that populate it.
+
+**Seat 1 — the "stale in content" question this round was set to ask.** A redact-worthy element whose own
+rectangle grows while the window's size does not: the mask is correctly positioned for the old extent and
+too small for the new one, so the newly-exposed pixels are photographed in the clear.
+
+- **⚠ REFUTED for the `printWindow` paths, by trace.** §2.5's bookend walk re-walks after the capture and
+  compares the mask set as `(X, Y, W, H)` normalised to the window origin — **including WIDTH and
+  HEIGHT** — and it runs whenever `MaskRects.Count > 0`, which is exactly when a redact-worthy element
+  exists. A grown rect changes `W`, the sets differ, and the attempt is discarded and retried. **This is
+  precisely what the bookend was added for**: an element growing IS a reflow of the mask set, which is the
+  leak class §2.5 closes. The finding asserted the pixels "are leaked directly to the agent" on a window
+  scope capture; they are not.
+- **✅ CONFIRMED for the OCR path, and filed as ROADMAP item 19.** That path has no bookend — item 8 gave
+  it a degenerate guard and a `WindowSizeChanged` check, and **both look at the WINDOW**. An element
+  growing within a constant window size is invisible to them, and this path OCRs what it captures, so the
+  text is returned as a string. Deferred for a stated cost reason: the bookend is a second full geometry
+  walk and `desktop_wait_for_text` polls at 750ms, so it would roughly double that loop's cost.
+
+**This is the first round whose only live finding was already covered on the paths that matter**, with the
+residue a pre-existing gap on a path item 8 does not own. Taken with Seat 3's concession, it is the
+strongest convergence signal the review has produced.

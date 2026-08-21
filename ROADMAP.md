@@ -667,3 +667,27 @@ times a second for the whole wait. Closing this needs a cheaper predicate (a cac
 a short TTL, or a check hoisted out of the poll loop), which is its own small design.
 
 Found by the AGY-AFTER panel over the item-8 plan, round 5, Guard-Consistency Auditor.
+
+### 19. The OCR path has no bookend walk, so a mask can be stale in CONTENT rather than position
+
+`desktop_find_text` / `desktop_wait_for_text` take mask rects from a UIA walk and pixels from
+`CaptureRectangle` afterwards. Item 8 gave that path two cheap guards — a degenerate-window refusal and a
+`WindowSizeChanged` resize check — but both look at the WINDOW. They do not detect a redact-worthy
+ELEMENT whose own rectangle changed while the window's did not: an auto-sizing control that grew, or an
+element that reflowed within a constant window size. The mask is then correctly positioned for the old
+extent and too small for the new one, and **this path OCRs what it captures**, so the newly-exposed text
+is returned as a string.
+
+**The screenshot path does not have this gap.** §2.5's bookend validation walk re-walks after the capture
+and compares the mask set as `(X, Y, W, H)` normalised to the window origin, so a grown or moved element
+rect trips it and forces a retry. The OCR path has no equivalent.
+
+**Deliberately not fixed in item 8, for a stated cost reason rather than scope discipline:** the bookend is
+a second full geometry walk, and `desktop_wait_for_text` re-resolves geometry on every poll at a 750ms
+cadence. Adding a walk per poll would roughly double the cost of the polling loop. Closing this needs
+either a cheaper element-level freshness check or a bookend applied only to `desktop_find_text`'s
+single-shot path, which is its own small design.
+
+Found by the AGY-AFTER panel over the item-8 plan, round 12, Leak Hunter. ⚠ The same finding also claimed
+the WINDOW-scope `printWindow` path leaks this way; that half was **refuted by trace** — the bookend
+catches it.
