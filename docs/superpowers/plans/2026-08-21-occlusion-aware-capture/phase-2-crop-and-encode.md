@@ -193,7 +193,11 @@ public static class WindowCropGeometry
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~WindowCropGeometryTests"`
-Expected: PASS — 11 passed.
+Expected: PASS — **10 passed** (6 `[Fact]` + 1 `[Theory]` × 4 `[InlineData]` rows).
+
+⚠ **This said "11 passed" until it was executed.** MEASURED: `Failed: 0, Passed: 10, Total: 10`. Same
+count-fossil family as Task 5's "11 passed" and "seven wire codes" — a review changed the block and the
+prose beside it was not updated.
 
 - [ ] **Step 5: Prove the gates are non-vacuous with three logic mutants**
 
@@ -204,7 +208,18 @@ Each mutant must turn a *named* test red. Run them one at a time and revert each
 2. Change the guard to `if (effective.IsEmpty) return null;`.
    Expected: `A_zero_width_touching_intersection_is_rejected_even_though_IsEmpty_is_false` FAILS.
 3. Change `relative` to use `e` unmodified (drop the `- w1` translation).
-   Expected: `A_pure_move_keeps_masks_on_W1_and_reports_on_W2` and `A_grown_window_is_cropped_back_to_the_region_that_was_scanned` both FAIL.
+   Expected: **`A_pure_move_keeps_masks_on_W1_and_reports_on_W2` and `Window_scope_static_window_is_the_whole_bitmap`** both FAIL.
+
+   ⚠ **This step used to name `A_grown_window_is_cropped_back_to_the_region_that_was_scanned` as the
+   second failure. That is IMPOSSIBLE and it was measured.** In that test `w1 = (0, 0, 800, 600)` — the
+   origin — so `e.X - w1.X` subtracts zero and dropping the translation is a **no-op** there; it stays
+   green. The test that does go red is `Window_scope_static_window_is_the_whole_bitmap`, whose
+   `w1 = (100, 200, 800, 600)` is off-origin. MEASURED: exactly those two red, the other eight green.
+
+   **The general lesson, and it applies to every mutant in this plan:** a mutant that removes a
+   translation can only be caught by a case whose translation is NON-ZERO. Half these fixtures sit at
+   the origin, so they are structurally blind to it. When predicting which test a mutant kills, check
+   the fixture's numbers — do not reason from the test's name.
 
 - [ ] **Step 6: Commit**
 
@@ -231,7 +246,23 @@ git commit -m "feat(capture): the pure crop geometry - effective, absolute, repo
   </ItemGroup>
 ```
 
-Check first — run `grep -n "InternalsVisibleTo" src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj`. If it already exists, add nothing.
+⚠ **ADD NOTHING — the grant already exists, and the check written here would not have found it.** That
+check greps ONE FILE (`FlaUI.Mcp.Core.csproj`) for a grant that lives somewhere else:
+`src/FlaUI.Mcp.Core/Properties/AssemblyInfo.cs:2` declares
+`[assembly: InternalsVisibleTo("FlaUI.Mcp.Tests")]`. So the narrow grep answers "not present", the
+implementer adds the MSBuild item, and — since `GenerateAssemblyInfo` is not set anywhere and therefore
+defaults ON — the SDK emits a SECOND attribute on top of the hand-written one. Redundant, and it changes
+a build file for no reason.
+
+**Grep the CONCEPT, not one spelling of it:**
+
+```bash
+grep -rn "InternalsVisibleTo" --include=*.cs --include=*.csproj --include=*.props src/FlaUI.Mcp.Core/
+```
+
+MEASURED: that returns `src/FlaUI.Mcp.Core/Properties/AssemblyInfo.cs:2`. **Core's internals are already
+visible to `FlaUI.Mcp.Tests`; this step is a no-op and the `.csproj` must NOT be touched.** Drop it from
+the Step 7 `git add` line too.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -400,7 +431,7 @@ Expected: PASS — 4 passed.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj test/FlaUI.Mcp.Tests/Perception/EncodeContractTests.cs
+git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs test/FlaUI.Mcp.Tests/Perception/EncodeContractTests.cs
 git commit -m "feat(capture): Encode takes absolute+reported, method and warnings"
 ```
 

@@ -75,7 +75,7 @@
 | `…/PerceptionManager.cs:935` | The yardstick becomes conditional |
 | `…/PerceptionManager.cs:1275` | `CaptureGeometry` gains three appended fields + a `HasPopupRoots` init property |
 | `…/PerceptionManager.cs:1134-1144` | `ResolveTextCaptureGeometryAsync` — the OCR path's degenerate-window refusal |
-| `src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj` | `InternalsVisibleTo` for the tests, if it is not already there (Task 9 Step 1) |
+| ~~`src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj`~~ | **NOT MODIFIED.** The `InternalsVisibleTo` grant already exists at `src/FlaUI.Mcp.Core/Properties/AssemblyInfo.cs:2`; Task 9 Step 1 is a no-op. Its original check grepped only the `.csproj`, so it would have missed the existing grant and added a duplicate |
 | `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:17` | Tool description: three separate edits |
 | `…/ScreenshotTools.cs:49,58,71-84` | Call sites and the metadata projection |
 | `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62,110` | The third caller — explicit scope, explicit yardstick |
