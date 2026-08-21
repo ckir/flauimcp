@@ -203,4 +203,71 @@ public class CaptureCircuitBreakerTests
         await c.CaptureAsync(new WindowHandle("w2"), null, CaptureScope.Window, 0);
         Assert.Equal(2, src.Calls);   // the breaker is PER-HWND
     }
+
+    // ⚠⚠ THE RECOVERY PATH, AND IT WAS COMPLETELY UNTESTED UNTIL THIS TEST EXISTED.
+    //
+    // MEASURED: deleting `_breaker?.Reset(hwnd)` from `WindowCaptureCoordinator.HungOrReset` -- the whole
+    // recovery mechanism -- left the full headless suite GREEN at 1036/1036. Nothing anywhere caught it.
+    //
+    // That gap is not academic: an AGY-AFTER panel round already caught this exact member being DEAD once
+    // before. The comment on `HungOrReset` records it -- *"`Reset` existed and was never called until
+    // round 6 -- the prose claimed 'a recovered window RESETS the breaker and takes the normal path'
+    // while nothing performed the reset."* Review caught it that time; without this test, nothing would
+    // catch it regressing.
+    //
+    // The gap was OPENED by the fix that made this suite runnable. Every other test here passes
+    // `isHungProbe: _ => true`, because the pinned plan block wired no probe at all and the real
+    // `IsHungAppWindow` P/Invoke against a synthetic handle returns FALSE -- which made `HungOrReset`
+    // reset the breaker on every check and defeated the diversion the tests exist to prove. Forcing the
+    // probe TRUE fixed that and, in doing so, removed the only route any test had to the false branch.
+    //
+    // Why the state assertion rather than a method assertion: with the Reset deleted, `HungOrReset` still
+    // returns false, so the capture still takes the PrintWindow path and `CaptureMethod` is identical
+    // either way. What differs is that the breaker keeps a stale entry for a window that recovered -- and
+    // per `Trip`'s own comment, "HWNDs are recycled by the OS, so a stale entry can also mis-trip the
+    // breaker for an unrelated window that happens to reuse the handle value."
+    [Fact]
+    public async Task A_recovered_window_RESETS_the_breaker_rather_than_serving_out_the_cooldown()
+    {
+        var now = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
+        int calls = 0;
+        // Times out ONCE -- tripping the breaker -- then renders normally, as a recovered window would.
+        var src = new FakeWindowImageSource(size =>
+        {
+            if (++calls == 1) return null;
+            var b = new Bitmap(size.Width, size.Height);
+            using var g = Graphics.FromImage(b);
+            using var bg = new SolidBrush(Color.White);
+            g.FillRectangle(bg, 0, 0, b.Width, b.Height);
+            using var fg = new SolidBrush(Color.Black);
+            g.FillRectangle(fg, 0, 0, b.Width / 2, b.Height);
+            return b;
+        });
+
+        var breaker = new CaptureCircuitBreaker(TimeSpan.FromMinutes(5), () => now);
+        bool hung = true;
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(Geo()), src, new CaptureRetryOptions(1, 50),
+            w2Probe: _ => W, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, 0, "screenScrape", warns),
+            breaker: breaker,
+            isHungProbe: _ => hung,
+            denylistedVisible: () => Task.FromResult(false),
+            desktopMasks: () => Task.FromResult(new DesktopMaskSet(
+                Array.Empty<Rectangle>(), Array.Empty<MaskEscalationEntry>(), Array.Empty<string>())));
+
+        var first = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("screenScrape", first.Result.CaptureMethod);
+        Assert.True(breaker.IsTripped(new IntPtr(0xBEEF)), "the timeout must trip the breaker");
+
+        // The OS now reports the window as healthy again, WELL INSIDE the five-minute cooldown.
+        hung = false;
+        var second = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+
+        Assert.Equal("printWindow", second.Result.CaptureMethod);
+        Assert.False(breaker.IsTripped(new IntPtr(0xBEEF)),
+            "a recovered window must be FORGOTTEN, not left tripped until the cooldown expires");
+        Assert.Equal(0, breaker.TrackedCount);
+    }
 }

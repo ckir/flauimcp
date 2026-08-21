@@ -1320,6 +1320,29 @@ to a conditionally-defined type used to produce.
 
 - [ ] **Step 1: Write the failing test**
 
+⛔ **THE PINNED BLOCK BELOW IS INCOMPLETE IN THREE WAYS. All three were MEASURED during execution; the
+block is left as-is so the diff stays reviewable, but you must add these or the tests cannot run.**
+
+1. **`using FlaUI.Mcp.Core.Errors;` is missing** — `ToolException`/`ToolErrorCode` are referenced and not
+   imported. A pure compile fix; every sibling test file in the directory already imports it.
+2. **`denylistedVisible` and `desktopMasks` must be wired on all five coordinator constructions.**
+   `ScrapeAsync` FAILS CLOSED on both, so without them five of the six tests die on a wiring refusal
+   before any assertion runs. This is the IDENTICAL defect Task 17's helper had, and that file documents
+   it: *"MEASURED: this helper originally wired neither, and SIX of the eleven tests below died... before
+   any assertion ran."*
+3. **`isHungProbe: _ => true` must be wired too, and this one is subtler than a missing import.** Without
+   it the coordinator falls back to the real `IsHungAppWindow` P/Invoke, which — MEASURED — returns
+   **false** for the synthetic `IntPtr(0xBEEF)` these tests use. `HungOrReset` then treats every window as
+   RECOVERED and calls `Reset` on the breaker at every check, so the diversion these tests exist to prove
+   never happens and the breaker's state is destroyed between calls. The seam exists precisely for this;
+   its own comment says *"Injected so the breaker's recovery behaviour is headless-testable; production
+   uses the OS."*
+
+⚠⚠ **AND FIXING (3) OPENS A COVERAGE HOLE THAT STEP 6b BELOW CLOSES. Do not skip it.** Forcing the probe
+TRUE in every test removes the only route any test had to `HungOrReset`'s FALSE branch — the recovery
+path. MEASURED: with the six tests as pinned, deleting `_breaker?.Reset(hwnd)` from the coordinator — the
+entire recovery mechanism — left the full headless suite **GREEN**. Nothing caught it.
+
 ```csharp
 using System;
 using System.Collections.Generic;
@@ -1674,13 +1697,39 @@ In the `TimedOut` arm, before returning:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureCircuitBreakerTests"`
-Expected: PASS — **6 passed**. (The plan said 3; MEASURED by counting `[Fact]` in Step 1, which declares
-SIX tests. Do not "fix" a 6 back down to 3.)
+Expected: PASS — **7 passed**: the six pinned in Step 1 plus the recovery test Step 6b adds. (The plan
+originally said 3, against a Step 1 declaring SIX. Do not "fix" a 7 back down.)
 
 - [ ] **Step 6: Prove the gate is non-vacuous with a logic mutant**
 
 Change `IsTripped` to `=> false`.
 Expected: `A_window_that_timed_out_is_not_retried_through_PrintWindow_during_the_cooldown` FAILS with `src.Calls == 5` — five leaks instead of one. **Revert.**
+
+- [ ] **Step 6b: Close the recovery-path coverage hole — REQUIRED, not optional**
+
+Add a seventh test, `A_recovered_window_RESETS_the_breaker_rather_than_serving_out_the_cooldown`, to
+`CaptureCircuitBreakerTests.cs`. It is the ONLY test that reaches `HungOrReset`'s false branch.
+
+**Why it is required.** Every other test in the file pins `isHungProbe: _ => true` (see Step 1's note 3),
+so none of them can reach the recovery path. MEASURED: deleting `_breaker?.Reset(hwnd)` — the whole
+recovery mechanism — left the suite **green at 1036/1036**. With this test present the same mutant
+produces **exactly one red**, and it is this test.
+
+**Why this path specifically deserves a test.** An AGY-AFTER round already caught this exact member being
+DEAD once: `HungOrReset`'s own comment records *"`Reset` existed and was never called until round 6 — the
+prose claimed 'a recovered window RESETS the breaker and takes the normal path' while nothing performed
+the reset."* Review caught it that time. Nothing would catch it regressing.
+
+**Shape:** a source that times out ONCE (tripping the breaker) and renders normally thereafter; a mutable
+`bool hung` behind `isHungProbe: _ => hung`. Capture once with `hung = true` — assert `screenScrape` and
+`breaker.IsTripped(...)`. Set `hung = false`, capture again — assert `printWindow`, **`IsTripped` is now
+false, and `TrackedCount == 0`**.
+
+⚠ **Assert on the BREAKER'S STATE, not on the capture method.** With the `Reset` deleted `HungOrReset`
+still returns false, so the capture still takes the PrintWindow path and `CaptureMethod` is identical
+either way. What differs is the stale entry left behind — and per `Trip`'s own comment, *"HWNDs are
+recycled by the OS, so a stale entry can also mis-trip the breaker for an unrelated window that happens
+to reuse the handle value."* A method assertion here would be vacuous.
 
 - [ ] **Step 7: File the out-of-process worker as ROADMAP debt**
 
@@ -1729,7 +1778,11 @@ operator accepted the containments and staged this.
 Build it if the containments prove insufficient in practice.
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Run the whole headless suite, then commit**
+
+⚠ **This task had NO full-suite step — it went from a filtered run straight to the commit.** Run it:
+`dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: **1037** — 1030 after Task 18, plus Step 1's six and Step 6b's one. Build 0/0.
 
 ```bash
 git add src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs test/FlaUI.Mcp.Tests/Perception/CaptureCircuitBreakerTests.cs ROADMAP.md
