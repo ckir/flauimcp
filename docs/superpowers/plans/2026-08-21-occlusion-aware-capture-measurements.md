@@ -612,3 +612,33 @@ contradicts it.
 
 If Task 15 breaks any of the three, this measurement does not transfer and the leak becomes permanent.
 **Check Task 15 against this list before Phase 4 is called done.**
+
+## Risk 5 — the detector's sampling
+
+**Strategy:** a fixed 64×64 sparse grid, plus an explicit sweep of the far right column and bottom row
+(a stride that does not divide the dimension would otherwise never sample them). Cost is O(64²)
+regardless of resolution, which is what makes it free next to the PNG encode that follows it.
+
+**The read path changed after measurement.** An earlier `Bitmap.GetPixel`-based scan measured
+**110 / 114 / 177 ms** for 20 detections on a 3840×2160 bitmap — over the <100 ms budget on every run.
+Benchmarked head-to-head against a `LockBits` + `Marshal.ReadInt32` scan at the same sample points, after
+first confirming both paths return the identical answer on a uniform bitmap and on one with content,
+`LockBits` measured **29 / 30 / 30 ms** — the sampling strategy was never the problem; `GetPixel` was the
+wrong instrument. The implementation now takes a `LockBits` fast path guarded by
+`Image.GetPixelFormatSize(bmp.PixelFormat) == 32`, falling back to `GetPixel` for a non-32bpp or
+bottom-up (negative-stride) bitmap.
+
+**Measured:** 20 detections on a 3840×2160 bitmap took **4ms** (three runs: 3ms, 4ms, 5ms, 4ms) against
+the <100ms budget, on the machine described in the environment table above — well inside the LockBits
+range recorded above, confirming the fast path is the one taken.
+
+**Criteria 1 and 2 are enforced by TESTS, not by inspection:**
+- criterion 1 (a blank render is uniform) — `A_uniform_bitmap_is_detected`, three colours including
+  white and mid-grey, because the property is uniformity and not darkness.
+- criterion 2 (the F4 dark-themed pixel-perfect render is NOT uniform) —
+  `The_F4_dark_themed_real_render_is_not_uniform`. This is the case that rules out every darkness-based
+  predicate: F4's non-black fraction is 0.044 *because it is a dark theme*, and a luminance test would
+  have discarded a flawless capture.
+- the fallback path (non-32bpp bitmaps) is exercised by `A_non_32bpp_uniform_bitmap_is_detected_through_the_fallback`
+  and `A_non_32bpp_bitmap_with_content_is_not_uniform_through_the_fallback` — without them the format
+  guard's else-branch would be dead code that still ships.
