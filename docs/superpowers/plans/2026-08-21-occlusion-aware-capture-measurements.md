@@ -564,6 +564,27 @@ Written down because a measurement record's worst failure is being read as broad
 to the tool description". That was wrong: the occlusion case had never been measured, and measuring it
 found a real contract limitation. Answers 1 and 2 are unchanged.
 
+### ▶ GATE CLEARED — operator decision, 2026-08-21
+
+The operator was shown answers 1–3 twice: once as first recorded, and again after the AGY-AFTER panel
+changed answer 3. **The gate is cleared and Phase 1 may begin.** Disposition:
+
+- **Risk 3 is accepted unmitigated**, on 400 tree-vs-pixel runs that did not observe it, with the
+  one-sidedness of that evidence explicitly on the record.
+- **The occluded-Chromium freshness limit is accepted as a DOCUMENTATION item, not a mitigation.**
+
+⚠ **TASK 22 OWES A TOOL-DESCRIPTION CHANGE, and it is the only carried obligation from Phase 0.** The
+description must state that a window which has been occluded for some time may return the last frame its
+renderer painted, which can be arbitrarily old, and that the capture cannot force it to refresh. Do not
+promise freshness. The masks and geometry are unaffected — this is about the image's age, nothing else.
+Chromium-family targets only; Electron did not suspend under the same treatment.
+
+**Two further carried obligations, both from the panel and both cheap:**
+
+- **Task 19** replaces its `CaptureCircuitBreaker` "permanently" sentence with the verbatim text given
+  in the Risk 2b section above.
+- **ROADMAP 17** records that the per-HWND breaker leaves the cross-window total unbounded.
+
 ### Two answers Phase 0 produced that the gate did not ask for
 
 **A. `IsHungAppWindow` is safe** — `True` in 13 ms on the hung window. This closes the single
