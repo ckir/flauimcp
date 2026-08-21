@@ -24,9 +24,18 @@ result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects
                                                              clipToVirtualScreen: true));
 ```
 
-`CaptureWindow` owns the `PrintWindow` acquisition, the crop, the resize and degeneracy checks, and the
-scrape fallback, returning the same `CaptureResult` the scrape path returns — now carrying
-`CaptureMethod` and `CaptureWarnings` (§5). Exact member names are the plan's; the SHAPE is not, because
+`CaptureWindow` owns the `PrintWindow` acquisition, the crop, and the guards that need only `W1`/`W2` —
+degeneracy, minimized-at-capture, and DETECTING a size mismatch. It returns the same `CaptureResult` the
+scrape path returns, now carrying `CaptureMethod` and `CaptureWarnings` (§5).
+
+⚠ **It does NOT own the retry loop or the scrape fallback, and an earlier draft said it did — which was
+not implementable.** Retrying means re-walking the UIA tree to obtain a fresh `W1`/`E`/mask set. That walk
+lives in `PerceptionManager`; a seam handed a finished `CaptureGeometry` record has no way to perform it,
+so the component the spec named as owner could not execute the step it was given. **The CALLER owns the
+loop:** it walks geometry, calls `CaptureWindow`, and on a reported size mismatch walks again and
+re-calls, up to the bound — then performs the scrape fallback itself. `CaptureWindow` REPORTS the
+mismatch; it does not resolve it. *(Panel round 18, Executable-Path Auditor: read as a sequence of
+operations rather than as prose, the step had no component able to run it.)* Exact member names are the plan's; the SHAPE is not, because
 this is the seam the whole design turns on.
 
 ⚠ **The seam needs the native `HWND`, and nothing currently carries it there.** `PrintWindow(hwnd, hdc,
@@ -171,6 +180,35 @@ has no full-desktop analogue.
 
 This introduces the repo's first native interop of this kind: `grep -rn "PrintWindow|BitBlt|GetWindowDC"
 src/` currently returns nothing.
+
+#### The canonical ORDER of operations — stated once, whole
+
+Several guards in this design are individually correct and produce different outcomes depending on which
+runs first. Three rounds each fixed one ordering pair; this list replaces those piecemeal statements so
+there is one place to read the sequence. *(Panel round 18, Executable-Path Auditor, which found a
+minimizing window reaching the retry-and-fallback path instead of its intended refusal purely because the
+relative order of two guards was never stated.)*
+
+For window and element scope, in this order:
+
+1. **Walk the UIA tree** — obtain `W1` (the window rect), `E` (the element rect, or `W1` for window
+   scope), the mask set, and the native `HWND`.
+2. **Guard `W1` for degeneracy, BEFORE the yardstick is computed.** A degenerate `W1` makes the yardstick
+   degenerate, which silently drops the whole mask set. Refuse.
+3. **Compute the yardstick and the mask set** (§2), unclipped for these scopes.
+4. **Take `W2`** — `GetWindowRect(HWND)`. A FALSE return means the window is gone: refuse.
+5. **Terminal target-state guards, before anything conditional:** `W2` degenerate → refuse; window
+   minimized now → refuse. These run FIRST because a window that minimizes mid-capture also changes size,
+   and if the resize check preceded them it would send a minimized window into the retry-and-fallback path
+   — scraping the rect it used to occupy, which now shows whatever is behind it.
+6. **Resize check** — `W1.Size` vs `W2.Size`. On a mismatch, leave this sequence: window scope refuses if
+   the mask set is non-empty and otherwise warns; element scope goes to the caller's retry-and-fallback
+   loop. Neither continues to the crop.
+7. **Crop** (the algorithm below). Its empty-intersection refusal is now reachable only when the sizes
+   AGREE, which narrows it to a provider reporting an element outside its own window.
+8. **Detect** the uniform-canvas conditions (§3) and **encode**, assembling `captureWarnings`.
+
+Full-desktop scope runs the scrape and steps 3 and 8 only, with the yardstick CLIPPED.
 
 #### The invariant that keeps masking correct — state it, do not assume it
 
@@ -478,10 +516,18 @@ behavioural contract, not an implementation detail, and the two scopes need diff
 and it was right to. "The plan owns what to do with that signal" was the spec declining to specify its
 own contract.)*
 
-⚠ **The window rect is not currently available at that site.** `CaptureGeometry`
-(`PerceptionManager.cs:1275`) carries `Bounds` — which for element scope IS the element rect — and no
-window rectangle. The plan must plumb the window rect through. `CaptureGeometry` is a positional record,
-so the same append-only rule applies as for `CaptureResult`.
+⚠ **Neither the window rect NOR the native handle is available at that site.** `CaptureGeometry`
+(`PerceptionManager.cs:1275`) carries `Bounds` — which for element scope IS the element rect — and
+nothing else about the window. The plan must plumb through **both `W1` and the native `HWND`**; see the
+seam note under "The problem" for why the handle is required and why `WindowHandle` is not it.
+`CaptureGeometry` is a positional record, so the same append-only rule applies as for `CaptureResult`.
+*(Panel round 18, Fold Auditor: round 17 added the `HWND` requirement at the seam and left this note
+saying only "the window rect", which is the incomplete-correction shape again — fifth instance.)*
+
+⚠ **`GetWindowRect`'s BOOL return must be checked, not assumed.** If the window is destroyed between the
+walk and the capture, the call FAILS — it does not reliably zero the rectangle, so a design that relies on
+the degenerate guard catching a zeroed struct is relying on a coincidence. Treat a false return as a
+destroyed target and refuse (`ElementNotActionable`). *(Panel round 18, Fold Auditor.)*
 
 ⚠ **Why the clamp is required at all.** §2 already documents that a window moving mid-walk leaves live
 mask rects against a stale capture rect, and calls that race inherent. Under the scrape a stale rect
@@ -882,6 +928,14 @@ should accept knowingly rather than inherit silently. *(Panel round 1, BS-1.)*
 - **Headless** cannot exercise `PrintWindow` — it needs a real window. The seam makes this tractable:
   acquisition becomes injectable, so mask/geometry logic stays headless-testable and only the interop is
   Desktop-category.
+
+  ⚠ **Carrying an `HWND` in `CaptureGeometry` does NOT break that**, though it looks as though it should.
+  The handle is data passed THROUGH the geometry and mask logic to the acquisition seam; nothing between
+  the walk and the seam dereferences it. A headless test constructs a `CaptureGeometry` with any handle
+  value and a fake acquisition, and every crop, yardstick and mask assertion still runs. Only the seam
+  itself needs a real window, which is exactly the split the injectable acquisition buys.
+  *(Panel round 18, Fold Auditor, which flagged the coupling as breaking headless testability — it does
+  not, but the reason it does not was not stated and is not obvious.)*
 - **The yardstick correction needs a headless test** proving an off-screen window's masks SURVIVE under
   the `PrintWindow` yardstick and are dropped under the scrape yardstick. This is the leak-shaped case and
   must not be Desktop-only.
@@ -1601,3 +1655,40 @@ this document is fit for its audience.
 Checked — its own doc comment describes it as pinning "the wire shape" such that "the test cannot pass
 against a projection that has drifted". The spec's description of it as a projection-shape tripwire is
 correct.
+
+### AGY-AFTER adversarial panel — round 18
+
+Seats: Pattern Hunter (five shapes), Fold Auditor (round 17's edits, hardest on the late `HWND`
+requirement), **Executable-Path Auditor** (read the spec as the SEQUENCE OF OPERATIONS a request performs,
+and check it as a program — is every value available from a step that already ran, does a guard read state
+a later step invalidates, is there an unstated ordering where two orders differ). Report:
+`.clavity/scratch/item8-panel/agy-round18.md`. **Verdict: NOT GREEN.** Five folds — and the first clean
+seat of the review:
+
+- **A step had no component able to execute it.** The spec assigned the retry loop and the scrape fallback
+  to `CaptureWindow`, which receives a finished `CaptureGeometry` record — but retrying means re-walking
+  the UIA tree, which that seam cannot do. Ownership moved to the CALLER: `CaptureWindow` REPORTS a size
+  mismatch, the caller re-walks and re-calls, and the caller performs the fallback. This was invisible to
+  every prose reading and obvious the moment the design was read as a program.
+- **An unstated ordering changed the answer.** A window that minimizes mid-capture also changes size, so
+  if the resize check ran before the minimized guard it would enter the retry-and-fallback path and scrape
+  the rect the window used to occupy — returning whatever is now behind it. **The canonical order is now
+  written out ONCE, whole**, replacing three rounds of piecemeal ordering statements.
+- **`GetWindowRect`'s BOOL return must be checked.** A window destroyed between the walk and the capture
+  makes the call FAIL; it does not reliably zero the rectangle, so relying on the degenerate guard to
+  catch a zeroed struct was relying on a coincidence.
+- **The `HWND` requirement had not reached the plumbing note**, which still said only "plumb the window
+  rect through" — fifth instance of the incomplete-correction shape, and the reason a canonical list is
+  better than another amendment.
+- **The headless-testability claim survives the `HWND`, and now says why.** The handle is data passed
+  THROUGH the geometry and mask logic to the seam; nothing between dereferences it, so headless tests
+  construct a geometry with any handle and a fake acquisition. The claim was right and its reason was not
+  obvious, which is why the seat challenged it.
+
+**The Pattern Hunter returned "no new findings" — the first clean seat in eighteen rounds.** Its five
+shapes had produced eleven findings between them; sweeping the current text produced none. Combined with
+round 17's Reader of Record YES, two seats that judge different properties of the document now both report
+it sound.
+
+**Verified, not folded:** `ScreenCapture.cs:40-41` is exactly as the spec describes —
+`catch (Exception ex) when (ex is COMException or ExternalException)` throwing `CaptureUnavailable`.
