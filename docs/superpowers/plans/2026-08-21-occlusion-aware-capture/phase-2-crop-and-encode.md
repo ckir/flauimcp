@@ -442,6 +442,23 @@ git commit -m "feat(capture): Encode takes absolute+reported, method and warning
 
 ### Task 10: `CaptureRectangle` learns its scope — and the third caller is wired explicitly
 
+> ⛔ **EXECUTE TASK 11 BEFORE THIS TASK. Task 10 cannot compile on its own.**
+>
+> Step 3 below calls `UniformCanvasDetector.IsUniform(...)` twice, and **Task 11 is what creates that
+> type** — MEASURED: `grep -rn "class UniformCanvasDetector" src/` returns nothing at this point in the
+> plan. Running Task 10 first is `CS0103`, twice.
+>
+> The dependency is strictly one-directional: grepping Task 11's whole body for `CaptureRectangle`,
+> `CaptureScope`, `warningsSoFar` or "Task 10" returns **nothing**, so Task 11 stands alone and simply
+> moves ahead of Task 10. Neither task's content changes for this reason; only the order does.
+>
+> *(AGY-FIRST consult 2026-08-21, option A, peer and driver ALIGNED. The peer's framing: "its consumer
+> must be built after the leaf it calls — this is the only correct topological sort", and "phase labels
+> are semantic groupings for human readers; they do not dictate execution order when the compiler
+> requires the callee to exist before the caller." Splitting the task risked the detector calls drifting
+> out of sync; merging would entangle a broad signature refactor with a new algorithm in one commit.
+> Phase 0 was a hard gate; Phases 1–6 never were.)*
+
 The scrape seam now has three callers with divergent requirements: full-desktop must evaluate `desktopCanvasUniform`, a fallback scrape must not and carries a `scrapeFallback*` code its caller decided, and the OCR path must not either.
 
 ⚠⚠ **THIS TASK HAD A BUILD-BREAKING OMISSION AND IT IS FIXED BELOW: there are FOUR call sites, not three.**

@@ -4,6 +4,11 @@
 
 ### Task 11: `UniformCanvasDetector` — settle the sampling by measurement
 
+> ⚠ **THIS TASK RUNS BEFORE TASK 10, ahead of the rest of Phase 3.** Task 10 calls
+> `UniformCanvasDetector.IsUniform(...)` and cannot compile until this task creates it. This task has no
+> dependency on Task 10 in return, so it simply moves earlier; its content is unchanged. Execution order
+> is therefore **… 9 → 11 → 10 → 12 → 13 …**. See the banner on Task 10 for the full reasoning.
+
 This is **risk 5**. The predicate's PURPOSE is settled by the spec and must not grow into a correctness gate: it tells an agent this image may not be usable and that the UIA tree is the fallback.
 
 **Its acceptance criteria are fixed, so this is a test rather than an observation.** The predicate and its sampling strategy pass if and only if:
