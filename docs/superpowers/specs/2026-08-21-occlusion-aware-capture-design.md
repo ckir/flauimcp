@@ -314,11 +314,25 @@ So the boundaries are specified as DATA, once:
 
 | Boundary | IN | OUT |
 |---|---|---|
-| caller → geometry walk | window handle, optional `@ref`, `clipToVirtualScreen` | `W1`, `E`, mask rects, native `HWND`, escalations, denied/minimized flags, and any warnings decided at geometry time (`popupsNotRendered`) |
-| caller → `CaptureWindow` | that geometry, `maxWidth`, **and the caller's accumulated warning list** | an OUTCOME: a completed `CaptureResult`, a bare "resized" signal, or a bare "timed out" signal |
-| caller → `CaptureRectangle` (scrape) | bounds, mask rects, `maxWidth`, **which scope it serves**, **and the caller's accumulated warning list** | a completed `CaptureResult` |
+| caller → geometry walk | window handle, optional `@ref`, **scope**, `clipToVirtualScreen` (full-desktop passes `true`; there is no `HWND` on that path) | `W1`, `E`, mask rects, native `HWND`, escalations, denied/minimized flags, and the warnings decided at geometry time (`popupsNotRendered`) |
+| caller → `CaptureWindow` | that geometry, `maxWidth`, **the scope it serves**, and **this attempt's warning list** | an OUTCOME: a completed `CaptureResult`, a bare "resized" signal, or a bare "timed out" signal |
+| caller → `CaptureRectangle` (scrape) | bounds, mask rects, `maxWidth`, **the scope it serves**, and **this attempt's warning list** | a completed `CaptureResult` |
 | either seam → `Encode` | `src`, `absolute`, `reported`, mask rects, `maxWidth`, `method`, `warnings` | `CaptureResult` |
-| caller → tool response | `CaptureResult` | the JSON metadata of §5 |
+| caller → tool response | the `CaptureResult` **and the `CaptureGeometry`** — `escalations` and `unmaskedProcesses` live on the latter, not on the result | the JSON metadata of §5 |
+
+⚠ **Both seams take the SCOPE.** An earlier version of this table gave it only to the scrape seam, while
+canonical step 6 requires `CaptureWindow` to branch window-versus-element on a resize. It cannot infer the
+scope from `E == W1` — an element that exactly covers its window would be routed down the wrong branch.
+*(Panel round 29, Fold Auditor: round 28 added this table and omitted from one row the very field it had
+just added to the other.)*
+
+⚠ **The warning list is scoped to the ATTEMPT, not to the request.** Each retry re-walks the UIA tree, so
+each attempt produces its OWN geometry-time warnings. If attempt 1 saw popup roots and attempt 2 did not,
+carrying attempt 1's `popupsNotRendered` into the result would state something false about the image that
+was actually returned. **Discard a failed attempt's warnings with the attempt.** The caller's own
+`scrapeFallback*` code is appended afterwards, on the fallback path, and is the one warning that outlives
+any single attempt. *(Panel round 29, Type-Flow Auditor — exactly the lifetime question this seat was
+asked to check.)*
 
 ⚠ **Two rules follow from the table and are the point of having it.** First, **warnings only ever travel
 INWARD**: whoever decides a warning passes it down, and only `Encode` assembles the final list — no
@@ -346,8 +360,16 @@ For window and element scope, in this order:
    Step 5's minimized check does NOT replace this one; it catches a window that minimizes AFTER the walk.
    *(Panel round 19, Fold Auditor: the canonical list had left them out while the prose still referred to
    them, which is the second-source-of-truth failure the list was supposed to end.)*
-2. **Guard `W1` for degeneracy, BEFORE the yardstick is computed.** A degenerate `W1` makes the yardstick
-   degenerate, which silently drops the whole mask set. Refuse.
+2. **Guard `W1` for degeneracy, BEFORE the yardstick is computed — INSIDE the geometry method, not in the
+   caller.** A degenerate `W1` makes the yardstick degenerate, which silently drops the whole mask set.
+   Refuse.
+   ⚠ **The caller cannot perform this guard, and an earlier draft said it was the caller's.** Steps 1 and 3
+   are the same method call: the walk produces the mask rects, and producing them REQUIRES the yardstick,
+   so by the time a caller holds `W1` the yardstick has already been computed and the mask set may already
+   have been dropped. There is no point between them for a caller to stand. The guard goes where the
+   ordering is enforceable — immediately after `captureBounds` is read and before the yardstick line
+   (`PerceptionManager.cs:915` → `:935`). *(Panel round 29, Type-Flow Auditor: the ordering was right and
+   the OWNER was wrong, and the type made the stated ownership impossible.)*
 3. **Compute the yardstick and the mask set** (§2), unclipped for these scopes.
 4. **Take `W2`** — `GetWindowRect(HWND)`. A FALSE return means the window is gone: refuse.
 5. **Terminal target-state guards, before anything conditional:** `W2` degenerate → refuse; window
@@ -374,7 +396,18 @@ For window and element scope, in this order:
    allocated one, so an engineer following the list literally reaches the crop with no image.)*
 7. **Crop** (the algorithm below). Its empty-intersection refusal is now reachable only when the sizes
    AGREE, which narrows it to a provider reporting an element outside its own window.
-8. **Detect** the uniform-canvas conditions (§3) and **encode**, assembling `captureWarnings`.
+8. **Encode**, assembling `captureWarnings`. ⚠ **The detectors do NOT run here** — they run where their
+   operands exist, which is earlier and in two different places:
+   - **`uniformCanvas`** is evaluated on the FULL window bitmap, between step 6b and step 7 — §3 requires
+     it to see the uncropped image, which no longer exists after step 7.
+   - **`elementCanvasUniform`** is evaluated on `src` AFTER step 7, since it is by definition about the
+     cropped region.
+   - **`desktopCanvasUniform`** is evaluated by the scrape seam on its own image.
+
+   Each result is appended to this attempt's warning list, which is what `Encode` receives. `Encode`
+   assembles; it does not detect — it never sees the uncropped bitmap and cannot. *(Panel round 29,
+   Type-Flow Auditor, raised as its furthest-point-before-guessing and correctly filed as a finding: the
+   step said "detect and encode" while the data flow gave `Encode` only the cropped `src`.)*
    ⚠ `uniformCanvas` and `elementCanvasUniform` run **only when the backend was `printWindow`**. On any
    scrape — full-desktop, or an element/window scope that fell back — there is no full-window bitmap
    distinct from the captured region, so the two-stage comparison has no second operand. A full-desktop
@@ -2288,3 +2321,42 @@ component required to produce something the signature reaching it cannot carry. 
 impossible in composition. **"What crosses each boundary" now specifies the data flow as a table**, with
 the two rules that fall out of it: warnings travel only inward, and every outcome a component can
 experience must have a representation in what it returns.
+
+### AGY-AFTER adversarial panel — round 29
+
+Seats: Fold Auditor (round 28's edits, hardest on the new data-flow table), **Type-Flow Auditor** (aimed
+where the table does NOT reach), Convergence Assessor eighth pass. Report:
+`.clavity/scratch/item8-panel/agy-round29.md`. **Verdict: NOT GREEN.** Four folds plus two promoted from
+its below-floor list — and every one is the same class:
+
+- **The table gave `scope` to one seam and not the other**, while canonical step 6 requires `CaptureWindow`
+  to branch window-versus-element. It cannot infer the scope from `E == W1`: an element exactly covering
+  its window would take the wrong branch. Round 28 added this table and omitted from one row the field it
+  had just added to the other.
+- **The `W1` guard could not be the caller's, because the type makes that ownership impossible.** Steps 1
+  and 3 are one method call — the walk produces the mask rects, and producing them requires the yardstick
+  — so by the time a caller holds `W1`, the yardstick has run and the mask set may already be gone. There
+  is no point between them for a caller to stand. The guard moves inside the geometry method, between
+  `PerceptionManager.cs:915` and `:935`. **The ordering was right; the owner was wrong.**
+- **Warnings leaked across retry attempts.** Each retry re-walks, so each attempt has its own geometry-time
+  warnings; carrying attempt 1's `popupsNotRendered` into attempt 2's successful result states something
+  false about the image actually returned. The list is now scoped to the ATTEMPT, with the caller's
+  `scrapeFallback*` the one code that outlives any single attempt.
+- **Step 8 said "detect and encode" while the data flow gave `Encode` only the cropped `src`.** §3 requires
+  `uniformCanvas` to see the UNCROPPED bitmap, which no longer exists by then. Detection now happens where
+  its operands do: `uniformCanvas` between 6b and 7, `elementCanvasUniform` after 7, `desktopCanvasUniform`
+  in the scrape seam. `Encode` assembles and does not detect.
+- **Promoted from below the floor:** the response row's IN column omitted `CaptureGeometry`, where
+  `escalations` and `unmaskedProcesses` actually live; and row 1 listed `clipToVirtualScreen` uniformly
+  without noting full-desktop has no `HWND`. Both are small — but this document's completeness claims have
+  now been wrong three times, and a table specifying data flow is exactly such a claim.
+
+**The Convergence Assessor refused the exit and answered the extra question directly.** Asked whether
+defects-in-fixes indicate convergence or genuinely new defects, it said the latter, and gave the reason:
+*"the review spent 28 rounds tweaking isolated control-flow rules without tracing the data required to
+evaluate them"* — a fix that branches on `scope` without passing `scope` is a structural failure, not an
+editing slip. **That read is accepted.** The design's LOGIC has been stable for roughly ten rounds; what
+has been churning is its component and type decomposition, which this spec has been specifying
+INCREMENTALLY — the same piecemeal habit that produced the ordering defects rounds 7 and 18 fixed by
+writing a block whole. The data-flow table was the first move toward writing it whole; this round made it
+correct.
