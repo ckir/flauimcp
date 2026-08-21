@@ -29,6 +29,14 @@ scrape fallback, returning the same `CaptureResult` the scrape path returns — 
 `CaptureMethod` and `CaptureWarnings` (§5). Exact member names are the plan's; the SHAPE is not, because
 this is the seam the whole design turns on.
 
+⚠ **The seam needs the native `HWND`, and nothing currently carries it there.** `PrintWindow(hwnd, hdc,
+flags)` takes an OS window handle. `CaptureGeometry` (`PerceptionManager.cs:1275`) carries `Bounds`,
+`MaskRects`, `Minimized`, `Denied`, `DeniedProcess` and `Escalations` — no handle — and the `WindowHandle`
+the tool layer holds is this server's own `wN` identifier, not an `HWND`. So the plan must plumb the
+native handle to this seam ALONGSIDE `W1`; §1's instruction to "plumb the window rect through" is
+necessary and not sufficient. *(Panel round 17, Fold Auditor: the seam as first written could not have
+called the API it exists to call.)*
+
 `CaptureRectangle` acquires with `Capture.Rectangle(absolute, null)` — a scrape of that screen region. So
 capturing a background window returns **a photograph of whatever occludes it**, confidently and silently.
 Nothing detects it.
@@ -84,9 +92,20 @@ image are different acts", but it is a judgement call and it is yours.
 Every one of these is paid in a spurious warning or a refusal. **None is paid in a leak** — that is the
 invariant the whole design is built to hold.
 
-**4. Two things the plan must MEASURE before this ships**, either of which could change the design:
-whether `PrintWindow` blocks on a window that is not pumping messages (risk 2), and whether it can return
-a stale composition (risk 3). Both are currently unmeasured and are labelled as such.
+**4. FIVE measurements the plan must take before this ships — two of which could change the DESIGN, not
+just its tuning.**
+
+| Measurement | Risk | Could it change the design? |
+|---|---|---|
+| Does `PrintWindow` block on a window that is not pumping messages? | 2 | **YES** — a bounded wait and a fallback depend on the answer |
+| Can `PrintWindow` return a STALE composition? | 3 | **YES** — it is a leak class with no mitigation designed for it |
+| Does a Chromium browser render? Does an Electron app? (both, separately) | 1 | no — but a failure would narrow where the feature is usable |
+| Do GDI handle counts stay flat across repeated captures, including every refusal path? | 4 | no — a pass/fail gate on the implementation |
+| What sampling strategy does the uniform-colour detector use? | 5 | no — tuning, with acceptance criteria already fixed in §3 |
+
+The first two are unmeasured and labelled as such throughout. *(Panel round 17, Pattern Hunter: this
+summary said "two things the plan must measure before this ships" while the risks section mandates five —
+the fifth shape, a summary that has already drifted from what it summarises, found on its first sweep.)*
 
 ## Evidence — MEASURED, not assumed
 
@@ -1006,10 +1025,14 @@ for each failure, or NONE — not whether the area was "covered".)*
 5. **The uniform-colour detector's sampling** — full-bitmap versus a grid — is a cost/accuracy tradeoff
    the plan settles, with a measurement, not a guess.
 6. **`ScreenCapture.CaptureRectangle` has one other caller** (full-desktop, `ScreenshotTools.cs:49`). The
-   plan must confirm the signature change does not alter its behaviour — and must SPECIFY that change,
-   which this spec deliberately does not: whether the new path is a parameter, an overload, or a separate
-   method is a decomposition decision the plan makes explicitly rather than by implication.
-   *(Panel round 1, LI-2.)*
+   plan must confirm the signature change does not alter its behaviour. **The change itself is now
+   SPECIFIED rather than deferred:** the full-desktop call gains `clipToVirtualScreen: true` (§2), and
+   window/element scope move to the `CaptureWindow` seam (see "The problem"). An earlier version of this
+   risk said the spec "deliberately does not" specify it, which stopped being true once those two blocks
+   were written out. What remains the plan's is `CaptureWindow`'s internal decomposition and the exact
+   member names. *(Panel round 1, LI-2, for the original finding; panel round 17, Fold Auditor, for the
+   contradiction the later folds created — the fourth shape, a rule stated one way here and another way
+   elsewhere.)*
 7. **The width ceiling bounds the payload, never the allocation.** `MaxCaptureWidth = 1920`
    (`ScreenCapture.cs:17`) is applied inside `Encode` (`:47-50`), after the source bitmap exists. Under
    the scrape that changed nothing; under `PrintWindow` the allocation is dictated by the window's own
@@ -1546,3 +1569,35 @@ the OPERATOR who must decide whether to build it, not as an implementer or audit
 **Both recurring shapes have now been found FOUR times each.** That is no longer a pattern worth noting;
 it is a property of how this document was written, and the Pattern Hunter seat should be considered
 permanent for any artifact revised this many times.
+
+### AGY-AFTER adversarial panel — round 17
+
+Seats: Pattern Hunter (four shapes, plus a FIFTH added because round 16 created the conditions for it —
+a new summary section that duplicates facts stated elsewhere), Fold Auditor (round 16's edits, hardest on
+the newly named seam), Reader of Record second pass. Report:
+`.clavity/scratch/item8-panel/agy-round17.md`. **Verdict: NOT GREEN.** Three folds — but one seat came
+back with a clean YES:
+
+- **The seam named in round 16 could not have called the API it exists to call.** `CaptureWindow(geo, ...)`
+  was given `CaptureGeometry`, which carries no window handle, while `PrintWindow(hwnd, ...)` needs one —
+  and the `WindowHandle` the tool layer holds is this server's own `wN` identifier, not an `HWND`. The
+  plan must plumb the native handle alongside `W1`. A late-named seam is exactly where this hides: the
+  block reads as a summary of settled decisions, so nobody checks whether its arguments are sufficient.
+- **The new ratify section had ALREADY drifted from what it summarises**, on its first sweep. It said
+  "two things the plan must MEASURE before this ships" while the risks section mandates five. Replaced
+  with a table of all five, marking which two could change the DESIGN rather than its tuning. The fifth
+  shape earned its place immediately.
+- **Risk 6 still said the spec "deliberately does not" specify the signature change** — which stopped
+  being true two rounds earlier, when §2's yardstick block and the acquisition "after" block were written
+  out. Fourth shape: a rule stated one way in one place and another way elsewhere.
+
+**The Reader of Record answered YES.** Asked the same question it answered "no" to in round 16 — can the
+operator make the decision from this document — it said the ratifications are now findable in one place
+with their costs stated plainly, and that the structural requirement has been met. That is the first
+unqualified yes any seat has given in this review, and it is on the question that actually decides whether
+this document is fit for its audience.
+
+**Verified, not folded:** the peer named `ListWindowsProjectionShapeTests.cs` as an unchecked claim.
+Checked — its own doc comment describes it as pinning "the wire shape" such that "the test cannot pass
+against a projection that has drifted". The spec's description of it as a projection-shape tripwire is
+correct.
