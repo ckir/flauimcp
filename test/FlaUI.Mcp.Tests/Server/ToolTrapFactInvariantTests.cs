@@ -22,6 +22,41 @@ public class ToolTrapFactInvariantTests
     /// exactly the failure it exists to catch — trim the description instead.
     private const int DescriptionBudget = 1500;
 
+    /// <summary>Per-tool ceilings, each with its reason. ⚠⚠ THIS IS NOT AN ESCAPE HATCH, AND THE
+    /// DIFFERENCE IS THE WHOLE DESIGN: the general budget above is UNCHANGED for the other 48 tools, an
+    /// excepted tool still has a HARD ceiling rather than none, and adding an entry here is a visible,
+    /// reviewable act that has to be argued for in this comment. Raising `DescriptionBudget` itself to
+    /// fit one tool is what the guard forbids, because it silently loosens all 49 at once.
+    ///
+    /// <para>`ScreenshotTools.DesktopScreenshot` — OPERATOR DECISION, 2026-08-22, on measurement. Item 8
+    /// gave this one tool two capture BACKENDS where every other tool has one, and the caller must be
+    /// told things that simply did not exist when the 1500 figure was set just above the then-longest
+    /// description (1403, which carried none of this):</para>
+    /// <list type="bullet">
+    /// <item>which backend produced the image, and that it must be CHECKED rather than inferred from the
+    /// scope requested, because window scope silently falls back;</item>
+    /// <item>that coordinates from a `printWindow` capture are NOT clickable — the window may be occluded
+    /// or off-screen, so a click computed from them lands on whatever is really drawn there. This is a
+    /// WRONG-ACTION hazard, not a misread-data one;</item>
+    /// <item>that an occluded Chromium-family window can suspend rendering and return an arbitrarily old
+    /// frame that re-capturing cannot refresh (Phase 0 gate answer 3, accepted as a documentation item
+    /// because no mitigation exists);</item>
+    /// <item>that `unmaskedProcesses`/`maskEscalations`/`escalated` describe a WHOLE-DESKTOP walk on a
+    /// fallback — the privacy-relevant one, since it changes what an entry means.</item>
+    /// </list>
+    /// <para>MEASURED before this exception was added: the description compressed as hard as it could be
+    /// without dropping one of those facts is 1711 chars. The only single omissions that reach 1500 are
+    /// the freshness limit (exactly 1500) or the clickability warning (1559, still over) — both
+    /// behaviour-changing. The ceiling here is set just above the measured 1711, on the same principle as
+    /// the general budget, so this tool cannot drift either.</para></summary>
+    private static readonly System.Collections.Generic.Dictionary<string, int> PerToolBudget = new()
+    {
+        ["ScreenshotTools.DesktopScreenshot"] = 1750,
+    };
+
+    private static int BudgetFor(string tool) =>
+        PerToolBudget.TryGetValue(tool, out var b) ? b : DescriptionBudget;
+
     private static string Description(Type type, string method)
     {
         var m = type.GetMethod(method) ?? throw new InvalidOperationException($"{type.Name}.{method} not found");
@@ -104,12 +139,34 @@ public class ToolTrapFactInvariantTests
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
                 .Where(m => m.GetCustomAttributesData().Any(d => d.AttributeType == typeof(McpServerToolAttribute)))
                 .Select(m => (Name: $"{t.Name}.{m.Name}", Len: m.GetCustomAttribute<DescriptionAttribute>()?.Description.Length ?? 0)))
-            .Where(x => x.Len > DescriptionBudget)
-            .Select(x => $"{x.Name} = {x.Len} chars")
+            .Where(x => x.Len > BudgetFor(x.Name))
+            .Select(x => $"{x.Name} = {x.Len} chars (ceiling {BudgetFor(x.Name)})")
             .ToList();
 
         Assert.True(over.Count == 0,
-            $"tool descriptions over {DescriptionBudget} chars — hoisting must not metastasize:\n"
-            + string.Join("\n", over));
+            $"tool descriptions over their ceiling ({DescriptionBudget} unless listed in PerToolBudget) "
+            + "— hoisting must not metastasize:\n" + string.Join("\n", over));
+
+        // ⚠ AN EXCEPTION FOR A TOOL THAT NO LONGER NEEDS ONE IS ITSELF ROT. Without this, a later trim
+        // could bring the description back under 1500 and the raised ceiling would linger, quietly
+        // re-opening the room the guard exists to deny. An entry must EARN its place every run.
+        var unnecessary = PerToolBudget.Keys
+            .Where(name =>
+            {
+                var len = typeof(WindowTools).Assembly.GetTypes()
+                    .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
+                    .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                        .Where(m => m.GetCustomAttributesData().Any(d => d.AttributeType == typeof(McpServerToolAttribute)))
+                        .Select(m => (Name: $"{t.Name}.{m.Name}", Len: m.GetCustomAttribute<DescriptionAttribute>()?.Description.Length ?? 0)))
+                    .Where(x => x.Name == name)
+                    .Select(x => (int?)x.Len)
+                    .FirstOrDefault();
+                return len is not null && len <= DescriptionBudget;
+            })
+            .ToList();
+
+        Assert.True(unnecessary.Count == 0,
+            "these tools now fit the general budget - REMOVE their PerToolBudget entry rather than "
+            + $"leaving headroom nobody is using:\n{string.Join("\n", unnecessary)}");
     }
 }

@@ -18,10 +18,22 @@ namespace FlaUI.Mcp.Core.Perception;
 public sealed record CaptureResult(byte[] Png, int X, int Y, int W, int H, double ScaleApplied, int Redactions,
                                    string CaptureMethod, IReadOnlyList<CaptureWarning> CaptureWarnings);
 
-/// <summary>Screen-region capture (no occlusion handling — callers focus-first; no UIA element reads).
-/// Captures by absolute screen rectangle so it can run OFF the query STA (spec §8). Paints black
-/// redaction rects (live bounds passed in), clamps width to a hard ceiling, PNG-encodes. Headless/
-/// disconnected sessions are detected before capture so we never hand back a black frame.</summary>
+/// <summary>Screen-region and per-window capture. Captures by absolute screen rectangle so it can run
+/// OFF the query STA (spec §8). Paints black redaction rects (live bounds passed in), clamps width to a
+/// hard ceiling, PNG-encodes.
+///
+/// TWO BACKENDS. CaptureRectangle SCRAPES a screen rectangle — used by full-desktop, by the OCR path,
+/// and as the fallback when PrintWindow cannot deliver. CaptureWindow renders a window's OWN content
+/// via PrintWindow, so it is unaffected by occlusion; window and element scope use it.
+///
+/// ⚠ The old promise that "headless/disconnected sessions are detected before capture so we never hand
+/// back a black frame" NO LONGER HOLDS in general. The session guard still runs (ScreenshotTools.cs
+/// refuses a non-renderable desktop), but PrintWindow can return a blank render for reasons no guard
+/// catches — MEASURED: its BOOL return is True on every call, including every all-black one. That is
+/// what the uniformCanvas / elementCanvasUniform / desktopCanvasUniform warnings exist to report.
+///
+/// ⚠ Callers no longer focus-first, and must not: the whole point is capturing without touching
+/// focus.</summary>
 public static class ScreenCapture
 {
     private const int MaxCaptureWidth = 1920; // hard ceiling — bounds base64 payload even if maxWidth<=0
