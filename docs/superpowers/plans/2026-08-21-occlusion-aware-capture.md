@@ -734,9 +734,20 @@ public class CaptureOutcomeTests
 
     // Without a TimedOut case the risk-2 scrape fallback is UNREACHABLE: the caller owns the fallback and
     // can only act on what the seam tells it.
+    //
+    // TargetTransient exists for the same structural reason: a degenerate W2 is RETRYABLE, and without a
+    // case for it the seam could only throw -- making the identical condition terminal at W2 while it is
+    // recoverable at W1.
     [Fact]
-    public void There_are_exactly_three_cases()
-        => Assert.Equal(3, System.Enum.GetValues<CaptureOutcomeKind>().Length);
+    public void There_are_exactly_four_cases()
+        => Assert.Equal(4, System.Enum.GetValues<CaptureOutcomeKind>().Length);
+
+    [Fact]
+    public void The_target_transient_signal_carries_no_payload()
+    {
+        Assert.Equal(CaptureOutcomeKind.TargetTransient, CaptureOutcome.TargetTransient.Kind);
+        Assert.Null(CaptureOutcome.TargetTransient.Result);
+    }
 }
 ```
 
@@ -762,6 +773,20 @@ public enum CaptureOutcomeKind
     /// <summary>PrintWindow did not return within the bound. No image. The caller falls back to the
     /// scrape with scrapeFallbackTargetUnresponsive.</summary>
     TimedOut,
+    /// <summary>W2 had zero or negative extents — the window has no renderable area RIGHT NOW. No image.
+    /// RETRYABLE, and that is the whole reason this case exists separately from a refusal.
+    ///
+    /// ⚠ It exists because the design already treats the IDENTICAL condition at W1 as a retryable
+    /// transient: "a window caught mid-open or mid-animation can report a degenerate rect for a frame —
+    /// exactly the transient the retry loop exists to absorb". Throwing here while returning a soft
+    /// signal there would make the same physical condition terminal or recoverable purely according to
+    /// which of two reads a few milliseconds apart happened to see it, and would defeat the retry loop
+    /// for precisely the animating window it was built for.
+    /// *(AGY-AFTER panel over this plan, round 3, Axiom Breaker.)*
+    ///
+    /// Surfaces to the AGENT as ElementNotActionable once retries exhaust — the same code the W1 case
+    /// surfaces as. The agent-facing code is not the internal signal.</summary>
+    TargetTransient,
 }
 
 /// <summary>What CaptureWindow returns. It WRAPS a CaptureResult rather than being one, because the seam
@@ -778,13 +803,14 @@ public sealed record CaptureOutcome(CaptureOutcomeKind Kind, CaptureResult? Resu
     public static CaptureOutcome Completed(CaptureResult result) => new(CaptureOutcomeKind.Completed, result);
     public static readonly CaptureOutcome Resized = new(CaptureOutcomeKind.Resized, null);
     public static readonly CaptureOutcome TimedOut = new(CaptureOutcomeKind.TimedOut, null);
+    public static readonly CaptureOutcome TargetTransient = new(CaptureOutcomeKind.TargetTransient, null);
 }
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureOutcomeTests"`
-Expected: PASS — 4 passed.
+Expected: PASS — 5 passed.
 
 - [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
 
@@ -2057,14 +2083,19 @@ public class CaptureWindowTests
 
     // F6 measured a minimized window's placeholder as 160x28 -- POSITIVE extents. An extents check alone
     // would pass it and yield a 160x28 image that is not the window's content at all.
+    // ⚠ REPORTED, NOT THROWN. A degenerate W2 is the SAME physical condition as a degenerate W1, which
+    // the design treats as a retryable transient because an animating or mid-open window reports one for
+    // a frame. Throwing here would make that condition terminal or recoverable purely according to which
+    // of two reads milliseconds apart happened to catch it -- and would defeat the retry loop for exactly
+    // the animating window it exists for.
     [Fact]
-    public void A_degenerate_W2_refuses()
+    public void A_degenerate_W2_reports_a_retryable_transient_rather_than_refusing()
     {
         var w1 = new Rectangle(100, 100, 400, 300);
-        var ex = Assert.Throws<ToolException>(() =>
-            Run(Geo(w1, w1), new Rectangle(100, 100, 0, 300), CaptureScope.Window,
-                FakeWindowImageSource.Solid(Color.White)));
-        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+        var o = Run(Geo(w1, w1), new Rectangle(100, 100, 0, 300), CaptureScope.Window,
+                    FakeWindowImageSource.Solid(Color.White));
+        Assert.Equal(CaptureOutcomeKind.TargetTransient, o.Kind);
+        Assert.Null(o.Result);
     }
 
     [Fact]
@@ -2259,6 +2290,10 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
         // including the coordinator's circuit-breaker path, which skips this method entirely.
         var w2 = GuardTargetState(geo.NativeWindowHandle, w2Probe, minimizedProbe);
 
+        // A degenerate W2 is REPORTED, not thrown: the window has no renderable area right now, which an
+        // animating window can be true of for a single frame. Same treatment as a degenerate W1.
+        if (w2.Width <= 0 || w2.Height <= 0) return CaptureOutcome.TargetTransient;
+
         var w1 = geo.WindowBounds;
         var warnings = warningsSoFar;
 
@@ -2340,12 +2375,13 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
                 "re-list windows and retry against a live handle");
         var w2 = w2n.Value;
 
-        if (w2.Width <= 0 || w2.Height <= 0)
-            throw new ToolException(ToolErrorCode.ElementNotActionable,
-                "The target window has no renderable area (zero or negative extents).",
-                "restore or resize the window, then retry");
-
-        // ⚠ NOT covered by the extents check above. F6 MEASURED a minimized window's placeholder rect as
+        // ⚠ DEGENERATE EXTENTS ARE **NOT** CHECKED HERE, AND THAT IS DELIBERATE. This method raises only
+        // the TERMINAL conditions -- destroyed and minimized -- because a degenerate rect is a RETRYABLE
+        // transient (an animating or mid-open window reports one for a frame), and throwing it from a
+        // shared guard would make it terminal for every caller. Each caller checks extents itself and
+        // routes the case into the retry loop. See CaptureOutcomeKind.TargetTransient.
+        //
+        // ⚠ NOT covered by any extents check anyway. F6 MEASURED a minimized window's placeholder rect as
         // -32000,-32000 with extents 160x28 -- POSITIVE. It would pass, and yield a 160x28 image that is
         // not the window's content at all.
         if ((minimizedProbe ?? DefaultMinimizedProbe)(hwnd))
@@ -2956,9 +2992,16 @@ public sealed class WindowCaptureCoordinator
                 ? new[] { CaptureWarnings.For(CaptureWarnings.PopupsNotRendered) }
                 : Array.Empty<CaptureWarning>();
 
-            // Steps 4-8, inside the seam.
-            var outcome = ScreenCapture.CaptureWindow(geo, maxWidth, scope, warnings, _source,
+            // Steps 4-8, inside the seam. The in-flight marker brackets the acquisition so a CONCURRENT
+            // request for the same window can see that this one is stuck before any timeout is recorded.
+            CaptureOutcome outcome;
+            _breaker?.BeginAcquisition(geo.NativeWindowHandle);
+            try
+            {
+                outcome = ScreenCapture.CaptureWindow(geo, maxWidth, scope, warnings, _source,
                                                       _opts.TimeoutMs, _w2Probe, _minimizedProbe);
+            }
+            finally { _breaker?.EndAcquisition(geo.NativeWindowHandle); }
 
             switch (outcome.Kind)
             {
@@ -2974,6 +3017,16 @@ public sealed class WindowCaptureCoordinator
                     return new WindowCaptureOutcome(
                         Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive),
                         geo);
+
+                case CaptureOutcomeKind.TargetTransient:
+                    // A degenerate W2 -- the window has no renderable area RIGHT NOW. Identical treatment
+                    // to a degenerate W1: absorb it, because an animating or mid-open window reports one
+                    // for a frame. Terminal only when the budget is spent, and it surfaces to the agent
+                    // as the SAME code the W1 case does.
+                    if (attempt < _opts.MaxAttempts) continue;
+                    throw new ToolException(ToolErrorCode.ElementNotActionable,
+                        "The target window reported no renderable area on every attempt.",
+                        "restore or resize the window, then retry");
 
                 case CaptureOutcomeKind.Resized:
                     if (attempt < _opts.MaxAttempts) continue;
@@ -3168,13 +3221,15 @@ public class BookendWalkTests
         Assert.Equal("printWindow", r.Result.CaptureMethod);   // NOT a refusal
     }
 
-    // ⚠ A BOOKEND WALK THAT THROWS MUST NOT DISCARD A GOOD IMAGE AS AN ERROR. The image is already in
-    // hand; what failed is the CONFIRMATION. Unguarded, this escaped CaptureAsync and turned a successful
-    // capture into a refusal -- and on ELEMENT scope it introduced a terminal refusal the design says
-    // that path does not have. A failed confirmation is treated as a MISMATCH: retry, then the scope's
-    // own terminal outcome.
+    // ⚠ A BOOKEND WALK THAT THROWS IS A FAILED CONFIRMATION, NOT AN ESCAPING ERROR. Unguarded it escaped
+    // CaptureAsync and discarded a good image already in hand. It is now treated as a MISMATCH -- retry,
+    // then the bookend's own terminal outcome.
+    //
+    // The walk here throws ElementNotActionable while the coordinator's refusal is RedactionUnmaskable,
+    // so this proves the coordinator's OWN defined outcome surfaces rather than the walk's exception
+    // simply passing through. Those two being the same code would make this test vacuous.
     [Fact]
-    public async Task A_bookend_walk_that_throws_falls_back_rather_than_propagating_for_element_scope()
+    public async Task A_bookend_walk_that_throws_becomes_the_defined_refusal_not_a_passthrough()
     {
         var w1 = new Rectangle(0, 0, 400, 300);
         var e  = new Rectangle(50, 50, 100, 80);
@@ -3185,8 +3240,8 @@ public class BookendWalkTests
             call++;
             // Odd calls are the pre-capture walk; even calls are the bookend, which always throws.
             if (call % 2 == 0)
-                throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                    "could not determine the redacted regions", "retry once the UI has settled");
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "the window vanished mid-confirmation", "re-list windows and retry");
             return Task.FromResult(new CaptureGeometry(e, new[] { mask }, false, false, null,
                 Array.Empty<MaskEscalationEntry>(), w1, new IntPtr(0x1234), false));
         });
@@ -3196,8 +3251,36 @@ public class BookendWalkTests
             scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
                                                              b.Height, 1.0, m.Count, "screenScrape", warns));
 
-        var r = await c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0);
-        Assert.Equal("screenScrape", r.Result.CaptureMethod);   // fell back, did NOT throw
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0));
+        // The coordinator's OWN outcome, not the walk's exception passing through.
+        Assert.Equal(ToolErrorCode.RedactionUnmaskable, ex.Code);
+    }
+
+    // ⚠ A BOOKEND EXHAUSTION REFUSES ON ELEMENT SCOPE TOO -- unlike a RESIZE exhaustion, which falls back
+    // to the scrape. The difference is what the failure PROVES: a resize proves a geometry mismatch and
+    // says nothing about the masks, while a bookend mismatch is direct evidence the mask set MOVED.
+    // Scraping with rects we have proven stale would ship an under-redacted image.
+    [Fact]
+    public async Task A_moving_mask_set_refuses_for_ELEMENT_scope_too_and_never_scrapes()
+    {
+        int n = 0;
+        var e = new Rectangle(50, 50, 100, 80);
+        var walk = new Func<WindowHandle, string?, Task<CaptureGeometry>>(
+            (_, _) => Task.FromResult(new CaptureGeometry(e,
+                new[] { new Rectangle(60, 60 + (n++ * 7), 20, 10) }, false, false, null,
+                Array.Empty<MaskEscalationEntry>(), W, new IntPtr(0x1234), false)));
+        bool scraped = false;
+        var c = new WindowCaptureCoordinator(walk, FakeWindowImageSource.Solid(Color.White),
+            new CaptureRetryOptions(3, 1000),
+            w2Probe: _ => W, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => { scraped = true; return new CaptureResult(Array.Empty<byte>(),
+                b.X, b.Y, b.Width, b.Height, 1.0, m.Count, "screenScrape", warns); });
+
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0));
+        Assert.Equal(ToolErrorCode.RedactionUnmaskable, ex.Code);
+        Assert.False(scraped, "a proven-stale mask set must never be painted onto a scrape");
     }
 
     // A window whose masked content animates continuously never settles. Window scope with masks refuses
@@ -3294,7 +3377,23 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
                         return new WindowCaptureOutcome(outcome.Result!, geo);
 
                     if (attempt < _opts.MaxAttempts) continue;
-                    return new WindowCaptureOutcome(OnResizeExhausted(geo, scope, maxWidth, warnings), geo);
+
+                    // ⚠⚠ A BOOKEND EXHAUSTION REFUSES ON **BOTH** SCOPES, and it must NOT be routed
+                    // through OnResizeExhausted. That method falls back to the scrape for element scope,
+                    // which is correct for a RESIZE -- there the failure is a geometry mismatch and the
+                    // masks may be perfectly fine. It is WRONG here.
+                    //
+                    // A bookend mismatch is DIRECT EVIDENCE that the mask set moved under the capture.
+                    // Falling back would scrape the window and paint those same rects -- rects we have
+                    // just PROVEN are stale -- producing an under-redacted image. That is the failure
+                    // class SP4 exists to close, and the argument is the identical one that makes window
+                    // scope refuse rather than scrape.
+                    //
+                    // Note this needs no mask-set test: the bookend only runs when M1 is non-empty.
+                    throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                        "The window's redacted regions kept moving during the capture, so they cannot be " +
+                        "reliably located in the image.",
+                        "wait for the window to settle, then retry, or capture a different window");
                 }
 ```
 
@@ -3501,6 +3600,51 @@ public class CaptureCircuitBreakerTests
         Assert.Equal(1, src.Calls);   // still short-circuited; it refused rather than scraping
     }
 
+    // ⚠⚠ THE BREAKER MUST BOUND CONCURRENT CAPTURES, NOT ONLY SERIALIZED ONES. Trip() runs AFTER a
+    // timeout elapses, so overlapping requests for the same hung window would all read IsTripped as
+    // false, all call Acquire, all block, and all leak -- N threads and N bitmaps for one window,
+    // defeating the containment this class exists to provide.
+    [Fact]
+    public async Task Overlapping_captures_of_one_hung_window_cost_ONE_acquisition_not_N()
+    {
+        var W = new Rectangle(0, 0, 400, 300);
+        // Blocks until released, so all three requests genuinely overlap.
+        var gate = new System.Threading.ManualResetEventSlim(false);
+        int calls = 0;
+        var src = new FakeWindowImageSource(_ =>
+        {
+            System.Threading.Interlocked.Increment(ref calls);
+            gate.Wait(5000);
+            return null;                       // then reports a timeout
+        });
+
+        var now = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
+        var breaker = new CaptureCircuitBreaker(TimeSpan.FromMinutes(5), () => now);
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(new CaptureGeometry(W, Array.Empty<Rectangle>(), false, false, null,
+                Array.Empty<MaskEscalationEntry>(), W, new IntPtr(0xBEEF), false)),
+            src, new CaptureRetryOptions(1, 50),
+            w2Probe: _ => W, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, 0, "screenScrape", warns),
+            breaker: breaker);
+
+        var first = c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        // Let the first acquisition outlive the whole timeout budget, so it is KNOWN stuck.
+        while (System.Threading.Volatile.Read(ref calls) == 0) await Task.Yield();
+        now = now.AddMilliseconds(500);
+
+        var second = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        var third  = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+
+        Assert.Equal("screenScrape", second.Result.CaptureMethod);
+        Assert.Equal("screenScrape", third.Result.CaptureMethod);
+        Assert.Equal(1, System.Threading.Volatile.Read(ref calls));   // ONE acquisition, not three
+
+        gate.Set();
+        await first;
+    }
+
     [Fact]
     public async Task A_different_window_is_unaffected()
     {
@@ -3545,6 +3689,12 @@ Append to `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`:
 public sealed class CaptureCircuitBreaker
 {
     private readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, DateTime> _tripped = new();
+    // ⚠ IN-FLIGHT ACQUISITIONS, and without this the breaker bounds only SERIALIZED captures. Trip() runs
+    // AFTER a timeout elapses, so three overlapping requests for the same hung window all read IsTripped
+    // as false, all call Acquire, all block, and all leak -- three threads and three bitmaps for one
+    // window, defeating the containment this class exists to provide.
+    // *(AGY-AFTER panel over this plan, round 3, State Corruptor.)*
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, DateTime> _inFlight = new();
     private readonly TimeSpan _cooldown;
     private readonly Func<DateTime> _clock;
 
@@ -3559,6 +3709,25 @@ public sealed class CaptureCircuitBreaker
 
     public bool IsTripped(IntPtr hwnd)
         => _tripped.TryGetValue(hwnd, out var at) && _clock() - at < _cooldown;
+
+    /// <summary>TRUE when another acquisition for this window has ALREADY outlived <paramref name="budget"/>
+    /// and is therefore known to be blocked -- so this call would block too, for the same reason, and add
+    /// one more permanent leak.
+    ///
+    /// ⚠ It deliberately does NOT divert merely because another acquisition is in flight. Two agents
+    /// capturing the same HEALTHY window concurrently is ordinary, and those calls finish in milliseconds;
+    /// diverting them to a scrape would reintroduce occlusion for a window that was working fine. Only an
+    /// acquisition that has already exceeded the whole timeout budget is evidence of a hang.</summary>
+    public bool AnotherAcquisitionIsStuck(IntPtr hwnd, TimeSpan budget)
+        => _inFlight.TryGetValue(hwnd, out var started) && _clock() - started > budget;
+
+    /// <summary>Records the start of an acquisition. Keeps the EARLIEST start for a window, so a stream of
+    /// overlapping requests cannot keep pushing the "stuck" judgement into the future.</summary>
+    public void BeginAcquisition(IntPtr hwnd) => _inFlight.TryAdd(hwnd, _clock());
+
+    /// <summary>Clears the in-flight marker. Safe to call for a request that TIMED OUT: the abandoned
+    /// thread is still blocked, but Trip() has by then recorded the window and the cooldown takes over.</summary>
+    public void EndAcquisition(IntPtr hwnd) => _inFlight.TryRemove(hwnd, out _);
 
     public void Trip(IntPtr hwnd)
     {
@@ -3587,7 +3756,13 @@ Before the `ScreenCapture.CaptureWindow` call:
 ```csharp
             // The breaker short-circuits BEFORE acquisition, which is the whole point: the leak happens
             // inside Acquire, so avoiding the call is the only way to avoid the leak.
-            if (_breaker is not null && _breaker.IsTripped(geo.NativeWindowHandle))
+            // Two conditions divert to the scrape, and they cover different windows in time: the breaker
+            // covers everything AFTER a timeout was observed, the in-flight check covers the gap DURING
+            // the first request, before any timeout has been recorded.
+            if (_breaker is not null
+                && (_breaker.IsTripped(geo.NativeWindowHandle)
+                    || _breaker.AnotherAcquisitionIsStuck(geo.NativeWindowHandle,
+                                                          TimeSpan.FromMilliseconds(_opts.TimeoutMs))))
             {
                 // ⚠⚠ THE TARGET-STATE GUARDS STILL RUN. Skipping straight to the scrape also skips
                 // canonical steps 4-5, which live inside CaptureWindow -- and those are the guards that
@@ -3600,7 +3775,16 @@ Before the `ScreenCapture.CaptureWindow` call:
                 //
                 // These guards are about the TARGET's state, not about the backend, so every path that is
                 // about to photograph a named window owes them.
-                ScreenCapture.GuardTargetState(geo.NativeWindowHandle, _w2Probe, _minimizedProbe);
+                var bw2 = ScreenCapture.GuardTargetState(geo.NativeWindowHandle, _w2Probe, _minimizedProbe);
+                // Degeneracy is retryable here for the same reason it is inside the seam, and scraping a
+                // window with no renderable area would photograph whatever now occupies its old rect.
+                if (bw2.Width <= 0 || bw2.Height <= 0)
+                {
+                    if (attempt < _opts.MaxAttempts) continue;
+                    throw new ToolException(ToolErrorCode.ElementNotActionable,
+                        "The target window reported no renderable area on every attempt.",
+                        "restore or resize the window, then retry");
+                }
                 return new WindowCaptureOutcome(
                     Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive),
                     geo);
@@ -4609,3 +4793,54 @@ carried its own defect in a large fraction of rounds.
 in a GUARD, not in the happy path.** The bookend contradicting the move rule, the anti-gaming sweep being
 gameable, the breaker smuggling a dead target past the guards, the containment leaking the thing it was
 containing. The common case has been correct throughout; the machinery added to protect it has not.
+
+## AGY-AFTER panel over this plan — round 3
+
+Brief `.clavity/seams/item8-plan-panel-r3.md`; report `.clavity/scratch/item8-plan-panel/agy-round3.md`.
+Seats: Fold Auditor (round 2's edits only), State Corruptor, Axiom Breaker. **Verdict: RED.**
+
+**Folded:**
+
+1. **The circuit breaker bounded only SERIALIZED captures.** `Trip()` runs *after* a timeout elapses, so
+   three overlapping requests for the same hung window all read `IsTripped` as false, all call `Acquire`,
+   all block, and all leak — three threads and three bitmaps for one window, defeating the containment the
+   class exists to provide. Added an IN-FLIGHT register and `AnotherAcquisitionIsStuck(hwnd, budget)`.
+   ⚠ It deliberately does **not** divert merely because another acquisition is in flight: two agents
+   capturing the same HEALTHY window concurrently is ordinary and those calls finish in milliseconds, so
+   diverting them would reintroduce occlusion for a window that was working fine. Only an acquisition that
+   has already outlived the whole timeout budget counts as evidence of a hang. *(State Corruptor.)*
+2. **A degenerate `W2` threw while a degenerate `W1` was a retryable transient — the same physical
+   condition, terminal or recoverable purely according to which of two reads milliseconds apart caught
+   it.** That defeated the retry loop for exactly the animating window it was built for. `CaptureOutcome`
+   gains a fourth case, `TargetTransient`; `GuardTargetState` now raises only the genuinely terminal
+   conditions (destroyed, minimized) and each caller routes degeneracy into the loop. *(Axiom Breaker —
+   the seat's first outing, and it found a contradiction three rounds had walked past.)*
+3. **The acquisition-thread handoff race.** *Already folded at `3433cf0` by the driver's own solo pass
+   before this report arrived; the peer's Fold Auditor found it independently.* Setting `abandoned` alone
+   narrows the window without closing it — the thread can publish into `result` between `Join` expiring
+   and the caller taking the lock. Both orderings are now covered.
+
+**Also folded this round, from the driver's solo Axiom Breaker pass — and it is leak-class:**
+
+4. **A bookend exhaustion was routed through `OnResizeExhausted`, which FALLS BACK TO THE SCRAPE for
+   element scope.** That is correct for a RESIZE, where the failure is a geometry mismatch and the masks
+   may be perfectly fine. It is wrong for a bookend mismatch, which is *direct evidence the mask set
+   moved*: falling back would scrape the window and paint rects we have just PROVEN are stale, producing
+   an under-redacted image. **A bookend exhaustion now refuses on BOTH scopes**, which is what the spec's
+   §4 table said all along — the code contradicted it and the spec was right.
+
+**REFUTED BY MEASUREMENT — do NOT re-raise:**
+
+5. *"The plan asserts `AutomationDispatcher.cs:61` is `_query.RunAsync(func)` with no timeout…"* The plan
+   mentions `AutomationDispatcher` **zero times**. (The claim is also TRUE of the real file, which makes
+   the pre-existing comment it came from accurate.) **This is the THIRD round running in which a direct
+   answer attributed to the plan an assertion the plan does not make** — grep every quoted claim.
+
+⚠ **Round 3 is RED. Four folds, three of them new code:** the in-flight register, the `TargetTransient`
+case, and the bookend's own terminal outcome.
+
+⚠ **The guards-only pattern held for a third round** — every one of the four is in protective machinery.
+But note the shift: rounds 1-2 found guards that were WRONG, round 3 found guards that were INCONSISTENT
+WITH EACH OTHER. `W1` versus `W2` degeneracy, and bookend-exhaustion versus resize-exhaustion, are both
+"two guards for the same class of condition that disagree". That is a different lens and it is not
+exhausted — round 4 should enumerate every PAIR of guards and ask whether they agree.
