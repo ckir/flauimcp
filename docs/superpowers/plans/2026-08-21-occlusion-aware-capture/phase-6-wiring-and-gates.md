@@ -542,10 +542,26 @@ git commit -m "feat(capture): the occlusion audit signal on the existing IAttent
 Three separate edits to the same tool-description string, plus the class doc. The spec records this obligation in two places because an engineer working through the contract changes reads §5, not the failure policy.
 
 **Files:**
-- Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:17`
-- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs:11-14`
+- Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs` — the `[Description(...)]` string. It was at
+  line 17; **Task 20 replaces the fields/constructor above it with a longer block, so it has moved.**
+  Find it with `grep -n "JSON metadata" src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs`.
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` — the **`ScreenCapture` class** doc comment.
+  ⛔ **The cited range `:11-14` IS WRONG AND DESTRUCTIVE — see Step 4.**
 
-- [ ] **Step 1: Edit 1 — the metadata enumeration**
+- [ ] **Step 1: Edit 1 — the metadata enumeration (VERIFY; Task 20 already did this)**
+
+⚠ **Task 20's Step 5b already made this exact change**, because Task 20's own projection-shape test
+demands the nine-field list and its gate could not go green without it. So this step is now a CHECK, not
+an edit. Confirm with:
+
+```bash
+grep -o "JSON metadata {[^}]*}" src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs
+```
+Expected: the nine-field list ending `...,captureMethod,captureWarnings}`. If it still shows seven,
+Task 20 was not completed — stop and finish Task 20 rather than patching it here.
+
+**Step 6's mutant still applies unchanged**: reverting the enumeration to the old seven-field list must
+turn Task 20's agreement test red, whichever task wrote the nine.
 
 In the description string, replace:
 
@@ -583,9 +599,58 @@ unmaskedProcesses lists processes whose windows contributed NO masks - unbindabl
 
 ⚠ **This is disclosure, not filtering, and the difference is deliberate.** Filtering `escalated` to the captured region is not possible without adding a rectangle to `MaskEscalationEntry`, which today carries only `automationId` and `controlType`. Over-reporting is the fail-safe direction — it can only make a consumer more cautious — so the fix is to make the sentence true rather than to make the data narrower. *(AGY-AFTER panel over this plan, round 11, Contract Liar Hunter.)*
 
+- [ ] **Step 3c: Edit 3c — THE FRESHNESS LIMIT. A CARRIED OBLIGATION FROM PHASE 0, and it was absent**
+
+⛔ **THIS STEP EXISTED NOWHERE IN THE TASK.** MEASURED: Task 22 contained **zero** occurrences of
+"fresh", "Chromium", "suspend", "last frame", "arbitrarily old" or "refresh". The obligation was recorded
+only in the measurements doc's gate disposition, which this task never told anyone to open — the third
+time on this branch that a Phase 0 obligation lived only in a sibling document. Executing Task 22 as
+written would have shipped the feature with this limit undocumented.
+
+**Why it exists.** Phase 0 gate answer 3 CHANGED during the panel: a fully occluded **Chromium-family**
+window can **SUSPEND rendering**, after which `PrintWindow` returns the last frame it painted —
+**150 successive calls did not wake it**. Electron did not suspend under the same treatment. This is a
+**FRESHNESS** hazard, not a leak and not a masking failure: `dTree = 0` throughout, because the tree and
+the pixels come from the same suspended renderer, so the masks and geometry stay correct. Only the
+image's AGE is in question. The operator accepted it as a **documentation** item rather than a
+mitigation, on the record, because no mitigation exists.
+
+Append to the description, after the `captureMethod`/`captureWarnings` sentences added in Step 3:
+
+```
+FRESHNESS: a 'printWindow' capture returns the frame the target's renderer last painted. A window left fully occluded can SUSPEND rendering - observed with Chromium-family windows, not with Electron - and this call will then keep returning that last painted frame, which may be arbitrarily old; capturing again does NOT wake it. Masks and geometry remain correct, so this is about the image's AGE and nothing else. If freshness matters, bring the window to the foreground (desktop_focus_window) and capture again.
+```
+
+⚠ **Do not soften this into a promise.** The description must not imply the capture refreshes the
+window, because MEASURED it cannot.
+
+⚠ **This sentence is pinned by no test, and that is accepted.** Task 20's agreement test checks only the
+`{field,...}` enumeration, not the prose. A prose assertion would pin wording rather than behaviour and
+would break on every legitimate edit. The gate here is the panel and this note, not a test.
+
 - [ ] **Step 4: Edit 4 — the class doc**
 
-Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 11–14 with:
+⛔ **THE CITED RANGE IS WRONG, AND FOLLOWING IT DOES TWO KINDS OF DAMAGE.** This step said *"Replace
+`ScreenCapture.cs` lines 11-14"*. MEASURED: lines 9–17 are the **`CaptureResult` record's** doc comment,
+and 11–14 sit inside it — they are its *"⚠ POSITIONAL RECORD, constructed positionally... APPEND ONLY,
+NEVER INSERT: X/Y/W/H are four interchangeable ints, so a field added mid-list rebinds arguments silently
+wherever the types line up. CaptureResultShapeTests pins the order for exactly that reason."* Overwriting
+those lines **deletes a load-bearing warning about silent argument rebinding** and drops the class doc
+into the middle of an unrelated record — while leaving the doc this step exists to fix untouched, still
+claiming "no occlusion handling".
+
+**The `ScreenCapture` class doc is at lines 21–24**, immediately above `public static class
+ScreenCapture`. Find it by content, not by line: `grep -n "Screen-region capture" ScreenCapture.cs`. It
+currently reads:
+
+```csharp
+/// <summary>Screen-region capture (no occlusion handling — callers focus-first; no UIA element reads).
+/// Captures by absolute screen rectangle so it can run OFF the query STA (spec §8). Paints black
+/// redaction rects (live bounds passed in), clamps width to a hard ceiling, PNG-encodes. Headless/
+/// disconnected sessions are detected before capture so we never hand back a black frame.</summary>
+```
+
+Replace **those four lines, and only those**, with:
 
 ```csharp
 /// <summary>Screen-region and per-window capture. Paints black redaction rects (live bounds passed in),
@@ -607,7 +672,9 @@ Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 11–14 with:
 - [ ] **Step 5: Run the headless suite**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: PASS — including Task 20's description/projection agreement test, which is what makes Step 1 non-optional.
+Expected: PASS, 0 failed, build 0/0, **total 1045** — unchanged from Task 20, because this task adds no
+tests. State the total verbatim. It must include Task 20's description/projection agreement test, which
+is what makes Step 1's check non-optional.
 
 - [ ] **Step 6: Prove the gate is non-vacuous with a logic mutant**
 
@@ -618,7 +685,7 @@ Expected: `The_tool_description_enumerates_exactly_the_fields_the_projection_emi
 
 ```bash
 git add src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs
-git commit -m "docs(capture): tool description and class doc - three edits plus the stale focus claim"
+git commit -m "docs(capture): tool description and class doc - five edits, incl. the Phase 0 freshness limit"
 ```
 
 ### Task 23: The GDI handle gate (risk 4)
