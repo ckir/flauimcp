@@ -2438,3 +2438,42 @@ in roughly ten rounds — the backends, the refusal policy, the yardstick, the w
 privacy posture have all been stable. What keeps failing is the DECOMPOSITION: who owns which step, and
 whether the types can carry what the rules require. That is exactly the layer a plan is supposed to
 settle, and it is the layer this spec has been least able to settle by prose alone.
+
+### AGY-AFTER adversarial panel — FINAL DISPOSITION (closed at round 30 by operator decision)
+
+**Thirty rounds. No round ever returned a verdict I accepted as green.** Round 24 returned GREEN on all
+three seats and was REFUSED, because a real defect sat in its own lens answer; rounds 25-30 then produced
+twenty-six further findings, which settled that refusal as correct.
+
+**Closed by the operator, not by a green verdict**, on this reasoning: the DESIGN DECISIONS stopped moving
+around round 20 — the backends, the refusal policy, the yardstick, the warning contract and the privacy
+posture have all been stable since. Every finding in rounds 27-30 was a DECOMPOSITION defect: who owns
+which step, and whether the types can carry what the rules require. **That is the layer an implementation
+plan settles, against real signatures, and it is the layer a spec settles worst by prose.** Each fix
+written here was a guess about a decomposition that `writing-plans` will pin against the actual code,
+which is why each one kept spawning the next.
+
+⚠ **agy's position is recorded because it dissents.** Its Convergence Assessor refused the exit at rounds
+20, 25, 27, 28, 29 and 30, and its final read was that these are genuinely new defects proving the design
+"is still crashing against its own type signatures" — noting that the components index drifted from the
+text the day it was written. That is a fair hit and it is not argued away here. **A reader who finds a
+decomposition defect this review missed should assume agy was right and this closure was early.**
+
+**What the review produced, by the numbers:**
+
+- 30 rounds; ~100 findings folded; 9 rejected by measurement, each with the measurement recorded.
+- **Six defects were leak-class** — an image returned with masks missing, misplaced, or covering the wrong
+  pixels. The most valuable arrived at rounds 20 and 25, AFTER the finding count had thinned and after I
+  had twice judged the design converged.
+- **Nine measurements were taken against the live system or runtime**, four of which REFUTED a claim in
+  this document or in a panel finding: the DWM-shadow mask-shift (F6), `Bitmap.Clone`'s exception types,
+  `Rectangle.Intersect`'s touching-edge behaviour, and a call-site count.
+- Twelve component joins were traced explicitly and are recorded sound.
+
+**The three lessons this document paid for, stated for whoever executes it:**
+
+1. **A green verdict is not the whole report.** Round 24's defect was in a lens answer beneath a clean
+   verdict — the second time that has happened in this repository.
+2. **A thinning finding count is not convergence.** Rounds 18-19 looked converged; round 20 found a leak.
+3. **Fixing a rule in one place does not fix its justification elsewhere.** Four separate rounds found a
+   correct mechanic defended by a rationale describing a version of the design that no longer existed.
