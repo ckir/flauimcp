@@ -283,3 +283,45 @@ and **none of them leak-class**, which is the first time in seven rounds.
 none.** What it found instead was a mechanical slip, a redundancy and stale prose — the residue of six
 rounds of edits rather than defects in the design. That is what convergence looks like here, and it is the
 first evidence of it beyond a seat going quiet.
+
+### Round 8 — Seat 1 clean; the review turns on itself
+
+Seats: Fold Auditor, **Completeness Sweep**, **Adversary of the Reviewer** (the last two never used before).
+**Verdict: RED.**
+
+**Seat 1 confirmed round 7's reachability claim** by tracing it: `CaptureWindow` returns `Resized` only
+for element scope or window-scope-with-masks, so window-scope-with-empty-masks returns `Completed` and
+continues to the crop — it never reaches `OnResizeExhaustedAsync`. The collapsed guard preserves exact
+behaviour. It also confirmed the rewritten tool description matches every path.
+
+**Folded:**
+
+1. **The spec's §4 row scoped the resize refusal to WINDOW scope** while the plan had refused ELEMENT
+   scope too since round 4. **A table asserting completeness that scopes a row more narrowly than the code
+   is the same defect as omitting a row** — and this is the same table that went stale three times.
+2. **The index omitted `FlaUI.Mcp.Core.csproj`** (Task 9 adds `InternalsVisibleTo`), and its `ROADMAP.md`
+   cell implied a task adds item 18. ⚠ **Item 18 is not "lost to the void" as the report's direct answer
+   claimed — it is committed at `ROADMAP.md:651`.** The index cell was misleading; the item is safe.
+3. **⚠⚠ `_desktopMasks` was FAIL-OPEN — the identical shape that made the denylist guard inert.** An
+   optional constructor parameter whose absence silently reverts to the TARGET's mask set, which is
+   exactly the leak the desktop walk closed. **Once was a mistake; twice would be a pattern.** Now throws.
+   *(Found by the driver while checking the premise of Seat 3's argument below — the argument only holds
+   if this is wired, and nothing guaranteed that.)*
+
+**⚠ NOT FOLDED — ESCALATED TO THE OPERATOR. Seat 3 argues one of the review's own folds is now obsolete,
+and it is RIGHT on the mechanics.**
+
+> Round 4 refused element-scope-with-masks on resize exhaustion because masks measured at `T1` could
+> misalign with pixels scraped at `T2`. **Round 6 then changed `ScrapeAsync` to discard the target's masks
+> and perform a FRESH desktop walk at `T2`** — so the fallback now acquires its image and its mask set
+> together. The `T1`/`T2` skew the round-4 refusal existed to prevent **no longer exists on that path**,
+> and the refusal now needlessly kills a fallback the design originally justified as preventing a total
+> outage on animating windows.
+
+The mechanics check out. It is escalated rather than folded because **it challenges ratification item 2**,
+which the operator settled explicitly: *window scope retries then refuses on exhaustion, and never falls
+back, because "a scrape reproduces a mask failure rather than fixing it".* Round 6 made that premise false.
+Only the operator may reverse it, and the same argument would apply to window scope as to element scope.
+
+**Refuted:** the direct answer's claim that item 18 would be "lost to the void" (committed at
+`ROADMAP.md:651`), and that `PerceptionManager.cs:1199`'s rethrow was unverified (measured this session).

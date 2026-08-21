@@ -75,13 +75,14 @@
 | `…/PerceptionManager.cs:935` | The yardstick becomes conditional |
 | `…/PerceptionManager.cs:1275` | `CaptureGeometry` gains three appended fields + a `HasPopupRoots` init property |
 | `…/PerceptionManager.cs:1134-1144` | `ResolveTextCaptureGeometryAsync` — the OCR path's degenerate-window refusal |
+| `src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj` | `InternalsVisibleTo` for the tests, if it is not already there (Task 9 Step 1) |
 | `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:17` | Tool description: three separate edits |
 | `…/ScreenshotTools.cs:49,58,71-84` | Call sites and the metadata projection |
 | `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62,110` | The third caller — explicit scope, explicit yardstick |
 | `src/FlaUI.Mcp.Server/Program.cs` | DI for `IWindowImageSource`; the audit-signal flag |
 | `src/FlaUI.Mcp.Server/ServerOptions.cs` | The audit-signal flag |
 | `src/FlaUI.Mcp.Server/Capture/CaptureAuditSignal.cs` | The occlusion audit signal (§2.6), flag-gated OFF |
-| `ROADMAP.md` | Item 17 (the out-of-process worker) and item 18 (the OCR path's denylist hole) as tracked debt |
+| `ROADMAP.md` | **Item 17** (the out-of-process worker) — added by Task 19 Step 7. ⚠ **Item 18** (the OCR path's denylist hole) is ALREADY COMMITTED, during the plan's panel; no task adds it and none should |
 
 ---
 

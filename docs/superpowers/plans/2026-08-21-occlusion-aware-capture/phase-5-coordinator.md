@@ -537,10 +537,21 @@ public sealed class WindowCaptureCoordinator
         // The cost is one full-desktop mask walk, on a path that is already the slow rare one -- reached
         // only after retries are spent or an acquisition timed out.
         // *(AGY-AFTER panel over this plan, round 6, Guard-Consistency Auditor.)*
+        // ⚠⚠ FAIL CLOSED, FOR THE SECOND TIME AND THE SAME REASON. `_desktopMasks` is an optional
+        // constructor parameter, and when it is absent this method silently reverts to the TARGET's mask
+        // set -- which is precisely the leak the desktop walk was added to close. That is the identical
+        // shape that made the denylist guard inert for a whole round: an optional dependency whose
+        // absence is indistinguishable from a pass. Once was a mistake; twice would be a pattern.
+        // *(Driver's round-8 pass, prompted by the peer's Adversary-of-the-Reviewer seat, which argued
+        // from the premise that a fallback's masks are ALWAYS fresh -- true only if this is wired.)*
+        if (_desktopMasks is null)
+            throw new ToolException(ToolErrorCode.CaptureUnavailable,
+                "This capture can only fall back to a screen scrape, and the desktop mask walk is not wired.",
+                "this is a server wiring defect - report it rather than retrying");
+
         var masks = geo.MaskRects;
         IReadOnlyList<string> unmasked = System.Array.Empty<string>();
         IReadOnlyList<MaskEscalationEntry> escalations = geo.Escalations;
-        if (_desktopMasks is not null)
         {
             // ⚠ THE ESCALATIONS MUST COME FROM THE SAME WALK AS THE MASKS. The tool publishes
             // `maskEscalations` and `escalated` beside the image; taking the masks from the desktop walk
