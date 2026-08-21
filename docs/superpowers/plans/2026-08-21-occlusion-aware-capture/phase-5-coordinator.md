@@ -391,8 +391,14 @@ public sealed class WindowCaptureCoordinator
             switch (outcome.Kind)
             {
                 case CaptureOutcomeKind.Completed:
-                    // Step 9 is added in Task 18.
-                    return new WindowCaptureOutcome(outcome.Result!, geo);
+                    // Step 9 is added in Task 18, which REPLACES this arm.
+                    // ⚠ FOUR arguments. `WindowCaptureOutcome` carries the unmasked-process list and the
+                    // escalations of the walk that produced the masks ACTUALLY PAINTED; on this path both
+                    // come from the target's own walk. An earlier version passed two here and would not
+                    // have compiled. *(AGY-AFTER round 7, Fold Auditor -- a defect in the driver's own
+                    // round-7 fold, which updated Task 18's copies of this arm and missed Task 17's.)*
+                    return new WindowCaptureOutcome(outcome.Result!, geo,
+                                                    System.Array.Empty<string>(), geo.Escalations);
 
                 case CaptureOutcomeKind.TimedOut:
                     // A MECHANISM failure: the window is on screen with real pixels and PrintWindow simply
@@ -437,10 +443,16 @@ public sealed class WindowCaptureCoordinator
         // pre-resize layout; a resize reflows content, so they no longer necessarily cover what they were
         // sampled to cover. A scrape reproduces that exactly -- the same stale rects over the same
         // reflowed content -- so switching backends cannot fix a MASK problem.
-        if (geo.MaskRects.Count > 0 && scope == CaptureScope.Window)
-            throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                "The window kept changing size, so its redacted regions cannot be reliably located.",
-                "wait for the window to settle, then retry, or capture a different window");
+        // ⚠ ONE GUARD, BOTH SCOPES. An earlier version had TWO consecutive refusals here -- this one
+        // qualified by `scope == CaptureScope.Window`, and an identical one below for element scope --
+        // which threw the same code with the same message. The scope condition was dead: the second
+        // caught everything the first did. Two guards that look different and do the same thing invite
+        // someone to change one of them. *(AGY-AFTER round 7, Guard-Consistency Auditor.)*
+        //
+        // The reachability argument that makes a single test correct: window scope with an EMPTY mask set
+        // never arrives here at all -- `CaptureWindow` warns `windowResized` and continues to the crop --
+        // so the only callers are window-with-masks, element-with-masks, and element-without. The first
+        // two refuse for the same reason and the third falls back.
 
         // ⚠⚠ ELEMENT SCOPE WITH A NON-EMPTY MASK SET REFUSES TOO, and an earlier version of this plan
         // let it fall back. A resize reflows the WINDOW's layout regardless of which scope asked for the
@@ -458,6 +470,7 @@ public sealed class WindowCaptureCoordinator
             throw new ToolException(ToolErrorCode.RedactionUnmaskable,
                 "The window kept changing size, so its redacted regions cannot be reliably located.",
                 "wait for the window to settle, then retry, or capture a different window");
+
 
         // ELEMENT SCOPE, NOTHING TO MASK: fall back. Its failure is a GEOMETRY mismatch on an image that
         // is otherwise sound, nothing was going to be redacted, and the scrape is what this tool does for

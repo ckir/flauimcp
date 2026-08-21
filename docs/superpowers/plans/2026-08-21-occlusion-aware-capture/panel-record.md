@@ -256,3 +256,30 @@ Seats: Fold Auditor, Guard-Consistency (3rd), Literal Implementer (2nd). **Verdi
 findings of "a guard that exists on one path and stops at the adjacent one" — and round 6 added a new
 sibling: *a guard that exists but was never connected.* Both are invisible to tests that only exercise the
 path the guard is on.
+
+### Round 7 — **the first round with no leak**
+
+Seats: Fold Auditor, Guard-Consistency (4th), Protocol Pedant (2nd). **Verdict: RED**, three findings —
+and **none of them leak-class**, which is the first time in seven rounds.
+
+1. **A COMPILE ERROR, in the driver's own round-7 fold.** That fold added `Escalations` to
+   `WindowCaptureOutcome`, making it a four-argument record, and updated Task 18's two copies of the
+   `Completed` arm while missing **Task 17's**. `phase-5-coordinator.md:395` passed two arguments. Caught
+   with an exact file:line quote.
+2. **A shadowed guard.** `OnResizeExhaustedAsync` had two consecutive refusals throwing the same code with
+   the same message — one qualified by `scope == CaptureScope.Window`, one not. The scope condition was
+   **dead**: the second caught everything the first did. Collapsed to one, with the reachability argument
+   written down: window-scope-with-empty-masks never arrives here (it warns and continues to the crop), so
+   the only callers are window-with-masks, element-with-masks, and element-without.
+3. **The tool description had gone FALSE in two places**, and it is read by every agent on every call.
+   It said `'screenScrape'` means full-desktop — but window and element fallbacks emit it too. And it said
+   resize exhaustion "falls back to a scrape (element scope)", which **round 4 made false** when
+   element-scope-with-masks began refusing. Both rewritten; the first now tells a caller to *check*
+   `captureMethod` rather than infer it from the scope requested.
+
+**Direct answer: not ready, because of the compile error.** Nothing else was named.
+
+⚠ **The shift is worth recording: rounds 1-6 produced eleven leak-class findings; round 7 produced
+none.** What it found instead was a mechanical slip, a redundancy and stale prose — the residue of six
+rounds of edits rather than defects in the design. That is what convergence looks like here, and it is the
+first evidence of it beyond a seat going quiet.
