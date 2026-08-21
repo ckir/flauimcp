@@ -164,13 +164,27 @@ public class CaptureWarningTests
         var root = RepoRoot();
         var src = string.Join("\n", System.IO.Directory.EnumerateFiles(
             System.IO.Path.Combine(root, "src"), "*.cs", System.IO.SearchOption.AllDirectories)
-            .Select(System.IO.File.ReadAllText));
+            .Select(f => StripComments(System.IO.File.ReadAllText(f))));
         foreach (var c in CaptureWarnings.AllCodes)
         {
             var member = char.ToUpperInvariant(c[0]) + c.Substring(1);
             Assert.True(src.Contains("CaptureWarnings." + member),
                 $"'{c}' is documented but never emitted - retire it or emit it");
         }
+    }
+
+    /// <summary>⚠ COMMENTS STRIPPED FIRST, and this is the SECOND test in this plan to need it. Without
+    /// it, a code named only in a comment — and this plan's comments name these codes constantly, to
+    /// explain the paths that emit them — satisfies the gate while nothing emits it. That is the same
+    /// defect item 12 shipped and the same one the metadata sweep had, arriving a third time in the test
+    /// written to prevent a code going dead. MEASURED: the substring check matches a commented line.</summary>
+    private static string StripComments(string source)
+    {
+        var noBlocks = System.Text.RegularExpressions.Regex.Replace(
+            source, @"/\*.*?\*/", string.Empty,
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        return string.Join("\n", noBlocks.Split('\n')
+            .Where(l => !l.TrimStart().StartsWith("//", System.StringComparison.Ordinal)));
     }
 
     private static string RepoRoot()
@@ -301,7 +315,17 @@ Expected: PASS — 11 passed.
 
 Temporarily set `[PopupsNotRendered]` to `""`. Re-run. Expected: `Every_shipped_code_has_a_recourse` FAILS on the `popupsNotRendered` row. **Revert.**
 
-Then a second mutant for the reachability gate: temporarily add `"windowResized"` back to `AllCodes` without adding an emission site. Expected: `No_shipped_code_is_unreachable` FAILS naming it, and `Exactly_six_codes_ship` FAILS at 7. **That is the gate that would have caught this code going dead on its own, so see it go red once.** **Revert.**
+Then TWO mutants for the reachability gate, and the second matters more than the first:
+
+1. Temporarily add `"windowResized"` back to `AllCodes` without adding an emission site.
+   Expected: `No_shipped_code_is_unreachable` FAILS naming it, and `Exactly_six_codes_ship` FAILS at 7.
+   **That is the gate that would have caught this code going dead on its own, so see it go red once.**
+2. Do the same, but ALSO add `// CaptureWarnings.WindowResized` as a COMMENT in any production file.
+   Expected: **it still FAILS.** If it passes, `StripComments` is not working and the gate is defeated by
+   typing two slashes — the third time that defect would have shipped in this repo, after item 12's
+   property sweep and this plan's own metadata sweep.
+
+**Revert both.**
 
 - [ ] **Step 6: Commit**
 
