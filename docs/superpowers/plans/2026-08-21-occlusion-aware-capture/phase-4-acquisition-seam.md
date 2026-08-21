@@ -574,34 +574,54 @@ actually describes.
 **The screenshot path already works this way** — §2.5's bookend validation walk re-walks after the
 capture. This closes the same asymmetry on the OCR path for two `GetWindowRect` calls.
 
-**Files:** `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` (the `TextCaptureGeometry` record and both
-`return` sites), `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs` (both capture sites),
-`src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` (the `WindowSizeChanged` helper),
-`test/FlaUI.Mcp.Tests/Perception/` as needed.
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/TextCaptureGeometry.cs` — the record's PARAMETER LIST
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` — both `new TextCaptureGeometry(` sites
+- Modify: `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs` — both OCR capture sites, both halves each
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` — the `WindowSizeChanged` helper
+- Test: `test/FlaUI.Mcp.Tests/Perception/OcrBookendTests.cs`
 
-⚠ **Task 13's Files list and its Step 9 `git add` named NEITHER `FindTextTools.cs` NOR `ScreenCapture.cs`,
-while this step modifies both** — so as originally written Task 13 would have committed a tree that does
-not compile. Staging is listed above rather than inherited.
+⚠ **The Files list said the record lives in `PerceptionManager.cs`. IT DOES NOT.** MEASURED: it is
+declared at `src/FlaUI.Mcp.Core/Perception/TextCaptureGeometry.cs:11`; only its two CONSTRUCTION sites
+(`PerceptionManager.cs:1220` and `:1236`) are in `PerceptionManager.cs`.
 
-- [ ] **Step 1: The guard itself**
+⚠ **Task 13's Files list and its Step 9 `git add` named NEITHER `FindTextTools.cs` NOR `ScreenCapture.cs`
+while this work modifies both** — as originally written, Task 13 would have committed a tree that does not
+compile. Staging is listed above rather than inherited.
 
-⚠⚠ The OCR path takes its mask rects from the walk and its pixels from `CaptureRectangle` some time later, **with nothing in between comparing the window's geometry.** A reflow in that gap misplaces every mask, and unlike the screenshot path the consequence is not a wrong-looking picture: **`FindAsync` OCRs the unmasked region and returns the redacted text as a string in the response.** `FindTextTools.cs:104-108` already states this hazard in its own words for a different case.
+- [ ] **Step 1: Extend `TextCaptureGeometry` — APPEND one parameter, do NOT replace the declaration**
 
-**PRE-EXISTING** — this is today's behaviour, unchanged by item 8. It is fixed here for the same reason the degenerate guard above was: item 8 built a resize guard for the screenshot path, and a guard that stops at the adjacent caller is this review's most-repeated defect. It is cheap: one `GetWindowRect`.
+⚠⚠ **`TextCaptureGeometry` is a record WITH A BODY.** It carries `ComputeCaptureBounds`, a pure helper
+with its own tests. An earlier draft of this step showed a bodiless record ending in `;` — **pasting that
+verbatim DELETES `ComputeCaptureBounds`.** It also wrote `IReadOnlyList<...>` unqualified where the file
+uses `System.Collections.Generic.IReadOnlyList<...>`.
 
-`TextCaptureGeometry` needs the handle to compare against. Extend it with an appended field, mirroring `CaptureGeometry`:
+**Append `System.IntPtr NativeWindowHandle` to the existing parameter list at `TextCaptureGeometry.cs:14`,
+keep the trailing `)` and the `{ ... }` body exactly as they are.** Appended, never inserted — the same
+positional-record rule as `CaptureResult` and `CaptureGeometry`.
+
+Then populate it at **both** construction sites in `ResolveTextCaptureGeometryAsync`, from the geometry
+the wrapper already holds: `geo.NativeWindowHandle`.
+
+- [ ] **Step 2: Add the helper to `ScreenCapture`**
+
+Add beside `GuardTargetState`, reusing the `GetWindowRect` P/Invoke Task 15 declared there:
 
 ```csharp
-// Appended, never inserted - same positional-record rule as CaptureResult and CaptureGeometry.
-public sealed record TextCaptureGeometry(bool Denied, string? DeniedProcess, bool Minimized,
-    System.Drawing.Rectangle CaptureBounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects,
-    int WindowLeft, int WindowTop, int WindowWidth, int WindowHeight,
-    System.IntPtr NativeWindowHandle);
+    /// <summary>TRUE when the window's CURRENT size differs from <paramref name="asWalked"/>. Used by the
+    /// OCR path, which has no W1/W2 pair of its own. A destroyed window reports changed: it is not safe
+    /// to photograph either.</summary>
+    public static bool WindowSizeChanged(IntPtr hwnd, Size asWalked)
+    {
+        var now = DefaultW2Probe(hwnd);
+        return now is null || now.Value.Size != asWalked;
+    }
 ```
 
-Populate it from the geometry the wrapper already holds (`geo.NativeWindowHandle`) at both `return` sites in `ResolveTextCaptureGeometryAsync`.
+- [ ] **Step 3: The bookend, at BOTH OCR capture sites**
 
-Then guard at **both** OCR capture sites, `FindTextTools.cs:62` and `:110`. **Each site gets BOTH halves** — one before the `Task.Run`, one immediately after it and BEFORE the pixels reach the OCR engine:
+Guard at `FindTextTools.cs:62` and `:110`. **Each site gets BOTH halves** — one before the `Task.Run`,
+one immediately after it and BEFORE the pixels reach the OCR engine:
 
 ```csharp
             // ⚠ BOOKEND, HALF 1 of 2 — FAIL FAST. If the window has ALREADY changed since the walk,
@@ -635,17 +655,108 @@ Then guard at **both** OCR capture sites, `FindTextTools.cs:62` and `:110`. **Ea
                     "wait for the window to settle, then retry");
 ```
 
-Add the helper beside `GuardTargetState` in `ScreenCapture`, reusing the P/Invoke already declared there:
+- [ ] **Step 4: The tests**
+
+⚠ **This task had NO tests at all** — it inherited Task 13's steps and lost them when it became a task of
+its own. Shipping a security guard nobody can watch fail is the most-repeated defect on this branch.
+
+Create `test/FlaUI.Mcp.Tests/Perception/OcrBookendTests.cs`:
 
 ```csharp
-    /// <summary>TRUE when the window's CURRENT size differs from <paramref name="asWalked"/>. Used by the
-    /// OCR path, which has no W1/W2 pair of its own. A destroyed window reports changed: it is not safe
-    /// to photograph either.</summary>
-    public static bool WindowSizeChanged(IntPtr hwnd, Size asWalked)
+using System;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class OcrBookendTests
+{
+    private static string RepoRoot()
     {
-        var now = DefaultW2Probe(hwnd);
-        return now is null || now.Value.Size != asWalked;
+        var d = new DirectoryInfo(Directory.GetCurrentDirectory());
+        while (d is not null && !File.Exists(Path.Combine(d.FullName, "FlaUI.Mcp.slnx"))) d = d.Parent;
+        Assert.NotNull(d);
+        return d!.FullName;
     }
+
+    /// <summary>Comment lines blanked, line count preserved. Same reason as every other sweep in this
+    /// repo: a source check that does not do this is defeated by typing two slashes.</summary>
+    private static string CodeOnly(string source)
+        => string.Join("\n", source.Replace("\r\n", "\n").Split('\n').Select(l =>
+        {
+            var t = l.TrimStart();
+            return t.StartsWith("//", StringComparison.Ordinal) || t.StartsWith("*", StringComparison.Ordinal)
+                ? string.Empty : l;
+        }));
+
+    // The documented contract: "A destroyed window reports changed: it is not safe to photograph either."
+    // IntPtr.Zero is never a live window, so GetWindowRect fails and the probe returns null.
+    [Fact]
+    public void A_destroyed_or_invalid_window_reports_changed()
+        => Assert.True(ScreenCapture.WindowSizeChanged(IntPtr.Zero, new Size(800, 600)));
+
+    // ⚠ THE ONLY GUARD ON THE WIRING. The bookend itself cannot be exercised headlessly -- reaching it
+    // needs a live UIA walk and a real screen grab -- so this pins that BOTH halves exist at BOTH sites.
+    // Deleting either half is the realistic regression, and half 2 is the one that closes the race.
+    [Fact]
+    public void Both_OCR_capture_sites_are_bracketed_by_a_bookend()
+    {
+        var text = CodeOnly(File.ReadAllText(
+            Path.Combine(RepoRoot(), "src", "FlaUI.Mcp.Server", "Tools", "FindTextTools.cs")));
+
+        // two capture sites x two halves
+        Assert.Equal(4, Regex.Matches(text, @"ScreenCapture\.WindowSizeChanged\s*\(").Count);
+    }
+
+    // The two halves diagnose DIFFERENT things and must stay distinguishable to an agent reading the
+    // refusal. Collapsing them to one message would still pass the count check above.
+    [Fact]
+    public void The_two_halves_keep_distinct_messages()
+    {
+        var text = CodeOnly(File.ReadAllText(
+            Path.Combine(RepoRoot(), "src", "FlaUI.Mcp.Server", "Tools", "FindTextTools.cs")));
+
+        Assert.Equal(2, Regex.Matches(text, "changed size between reading its redacted regions").Count);
+        Assert.Equal(2, Regex.Matches(text, "changed size while it was being captured").Count);
+    }
+}
+```
+
+- [ ] **Step 5: Run the tests and the full headless suite**
+
+`dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~OcrBookendTests"`
+Expected: **3 passed.**
+
+`dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: **1010 passed, 0 failed**, build 0 warnings / 0 errors. (Baseline 1007 + these 3.)
+
+⚠ **If a PRE-EXISTING test fails, STOP and report it.** `TextCaptureGeometry` gained a field and both OCR
+paths gained refusals; a red test there is a signal, not something to patch.
+
+- [ ] **Step 6: THREE mutants**
+
+All three leave the file compiling, so each must turn a NAMED test red.
+**Report the complete red set for each and revert each.**
+
+1. Delete **half 2** (the post-capture check) at ONE site.
+   Expected: `Both_OCR_capture_sites_are_bracketed_by_a_bookend` FAILS at 3 != 4. **This is the mutant
+   that matters** — half 2 is the half that closes the race, and deleting it is the realistic regression.
+2. Give half 2 the SAME message as half 1 at both sites.
+   Expected: `The_two_halves_keep_distinct_messages` FAILS. The count check in mutant 1 would NOT catch
+   this, which is why both tests exist.
+3. Change `WindowSizeChanged` to `return now is not null && now.Value.Size != asWalked;` — i.e. treat a
+   destroyed window as unchanged.
+   Expected: `A_destroyed_or_invalid_window_reports_changed` FAILS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/TextCaptureGeometry.cs src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs src/FlaUI.Mcp.Server/Tools/FindTextTools.cs test/FlaUI.Mcp.Tests/Perception/OcrBookendTests.cs
+git commit -m "feat(capture): bookend the OCR path's resize guard, closing a plaintext-disclosure race"
 ```
 
 ### Task 16: `PrintWindowImageSource` — the real interop, and the only Desktop-category production file
