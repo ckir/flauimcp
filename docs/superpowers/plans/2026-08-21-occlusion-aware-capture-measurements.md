@@ -244,3 +244,42 @@ negative does NOT refute it.** This is a timing race between an asynchronous com
 tree walk, so a finite number of clean runs means **"not observed at these timings"**, never "cannot
 happen". **Risk 3 is NOT deleted from the spec.** It ships documented and unmitigated, and §2.5's bookend
 walk still does not cover it.
+
+---
+
+## DESIGN GATE (Task 3)
+
+```
+1. Does PrintWindow BLOCK on a non-pumping window?              BLOCKS
+   -> Tasks 15b and 19b ARE BUILT: the timeout, the dedicated capture thread,
+      and the circuit breaker. 110836 ms vs 31 ms, same window, ~3600x.
+
+2. Is the stale composition CONFIRMED?                          NOT OBSERVED IN 300 RUNS
+   -> 200 Chromium + 100 Electron. Does NOT refute the race (one-sided probe).
+      No escalation is triggered. Risk 3 ships documented and unmitigated.
+
+3. Do Chromium AND Electron render under PW_RENDERFULLCONTENT?  BOTH
+   -> No limitation to add to the tool description in Task 22.
+```
+
+### Two answers Phase 0 produced that the gate did not ask for
+
+**A. `IsHungAppWindow` is safe** — `True` in 13 ms on the hung window. This closes the single
+above-floor unverified assumption that plan-panel round 13 named in its own green verdict. The circuit
+breaker keeps its `_isHung` recovery probe; Step 5b's plain-cooldown fallback is not taken.
+
+**B. An abandoned `PrintWindow` leaks, but the leak is RECLAIMED when the target recovers.** Three GDI
+objects plus a window-sized bitmap per *outstanding* abandoned call, accumulating linearly with no
+ceiling while the window stays hung — then every abandoned thread returned the instant the window
+resumed, released its own resources, and the process fell back to its exact baseline.
+
+⚠ **This is a constraint on Task 15, not just an observation.** Reclamation depends on all three of:
+
+1. the capture thread is a **background** thread that is *abandoned*, never `Abort`ed or killed;
+2. its resource release sits in that thread's **own `finally`**, so it runs on the late return, after
+   the caller has already given up;
+3. the caller never reuses the handoff buffer — the abandoned thread writes into its own bitmap at an
+   arbitrary later time.
+
+If Task 15 breaks any of the three, this measurement does not transfer and the leak becomes permanent.
+**Check Task 15 against this list before Phase 4 is called done.**
