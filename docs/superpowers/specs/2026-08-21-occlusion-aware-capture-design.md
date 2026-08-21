@@ -30,8 +30,11 @@ guard is the CALLER's**, because it must run before the yardstick is computed an
 computed before this seam is ever invoked; see the canonical order. *(Panel round 19, Executable-Path
 Auditor: an earlier version said the seam owned "the guards that need only `W1`/`W2`", which assigned it a
 check that has to happen before it receives control — the canonical list had become a second source of
-truth disagreeing with the ownership sentence, which is the specific risk of adding one.)* It returns the same `CaptureResult` the
-scrape path returns, now carrying `CaptureMethod` and `CaptureWarnings` (§5).
+truth disagreeing with the ownership sentence, which is the specific risk of adding one.)* On success it produces the same `CaptureResult`
+the scrape path produces, now carrying `CaptureMethod` and `CaptureWarnings` (§5) — but it does not
+RETURN that type directly; see the report channel below. *(Panel round 20, Fold Auditor: saying the seam
+"returns the same `CaptureResult`" while also requiring it to report a resize contradicted itself, since
+the two cannot both be the return type once exceptions and sentinels are ruled out.)*
 
 ⚠ **It does NOT own the retry loop or the scrape fallback, and an earlier draft said it did — which was
 not implementable.** Retrying means re-walking the UIA tree to obtain a fresh `W1`/`E`/mask set. That walk
@@ -52,8 +55,9 @@ encodings are ruled out:
 - **Not `null` or a sentinel `CaptureResult`.** The caller must be able to distinguish "resized" from any
   other empty outcome, and a sentinel loses the observed `W2` the next attempt wants.
 
-What must cross the boundary: **either a completed `CaptureResult`, or a "resized" report carrying the
-observed `W2`.** *(Panel round 19, Executable-Path Auditor — and its "furthest point before guessing",
+What must cross the boundary: **an OUTCOME that is either a completed `CaptureResult` or a "resized"
+report carrying the observed `W2`.** The outcome type WRAPS the result; it is not the result. That is the
+only shape satisfying both this requirement and the two ruled-out encodings. *(Panel round 19, Executable-Path Auditor — and its "furthest point before guessing",
 which was this exact gap.)* Exact member names are the plan's; the SHAPE is not, because
 this is the seam the whole design turns on.
 
@@ -226,9 +230,24 @@ For window and element scope, in this order:
    minimized now → refuse. These run FIRST because a window that minimizes mid-capture also changes size,
    and if the resize check preceded them it would send a minimized window into the retry-and-fallback path
    — scraping the rect it used to occupy, which now shows whatever is behind it.
-6. **Resize check** — `W1.Size` vs `W2.Size`. On a mismatch, leave this sequence: window scope refuses if
-   the mask set is non-empty and otherwise warns; element scope goes to the caller's retry-and-fallback
-   loop. Neither continues to the crop.
+6. **Resize check** — `W1.Size` vs `W2.Size`. On a mismatch, three different things happen, and only two
+   of them leave this sequence:
+   - **window scope, mask set NON-EMPTY** → REFUSE. Leaves the sequence.
+   - **window scope, mask set EMPTY** → record a `windowResized` warning and **CONTINUE to the crop.**
+     ⚠ It must continue: the crop is what discards the region a GROWN window added that the walk never
+     inspected. Skipping it would hand `Encode` a `W2`-sized bitmap against a `W1`-sized rectangle —
+     breaking the `src.Size == absolute.Size` invariant — AND return unscanned pixels, the exact leak the
+     crop was made universal to close. *(Panel round 20, Convergence Assessor: asked to argue against
+     ENDING the review, it traced the abort path BETWEEN the resize policy and the crop — two things
+     nineteen rounds had each examined only in isolation — and found a SUCCESS state that bypassed the
+     logic making it safe. The earlier "neither continues to the crop" was true of the refusal and false
+     of the warning.)*
+   - **element scope** → the caller's retry-and-fallback loop. Leaves the sequence.
+
+6b. **Acquire** — allocate a bitmap of `W2`'s size and call
+   `PrintWindow(HWND, hdc, PW_RENDERFULLCONTENT)`. *(Panel round 20, Executable-Path Auditor: the
+   canonical list never actually took the screenshot. Step 7 referenced `bitmap.Width` while no step had
+   allocated one, so an engineer following the list literally reaches the crop with no image.)*
 7. **Crop** (the algorithm below). Its empty-intersection refusal is now reachable only when the sizes
    AGREE, which narrows it to a provider reporting an element outside its own window.
 8. **Detect** the uniform-canvas conditions (§3) and **encode**, assembling `captureWarnings`.
@@ -1749,3 +1768,32 @@ parsing the eight-step sequence.
 
 **Verified, not folded:** `ScreenshotTools.cs:60` and `:73` are exactly as the spec describes —
 `DpiHelper.ScaleForPoint(result.X, result.Y)` and the `bounds` projection.
+
+### AGY-AFTER adversarial panel — round 20
+
+Seats: Fold Auditor (round 19's edits), Executable-Path Auditor third pass, and a **Convergence Assessor**
+whose only job was to argue AGAINST ending the review — name the part of the design most likely still
+wrong, and say why it survived nineteen rounds. Report: `.clavity/scratch/item8-panel/agy-round20.md`.
+**Verdict: NOT GREEN, and the round justified itself.** Three folds:
+
+- **A SUCCESS state bypassed the logic that made it safe — leak-class, and it survived nineteen rounds.**
+  Step 6 said a size mismatch means "neither continues to the crop". True of the refusal; FALSE of the
+  window-scope warning, which continues and captures. Without the crop it would hand `Encode` a
+  `W2`-sized bitmap against a `W1`-sized rectangle, breaking the invariant AND returning the unscanned
+  region a grown window added — the precise leak round 10 made the crop universal to close. It survived
+  because every prior round examined the resize POLICY and the crop MATH separately; nothing had traced
+  the path between them. This is why the round ran.
+- **The canonical order never took the screenshot.** Step 7 cropped `bitmap` while no step allocated one
+  or called `PrintWindow`. Added as step 6b. A list that presents itself as the complete sequence is read
+  literally, which is the whole point of having one.
+- **The seam's return type contradicted itself.** It was described as returning "the same `CaptureResult`
+  the scrape path returns" while also being required to report a resize — impossible once exceptions and
+  sentinels are ruled out. The outcome type WRAPS the result rather than being it.
+
+**The Convergence Assessor is the seat worth keeping from this round.** Given an explicit licence to
+answer "I have nothing" and told that answer would end the review, it instead named a specific defect and
+explained the structural reason the panel had missed it — two components each reviewed in isolation, with
+the path between them never traced. Inviting the honest null answer is what made the non-null answer
+credible.
+
+**Verified, not folded:** `ScreenCapture.cs:39` is exactly `cap = Capture.Rectangle(absolute, null);`.
