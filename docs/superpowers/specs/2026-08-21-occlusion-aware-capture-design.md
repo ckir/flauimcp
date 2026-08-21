@@ -181,14 +181,20 @@ same six lines removes the class:
   image is returned as a success**. Ordering is the whole defence: reject a degenerate `W1` before the
   yardstick can turn it into an empty mask set. *(Panel round 9, Fold Auditor.)*
 
-  ⚠ Since round 10 unified the scopes, this guard is **belt-and-braces for WINDOW scope and still
-  load-bearing for ELEMENT scope.** With `E = W1`, a degenerate `W1` makes `relative` degenerate, so the
-  crop's empty check refuses before any image is returned and the dropped mask set never reaches a
-  caller. Element scope is different: `E` is the ELEMENT's rect and can be perfectly valid while the
-  WINDOW rect is degenerate — UIA is capable of reporting exactly that inconsistency, which is why the
-  mask-escalation machinery exists at all. There `relative` is non-degenerate, the crop succeeds, and the
-  image ships with no masks. Keep the guard. *(Panel round 11 proposed deleting it as dead code; that is
-  true only for the scope it traced.)*
+  ⚠ **This guard is DEFENCE IN DEPTH, and it is kept knowingly rather than because nothing else covers
+  the case.** Traced against the rest of the design, every path from a degenerate `W1` does already end in
+  a refusal: window scope's crop goes empty (`E = W1`), and element scope hits the size-mismatch rule
+  because a degenerate `W1` cannot equal a valid `W2`. So it is redundant, and an earlier draft's
+  justification for it — that element scope had an uncovered path — was wrong. *(Panel rounds 11 and 13,
+  which traced it correctly.)*
+
+  It stays anyway, for one reason: **what it guarantees is that a DROPPED MASK SET never reaches a
+  caller, and that guarantee should not rest on a three-rule interaction.** Those three rules have each
+  been rewritten during this review, one of them three times. A single check at the source costs one
+  comparison and cannot be invalidated by a later change to the retry, fallback or crop logic — all of
+  which sit downstream of it and all of which have changed since it was added. That is the correct trade
+  for a leak-class guarantee, and it is a judgement call rather than a necessity, which is why it is
+  labelled as one.
 
 ⚠ **A MINIMIZED window is NOT caught by an extents check, and must be re-tested at capture time.** F6
 measured the placeholder rect Windows gives a minimized window: `-32000,-32000` with extents `160x28` —
@@ -331,8 +337,17 @@ behavioural contract, not an implementation detail, and the two scopes need diff
   was a REGRESSION: spinners, progress dialogs and expanding windows are captured perfectly well today,
   and a design that returns nothing for all of them is strictly worse than the one it replaces. This is
   the same mechanism-failure case as the timeout (risk 2): the window is on screen with real pixels, and
-  what we cannot obtain is a consistent geometry-and-capture pair. The scrape takes both at one instant,
-  which is exactly what the tool does now.
+  what we cannot obtain is a consistent geometry-and-capture pair. The scrape is what the tool does today
+  for this window, so the fallback restores current behaviour instead of returning nothing.
+
+  ⚠ **The scrape is NOT synchronized with the geometry, and this spec must not claim it is.** An earlier
+  draft said the scrape "takes both at one instant". It does not: it takes PIXELS at one instant, while
+  `E` still comes from a UIA walk that happened earlier, so an animating window is captured with
+  coordinates that are already slightly stale. That staleness is the same inherent race §2 documents and
+  accepts — it is today's behaviour, not a new defect — but the fallback is justified by "better than
+  nothing", not by synchronisation it does not have. *(Panel round 13, Fold Auditor: the claim was
+  overstated. Its conclusion — that the fallback therefore fails the design's own tests — is rejected:
+  test (2) asks whether `PrintWindow` produced a usable image, and it did not.)*
 
   ⚠ **The scrape must use the geometry from the LAST retry attempt, not the first.** Each attempt
   re-takes the geometry-and-capture pair, so the freshest pair is already in hand; reusing the original
@@ -489,13 +504,25 @@ An incorrect warning is cheap; an incorrect refusal is not.
 panel — a spacer, a blank text area, a flat background — is genuinely one colour. Evaluating the signal
 post-crop would warn constantly on valid captures.
 
-⚠ **BOTH detectors apply ONLY when `captureMethod` is `printWindow`.** They exist to catch a
-`PrintWindow` render failure, which by construction cannot occur on the scrape path. Running them on a
-`screenScrape` image would also be incoherent: that image is already sized to `captureBounds`, so there
-is no "full window bitmap" distinct from the crop, and a legitimately solid element would fire
-`uniformCanvas` — telling the agent the whole WINDOW was blank when the tool never rendered a window
-bitmap at all. *(Panel round 12, Fold Auditor: the two-stage detector silently assumed a two-stage
-pipeline that the fallback path does not have.)*
+⚠ **The two-stage detector applies ONLY when `captureMethod` is `printWindow`.** It exists to catch a
+`PrintWindow` render failure, and the two-stage split is incoherent on a scrape image: that image is
+already sized to `captureBounds`, so there is no "full window bitmap" distinct from the crop, and a
+legitimately solid element would fire `uniformCanvas` — telling the agent the whole WINDOW was blank when
+the tool never rendered a window bitmap at all. *(Panel round 12, Fold Auditor: the two-stage detector
+silently assumed a two-stage pipeline that the fallback path does not have.)*
+
+⚠ **BUT `uniformCanvas` DOES run on a FULL-DESKTOP scrape, and closing that gap is deliberate.** A
+full-desktop capture can come back entirely black for reasons `IsDesktopRenderable()` does not catch — a
+window using `SetWindowDisplayAffinity` to exclude itself from capture, DRM-protected content, a session
+in transition. Today that returns a black image silently, and an agent cannot tell it from a dark screen.
+The detector now exists, the check is nearly free, and a genuinely uniform whole desktop is not a real
+case, so the false-positive cost is close to zero.
+
+This is a small, deliberate widening of item 8's scope, recorded rather than done quietly: full-desktop is
+otherwise out of scope and keeps the scrape. It is folded here rather than deferred because this project
+does not defer a defect for being pre-existing — the blind spot is real, and the mechanism that closes it
+is already being built. *(Panel round 13, Fold Auditor: disabling the detector on every scrape path was
+the right call for the two-stage element/window split and the wrong call for the whole-image check.)*
 
 **The two errors that choice accepts, stated symmetrically:**
 
@@ -1214,3 +1241,39 @@ privacy-posture widening, already named and already routed to the operator for r
 had been reviewed in the round that introduced it, and each was individually correct; the defect existed
 only in the relationship between two of them. A surface assembled one piece at a time needs a pass that
 looks at the assembled surface.
+
+### AGY-AFTER adversarial panel — round 13
+
+Seats: Fold Auditor (round 12's edits, with the fallback rule — now on its THIRD form — as its hardest
+target), Contract Surface Auditor second pass (six codes), **Simplicity Auditor** (find what can be
+REMOVED without losing a guarantee, since round 10's best outcome was a deletion). Report:
+`.clavity/scratch/item8-panel/agy-round13.md`. **Verdict: NOT GREEN.** Three folds, one rejection:
+
+- **A claim in the fallback rationale was overstated.** "The scrape takes both at one instant" is false:
+  it takes PIXELS at one instant while `E` still comes from an earlier walk. Corrected — the fallback is
+  justified by being better than nothing and by restoring today's behaviour, not by a synchronisation it
+  does not have. **Its conclusion was rejected**: test (2) asks whether `PrintWindow` produced a usable
+  image, and it did not, so retry-exhaustion still qualifies.
+- **Disabling the detector on every scrape path opened a real blind spot.** Round 12's rule was right for
+  the two-stage element/window split and wrong for the whole-image check: a FULL-DESKTOP scrape can come
+  back entirely black — `SetWindowDisplayAffinity`, DRM content, a session in transition — with nothing
+  to distinguish it from a dark screen. `uniformCanvas` now runs there too. A deliberate small scope
+  widening, recorded rather than done quietly, folded rather than deferred because this project does not
+  defer a defect for being pre-existing.
+- **The degenerate-`W1` guard's justification was wrong and is corrected.** Traced properly, every path
+  from a degenerate `W1` already ends in a refusal, so the guard IS redundant — rounds 11 and 13 were
+  both right about that, and the "element scope has an uncovered path" defence was not. It is kept as
+  explicit DEFENCE IN DEPTH, on the grounds that a leak-class guarantee should not rest on a three-rule
+  interaction when all three rules have been rewritten during this review. Labelled as a judgement call,
+  not as a necessity.
+
+**Rejected by measurement:** that `windowResized` and `popupsNotRendered` are mutually exclusive. The
+argument was that popups graft masks, so a window with a popup always has a non-empty mask set and would
+refuse rather than warn. Checked at `PerceptionManager.cs:1106` — `pw.Add(resolution.Rect)` runs only for
+elements that are actually REDACTED, so a popup containing nothing sensitive grafts zero masks. An open
+menu with no password field, on a window that resizes mid-capture, produces both codes. The combination
+is reachable and the contract must handle it.
+
+**The Simplicity Auditor seat produced a correct finding and the right answer was still to keep the
+code** — which is the more useful outcome than either blind deletion or a reflexive defence. Asking what
+can be removed forced the real justification into the open and replaced a wrong one.
