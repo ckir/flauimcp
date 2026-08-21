@@ -59,12 +59,39 @@ public sealed class FindTextTools
             var geo = await _perception.ResolveTextCaptureGeometryAsync(new WindowHandle(window), region); // Step 0 shape
             if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"OCR of windows owned by '{geo.DeniedProcess}' is blocked.", "target a non-sensitive window");
             if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
+            // ⚠ BOOKEND, HALF 1 of 2 — FAIL FAST. If the window has ALREADY changed since the walk,
+            // there is no point paying for the capture. This half is cheap and catches the common case.
+            if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
+                                                new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "The window changed size between reading its redacted regions and capturing it, so " +
+                    "those regions can no longer be located.",
+                    "wait for the window to settle, then retry");
+
             // ⚠ OcrRegion, not Window. This path SCRAPES and always has; it is neither a whole desktop
             // nor a PrintWindow capture, so it runs NO uniform detector. Item 8 did not change this
             // path's backend -- it only forced the scope to be named. See risk 6.
             var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(
                 geo.CaptureBounds, geo.MaskRects, maxWidth: 0, CaptureScope.OcrRegion,
                 System.Array.Empty<CaptureWarning>())); // maxWidth:0 -> best OCR accuracy (still 1920-clamped)
+
+            // ⚠⚠ BOOKEND, HALF 2 of 2 — THIS IS THE HALF THAT CLOSES THE RACE, and half 1 alone does not.
+            // A reflow BETWEEN the pre-check and the capture leaves pixels from the NEW layout carrying
+            // masks computed for the OLD one. On the screenshot path that returns a wrong-looking image;
+            // here the OCR engine reads the newly-exposed pixels and returns the redacted text as a
+            // STRING. Re-reading the rect after acquisition is one GetWindowRect, and it is the only
+            // check that can see a change that happened DURING the capture.
+            //
+            // ⚠ A DISTINCT MESSAGE from half 1, deliberately. Both recourses are "wait and retry", but
+            // "changed DURING" and "changed BEFORE" are different diagnoses and this design's standing
+            // rule is that no two distinct causes share one message.
+            if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
+                                                new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "The window changed size while it was being captured, so the redacted regions in this " +
+                    "image can no longer be trusted to cover what they were computed for.",
+                    "wait for the window to settle, then retry");
+
             var matches = await _finder.FindAsync(query, cap.Png, mode, all,
                 cap.ScaleApplied, cap.X, cap.Y, geo.WindowLeft, geo.WindowTop, geo.WindowWidth, geo.WindowHeight);
             return ToolResponse.Ok(new
@@ -112,9 +139,36 @@ public sealed class FindTextTools
                 // ToolException still means the window vanished/closed mid-wait -> not found.
                 catch (ToolException ex) when (ex.Code != ToolErrorCode.RedactionUnmaskable) { return false; }
                 if (geo.Denied || geo.Minimized) return false;
+                // ⚠ BOOKEND, HALF 1 of 2 — FAIL FAST. If the window has ALREADY changed since the walk,
+                // there is no point paying for the capture. This half is cheap and catches the common case.
+                if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
+                                                    new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                    throw new ToolException(ToolErrorCode.ElementNotActionable,
+                        "The window changed size between reading its redacted regions and capturing it, so " +
+                        "those regions can no longer be located.",
+                        "wait for the window to settle, then retry");
+
                 var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(
                     geo.CaptureBounds, geo.MaskRects, maxWidth: 0, CaptureScope.OcrRegion,
                     System.Array.Empty<CaptureWarning>())); // scope: see the note at :62
+
+                // ⚠⚠ BOOKEND, HALF 2 of 2 — THIS IS THE HALF THAT CLOSES THE RACE, and half 1 alone does not.
+                // A reflow BETWEEN the pre-check and the capture leaves pixels from the NEW layout carrying
+                // masks computed for the OLD one. On the screenshot path that returns a wrong-looking image;
+                // here the OCR engine reads the newly-exposed pixels and returns the redacted text as a
+                // STRING. Re-reading the rect after acquisition is one GetWindowRect, and it is the only
+                // check that can see a change that happened DURING the capture.
+                //
+                // ⚠ A DISTINCT MESSAGE from half 1, deliberately. Both recourses are "wait and retry", but
+                // "changed DURING" and "changed BEFORE" are different diagnoses and this design's standing
+                // rule is that no two distinct causes share one message.
+                if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
+                                                    new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                    throw new ToolException(ToolErrorCode.ElementNotActionable,
+                        "The window changed size while it was being captured, so the redacted regions in this " +
+                        "image can no longer be trusted to cover what they were computed for.",
+                        "wait for the window to settle, then retry");
+
                 var matches = await _finder.FindAsync(query, cap.Png, MatchMode.Fuzzy, all: false,
                     cap.ScaleApplied, cap.X, cap.Y, geo.WindowLeft, geo.WindowTop, geo.WindowWidth, geo.WindowHeight);
                 if (matches.Count > 0) { found = matches; return true; }

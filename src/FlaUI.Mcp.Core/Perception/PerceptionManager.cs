@@ -1218,7 +1218,7 @@ public sealed class PerceptionManager
         var geo = await ResolveWindowCaptureGeometryAsync(handle, null);
         if (geo.Denied || geo.Minimized)
             return new TextCaptureGeometry(geo.Denied, geo.DeniedProcess, geo.Minimized,
-                geo.Bounds, geo.MaskRects, geo.Bounds.X, geo.Bounds.Y, geo.Bounds.Width, geo.Bounds.Height);
+                geo.Bounds, geo.MaskRects, geo.Bounds.X, geo.Bounds.Y, geo.Bounds.Width, geo.Bounds.Height, geo.NativeWindowHandle);
 
         // ⚠ A DEGENERATE WINDOW MUST REFUSE HERE TOO. The walk returns an EMPTY mask set for one, and this
         // path OCRs what it captures -- so proceeding would read redacted text back as plaintext once the
@@ -1233,7 +1233,7 @@ public sealed class PerceptionManager
 
         var win = geo.Bounds; // full window physical rect (target was `win` itself since @ref is null)
         var capture = TextCaptureGeometry.ComputeCaptureBounds(win, region);
-        return new TextCaptureGeometry(false, null, false, capture, geo.MaskRects, win.X, win.Y, win.Width, win.Height);
+        return new TextCaptureGeometry(false, null, false, capture, geo.MaskRects, win.X, win.Y, win.Width, win.Height, geo.NativeWindowHandle);
     }
 
     /// <summary>DEF-2: full-desktop capture passed Array.Empty&lt;Rectangle&gt;() and so masked NOTHING — the one

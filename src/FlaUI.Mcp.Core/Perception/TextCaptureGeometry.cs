@@ -11,7 +11,7 @@ namespace FlaUI.Mcp.Core.Perception;
 public sealed record TextCaptureGeometry(
     bool Denied, string? DeniedProcess, bool Minimized,
     System.Drawing.Rectangle CaptureBounds, System.Collections.Generic.IReadOnlyList<System.Drawing.Rectangle> MaskRects,
-    int WindowLeft, int WindowTop, int WindowWidth, int WindowHeight)
+    int WindowLeft, int WindowTop, int WindowWidth, int WindowHeight, System.IntPtr NativeWindowHandle)
 {
     /// <summary>Given the FULL window physical rect and an optional [xPct,yPct,wPct,hPct] region (fractions in
     /// (0,1]), returns the absolute capture rect. Null region -> the full window rect. Throws

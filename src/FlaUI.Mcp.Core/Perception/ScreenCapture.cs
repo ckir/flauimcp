@@ -299,6 +299,15 @@ public static class ScreenCapture
         return w2;
     }
 
+    /// <summary>TRUE when the window's CURRENT size differs from <paramref name="asWalked"/>. Used by the
+    /// OCR path, which has no W1/W2 pair of its own. A destroyed window reports changed: it is not safe
+    /// to photograph either.</summary>
+    public static bool WindowSizeChanged(IntPtr hwnd, Size asWalked)
+    {
+        var now = DefaultW2Probe(hwnd);
+        return now is null || now.Value.Size != asWalked;
+    }
+
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
     [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
