@@ -148,8 +148,14 @@ effective = Intersect(relative, new Rectangle(0, 0, bitmap.Width, bitmap.Height)
 if (effective.Width <= 0 || effective.Height <= 0) -> refuse           // see the empty case below
 src       = bitmap cropped to `effective`
 absolute  = effective offset back by W1.Location
-Encode(src, absolute, masks, maxWidth)       // src.Size == absolute.Size, by construction
+Encode(src, absolute, masks, maxWidth, method, warnings)   // src.Size == absolute.Size, by construction
 ```
+
+`Encode` constructs the `CaptureResult`, so the two new fields reach it the same way every other field
+does — as parameters. `method` is the backend that produced `src`; `warnings` is the list accumulated by
+the checks in §1 and §3, empty in the normal case. *(Panel round 15, Fold Auditor: the block still
+showed the four-argument call while §5 had already settled a nine-field result, leaving the bridge
+between the detector logic and the constructor unstated.)*
 
 ⚠ **Window scope is cropped too, and that crop is load-bearing rather than a no-op.** Earlier drafts
 exempted window scope on the grounds that the bitmap already IS the window. That is true only while
@@ -321,11 +327,26 @@ behavioural contract, not an implementation detail, and the two scopes need diff
   *(Panel round 10, Fold Auditor: the leak was real; its proposed fix — crop window scope too — was
   right and is adopted. Its further conclusion, that the crop makes the refusal unnecessary, is not: the
   crop solves unscanned PIXELS, not reflowed MASKS.)*
-- **Element scope: REFUSE, with a retry hint.** The element's rect is from before the resize, so its
-  offset within the window may no longer locate it. The crop can land on the wrong content and be masked
-  consistently — the "flawless-looking PNG of the wrong region" this subsection exists to prevent. This
-  is the case where §3's usual asymmetry inverts: there is no cheap warning available, because the wrong
-  answer is indistinguishable from the right one.
+- **Element scope: RETRY, then fall back to the scrape. Never return the crop.** The element's rect is
+  from before the resize, so its offset within the window may no longer locate it. The crop can land on
+  the wrong content and be masked consistently — the "flawless-looking PNG of the wrong region" this
+  subsection exists to prevent. This is the case where §3's usual asymmetry inverts: there is no cheap
+  warning available, because the wrong answer is indistinguishable from the right one.
+
+  ⚠ **Stated as ONE flow, because three rounds each amended a piece of it and the pieces stopped
+  agreeing.** An earlier draft said "REFUSE, with a retry hint" and then, further down, "on exhaustion
+  fall back to the scrape" — two different terminal outcomes for one condition. *(Panel round 15,
+  Failure-Mode Cartographer: its table listed the detection and the exhaustion as separate rows, which is
+  what made the disagreement visible.)* The flow is:
+
+  1. Detect `W1.Size != W2.Size`. Do **not** return the crop and do **not** refuse yet.
+  2. Re-take the geometry-and-capture pair, a bounded number of times.
+  3. If a consistent pair is obtained, proceed normally with the fresh `W1`/`E` — no warning.
+  4. On exhaustion, fall back to the SCRAPE using the LAST attempt's geometry, reporting
+     `captureMethod: "screenScrape"` and `scrapeFallbackTargetChanging`.
+
+  There is no terminal refusal on this path. The tool refuses only where the target has no pixels to
+  give (see the degenerate, minimized and empty-crop cases).
 
   ⚠ **"Retry" must be BOUNDED, or a continuously-changing window is a livelock.** A window that animates
   — a progress dialog, a resizing splash, anything mid-transition — never satisfies
@@ -407,6 +428,18 @@ physical pixels that match `geo.Bounds`. The probe reproduced this: run DPI-awar
 
 ```csharp
 var yardstick = System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds());
+```
+
+**The REQUIRED end state, written out** — the prose below demands a caller-supplied switch, and a block
+showing only the "before" is a paste trap this document has already fallen into twice. *(Panel round 15,
+Pattern Hunter — third instance of that pattern.)*
+
+```csharp
+// clipToVirtualScreen defaults to FALSE: the mask-preserving value, so a forgotten call site fails safe.
+// Full-desktop (the scrape) passes true; window and element scope take the default.
+var yardstick = clipToVirtualScreen
+    ? System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds())
+    : captureBounds;
 ```
 
 and then early-returns when that intersection is empty, on this stated premise:
@@ -564,6 +597,22 @@ What the plan owns is the hint's exact wording. *(Panel round 14, direct questio
 plan owns an explicit mapping" without naming the code, which is an abdication of contract dressed as a
 deferral — the same shape §5 was corrected for in round 6.)*
 
+**Every refusal this design introduces, with its error code.** §4 previously mapped only the GDI case,
+leaving the §1 refusals unmapped — an implementer would have invented a code per site.
+*(Panel round 15, Failure-Mode Cartographer: a failure mode with no row.)*
+
+| Refusal | Code | Why that code |
+|---|---|---|
+| `W1` or `W2` has zero/negative extents | `ElementNotActionable` | the window has no renderable area; the same class as the existing minimized refusal |
+| window is minimized at capture time | `ElementNotActionable` | matches the pre-existing check at `ScreenshotTools.cs:55`, which uses exactly this code |
+| element crop is empty (`effective` degenerate) | `ElementNotActionable` | the named element is not inside the pixels that were captured, so it cannot be acted on from this image |
+| window-scope resize with a NON-EMPTY mask set | `RedactionUnmaskable` | this is precisely that code's meaning — the redacted regions cannot be reliably located — and it is the code SP4 established for "refuse rather than return an under-masked image" |
+| null/zero GDI handle | `CaptureUnavailable` | environmental capture failure, matching the scrape path (`ScreenCapture.cs:40-41`) |
+| desktop not renderable | `CaptureUnavailable` | unchanged; already thrown at `ScreenshotTools.cs:27-28` |
+
+No new `ToolErrorCode` values are introduced. Every refusal reuses a code the agent contract already
+documents, so a caller that branches on today's codes needs no change to handle this feature.
+
 The session-level guard is unaffected and still runs first: `ScreenshotTools.cs:27-28` throws
 `CaptureUnavailable` when `IsDesktopRenderable()` is false, which covers the locked/disconnected desktop
 before either backend is reached.
@@ -612,6 +661,12 @@ on them. A list of English prose would force a consumer to regex wording that wi
 worse contract than the boolean it replaced, not a better one. `code` is what a caller branches on;
 `recourse` is what §3 requires so the signal arrives with its instruction. *(Panel round 7, Contract
 Integrity — the seat was right that the analogy was being claimed on the axis where it broke.)*
+
+⚠ **Codes are SCOPE-SPECIFIC, and some combinations are therefore unreachable.** `uniformCanvas` and
+`windowResized` are window-scope; `elementCanvasUniform` is element-scope; `desktopCanvasUniform` is
+full-desktop only. So `elementCanvasUniform` can never co-occur with `windowResized`. A consumer does not
+need to reason about that — it branches on the codes it receives — but the scoping is stated so nobody
+writes a handler for a pair that cannot arrive. *(Panel round 15, Failure-Mode Cartographer.)*
 
 ⚠ **A warning is never a substitute for a refusal where §1 or §4 specifies one.** `captureWarnings`
 annotates an image that was returned; it does not downgrade a case the design decided to refuse.
@@ -886,7 +941,11 @@ for each failure, or NONE — not whether the area was "covered".)*
    reachable, and `SearchRoots` is called from TWELVE sites in `PerceptionManager.cs` — lines 75, 89, 107,
    126, 262, 283, 305, 539, 540, 740, 883 and 998. *(An earlier draft said nine. Panel round 11 filed the
    count as unverified, correctly; it was wrong.)* A popup is a SEPARATE
-   top-level HWND: the scrape includes its pixels and the grafted mask covers them, but `PrintWindow`
+   top-level HWND: the scrape includes its pixels **only where the popup overlaps the window's own rect**,
+   since a window-scoped scrape captures `captureBounds` and nothing outside it — an earlier draft said
+   the scrape simply "includes its pixels", which §5's `popupsNotRendered` recourse already contradicts.
+   *(Panel round 15, Pattern Hunter — third instance of a retracted claim left live elsewhere.)* Within
+   that overlap the grafted mask covers them, but `PrintWindow`
    renders one window and its CHILD windows, so the popup's pixels are absent while its mask rect
    survives. The result is a black rectangle over ordinary window content and a `redactions` count that
    corresponds to nothing visible. The direction is fail-safe — over-masking, never under-masking — so
@@ -1340,3 +1399,33 @@ ToolException(ToolErrorCode.CaptureUnavailable, ...)`. The spec is correct there
 **The Cartographer seat found its defect in the SHAPE of the table, not in any row's content** — two
 rows with materially different causes were textually identical. That is a defect no prose reading
 surfaces, because prose never puts the two cases adjacent.
+
+### AGY-AFTER adversarial panel — round 15
+
+Seats: Fold Auditor (round 14's edits, hardest on the LATE introduction of a new type), **Pattern Hunter**
+(sweep the whole document for the two failure patterns that had each already bitten it TWICE),
+Failure-Mode Cartographer second pass. Report: `.clavity/scratch/item8-panel/agy-round15.md`.
+**Verdict: NOT GREEN.** Five folds — and the Pattern Hunter found BOTH of its targets a third time:
+
+- **A retracted claim, live one section away, third instance.** §5's `popupsNotRendered` recourse says the
+  scrape crops popups beyond the window's rect; risk 8 still said the scrape "includes its pixels" flatly.
+  Corrected — a window-scoped scrape captures `captureBounds` and nothing outside it, so it includes a
+  popup only where it overlaps.
+- **A "before" block with no "after", third instance.** §2 quoted the current yardstick computation and
+  demanded a caller-supplied switch in prose without ever showing the resulting call. The end state is now
+  written out, including the fail-safe default direction.
+- **The algorithm block still described the OLD pipeline.** It showed `Encode(src, absolute, masks,
+  maxWidth)` while §5 had already settled a nine-field `CaptureResult`, leaving the bridge from the
+  detector logic to the constructor unstated.
+- **Three amendments to one flow had stopped agreeing.** Element-scope resize said "REFUSE with a retry
+  hint" in one place and "on exhaustion fall back to the scrape" in another — two terminal outcomes for
+  one condition. Restated as a single four-step flow with no terminal refusal on that path.
+- **Every §1 refusal was missing from the error map.** §4 mapped only the GDI case; the degenerate,
+  minimized, empty-crop and resize-with-masks refusals had no `ToolErrorCode`, so an implementer would
+  have invented one per site. All six now mapped, and **no new code is introduced** — each reuses one the
+  agent contract already documents.
+
+**The Pattern Hunter seat is the highest-yield lens of the review per unit of instruction.** It was given
+no subject-matter question at all — only two failure SHAPES that had recurred — and it found a fresh
+instance of each. Once a defect class has appeared twice in an artifact, hunting the class beats hunting
+the content.
