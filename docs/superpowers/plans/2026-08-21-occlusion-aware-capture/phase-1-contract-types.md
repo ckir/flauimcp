@@ -125,8 +125,10 @@ git commit -m "feat(capture): CaptureScope - the enum both seams branch on"
 
 - [ ] **Step 1: Write the failing test**
 
+⚠ **No `using System.Linq;`** — the only member that used it moved to Task 25, and this repo builds
+warnings-as-errors.
+
 ```csharp
-using System.Linq;
 using FlaUI.Mcp.Core.Perception;
 using Xunit;
 
@@ -156,45 +158,13 @@ public class CaptureWarningTests
     public void Exactly_six_codes_ship()
         => Assert.Equal(6, CaptureWarnings.AllCodes.Count);
 
-    // Every shipped code must have at least one emission site in production. This is the other half of
-    // the retirement: it is what would have caught `windowResized` going dead on its own.
-    [Fact]
-    public void No_shipped_code_is_unreachable()
-    {
-        var root = RepoRoot();
-        var src = string.Join("\n", System.IO.Directory.EnumerateFiles(
-            System.IO.Path.Combine(root, "src"), "*.cs", System.IO.SearchOption.AllDirectories)
-            .Select(f => StripComments(System.IO.File.ReadAllText(f))));
-        foreach (var c in CaptureWarnings.AllCodes)
-        {
-            var member = char.ToUpperInvariant(c[0]) + c.Substring(1);
-            Assert.True(src.Contains("CaptureWarnings." + member),
-                $"'{c}' is documented but never emitted - retire it or emit it");
-        }
-    }
-
-    /// <summary>⚠ COMMENTS STRIPPED FIRST, and this is the SECOND test in this plan to need it. Without
-    /// it, a code named only in a comment — and this plan's comments name these codes constantly, to
-    /// explain the paths that emit them — satisfies the gate while nothing emits it. That is the same
-    /// defect item 12 shipped and the same one the metadata sweep had, arriving a third time in the test
-    /// written to prevent a code going dead. MEASURED: the substring check matches a commented line.</summary>
-    private static string StripComments(string source)
-    {
-        var noBlocks = System.Text.RegularExpressions.Regex.Replace(
-            source, @"/\*.*?\*/", string.Empty,
-            System.Text.RegularExpressions.RegexOptions.Singleline);
-        return string.Join("\n", noBlocks.Split('\n')
-            .Where(l => !l.TrimStart().StartsWith("//", System.StringComparison.Ordinal)));
-    }
-
-    private static string RepoRoot()
-    {
-        var d = new System.IO.DirectoryInfo(System.IO.Directory.GetCurrentDirectory());
-        while (d is not null && !System.IO.File.Exists(System.IO.Path.Combine(d.FullName, "FlaUI.Mcp.slnx")))
-            d = d.Parent;
-        Assert.NotNull(d);
-        return d!.FullName;
-    }
+    // ⚠ `No_shipped_code_is_unreachable` USED TO LIVE HERE AND HAS MOVED TO TASK 25 (Phase 6).
+    // It asserts every shipped code has a production emission site. MEASURED at execution time:
+    // `grep -rn "CaptureWarnings\." src/` returns NOTHING at this point in the plan, the FIRST emission
+    // site is created in Phase 2 (phase-2-crop-and-encode.md:299) and the LAST in Phase 5
+    // (phase-5-coordinator.md:497) -- so in Phase 1 the gate fails for all six codes and this task could
+    // never commit green. Its preconditions do not exist until Phase 5 completes.
+    // Do NOT re-add it here. See Task 25 Step 0c.
 
     // §5: `code` is what a caller branches on, so it must be a stable identifier -- never prose.
     [Fact]
@@ -309,29 +279,26 @@ public static class CaptureWarnings
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureWarningTests"`
-Expected: PASS — 11 passed.
+Expected: PASS — **9 passed** (6 theory rows + 3 facts).
+
+⚠ **This step said "11 passed" until execution.** That number, and the "seven wire codes" in the commit
+message below, are both fossils from before `windowResized` was retired at panel round 11 — back when
+the theory had 7 rows and 7 + 4 facts = 11. Neither survived the retirement; nothing noticed until the
+task was actually run.
 
 - [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
 
 Temporarily set `[PopupsNotRendered]` to `""`. Re-run. Expected: `Every_shipped_code_has_a_recourse` FAILS on the `popupsNotRendered` row. **Revert.**
 
-Then TWO mutants for the reachability gate, and the second matters more than the first:
-
-1. Temporarily add `"windowResized"` back to `AllCodes` without adding an emission site.
-   Expected: `No_shipped_code_is_unreachable` FAILS naming it, and `Exactly_six_codes_ship` FAILS at 7.
-   **That is the gate that would have caught this code going dead on its own, so see it go red once.**
-2. Do the same, but ALSO add `// CaptureWarnings.WindowResized` as a COMMENT in any production file.
-   Expected: **it still FAILS.** If it passes, `StripComments` is not working and the gate is defeated by
-   typing two slashes — the third time that defect would have shipped in this repo, after item 12's
-   property sweep and this plan's own metadata sweep.
-
-**Revert both.**
+⚠ **The two reachability mutants moved to Task 25 Step 0c with the test they exercise.** They cannot run
+here: there is no emission site for any code until Phase 5 completes, so the gate is red before the
+mutant is applied and a mutant that turns a red test red proves nothing.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/FlaUI.Mcp.Core/Perception/CaptureWarning.cs test/FlaUI.Mcp.Tests/Perception/CaptureWarningTests.cs
-git commit -m "feat(capture): CaptureWarning and the seven wire codes with their recourse text"
+git commit -m "feat(capture): CaptureWarning and the six wire codes with their recourse text"
 ```
 
 ### Task 6: `CaptureResult` gains its two fields — appended, never inserted
