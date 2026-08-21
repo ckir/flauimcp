@@ -399,7 +399,7 @@ git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs test/FlaUI.Mcp.Tests/Perc
 git commit -m "feat(capture): CaptureResult carries captureMethod and captureWarnings (appended)"
 ```
 
-### Task 7: `CaptureOutcome` — the three-case seam return
+### Task 7: `CaptureOutcome` — the four-case seam return
 
 The seam must be able to say "no image; the window resized" and "no image; the call timed out". Neither an exception nor a null/sentinel `CaptureResult` can express that: exceptions are wrong because this is ordinary expected control flow that collides with the surrounding `ToolException` conversions, and a sentinel cannot be told apart from any other empty outcome.
 
@@ -540,7 +540,9 @@ Expected: PASS — 5 passed.
 
 - [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
 
-Temporarily delete the `TimedOut` enum member and its factory. Re-run. Expected: `There_are_exactly_three_cases` FAILS (and the file no longer compiles, which is the structural half — the count assertion is the behavioural half). **Revert.**
+Temporarily delete the `TimedOut` enum member and its factory. Re-run. Expected: `There_are_exactly_four_cases` FAILS (and the file no longer compiles, which is the structural half — the count assertion is the behavioural half). **Revert.**
+
+⚠ **This step named `There_are_exactly_three_cases` until execution — a test that does not exist.** It, and this task's heading, were fossils from before `TargetTransient` was added as a fourth case; the code block was updated and the prose around it was not. An implementer following the old text would have gone looking for a test that was never written.
 
 - [ ] **Step 6: Commit**
 

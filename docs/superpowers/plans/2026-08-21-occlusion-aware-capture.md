@@ -96,7 +96,7 @@ hard stop.
 | Phase | Tasks | File | What it settles |
 |---|---|---|---|
 | **0** | 1–3 | [Measurements](2026-08-21-occlusion-aware-capture/phase-0-measurements.md) | **Two answers can change the design. Task 3 is a HARD STOP.** No production code until the operator has seen all three. |
-| **1** | 4–7 | [Contract types](2026-08-21-occlusion-aware-capture/phase-1-contract-types.md) | `CaptureScope`, `CaptureWarning` + the seven wire codes, `CaptureResult`'s two appended fields, `CaptureOutcome`'s four cases |
+| **1** | 4–7 | [Contract types](2026-08-21-occlusion-aware-capture/phase-1-contract-types.md) | `CaptureScope`, `CaptureWarning` + the **six** wire codes, `CaptureResult`'s two appended fields, `CaptureOutcome`'s four cases |
 | **2** | 8–10 | [Crop and encode](2026-08-21-occlusion-aware-capture/phase-2-crop-and-encode.md) | The PURE crop geometry, `Encode`'s two rectangles, and `CaptureRectangle`'s scope — including the OCR third caller |
 | **3** | 11–13 | [Detector, yardstick, walk](2026-08-21-occlusion-aware-capture/phase-3-detector-yardstick-walk.md) | The uniform detector, the mask-preserving yardstick default, and `CaptureGeometry`'s `W1` / `HWND` / degeneracy signal |
 | **4** | 14–16 | [Acquisition seam](2026-08-21-occlusion-aware-capture/phase-4-acquisition-seam.md) | `IWindowImageSource`, `CaptureWindow`, and the only file in this feature that touches Win32 |
