@@ -537,12 +537,27 @@ For window and element scope, in this order:
    assembles; it does not detect — it never sees the uncropped bitmap and cannot. *(Panel round 29,
    Type-Flow Auditor, raised as its furthest-point-before-guessing and correctly filed as a finding: the
    step said "detect and encode" while the data flow gave `Encode` only the cropped `src`.)*
-   ⚠ `uniformCanvas` and `elementCanvasUniform` run **only when the backend was `printWindow`**. On any
-   scrape — full-desktop, or an element/window scope that fell back — there is no full-window bitmap
-   distinct from the captured region, so the two-stage comparison has no second operand. A full-desktop
-   scrape instead gets `desktopCanvasUniform`; a fallback scrape gets neither. *(Panel round 21, Seam
-   Tracer: the gate was stated in §3 and not repeated where the codes are defined or where the sequence
-   runs them, so a reader arriving from the fallback path would look for an operand that does not exist.)*
+   ⚠ The TWO-STAGE comparison runs only when the backend was `printWindow`: on any scrape there is no
+   full-window bitmap distinct from the captured region, so it has no second operand. *(Panel round 21,
+   Seam Tracer: the gate was stated in §3 and not repeated where the codes are defined or where the
+   sequence runs them, so a reader arriving from the fallback path would look for an operand that does not
+   exist.)*
+
+   ⚠⚠ **BUT THE FIRST STAGE ALONE NEEDS NO SECOND OPERAND, AND AN EARLIER VERSION OF THIS PARAGRAPH SAID
+   "a fallback scrape gets neither" — WHICH SILENTLY RETURNED BLACK IMAGES.** A window-scope capture that
+   falls back to the scrape and comes back one colour is exactly as unusable, and exactly as undetectable
+   by the agent, as the full-desktop case `desktopCanvasUniform` was folded in to cover. So:
+
+   - **full-desktop scrape** → `desktopCanvasUniform`, as before;
+   - **WINDOW-scope fallback scrape** → `uniformCanvas`. The captured region IS the window, so the code's
+     text is true of it;
+   - **ELEMENT-scope fallback scrape** → still nothing, and this is the one gap left open deliberately.
+     There the captured region is the ELEMENT, so `uniformCanvas` would claim the whole WINDOW rendered as
+     one colour — a statement the tool never measured. No existing code's text is true of that case, and
+     inventing an eighth code for it was judged out of proportion to a scrape-path edge.
+
+   *(AGY-AFTER panel over the PLAN, round 4, Protocol Pedant. The plan inherited this hole from the spec
+   and reproduced it faithfully, which is how it was found.)*
 
 9. **The BOOKEND VALIDATION WALK (§2.5) — in the CALLER, after the seam returns.** If `M1` (this
    attempt's mask rect list) is non-empty, re-run the geometry walk to obtain `M2` and compare the two as
@@ -1306,7 +1321,7 @@ contract undefined, which is the same abdication §5 exists to close:
 
 | `code` | fires when | `recourse` says, in substance |
 |---|---|---|
-| `uniformCanvas` | window AND element scope, **`printWindow` only**: §3's detector finds the full WINDOW bitmap effectively one colour | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
+| `uniformCanvas` | window AND element scope under `printWindow`: §3's detector finds the full WINDOW bitmap effectively one colour. **ALSO on a WINDOW-scope FALLBACK SCRAPE**, where the captured region is the window and the whole-image check is as meaningful as it is for a full desktop | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
 | `desktopCanvasUniform` | §3's detector finds a FULL-DESKTOP scrape effectively one colour | the whole desktop came back a single colour. The usual causes are a secure desktop (a UAC prompt), DRM-protected content, or a session in transition — **UIA is normally blocked in those states too, so `desktop_snapshot` will not help.** Wait for the condition to clear and re-capture |
 | `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture with an empty mask set | the window changed size mid-capture. The image itself is sound — it was cropped back to the region you asked for — but the layout inside it **may** have reflowed, so any UIA tree or element ref you hold for this window may be geometrically stale. Re-snapshot before acting on cached coordinates |
 | `popupsNotRendered` | this window had one or more popup roots at geometry time (`PopupFinder.SearchRoots` returned more than the window itself). **Fires on BOTH backends** | an open menu, dropdown or tooltip belonging to this window is a separate top-level window and may be **missing from this image** — structurally absent under `printWindow`, and cropped off under `screenScrape` wherever it extends beyond the window's rect. Its absence is not evidence it failed to open — read the UIA tree to see it |

@@ -742,11 +742,15 @@ public class CaptureOutcomeTests
     public void There_are_exactly_four_cases()
         => Assert.Equal(4, System.Enum.GetValues<CaptureOutcomeKind>().Length);
 
+    // Carries no RESULT, but does carry the reason its terminal message needs -- a payload with exactly
+    // one consumer, unlike the W2 rectangle the Resized signal was correctly denied.
     [Fact]
-    public void The_target_transient_signal_carries_no_payload()
+    public void The_transient_signal_carries_a_reason_but_no_result()
     {
-        Assert.Equal(CaptureOutcomeKind.TargetTransient, CaptureOutcome.TargetTransient.Kind);
-        Assert.Null(CaptureOutcome.TargetTransient.Result);
+        var t = CaptureOutcome.Transient("the window reported no renderable area");
+        Assert.Equal(CaptureOutcomeKind.TargetTransient, t.Kind);
+        Assert.Null(t.Result);
+        Assert.Equal("the window reported no renderable area", t.TransientReason);
     }
 }
 ```
@@ -798,12 +802,21 @@ public enum CaptureOutcomeKind
 /// any other empty outcome, and a sentinel collapses them.
 /// ⚠ The two signals carry NO payload. Retrying means a fresh UIA walk, which discovers the new geometry
 /// itself; nothing consumes a rectangle the failed attempt observed.</summary>
-public sealed record CaptureOutcome(CaptureOutcomeKind Kind, CaptureResult? Result)
+public sealed record CaptureOutcome(CaptureOutcomeKind Kind, CaptureResult? Result,
+                                    string? TransientReason = null)
 {
     public static CaptureOutcome Completed(CaptureResult result) => new(CaptureOutcomeKind.Completed, result);
     public static readonly CaptureOutcome Resized = new(CaptureOutcomeKind.Resized, null);
     public static readonly CaptureOutcome TimedOut = new(CaptureOutcomeKind.TimedOut, null);
-    public static readonly CaptureOutcome TargetTransient = new(CaptureOutcomeKind.TargetTransient, null);
+
+    /// <summary>A retryable transient, carrying the sentence the caller uses IF the budget runs out.
+    ///
+    /// ⚠ This payload does NOT violate the no-payload rule the Resized signal obeys. That rule killed a
+    /// payload NOBODY CONSUMED -- "a contract requiring data its only consumer discards". This one has
+    /// exactly one consumer and is consumed on every terminal path: without it the coordinator would
+    /// report "no renderable area" for an empty element crop, which is a false diagnosis.</summary>
+    public static CaptureOutcome Transient(string reason)
+        => new(CaptureOutcomeKind.TargetTransient, null, reason);
 }
 ```
 
@@ -1321,6 +1334,19 @@ Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 36–43 with:
             // The detector runs where the bitmap lives, so the seam cannot delegate this decision upward.
             if (scope.RunsDesktopUniformDetector() && UniformCanvasDetector.IsUniform(cap.Bitmap))
                 warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.DesktopCanvasUniform));
+            // ⚠⚠ A WINDOW-SCOPE FALLBACK SCRAPE GETS THE WHOLE-IMAGE CHECK TOO, and without it this path
+            // silently returned a black image -- recreating the exact defect the uniformCanvas widening
+            // was folded to close. The TWO-STAGE detector genuinely cannot run on a scrape (there is no
+            // full-window bitmap distinct from the captured region), but the FIRST stage alone needs no
+            // second operand, and "this image is one colour" is as true and as useful here as it is for a
+            // full desktop. *(AGY-AFTER panel over this plan, round 4, Protocol Pedant.)*
+            //
+            // ⚠ WINDOW SCOPE ONLY. On an ELEMENT-scope fallback the captured region is the ELEMENT, so
+            // emitting uniformCanvas would state that the whole WINDOW rendered as one colour -- a claim
+            // the tool cannot support and did not measure. That case stays uncovered, deliberately, and it
+            // is the one gap this fold does not close.
+            else if (scope == CaptureScope.Window && UniformCanvasDetector.IsUniform(cap.Bitmap))
+                warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.UniformCanvas));
             return Encode(cap.Bitmap, absolute, absolute, redactAbsolute, maxWidth, "screenScrape", warnings);
         }
     }
@@ -2168,14 +2194,18 @@ public class CaptureWindowTests
     // Sizes AGREE and the element still falls outside the window's own bitmap -- a provider reporting an
     // element outside its own window. Pathological rather than impossible; this repo's mask-escalation
     // machinery exists because UIA does report inconsistent rectangles.
+    // ⚠ RETRYABLE, not an immediate refusal. Reachable only when the sizes AGREE, so it means UIA
+    // reported an element outside its own window -- the same class of transient as a momentarily
+    // degenerate window rect, which the design already absorbs. The reason travels with the signal so the
+    // terminal message is not the false "no renderable area".
     [Fact]
-    public void An_empty_element_crop_at_matching_sizes_refuses()
+    public void An_empty_element_crop_at_matching_sizes_is_a_retryable_transient()
     {
         var w1 = new Rectangle(0, 0, 800, 600);
         var e  = new Rectangle(900, 900, 100, 50);
-        var ex = Assert.Throws<ToolException>(() =>
-            Run(Geo(e, w1), w1, CaptureScope.Element, FakeWindowImageSource.Solid(Color.White)));
-        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+        var o = Run(Geo(e, w1), w1, CaptureScope.Element, FakeWindowImageSource.Solid(Color.White));
+        Assert.Equal(CaptureOutcomeKind.TargetTransient, o.Kind);
+        Assert.Contains("not inside the pixels", o.TransientReason);
     }
 
     // THE DETECTORS RUN WHERE THEIR OPERANDS EXIST. uniformCanvas sees the FULL window bitmap, before the
@@ -2292,7 +2322,8 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
 
         // A degenerate W2 is REPORTED, not thrown: the window has no renderable area right now, which an
         // animating window can be true of for a single frame. Same treatment as a degenerate W1.
-        if (w2.Width <= 0 || w2.Height <= 0) return CaptureOutcome.TargetTransient;
+        if (w2.Width <= 0 || w2.Height <= 0)
+            return CaptureOutcome.Transient("The target window reported no renderable area.");
 
         var w1 = geo.WindowBounds;
         var warnings = warningsSoFar;
@@ -2332,9 +2363,16 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
         // check above already left the sequence otherwise.
         var crop = WindowCropGeometry.Compute(new Size(bitmap.Width, bitmap.Height), geo.Bounds, w1, w2);
         if (crop is null)
-            throw new ToolException(ToolErrorCode.ElementNotActionable,
-                "The requested element is not inside the pixels that were captured.",
-                "re-snapshot the window for fresh element bounds, then retry");
+            // ⚠ RETRYABLE, and an earlier version of this plan refused here on the FIRST occurrence.
+            // Reachable only when W1.Size == W2.Size, so it means a provider reported an element outside
+            // its own window -- and the design's own justification for calling that "pathological rather
+            // than impossible" is that "this repo's mask-escalation machinery exists because UIA does
+            // report inconsistent rectangles". A momentarily bad ELEMENT rect is therefore the same class
+            // of transient as a momentarily degenerate WINDOW rect, which the design already absorbs.
+            // Two guards over one condition class must not disagree.
+            // *(Driver's solo Guard-Consistency pass, round 4.)*
+            return CaptureOutcome.Transient(
+                "The requested element was not inside the pixels that were captured.");
         var c = crop.Value;
 
         using var src = bitmap.Clone(c.Effective, bitmap.PixelFormat);
@@ -2770,6 +2808,31 @@ public class WindowCaptureCoordinatorTests
         Assert.Contains(r.Result.CaptureWarnings, w => w.Code == "scrapeFallbackTargetChanging");
     }
 
+    // ⚠⚠ ...BUT ONLY WHEN THERE IS NOTHING TO MASK. A resize reflows the WINDOW's layout regardless of
+    // which scope asked, so painting pre-resize mask rects onto a post-resize scrape under-redacts exactly
+    // as it would for window scope. The test above passes an EMPTY mask set, which is the population the
+    // fallback was justified by -- spinners, progress dialogs, expanding windows.
+    [Fact]
+    public async Task Element_scope_WITH_masks_refuses_on_exhaustion_rather_than_scraping()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var e  = new Rectangle(100, 100, 200, 150);
+        var mask = new Rectangle(110, 110, 40, 20);
+        bool scraped = false;
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(new CaptureGeometry(e, new[] { mask }, false, false, null,
+                Array.Empty<MaskEscalationEntry>(), w1, new IntPtr(0x1234), false)),
+            FakeWindowImageSource.Solid(Color.White), new CaptureRetryOptions(2, 1000),
+            w2Probe: _ => new Rectangle(0, 0, 700, 600), minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => { scraped = true; return new CaptureResult(Array.Empty<byte>(),
+                b.X, b.Y, b.Width, b.Height, 1.0, m.Count, "screenScrape", warns); });
+
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0));
+        Assert.Equal(ToolErrorCode.RedactionUnmaskable, ex.Code);
+        Assert.False(scraped, "pre-resize masks must never be painted onto a post-resize scrape");
+    }
+
     // The fallback must use the LAST attempt's geometry. Reusing the first would hand the scrape
     // coordinates staler by the entire duration of the loop -- the loop actively degrading the fallback
     // it exists to reach.
@@ -2900,6 +2963,7 @@ Create `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`:
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Threading.Tasks;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Windows;
@@ -3019,14 +3083,15 @@ public sealed class WindowCaptureCoordinator
                         geo);
 
                 case CaptureOutcomeKind.TargetTransient:
-                    // A degenerate W2 -- the window has no renderable area RIGHT NOW. Identical treatment
-                    // to a degenerate W1: absorb it, because an animating or mid-open window reports one
-                    // for a frame. Terminal only when the budget is spent, and it surfaces to the agent
-                    // as the SAME code the W1 case does.
+                    // The target's geometry was momentarily unusable -- a degenerate W2, or an element
+                    // rect outside its own window. Both are UIA reporting a bad rectangle for a frame,
+                    // which is the transient this loop exists to absorb and which the design already
+                    // absorbs for a degenerate W1. Terminal only when the budget is spent, and it
+                    // surfaces to the agent as the SAME code the W1 case does.
                     if (attempt < _opts.MaxAttempts) continue;
                     throw new ToolException(ToolErrorCode.ElementNotActionable,
-                        "The target window reported no renderable area on every attempt.",
-                        "restore or resize the window, then retry");
+                        $"{outcome.TransientReason} This held on every attempt.",
+                        "re-snapshot the window for fresh bounds, or restore/resize it, then retry");
 
                 case CaptureOutcomeKind.Resized:
                     if (attempt < _opts.MaxAttempts) continue;
@@ -3048,14 +3113,31 @@ public sealed class WindowCaptureCoordinator
         // pre-resize layout; a resize reflows content, so they no longer necessarily cover what they were
         // sampled to cover. A scrape reproduces that exactly -- the same stale rects over the same
         // reflowed content -- so switching backends cannot fix a MASK problem.
-        if (scope == CaptureScope.Window && geo.MaskRects.Count > 0)
+        if (geo.MaskRects.Count > 0 && scope == CaptureScope.Window)
             throw new ToolException(ToolErrorCode.RedactionUnmaskable,
                 "The window kept changing size, so its redacted regions cannot be reliably located.",
                 "wait for the window to settle, then retry, or capture a different window");
 
-        // ELEMENT SCOPE: fall back. Its failure is a GEOMETRY mismatch on an image that is otherwise
-        // sound, and the scrape is what this tool does for this window today -- so the fallback restores
-        // current behaviour rather than returning nothing.
+        // ⚠⚠ ELEMENT SCOPE WITH A NON-EMPTY MASK SET REFUSES TOO, and an earlier version of this plan
+        // let it fall back. A resize reflows the WINDOW's layout regardless of which scope asked for the
+        // capture, so painting pre-resize mask rects onto a post-resize scrape under-redacts exactly as it
+        // would for window scope. Falling back "because that is what the tool does today" is the
+        // pre-existing-defect defence this project does not accept, and it contradicted the very argument
+        // that makes window scope refuse.
+        // *(AGY-AFTER panel over this plan, round 4, Guard-Consistency Auditor.)*
+        //
+        // ⚠ The REGRESSION ARGUMENT FOR THE FALLBACK SURVIVES INTACT, because it was always about a
+        // different population. Spinners, progress dialogs and expanding windows -- the cases the fallback
+        // was justified by -- carry NO redacted content, so they still fall back. Only a resizing window
+        // that also holds something worth masking now refuses.
+        if (geo.MaskRects.Count > 0)
+            throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                "The window kept changing size, so its redacted regions cannot be reliably located.",
+                "wait for the window to settle, then retry, or capture a different window");
+
+        // ELEMENT SCOPE, NOTHING TO MASK: fall back. Its failure is a GEOMETRY mismatch on an image that
+        // is otherwise sound, nothing was going to be redacted, and the scrape is what this tool does for
+        // this window today -- so the fallback restores current behaviour rather than returning nothing.
         return Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetChanging);
     }
 
@@ -3426,12 +3508,23 @@ Add the comparison as a private static member:
 
         var oa = before.WindowBounds.Location;
         var ob = after.WindowBounds.Location;
-        for (int i = 0; i < a.Count; i++)
-        {
-            if (a[i].X - oa.X != b[i].X - ob.X) return false;
-            if (a[i].Y - oa.Y != b[i].Y - ob.Y) return false;
-            if (a[i].Size != b[i].Size) return false;
-        }
+
+        // ⚠ ORDER-INSENSITIVE. An earlier version compared by index, on the reasoning that the walk is
+        // deterministic so a reordering would itself be evidence the tree changed. That reasoning is
+        // wrong twice over: UIA enumeration order across two walks is not a guarantee this repo owns, and
+        // -- more importantly -- a REORDERING WITH IDENTICAL GEOMETRY IS NOT A REFLOW. The question this
+        // guard asks is "do the masks still cover the same regions", and the answer does not depend on
+        // the order the walk happened to return them in. Comparing by index only added a false-refusal
+        // mode. *(AGY-AFTER panel over this plan, round 4, direct answer 1.)*
+        static (int X, int Y, int W, int H) Key(Rectangle r, Point o)
+            => (r.X - o.X, r.Y - o.Y, r.Width, r.Height);
+
+        var ka = a.Select(r => Key(r, oa)).OrderBy(k => k.X).ThenBy(k => k.Y)
+                                          .ThenBy(k => k.W).ThenBy(k => k.H).ToList();
+        var kb = b.Select(r => Key(r, ob)).OrderBy(k => k.X).ThenBy(k => k.Y)
+                                          .ThenBy(k => k.W).ThenBy(k => k.H).ToList();
+        for (int i = 0; i < ka.Count; i++)
+            if (ka[i] != kb[i]) return false;
         return true;
     }
 ```
@@ -3785,6 +3878,15 @@ Before the `ScreenCapture.CaptureWindow` call:
                         "The target window reported no renderable area on every attempt.",
                         "restore or resize the window, then retry");
                 }
+                // ⚠⚠ AND THE RESIZE CHECK. Skipping the seam also skips `if (w1.Size != w2.Size)`, so a
+                // hung window that RECOVERS and resizes during the cooldown would be scraped with stale
+                // W1 masks and never checked -- bypassing the exact protection the seam path enforces.
+                // *(AGY-AFTER panel over this plan, round 4, Guard-Consistency Auditor.)*
+                if (geo.WindowBounds.Size != bw2.Size && geo.MaskRects.Count > 0)
+                    throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                        "The window changed size, so its redacted regions cannot be reliably located.",
+                        "wait for the window to settle, then retry, or capture a different window");
+
                 return new WindowCaptureOutcome(
                     Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive),
                     geo);
@@ -4844,3 +4946,57 @@ But note the shift: rounds 1-2 found guards that were WRONG, round 3 found guard
 WITH EACH OTHER. `W1` versus `W2` degeneracy, and bookend-exhaustion versus resize-exhaustion, are both
 "two guards for the same class of condition that disagree". That is a different lens and it is not
 exhausted — round 4 should enumerate every PAIR of guards and ask whether they agree.
+
+## AGY-AFTER panel over this plan — round 4
+
+Brief `.clavity/seams/item8-plan-panel-r4.md`; report `.clavity/scratch/item8-plan-panel/agy-round4.md`.
+Seats: Guard-Consistency Auditor (bespoke), Protocol Pedant, Blindspot Auditor. **Verdict: RED.**
+
+**Folded — two are leak-class:**
+
+1. **⚠ LEAK. Element scope with a NON-EMPTY mask set fell back to the scrape on resize exhaustion.** A
+   resize reflows the WINDOW's layout regardless of which scope asked, so painting pre-resize mask rects
+   onto a post-resize scrape under-redacts exactly as it would for window scope — while window scope
+   refuses for precisely that reason. The fallback was defended as "restoring current behaviour", which is
+   the pre-existing-defect defence this project does not accept. **Element scope with masks now refuses
+   too.** ⚠ The regression argument for the fallback survives intact because it was always about a
+   different population: spinners, progress dialogs and expanding windows carry nothing to mask, so they
+   still fall back. *(Guard-Consistency Auditor.)*
+2. **⚠ LEAK. The circuit-breaker path bypassed the resize guard.** Skipping the seam also skips
+   `if (w1.Size != w2.Size)`, so a hung window that RECOVERED and resized during the cooldown was scraped
+   with stale `W1` masks and never checked. The breaker path now runs the resize check as well as
+   `GuardTargetState`. *(Guard-Consistency Auditor.)*
+3. **A window-scope FALLBACK SCRAPE that came back one colour emitted nothing** — recreating the exact
+   defect the `uniformCanvas` widening was folded in to close. The TWO-STAGE detector genuinely cannot run
+   on a scrape, but the FIRST stage needs no second operand. A window-scope fallback now emits
+   `uniformCanvas`. ⚠ An ELEMENT-scope fallback still emits nothing, **deliberately**: there the captured
+   region is the element, so the code's text would claim the whole window rendered as one colour — a
+   statement the tool never measured. That gap is stated rather than papered over. *(Protocol Pedant. The
+   spec has been corrected too — it said "a fallback scrape gets neither".)*
+4. **`MaskSetsMatch` compared by INDEX.** Its justification was that the walk is deterministic so a
+   reordering is itself evidence the tree changed. Wrong twice: UIA enumeration order across two walks is
+   not a guarantee this repo owns, and **a reordering with identical geometry is not a reflow.** The
+   question is whether the masks still cover the same regions, which does not depend on walk order. Now
+   order-insensitive, removing a false-refusal mode. *(Direct answer 1 — correctly identified as the most
+   likely surviving defect.)*
+
+**Also folded this round, from the driver's solo Guard-Consistency pass:**
+
+5. **The empty-crop refusal was terminal on the FIRST occurrence, while a degenerate `W1` was retryable.**
+   Both are "UIA reported a bad rectangle for a frame". The design's own text calls the empty crop
+   "pathological rather than impossible, this repo's mask-escalation machinery exists because **UIA does
+   report inconsistent rectangles**" — which argues for absorbing it, not refusing it. Now a retryable
+   transient carrying its own reason, so the terminal message is not the false "no renderable area".
+   ⚠ **The peer had this in its BELOW-FLOOR list**, discarded as "rare and likely terminal". Reading the
+   below-floor list first has now produced a real finding in this repository several times.
+
+**Not folded:**
+
+6. *"The audit signal floods the operator with false positives on visible background windows."* **Already
+   argued in the plan**, in those words: the trigger over-signals deliberately, it never MISSES a covered
+   window, computing true occlusion needs a hit-test this server does not do, **and that is exactly why it
+   is OFF BY DEFAULT.** The finding proposes no better trigger. Recorded rather than folded.
+7. *"Task 17's three call sites are unverified."* Verified this session by `grep -rn`.
+
+⚠ **Round 4 is RED. Five folds, and the two leak-class ones were BOTH "a guard that exists on one path
+and not on the adjacent one".** That is the same lens as round 3 and it is still producing.
