@@ -332,7 +332,13 @@ behavioural contract, not an implementation detail, and the two scopes need diff
   and a design that returns nothing for all of them is strictly worse than the one it replaces. This is
   the same mechanism-failure case as the timeout (risk 2): the window is on screen with real pixels, and
   what we cannot obtain is a consistent geometry-and-capture pair. The scrape takes both at one instant,
-  which is exactly what the tool does now. Report `captureMethod: "screenScrape"` and `scrapeFallback`.
+  which is exactly what the tool does now.
+
+  ⚠ **The scrape must use the geometry from the LAST retry attempt, not the first.** Each attempt
+  re-takes the geometry-and-capture pair, so the freshest pair is already in hand; reusing the original
+  `E` would hand the scrape coordinates that are staler by the entire duration of the retry loop — the
+  loop would be actively degrading the fallback it exists to reach. *(Panel round 12, Regression
+  Auditor.)*
   *(Panel round 11, Regression Auditor.)*
 
   ⚠ **The bound and the interval are the PLAN's, with an acceptance criterion**: the whole retry sequence
@@ -483,6 +489,14 @@ An incorrect warning is cheap; an incorrect refusal is not.
 panel — a spacer, a blank text area, a flat background — is genuinely one colour. Evaluating the signal
 post-crop would warn constantly on valid captures.
 
+⚠ **BOTH detectors apply ONLY when `captureMethod` is `printWindow`.** They exist to catch a
+`PrintWindow` render failure, which by construction cannot occur on the scrape path. Running them on a
+`screenScrape` image would also be incoherent: that image is already sized to `captureBounds`, so there
+is no "full window bitmap" distinct from the crop, and a legitimately solid element would fire
+`uniformCanvas` — telling the agent the whole WINDOW was blank when the tool never rendered a window
+bitmap at all. *(Panel round 12, Fold Auditor: the two-stage detector silently assumed a two-stage
+pipeline that the fallback path does not have.)*
+
 **The two errors that choice accepts, stated symmetrically:**
 
 - **False POSITIVE:** a window that is genuinely one uniform colour (a colour-calibration app, a black
@@ -549,7 +563,8 @@ contract undefined, which is the same abdication §5 exists to close:
 | `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture with an empty mask set | the window changed size mid-capture. The image itself is sound — it was cropped back to the region you asked for — but the layout inside it **may** have reflowed, so any UIA tree or element ref you hold for this window may be geometrically stale. Re-snapshot before acting on cached coordinates |
 | `popupsNotRendered` | this window had one or more popup roots at geometry time (`PopupFinder.SearchRoots` returned more than the window itself) and the backend is `printWindow` | an open menu, dropdown or tooltip belonging to this window is a separate top-level window and is **not in this image**. Its absence is not evidence it failed to open — read the UIA tree to see it |
 | `elementCanvasUniform` | element scope only: the CROPPED region is effectively one colour while the full window bitmap was not | this element's pixels may have failed to render even though the window as a whole did — a hardware-accelerated child viewport is the usual cause. Verify through the UIA tree before concluding the control is blank |
-| `scrapeFallback` | §1's `PrintWindow` timeout expired and the scrape produced this image instead (see risk 2 and Out of scope) | this image is a screen scrape, so anything overlapping the window is in it; `captureMethod` says `screenScrape`. Treat occlusion as possible |
+| `scrapeFallbackTargetUnresponsive` | `PrintWindow` timed out because the target's message loop is blocked, and the scrape produced this image instead (risk 2) | this image is a screen scrape, so anything overlapping the window is in it — treat occlusion as possible. **The target is not pumping messages**: it will not respond to input either, so do not queue clicks against it |
+| `scrapeFallbackTargetChanging` | element-scope retries were exhausted because the window kept resizing, and the scrape produced this image instead (§1) | this image is a screen scrape, so treat occlusion as possible. **The target is changing continuously** — it is alive and busy, not stuck; waiting and re-capturing may succeed |
 
 Codes are camelCase, matching every other field in this response. *(Panel round 8, Fold Auditor: round
 7 settled the SHAPE and dropped the VALUES.)*
@@ -638,7 +653,7 @@ omission it warns against.)*
 
   **The timeout exception falls outside that reasoning rather than weakening it.** The ban is about
   switching backends on an UNSOUND signal. A timeout has no false-positive mode to re-price: the call
-  either returned or it did not, and `captureMethod` plus a `scrapeFallback` warning make the switch
+  either returned or it did not, and `captureMethod` plus a `scrapeFallback*` code make the switch
   visible. Risk 2 carries the full argument, including why refusing there would have been a regression
   against today's behaviour. *(Panel round 10, Adversary of the Reviewer.)*
 - **ROADMAP item 13** (bare catches) and any redaction-rule change.
@@ -714,7 +729,7 @@ for each failure, or NONE — not whether the area was "covered".)*
 
    ⚠ **The timeout CONTRACT is settled here, so only the bound is a measurement.** If the call can block,
    the plan bounds it — and **on expiry the capture FALLS BACK TO THE SCRAPE**, reporting
-   `captureMethod: "screenScrape"` and a `scrapeFallback` warning. It never returns a blank or partial
+   `captureMethod: "screenScrape"` and `scrapeFallbackTargetUnresponsive`. It never returns a blank or partial
    `PrintWindow` image.
 
    **Why the scrape fallback is allowed here**, when Out-of-scope bans it everywhere else. The
@@ -726,9 +741,23 @@ for each failure, or NONE — not whether the area was "covered".)*
 
    The property that actually separates them:
 
-   > **The fallback is allowed exactly where the TARGET has real, current, on-screen pixels and only OUR
-   > BACKEND failed to obtain them. It is banned where the failure is in the target itself, because there
-   > the scrape has nothing better to offer.**
+   > **The fallback is allowed only where BOTH hold:**
+   > **(1) the TARGET has real, current, on-screen pixels — otherwise the scrape has nothing better to
+   > offer; and**
+   > **(2) the `PrintWindow` path produced NO USABLE IMAGE AT ALL — otherwise switching trades an image
+   > that is merely incomplete for one that reintroduces occlusion, which is the defect this feature
+   > exists to remove.**
+
+   ⚠ Test (2) is what stops the rule licensing the fallback for a partial render. *(Panel round 12, Fold
+   Auditor: with test (1) alone, a black hardware-accelerated viewport and a missing popup both classify
+   as mechanism failures — the target really is on screen, and `PrintWindow` really did fail to get it —
+   so the rule as written demanded a fallback the design does not do.)* The peer's classification was
+   correct and the rule was incomplete. But its conclusion — that those cases MUST fall back — is
+   rejected: in both, `PrintWindow` returned a usable, occlusion-free image that is missing a region. The
+   scrape would supply that region and re-import everything overlapping the window. **A partial image
+   that is honest about being partial beats a complete image that may be a photograph of something
+   else** — which is the whole thesis of item 8. So those cases keep the image and carry a warning
+   (`elementCanvasUniform`, `popupsNotRendered`).
 
    - **Timeout — mechanism failure.** The window exists, is on screen, and is rendering to the desktop;
      `PrintWindow` simply could not get a copy because the target's message loop is blocked. The scrape
@@ -743,7 +772,7 @@ for each failure, or NONE — not whether the area was "covered".)*
      region is not on screen where the crop looked. Falling back would photograph whatever happens to
      occupy those coordinates, which is precisely the defect item 8 exists to fix.
 
-   And the switch is never silent: `captureMethod` names the backend and `scrapeFallback` states the
+   And the switch is never silent: `captureMethod` names the backend and the `scrapeFallback*` code states the
    consequence.
 
    ⚠ **Refusing here would have been a REGRESSION, which is what makes this worth the exception.** A
@@ -1094,7 +1123,7 @@ of them DELETED a special case rather than adding a guard:
   loop — so "refuse on expiry" would hand back nothing in the one scenario an agent most needs this
   feature, and strictly less than today's behaviour. The scrape fallback is allowed here and only here:
   the Out-of-scope ban rests on the fallback needing an UNSOUND trigger, and a timeout has no
-  false-positive mode to re-price. `captureMethod` and a `scrapeFallback` warning keep the switch visible.
+  false-positive mode to re-price. `captureMethod` and a `scrapeFallback*` code keep the switch visible.
 - **The `windowResized` recourse was actively harmful.** It implied retrying was optional, while §5 tells
   agents to act through the UIA tree — the tree the server has just detected is geometrically stale. An
   agent following both would click where a control used to be. The recourse now says the tree must be
@@ -1149,3 +1178,39 @@ WINDOW scope, where `E = W1` makes the crop catch it. False for ELEMENT scope, w
 element rect inside a degenerate window rect — UIA reports exactly that kind of inconsistency, which is
 why the mask-escalation machinery exists. There the crop succeeds and the image ships unmasked. The guard
 stays. *(A correct trace of one scope, generalised to both.)*
+
+### AGY-AFTER adversarial panel — round 12
+
+Seats: Fold Auditor (round 11's edits, with the replacement fallback rationale as its hardest target),
+Regression Auditor second pass, **Contract Surface Auditor** (the five warning codes plus two new fields
+audited as ONE surface, which nothing had done — each piece had only been reviewed as it was added).
+Report: `.clavity/scratch/item8-panel/agy-round12.md`. **Verdict: NOT GREEN.** Four folds:
+
+- **The mechanism-vs-target rule was INCOMPLETE and its own examples broke it.** A black
+  hardware-accelerated viewport and a missing popup both satisfy "the target has on-screen pixels and our
+  backend failed to get them" — so the rule as written demanded a scrape fallback the design does not do.
+  A second test now carries the weight: the fallback also requires that `PrintWindow` produced **no
+  usable image at all**. A partial image that is honest about being partial beats a complete image that
+  may be a photograph of something else. That is the thesis of item 8, and it is what test (2) encodes.
+- **The dual detector assumed a pipeline the fallback path does not have.** A `screenScrape` image is
+  already sized to `captureBounds`, so there is no "full window bitmap" distinct from the crop — a
+  legitimately solid element would have fired `uniformCanvas` and told the agent the whole window was
+  blank. Both detectors now apply only when `captureMethod` is `printWindow`, which is also the only
+  backend whose render can fail in the way they exist to catch.
+- **The retry loop was degrading the fallback it exists to reach.** On exhaustion the scrape must use the
+  geometry from the LAST attempt, not the first; each attempt already re-takes the pair, so the freshest
+  one is in hand and the loop's duration stops mattering.
+- **Two opposite target states produced identical metadata.** A HUNG application and a HYPER-ACTIVE one
+  both fell back to the scrape with the same single code, leaving the caller unable to tell "this app is
+  frozen, stop queuing input" from "this app is busy, wait and retry". Split into
+  `scrapeFallbackTargetUnresponsive` and `scrapeFallbackTargetChanging`, each carrying the recourse its
+  own case needs.
+
+**Already covered, noted so it is not re-raised:** the Regression Auditor's "gain as a hazard" — that
+`PrintWindow` can capture a window on another virtual desktop, which the scrape cannot — is the
+privacy-posture widening, already named and already routed to the operator for ratification.
+
+**The Contract Surface Auditor found its defect by looking at the codes TOGETHER.** Every one of the five
+had been reviewed in the round that introduced it, and each was individually correct; the defect existed
+only in the relationship between two of them. A surface assembled one piece at a time needs a pass that
+looks at the assembled surface.
