@@ -9,7 +9,11 @@
 ### Task 17: `WindowCaptureCoordinator` — the retry loop and the resize policy
 
 **Files:**
-- Create: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`
+- Create: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs` — **which holds TWO classes:** the
+  coordinator (Step 4) and `CaptureCircuitBreaker` (**Step 4b**). See Step 4b for why the breaker is
+  defined here rather than in Task 19, which is where it used to live.
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` — Step 2 adds `HasPopupRoots` to
+  `CaptureGeometry`. This line was missing from the list while Step 2 required the edit.
 - Test: `test/FlaUI.Mcp.Tests/Perception/WindowCaptureCoordinatorTests.cs`
 
 ⛔ **`CaptureGeometryCallSiteTests.cs` IS NOT MODIFIED BY THIS TASK. Do not touch it.**
@@ -65,13 +69,30 @@ public class WindowCaptureCoordinatorTests
                w2Probe: w2, minimizedProbe: _ => false,
                scrape: (bounds, masks, mw, scope, warns) =>
                    new CaptureResult(Array.Empty<byte>(), bounds.X, bounds.Y, bounds.Width, bounds.Height,
-                                     1.0, masks.Count, "screenScrape", warns));
+                                     1.0, masks.Count, "screenScrape", warns),
+               // ⚠⚠ BOTH OF THESE ARE MANDATORY ON ANY TEST THAT CAN REACH A FALLBACK, and omitting them
+               // is not a silent under-test -- it is a hard refusal. `ScrapeAsync` FAILS CLOSED on each:
+               // an absent `denylistedVisible` or `desktopMasks` throws `CaptureUnavailable` rather than
+               // proceeding, because an optional dependency whose absence is indistinguishable from a
+               // pass is exactly the defect that made the denylist guard inert for a whole panel round.
+               //
+               // MEASURED: this helper originally wired neither, and SIX of the eleven tests below died
+               // with "the denylist guard is not wired" before any assertion ran. The guards are correct;
+               // the helper was the defect. Do not "fix" a future failure here by relaxing either guard.
+               denylistedVisible: () => Task.FromResult(false),
+               desktopMasks: () => Task.FromResult(new DesktopMaskSet(
+                   Array.Empty<Rectangle>(), Array.Empty<MaskEscalationEntry>(), Array.Empty<string>())));
 
     [Fact]
     public async Task A_static_window_captures_on_the_first_attempt()
     {
         var w = new Rectangle(0, 0, 400, 300);
-        var c = Make(Walk(Geo(w, w)), FakeWindowImageSource.Solid(Color.White), _ => w);
+        // ⚠ `Varied()`, NOT `Solid()`. `Solid` paints one colour plus a 4x4 marker, and
+        // `UniformCanvasDetector` samples a 64x64 GRID -- whose sample points step ~6px across a 400px
+        // window and so never land on a 4x4 marker. A `Solid` window is therefore UNIFORM as far as the
+        // detector is concerned, and this capture emits `uniformCanvas`, which is correct behaviour and
+        // would make the empty-warnings assertion below fail. A healthy window is not a blank one.
+        var c = Make(Walk(Geo(w, w)), FakeWindowImageSource.Varied(Color.White), _ => w);
         var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
         Assert.Equal("printWindow", r.Result.CaptureMethod);
         Assert.Empty(r.Result.CaptureWarnings);
@@ -86,8 +107,10 @@ public class WindowCaptureCoordinatorTests
         var stale  = new Rectangle(0, 0, 800, 600);
         var settled = new Rectangle(0, 0, 900, 600);
         var mask = new Rectangle(10, 10, 50, 20);
+        // `Varied`, not `Solid` -- see the note in the first test: a `Solid` window reads as uniform to
+        // the 64x64 grid and would emit `uniformCanvas`, defeating the empty-warnings assertion.
         var c = Make(Walk(Geo(stale, stale, mask), Geo(settled, settled, mask)),
-                     FakeWindowImageSource.Solid(Color.White), _ => settled);
+                     FakeWindowImageSource.Varied(Color.White), _ => settled);
         var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
         Assert.Equal("printWindow", r.Result.CaptureMethod);
         Assert.Empty(r.Result.CaptureWarnings);   // it settled, so nothing about it is stale
@@ -144,7 +167,12 @@ public class WindowCaptureCoordinatorTests
             FakeWindowImageSource.Solid(Color.White), new CaptureRetryOptions(2, 1000),
             w2Probe: _ => new Rectangle(0, 0, 700, 600), minimizedProbe: _ => false,
             scrape: (b, m, mw, s, warns) => { scraped = true; return new CaptureResult(Array.Empty<byte>(),
-                b.X, b.Y, b.Width, b.Height, 1.0, m.Count, "screenScrape", warns); });
+                b.X, b.Y, b.Width, b.Height, 1.0, m.Count, "screenScrape", warns); },
+            // Same two mandatory fallback dependencies as `Make` -- this test builds the coordinator
+            // directly, so it does not inherit them. See the note in `Make`.
+            denylistedVisible: () => Task.FromResult(false),
+            desktopMasks: () => Task.FromResult(new DesktopMaskSet(
+                Array.Empty<Rectangle>(), Array.Empty<MaskEscalationEntry>(), Array.Empty<string>())));
 
         var r = await c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0);
         Assert.Equal("screenScrape", r.Result.CaptureMethod);
@@ -276,6 +304,14 @@ Expected: FAIL — `WindowCaptureCoordinator` does not exist.
 
 - [ ] **Step 4: Write the coordinator**
 
+⚠ **ONE LINE OF THIS BLOCK WAS CORRECTED AFTER A MEASURED BUILD FAILURE, and it is a different defect
+class from the stale citations elsewhere in this plan.** The constructor's `_scrape` fallback was pinned
+as `scrape ?? ScreenCapture.CaptureRectangle;`, which was correct when this plan was written. It stopped
+being correct DURING EXECUTION: Task 10 added an optional sixth parameter to `CaptureRectangle` (the
+`IScreenImageSource?` seam the operator asked for so the warning-emission path became testable), which
+changed the method group's natural type and made `??` a `CS0019`. Nothing was stale here — the plan
+drifted because the code underneath it legitimately changed. The corrected line is in the block below.
+
 Create `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`:
 
 ```csharp
@@ -358,7 +394,12 @@ public sealed class WindowCaptureCoordinator
         _desktopMasks = desktopMasks;
         _walk = walk; _source = source; _opts = opts;
         _w2Probe = w2Probe; _minimizedProbe = minimizedProbe;
-        _scrape = scrape ?? ScreenCapture.CaptureRectangle;
+        // ⚠ AN EXPLICIT LAMBDA, NOT A METHOD GROUP. `ScreenCapture.CaptureRectangle` carries an optional
+        // SIXTH parameter -- the `IScreenImageSource?` test seam added in Task 10 -- so its natural type
+        // is the six-argument delegate, not this field's five-argument one, and `??` cannot convert
+        // between them: `scrape ?? ScreenCapture.CaptureRectangle` is CS0019. The lambda pins the
+        // five-argument shape and lets the seam take its default in production.
+        _scrape = scrape ?? ((r, masks, w, sc, warn) => ScreenCapture.CaptureRectangle(r, masks, w, sc, warn));
         _breaker = breaker;
         // Injected so the breaker's recovery behaviour is headless-testable; production uses the OS.
         _isHung = isHungProbe ?? IsHungAppWindow;
@@ -666,6 +707,103 @@ public sealed class WindowCaptureCoordinator
 }
 ```
 
+- [ ] **Step 4b: Append the circuit breaker class to the same file**
+
+⚠⚠ **THIS IS WHY THE CLASS IS HERE AND NOT IN TASK 19.** Step 4's coordinator, pinned verbatim above,
+declares `private readonly CaptureCircuitBreaker? _breaker;`, takes it as a constructor parameter, and
+calls `BeginAcquisition`, `EndAcquisition` and `Reset` on it. The class used to be written in **Task 19,
+Step 3** — two tasks later — which is a forward reference the compiler cannot satisfy. MEASURED: Task 17
+executed on its own failed `dotnet build FlaUI.Mcp.slnx` with `CS0246: The type or namespace name
+'CaptureCircuitBreaker' could not be found`, so Steps 5–7 were unreachable. Task 19 now confirms this
+class instead of writing it, and keeps the tests, the wiring and the mutants.
+
+**Do not stub these methods and fill them in later.** `_breaker?.BeginAcquisition(...)` against a no-op
+stub compiles and silently does nothing, which would leave Tasks 17 and 18 shipping a circuit breaker
+that contains nothing while every test passes.
+
+Append to `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`, **after the coordinator's closing
+brace** — both classes live in the `FlaUI.Mcp.Core.Perception` namespace already declared at the top of
+the file:
+
+```csharp
+/// <summary>Remembers windows whose PrintWindow acquisition timed out, and routes subsequent captures of
+/// those windows straight to the scrape for a cooldown.
+///
+/// ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. Each blocked call keeps its thread, its HDC, its GDI bitmap and
+/// its managed bitmap permanently -- a blocked Win32 call cannot be cancelled, so nothing in-process can
+/// take them back. What this bounds is the MULTIPLIER: N captures of a hung window cost ONE leak instead
+/// of N. Operator ratification of 2026-08-21 accepted that trade explicitly; the out-of-process worker
+/// that would actually reclaim is filed as ROADMAP debt.</summary>
+public sealed class CaptureCircuitBreaker
+{
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, DateTime> _tripped = new();
+    // ⚠ IN-FLIGHT ACQUISITIONS, and without this the breaker bounds only SERIALIZED captures. Trip() runs
+    // AFTER a timeout elapses, so three overlapping requests for the same hung window all read IsTripped
+    // as false, all call Acquire, all block, and all leak -- three threads and three bitmaps for one
+    // window, defeating the containment this class exists to provide.
+    // *(AGY-AFTER panel over this plan, round 3, State Corruptor.)*
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, DateTime> _inFlight = new();
+    private readonly TimeSpan _cooldown;
+    private readonly Func<DateTime> _clock;
+
+    public CaptureCircuitBreaker(TimeSpan cooldown, Func<DateTime> clock)
+    { _cooldown = cooldown; _clock = clock; }
+
+    public static CaptureCircuitBreaker Default => new(TimeSpan.FromMinutes(5), () => DateTime.UtcNow);
+
+    /// <summary>How many windows are currently tracked. Exists so a test can prove the dictionary is
+    /// pruned rather than growing forever — the growth is otherwise invisible until it matters.</summary>
+    public int TrackedCount => _tripped.Count;
+
+    public bool IsTripped(IntPtr hwnd)
+        => _tripped.TryGetValue(hwnd, out var at) && _clock() - at < _cooldown;
+
+    /// <summary>TRUE when another acquisition for this window has ALREADY outlived <paramref name="budget"/>
+    /// and is therefore known to be blocked -- so this call would block too, for the same reason, and add
+    /// one more permanent leak.
+    ///
+    /// ⚠ It deliberately does NOT divert merely because another acquisition is in flight. Two agents
+    /// capturing the same HEALTHY window concurrently is ordinary, and those calls finish in milliseconds;
+    /// diverting them to a scrape would reintroduce occlusion for a window that was working fine. Only an
+    /// acquisition that has already exceeded the whole timeout budget is evidence of a hang.</summary>
+    public bool AnotherAcquisitionIsStuck(IntPtr hwnd, TimeSpan budget)
+        => _inFlight.TryGetValue(hwnd, out var started) && _clock() - started > budget;
+
+    /// <summary>Records the start of an acquisition. Keeps the EARLIEST start for a window, so a stream of
+    /// overlapping requests cannot keep pushing the "stuck" judgement into the future.</summary>
+    public void BeginAcquisition(IntPtr hwnd) => _inFlight.TryAdd(hwnd, _clock());
+
+    /// <summary>Clears the in-flight marker. Safe to call for a request that TIMED OUT: the abandoned
+    /// thread is still blocked, but Trip() has by then recorded the window and the cooldown takes over.</summary>
+    public void EndAcquisition(IntPtr hwnd) => _inFlight.TryRemove(hwnd, out _);
+
+    /// <summary>Forget a window entirely -- called when the OS reports it is no longer hung, so a target
+    /// that recovered stops being penalised for having hung once. See WindowCaptureCoordinator.HungOrReset,
+    /// which is the ONLY caller and the reason this method exists.</summary>
+    public void Reset(IntPtr hwnd)
+    {
+        _tripped.TryRemove(hwnd, out _);
+        _inFlight.TryRemove(hwnd, out _);
+    }
+
+    public void Trip(IntPtr hwnd)
+    {
+        // ⚠ PRUNE ON WRITE. Without this the dictionary is UNBOUNDED: every window that ever hung leaves
+        // a permanent entry, in a server designed to run for weeks. The entries are tiny, so this is not
+        // the leak that matters -- but a subproject whose entire subject is not leaking must not ship a
+        // collection that only grows, and HWNDs are recycled by the OS, so a stale entry can also
+        // mis-trip the breaker for an unrelated window that happens to reuse the handle value.
+        //
+        // Pruning on Trip rather than on a timer keeps this allocation-free in the common case: Trip only
+        // runs when a capture actually timed out, which is rare by construction.
+        var now = _clock();
+        foreach (var kv in _tripped)
+            if (now - kv.Value >= _cooldown) _tripped.TryRemove(kv.Key, out _);
+        _tripped[hwnd] = now;
+    }
+}
+```
+
 - [ ] **Step 5: Make `ScreenCapture.Append` visible to the coordinator**
 
 It is `internal` and both types are in `FlaUI.Mcp.Core`, so no change is needed. Confirm with `dotnet build FlaUI.Mcp.slnx`.
@@ -684,14 +822,41 @@ Expected: PASS, 0 failed, build 0 warnings / 0 errors.
 
 - [ ] **Step 8: Prove the gates are non-vacuous with three logic mutants**
 
-1. Make `ScrapeAsync` use `geo.MaskRects` instead of the fresh desktop walk (i.e. undo round 6).
-   Expected: `A_fallback_scrape_uses_FRESH_masks_not_the_stale_target_set` FAILS — and that failure is
-   the whole justification for relaxing the resize refusal, so it is the one mutant in this task that
-   must be seen to go red before the relaxation is trusted.
-2. Change the degenerate branch to `throw` immediately instead of `continue`.
-   Expected: `A_degenerate_W1_retries_rather_than_failing_terminally` FAILS.
-3. Hoist `warnings` outside the `for` loop and accumulate into it across attempts.
-   Expected: `A_discarded_attempts_warnings_are_discarded_with_it` FAILS.
+⛔ **THE MUTANT THAT USED TO BE FIRST HAS MOVED TO TASK 18, and it was not runnable here.** It read
+*"Make `ScrapeAsync` use `geo.MaskRects` instead of the fresh desktop walk. Expected:
+`A_fallback_scrape_uses_FRESH_masks_not_the_stale_target_set` FAILS"* — but that test **does not exist
+yet at this point in the plan.** It is written in **Task 18's Step 1**, in `BookendWalkTests.cs`. A
+mutant whose oracle has not been written cannot go red; it just leaves the suite green and reads as a
+passed check. It is now Task 18's third mutant, where its oracle exists.
+
+**MEASURED RESULTS of the three below — each names the COMPLETE red set, not just the intended test.**
+
+1. Delete the degenerate branch's retry so it throws on the first bad frame: remove the line
+   `if (attempt < _opts.MaxAttempts) continue;` from inside `if (geo.DegenerateWindow)`.
+   Expected: **exactly one red** — `A_degenerate_W1_retries_rather_than_failing_terminally`.
+
+   ⚠ **DELETE the line; do NOT neuter it to `if (false) continue;`.** MEASURED: the `false` form is
+   `CS0162: Unreachable code detected` on the `throw` below it, and warnings are errors repo-wide, so
+   the build fails and **the guarded test never runs at all**. A mutant that breaks the build proves
+   nothing — it is the failure mode this plan has now hit four separate times.
+
+2. Hoist `warnings` outside the `for` loop and accumulate into it across attempts (a field on the class,
+   appended to on each attempt, rather than a fresh local per attempt).
+   Expected: **exactly one red** — `A_discarded_attempts_warnings_are_discarded_with_it`.
+
+3. Make the `_scrape` forwarder hardcode a scope instead of forwarding its parameter: change
+   `... => ScreenCapture.CaptureRectangle(r, masks, w, sc, warn)` to `... (r, masks, w,
+   CaptureScope.Window, warn)`.
+   Expected: **`Every_production_CaptureRectangle_call_names_its_scope` FAILS.** This is the non-vacuity
+   proof for the sweep's new fifth call site — see Step 4's note on why that site is a lambda.
+
+   ⚠ **A SECOND, UNRELATED TEST WENT RED ON THIS RUN AND IT IS A FLAKE, NOT A CONSEQUENCE.**
+   `Uninstall_removes_both_and_preserves_other_permissions` (the installer permissions suite) failed
+   once during this mutant's full-suite run. VERIFIED: it passes 3/3 in isolation, and the full headless
+   suite is 1021/1021 green both before and after — and the mutant touches only the coordinator's scrape
+   delegate, which no installer test can reach. Captured as a local anomaly; it is a second flaky test
+   alongside the `PopupRootCoverage` ARRANGE flake already tracked as ROADMAP 16. **Do not treat a red
+   here as a signal about this mutant.**
 
 **Revert every mutant.**
 
@@ -900,6 +1065,16 @@ public class BookendWalkTests
             scrape: (b, m, mw, s, warns) => { scraped = true; return new CaptureResult(Array.Empty<byte>(),
                 b.X, b.Y, b.Width, b.Height, 1.0, m.Count, "screenScrape", warns); });
 
+        // ⚠ THIS CONSTRUCTION DELIBERATELY WIRES NEITHER `denylistedVisible` NOR `desktopMasks`, unlike
+        // the one above, and that is load-bearing rather than an oversight: the bookend refusal fires
+        // BEFORE `ScrapeAsync` is ever entered, so the fallback dependencies are genuinely unreachable
+        // here -- which `Assert.False(scraped)` is what proves. Do not add them.
+        //
+        // ⚠ But read the failure carefully if this test ever goes red. Should the bookend STOP firing,
+        // the capture would fall through to the scrape and die on the fail-closed wiring guard, so the
+        // test would report `CaptureUnavailable` ("the denylist guard is not wired") instead of the
+        // absent `RedactionUnmaskable`. That message would be describing the SECOND consequence of the
+        // defect, not the defect. The real failure is always "the bookend did not refuse".
         var ex = await Assert.ThrowsAsync<ToolException>(() =>
             c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0));
         Assert.Equal(ToolErrorCode.RedactionUnmaskable, ex.Code);
@@ -1077,14 +1252,24 @@ Add the comparison as a private static member:
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~BookendWalkTests"`
 Expected: PASS — 5 passed.
 
-- [ ] **Step 5: Prove the gates are non-vacuous with two logic mutants**
+- [ ] **Step 5: Prove the gates are non-vacuous with three logic mutants**
 
 1. Change `MaskSetsMatch` to `=> true`.
    Expected: `A_mask_that_moved_under_the_capture_triggers_a_retry` FAILS at `Assert.Equal(4, walks())` with 2 — the leak is open again, and seeing this fail once is the point.
 2. Delete the `if (geo.MaskRects.Count == 0)` short circuit.
    Expected: `An_empty_mask_set_performs_no_second_walk` FAILS with 2 walks.
 
-**Revert both.**
+3. **MOVED HERE FROM TASK 17, because its oracle is written in THIS task and nowhere earlier.** Make
+   `ScrapeAsync` use `geo.MaskRects` instead of the fresh desktop walk (i.e. undo the round-6 fold).
+   Expected: `A_fallback_scrape_uses_FRESH_masks_not_the_stale_target_set` FAILS — and that failure is
+   the whole justification for relaxing the resize refusal, so it is the one mutant in this phase that
+   must be seen to go red before the relaxation is trusted.
+
+   ⚠ Task 17's Step 8 listed this mutant while its oracle did not yet exist — the test is created in
+   THIS task's Step 1, in `BookendWalkTests.cs`. Run there, it could only ever have come back green,
+   which reads identically to a passed check.
+
+**Revert all three.**
 
 - [ ] **Step 6: Run the whole headless suite**
 
@@ -1109,6 +1294,15 @@ leaves the rect identical. That risk remains unmitigated and one-sided."
 ### Task 19: The per-HWND circuit breaker
 
 **Build this only if Task 1 measured a block.** If it did not, skip the task and record the skip in the measurements doc.
+
+⚠ **Task 1 measured `BLOCKS`, so this task RUNS.** The verdict is at
+`docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md` — grep for `VERDICT: BLOCKS`.
+
+⚠ **Skipping it would no longer break the build, and that is deliberate.** The `CaptureCircuitBreaker`
+class is defined unconditionally in **Task 17, Step 4b**, and the coordinator reaches it only through
+`_breaker?.`, with the constructor parameter defaulting to `null`. So a skipped Task 19 leaves a type
+that compiles and is simply never constructed, rather than the `CS0246` that an unconditional reference
+to a conditionally-defined type used to produce.
 
 **Files:**
 - Modify: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`
@@ -1309,88 +1503,50 @@ public class CaptureCircuitBreakerTests
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureCircuitBreakerTests"`
 Expected: FAIL — `CaptureCircuitBreaker` does not exist.
 
-- [ ] **Step 3: Write the breaker**
+- [ ] **Step 3: The breaker class — ALREADY WRITTEN, in Task 17**
 
-Append to `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`:
+⛔ **DO NOT WRITE THE CLASS HERE. It does not belong to this task any more.** This step used to read
+*"Write the breaker — append to `WindowCaptureCoordinator.cs`"* and carried the full class source.
 
-```csharp
-/// <summary>Remembers windows whose PrintWindow acquisition timed out, and routes subsequent captures of
-/// those windows straight to the scrape for a cooldown.
-///
-/// ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. Each blocked call keeps its thread, its HDC, its GDI bitmap and
-/// its managed bitmap permanently -- a blocked Win32 call cannot be cancelled, so nothing in-process can
-/// take them back. What this bounds is the MULTIPLIER: N captures of a hung window cost ONE leak instead
-/// of N. Operator ratification of 2026-08-21 accepted that trade explicitly; the out-of-process worker
-/// that would actually reclaim is filed as ROADMAP debt.</summary>
-public sealed class CaptureCircuitBreaker
-{
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, DateTime> _tripped = new();
-    // ⚠ IN-FLIGHT ACQUISITIONS, and without this the breaker bounds only SERIALIZED captures. Trip() runs
-    // AFTER a timeout elapses, so three overlapping requests for the same hung window all read IsTripped
-    // as false, all call Acquire, all block, and all leak -- three threads and three bitmaps for one
-    // window, defeating the containment this class exists to provide.
-    // *(AGY-AFTER panel over this plan, round 3, State Corruptor.)*
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, DateTime> _inFlight = new();
-    private readonly TimeSpan _cooldown;
-    private readonly Func<DateTime> _clock;
+**MEASURED, and it broke the build:** Task 17's coordinator does not merely mention the breaker, it
+**declares a field of that type and calls four of its methods** — `private readonly
+CaptureCircuitBreaker? _breaker;`, the constructor parameter, `_breaker = breaker;`,
+`_breaker?.BeginAcquisition(...)`, `_breaker?.EndAcquisition(...)` and `_breaker?.Reset(hwnd)`. A type
+first defined two tasks later cannot satisfy any of them, so `dotnet build FlaUI.Mcp.slnx` at the end of
+Task 17 failed with `CS0246: The type or namespace name 'CaptureCircuitBreaker' could not be found`, and
+Task 17 could not reach the green build its own Steps 5–7 demand.
 
-    public CaptureCircuitBreaker(TimeSpan cooldown, Func<DateTime> clock)
-    { _cooldown = cooldown; _clock = clock; }
+⚠ **This is the same defect the round-5 fold thought it had fixed.** The comment above the field in
+Task 17 records that round 5 found a `CS0103` here — prose describing a field that was never declared —
+and fixed it by adding the declaration. That fix moved the error rather than removing it: the field
+existed, and its **type** still did not. A missing declaration and a missing type are the same defect
+wearing different error codes.
 
-    public static CaptureCircuitBreaker Default => new(TimeSpan.FromMinutes(5), () => DateTime.UtcNow);
+**The class now lands in Task 17, Step 4b**, in the same file and at the same position (appended after
+the coordinator's closing brace), so nothing about the shipped source changed — only which task writes
+it. Confirm it is there before continuing:
 
-    /// <summary>How many windows are currently tracked. Exists so a test can prove the dictionary is
-    /// pruned rather than growing forever — the growth is otherwise invisible until it matters.</summary>
-    public int TrackedCount => _tripped.Count;
-
-    public bool IsTripped(IntPtr hwnd)
-        => _tripped.TryGetValue(hwnd, out var at) && _clock() - at < _cooldown;
-
-    /// <summary>TRUE when another acquisition for this window has ALREADY outlived <paramref name="budget"/>
-    /// and is therefore known to be blocked -- so this call would block too, for the same reason, and add
-    /// one more permanent leak.
-    ///
-    /// ⚠ It deliberately does NOT divert merely because another acquisition is in flight. Two agents
-    /// capturing the same HEALTHY window concurrently is ordinary, and those calls finish in milliseconds;
-    /// diverting them to a scrape would reintroduce occlusion for a window that was working fine. Only an
-    /// acquisition that has already exceeded the whole timeout budget is evidence of a hang.</summary>
-    public bool AnotherAcquisitionIsStuck(IntPtr hwnd, TimeSpan budget)
-        => _inFlight.TryGetValue(hwnd, out var started) && _clock() - started > budget;
-
-    /// <summary>Records the start of an acquisition. Keeps the EARLIEST start for a window, so a stream of
-    /// overlapping requests cannot keep pushing the "stuck" judgement into the future.</summary>
-    public void BeginAcquisition(IntPtr hwnd) => _inFlight.TryAdd(hwnd, _clock());
-
-    /// <summary>Clears the in-flight marker. Safe to call for a request that TIMED OUT: the abandoned
-    /// thread is still blocked, but Trip() has by then recorded the window and the cooldown takes over.</summary>
-    public void EndAcquisition(IntPtr hwnd) => _inFlight.TryRemove(hwnd, out _);
-
-    /// <summary>Forget a window entirely -- called when the OS reports it is no longer hung, so a target
-    /// that recovered stops being penalised for having hung once. See WindowCaptureCoordinator.HungOrReset,
-    /// which is the ONLY caller and the reason this method exists.</summary>
-    public void Reset(IntPtr hwnd)
-    {
-        _tripped.TryRemove(hwnd, out _);
-        _inFlight.TryRemove(hwnd, out _);
-    }
-
-    public void Trip(IntPtr hwnd)
-    {
-        // ⚠ PRUNE ON WRITE. Without this the dictionary is UNBOUNDED: every window that ever hung leaves
-        // a permanent entry, in a server designed to run for weeks. The entries are tiny, so this is not
-        // the leak that matters -- but a subproject whose entire subject is not leaking must not ship a
-        // collection that only grows, and HWNDs are recycled by the OS, so a stale entry can also
-        // mis-trip the breaker for an unrelated window that happens to reuse the handle value.
-        //
-        // Pruning on Trip rather than on a timer keeps this allocation-free in the common case: Trip only
-        // runs when a capture actually timed out, which is rare by construction.
-        var now = _clock();
-        foreach (var kv in _tripped)
-            if (now - kv.Value >= _cooldown) _tripped.TryRemove(kv.Key, out _);
-        _tripped[hwnd] = now;
-    }
-}
+```bash
+grep -n "class CaptureCircuitBreaker" src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs
 ```
+Expected: one hit. If it is absent, Task 17 was not completed — stop and finish Task 17 rather than
+pasting the class here.
+
+⚠ **The whole class moved, not a stub.** Stubbing the methods in Task 17 and filling them here was
+considered and rejected: `_breaker?.BeginAcquisition(...)` against a no-op stub **compiles and silently
+does nothing**, so Tasks 17 and 18 would carry a circuit breaker that contains nothing while every test
+passes — a silent safety failure in the exact machinery this subproject exists to build. The class has
+no dependency on anything Task 18 creates (it uses only `ConcurrentDictionary`, `IntPtr`, `DateTime`,
+`TimeSpan` and `Func`), so there was nothing to defer.
+
+⚠ **AND IT REMOVES A STRUCTURAL PARADOX, which is why the fix is a move and not a reorder.** This task
+is conditional — *"Build this only if Task 1 measured a block"* — while Task 17 is not. Task 1 measured
+`BLOCKS`, so the condition happens to hold here; but had it not, Task 17 would have referenced a type
+that was **never** defined and the build would have been permanently broken. Defining the type
+unconditionally in Task 17 and populating only the tests and the wiring here makes the coupling sound
+whichever way the measurement had gone. *(AGY-FIRST consult, 2026-08-21: the peer independently reached
+this same failure mode from the fork brief, and it is the one no option in the brief addressed.)*
+
 
 - [ ] **Step 4: Wire it into the coordinator**
 

@@ -71,17 +71,39 @@ public class CaptureRectangleCallSiteTests
     // OCR path (FindTextTools) is the caller this sweep exists for -- it was invisible to the spec until
     // it was measured, and it is the one most likely to be forgotten again.
     //
-    // ⚠ FOUR CALL SITES, and the DECLARATION is not among them: it reads
+    // ⚠ FIVE CALL SITES, and the DECLARATION is not among them: it reads
     // `public static CaptureResult CaptureRectangle(` with no `ScreenCapture.` prefix, so the needle
     // never matches it. An earlier version asserted "1 declaration + 3 call sites" and would have failed
     // 4 != 3 even with every call site correctly updated.
+    //
+    // ⚠⚠ THE FIFTH IS A FORWARDER, AND IT CANNOT NAME A LITERAL SCOPE. `WindowCaptureCoordinator`'s
+    // constructor defaults its injectable `_scrape` to `ScreenCapture.CaptureRectangle`, and that default
+    // must be an explicit LAMBDA rather than a method group: `CaptureRectangle` carries an optional sixth
+    // parameter (the `IScreenImageSource?` test seam), so its natural type is the six-argument delegate
+    // and `??` against the five-argument field is a `CS0019`. The lambda receives the scope as a
+    // PARAMETER and passes it straight through, so no `CaptureScope.Something` literal appears -- and the
+    // original assertion below, which demanded that literal at every site, went red on it.
+    //
+    // Relaxing the rule for that site would gut the sweep, so it is pinned by SHAPE instead: the
+    // forwarder must forward, verbatim. Hardcoding a scope there (`..., CaptureScope.Window, warn`) turns
+    // this test red exactly as it should, because that is the silent-default defect the sweep exists to
+    // catch -- it would make every coordinator fallback claim window scope regardless of what was asked.
     [Fact]
     public void Every_production_CaptureRectangle_call_names_its_scope()
     {
         var calls = CallSites(RepoRoot());
-        Assert.Equal(4, calls.Count);
+        Assert.Equal(5, calls.Count);
 
-        foreach (var c in calls)
+        var forwarders = calls.Where(c =>
+            Path.GetFileName(c.File) == "WindowCaptureCoordinator.cs").ToList();
+        var literal = calls.Except(forwarders).ToList();
+
+        // The coordinator holds exactly ONE such site, and it forwards its scope parameter untouched.
+        var fwd = Assert.Single(forwarders);
+        Assert.Equal("(r, masks, w, sc, warn)", fwd.Args);
+
+        Assert.Equal(4, literal.Count);
+        foreach (var c in literal)
             Assert.True(Regex.IsMatch(c.Args, @"CaptureScope\.\w+"),
                 $"{Path.GetFileName(c.File)}:{c.Line} calls CaptureRectangle without naming a CaptureScope");
     }

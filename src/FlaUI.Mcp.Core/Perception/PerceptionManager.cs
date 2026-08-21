@@ -1189,7 +1189,9 @@ public sealed class PerceptionManager
                     if (resolution.Escalated) escalations.Add(new MaskEscalationEntry(aid, ct));
                 }
             }
-            return new CaptureGeometry(captureBounds, pw, false, false, null, escalations, windowBounds, NativeHandleOf(win), false);
+            return new CaptureGeometry(captureBounds, pw, false, false, null, escalations,
+                                       windowBounds, NativeHandleOf(win), false)
+            { HasPopupRoots = roots.Count > 1 };
             }
             catch (ToolException) { throw; }
             // ⚠ A CRITICAL failure is NOT a redaction outcome. Reclassifying OutOfMemoryException — or a
@@ -1388,7 +1390,17 @@ public sealed record FocusedElementInfo(string Ref, string DescriptorLine, strin
 /// place in the design where the agent-facing code and the internal signal deliberately part company.</summary>
 public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects, bool Minimized, bool Denied, string? DeniedProcess,
     IReadOnlyList<MaskEscalationEntry> Escalations,
-    System.Drawing.Rectangle WindowBounds, System.IntPtr NativeWindowHandle, bool DegenerateWindow);
+    System.Drawing.Rectangle WindowBounds, System.IntPtr NativeWindowHandle, bool DegenerateWindow)
+{
+    /// <summary>This window had popup roots at geometry time — PopupFinder.SearchRoots returned more
+    /// than the window itself. Decided during the WALK, consumed by the caller, which is why it travels
+    /// on the geometry rather than being re-derived downstream.
+    ///
+    /// An init-only PROPERTY rather than a positional parameter, deliberately: the positional list is
+    /// pinned by CaptureGeometryShapeTests and adding to it would churn every construction site for a
+    /// flag most of them do not care about.</summary>
+    public bool HasPopupRoots { get; init; }
+}
 
 /// <summary>The mask set for a FULL-DESKTOP capture: every visible non-denied window's rects, plus the
 /// elements across all of them whose mask came from an ancestor. Lists rather than a tuple so the

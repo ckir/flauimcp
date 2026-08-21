@@ -152,7 +152,12 @@ public class CaptureWindowTests
     public void A_uniform_window_bitmap_warns_uniformCanvas()
     {
         var w = new Rectangle(0, 0, 400, 300);
-        // Solid() paints a magenta marker, so use a genuinely flat source for this one.
+        // ⚠ THIS COMMENT USED TO BE WRONG IN A WAY THAT MATTERED. It read "Solid() paints a magenta
+        // marker, so use a genuinely flat source for this one", implying `Solid` is non-uniform. It is
+        // not: the detector samples a 64x64 grid whose points never land on a 4x4 marker, so a `Solid`
+        // window IS uniform to it. Using a flat source here is still right -- but for the reason that it
+        // is unambiguous, not because `Solid` would have failed to trigger the warning. See
+        // `FakeWindowImageSource.Varied`, added once Task 17's tests tripped over the real behaviour.
         var flat = new FakeWindowImageSource(size =>
         {
             var b = new Bitmap(size.Width, size.Height);

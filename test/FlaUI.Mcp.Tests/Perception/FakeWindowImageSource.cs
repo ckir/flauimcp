@@ -28,6 +28,30 @@ public sealed class FakeWindowImageSource : IWindowImageSource
         return b;
     });
 
+    /// <summary>Like <see cref="Solid"/>, but genuinely NON-UNIFORM to the detector.
+    ///
+    /// ⚠ THIS EXISTS BECAUSE `Solid` IS NOT. `Solid` paints a 4x4 magenta marker, and a comment
+    /// elsewhere in this suite once read "Solid() paints a magenta marker, so use a genuinely flat source
+    /// for this one" -- treating that marker as enough to make the bitmap varied. It is not.
+    /// `UniformCanvasDetector` samples a 64x64 GRID, so on a 400x300 window its sample points step ~6px
+    /// horizontally and ~5px vertically and NEVER land inside a 4x4 marker at (1,1). MEASURED: a `Solid`
+    /// window emits `uniformCanvas`. The marker is there to prove the crop moved the origin, which is a
+    /// different job and one it still does.
+    ///
+    /// The contrasting half-window block below is far larger than the grid step, so it is unmissable.</summary>
+    public static FakeWindowImageSource Varied(Color c) => new(size =>
+    {
+        var b = new Bitmap(Math.Max(1, size.Width), Math.Max(1, size.Height));
+        using var g = Graphics.FromImage(b);
+        using var brush = new SolidBrush(c);
+        g.FillRectangle(brush, 0, 0, b.Width, b.Height);
+        using var contrast = new SolidBrush(c.GetBrightness() > 0.5f ? Color.Black : Color.White);
+        g.FillRectangle(contrast, b.Width / 2, 0, b.Width - (b.Width / 2), b.Height);
+        using var marker = new SolidBrush(Color.Magenta);
+        g.FillRectangle(marker, 1, 1, 4, 4);
+        return b;
+    });
+
     /// <summary>Stages the timeout path.</summary>
     public static FakeWindowImageSource TimesOut() => new(_ => null);
 
