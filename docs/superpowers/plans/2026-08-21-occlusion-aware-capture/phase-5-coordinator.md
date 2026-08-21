@@ -11,7 +11,22 @@
 **Files:**
 - Create: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`
 - Test: `test/FlaUI.Mcp.Tests/Perception/WindowCaptureCoordinatorTests.cs`
-- Modify: `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryCallSiteTests.cs` (the count goes 3 → 4)
+
+⛔ **`CaptureGeometryCallSiteTests.cs` IS NOT MODIFIED BY THIS TASK. Do not touch it.**
+
+This line used to read *"Modify: `CaptureGeometryCallSiteTests.cs` (the count goes 3 → 4)"*, and it
+**contradicted this task's own Step 6**, which says the sweep *"is still green and still says 3"*. Step 6
+is right, and so is the test's own comment: *"THREE, and it stays three after Task 17."*
+
+**VERIFIED against Step 4's own code:** the coordinator holds
+`private readonly Func<WindowHandle, string?, Task<CaptureGeometry>> _walk;` and calls
+`await _walk(handle, @ref)`. It takes the walk as a **DELEGATE** and never calls
+`ResolveWindowCaptureGeometryAsync`, so it adds **no** call site.
+
+⚠⚠ **Following the old line would have caused an architectural regression, not just a wrong number.**
+Editing the test to expect 4 makes it fail against a real count of 3, and the obvious "fix" is to wire
+the coordinator straight into `PerceptionManager` — which Step 6 warns *"would also destroy every
+headless test in Tasks 17–19."* **Fix the wiring, not the number.**
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -230,7 +245,7 @@ public class WindowCaptureCoordinatorTests
 
 The test above needs it and so does `popupsNotRendered`, which is decided at geometry time. Add it as an **init-only property**, not a positional parameter, so the append-only ordering test is unaffected:
 
-In `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs`, change the `CaptureGeometry` declaration's closing `;` to a body:
+In `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs`, change the `CaptureGeometry` declaration's closing `;` to a body — **find it by name; it is now at `:1389` and ends `bool DegenerateWindow);`**:
 
 ```csharp
     System.Drawing.Rectangle WindowBounds, System.IntPtr NativeWindowHandle, bool DegenerateWindow)
@@ -246,7 +261,7 @@ In `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs`, change the `CaptureGeom
 }
 ```
 
-Then set it at the success return (`PerceptionManager.cs:1110`), where `roots` is in scope:
+Then set it at the success return — **find it by `grep -n "return new CaptureGeometry(captureBounds, pw,"`; it was cited as `:1110` and is now `:1192`.** VERIFIED that `roots` IS in scope there: it is declared at `:1080` at method-body level and the return sits after the loop that consumes it.
 
 ```csharp
             return new CaptureGeometry(captureBounds, pw, false, false, null, escalations,
@@ -660,7 +675,7 @@ It is `internal` and both types are in `FlaUI.Mcp.Core`, so no change is needed.
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureGeometryCallSiteTests"`
 Expected: PASS, unchanged.
 
-The coordinator takes the walk as a **delegate**, so it adds no call site to `ResolveWindowCaptureGeometryAsync` — the count is still `ScreenshotTools:53`, `PerceptionManager:1136` (OCR) and `PerceptionManager:1181` (full-desktop). **If this test went red, the coordinator was wired by calling `PerceptionManager` directly instead of through the injected delegate, which would also destroy every headless test in Tasks 17–19. Fix the wiring, not the number.**
+The coordinator takes the walk as a **delegate**, so it adds no call site to `ResolveWindowCaptureGeometryAsync` — the count is still three. **MEASURED after Tasks 12 and 13 shifted the file:** `ScreenshotTools.cs:55`, `PerceptionManager.cs:1218` (OCR) and `PerceptionManager.cs:1274` (full-desktop) — the plan previously cited `:53`, `:1136` and `:1181`, all now stale. Re-derive with `grep -rn "ResolveWindowCaptureGeometryAsync\s*(" src/` rather than trusting any of these numbers. **If this test went red, the coordinator was wired by calling `PerceptionManager` directly instead of through the injected delegate, which would also destroy every headless test in Tasks 17–19. Fix the wiring, not the number.**
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
