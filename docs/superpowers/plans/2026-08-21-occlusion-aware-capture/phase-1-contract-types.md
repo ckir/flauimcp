@@ -208,9 +208,18 @@ public static class CaptureWarnings
 
     private static readonly Dictionary<string, string> Recourses = new(StringComparer.Ordinal)
     {
+        // ⚠ THE TEXT MUST BE TRUE ON BOTH BACKENDS, and an earlier version said "rendered" -- which is
+        // false of a scrape, where nothing rendered and the screen was photographed. The peer argued from
+        // that wording that the code should not fire on a scrape at all. Rejected: a uniform scrape of a
+        // window's rect is very often a solid OCCLUDER, which is precisely the hazard the fallback
+        // carries, and this design's standing rule is that an incorrect warning is cheap while an
+        // incorrect refusal is not. The wording was the defect, not the firing.
+        // *(AGY-AFTER panel over this plan, round 9, Adversary of the Reviewer.)*
         [UniformCanvas] =
-            "The whole window rendered as a single colour, so this image may not be usable. " +
-            "Read the UIA tree with desktop_snapshot instead.",
+            "The captured region came back as a single colour, so this image may not be usable. Under " +
+            "captureMethod 'printWindow' that means the window did not render; under 'screenScrape' it " +
+            "may be a solid window covering the target, or a genuinely blank region. Either way, read " +
+            "the UIA tree with desktop_snapshot rather than trusting these pixels.",
         [DesktopCanvasUniform] =
             "The whole desktop came back a single colour. The usual causes are a secure desktop (a UAC " +
             "prompt), DRM-protected content, or a session in transition. UIA is normally blocked in " +

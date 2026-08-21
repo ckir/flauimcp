@@ -350,3 +350,37 @@ the stale masks and turn the relaxation into a leak.
 **This is the value of the Adversary-of-the-Reviewer seat, stated for the next panel:** it was asked to
 name the fold most likely to be WRONG, and it named one of the review's own — correctly. Eight rounds of
 folds had left a guard standing whose reason had been removed two rounds earlier by another fold.
+
+### Round 9 — a TOCTOU an untrusted app can drive
+
+Seats: Fold Auditor (the reversal only), **Boundary Smuggler** (never seated), Adversary of the Reviewer
+(2nd). **Verdict: RED**, two findings.
+
+**Seat 1 clean, and it independently reproduced the driver's own verification:** three paths now reach
+`ScrapeAsync` instead of refusing — timeout, breaker, resize exhaustion — and all three route through the
+single `_scrape` call, which sits after a null-checked `_desktopMasks` invocation that unconditionally
+replaces `geo.MaskRects`. **No path can reach the scrape with the target's stale masks.**
+
+**Folded:**
+
+1. **⚠⚠ A TOCTOU ON THE DENYLIST GUARD, deliberately drivable.** `_denylistedVisible()` runs *before* the
+   desktop mask walk, which is the slowest thing on the path — leaving tens to hundreds of milliseconds
+   between "no credential window is visible" and the shutter. A window appearing in that gap is
+   photographed **in the clear**, because `AllMaskRectsAsync` **SKIPS** denylisted windows rather than
+   masking them (`PerceptionManager.cs:1178`), so it contributes no rects and the scrape paints nothing
+   over it. An application that hangs its own message loop can force this path and time the appearance.
+   **The denylist is now re-checked AFTER the pixels are taken**; re-checking cannot un-take them, but it
+   stops them being RETURNED, which is the part that matters. ⚠ Residual, stated rather than chased: a
+   window appearing *and vanishing* between both checks evades both — not the exploit above, which needs
+   the window visible while the shutter is open.
+2. **The `uniformCanvas` recourse said "rendered", which is false on a scrape.** The peer argued from that
+   wording that the code should not fire on a scrape at all. **Rejected, with reasons:** a uniform scrape
+   of a window's rect is very often a solid OCCLUDER — precisely the hazard the fallback carries — and this
+   design's standing rule is that an incorrect warning is cheap while an incorrect refusal is not. **The
+   wording was the defect, not the firing.** The text now covers both backends explicitly.
+
+**Below the floor, and correctly so:** the peer discarded two items *because the plan already documents
+them as deliberate acceptances* — the fallback capturing overlapping windows, and the inherited
+full-desktop refusal. That is the ledger working as intended.
+
+**Refuted:** `ScreenshotTools.cs:38` was verified by grep this session.

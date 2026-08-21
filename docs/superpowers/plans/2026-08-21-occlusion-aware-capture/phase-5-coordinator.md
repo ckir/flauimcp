@@ -587,8 +587,33 @@ public sealed class WindowCaptureCoordinator
         var unmasked = desk.UnmaskedProcesses;
         var escalations = desk.Escalations;
 
-        return (_scrape(geo.Bounds, masks, maxWidth, scope,
-                        ScreenCapture.Append(warnings, CaptureWarnings.For(code))), unmasked, escalations);
+        var image = _scrape(geo.Bounds, masks, maxWidth, scope,
+                            ScreenCapture.Append(warnings, CaptureWarnings.For(code)));
+
+        // ⚠⚠ THE DENYLIST IS CHECKED AGAIN, AFTER THE PIXELS ARE TAKEN. The check above runs before the
+        // desktop mask walk, and that walk is the slowest thing on this path -- so between "no denylisted
+        // window is visible" and the shutter there is a window of tens to hundreds of milliseconds. A
+        // credential window appearing in that gap is photographed IN THE CLEAR, because
+        // `AllMaskRectsAsync` SKIPS denylisted windows rather than masking them
+        // (`PerceptionManager.cs:1178`) -- so it contributes no rects, and the scrape paints nothing over
+        // it. An application that hangs its own message loop can force this path deliberately and then
+        // time the appearance.
+        //
+        // Re-checking cannot un-take the pixels. What it does is stop them being RETURNED, which is the
+        // part that matters: the image is discarded and the capture refuses.
+        // *(AGY-AFTER panel over this plan, round 9, Boundary Smuggler.)*
+        //
+        // ⚠ RESIDUAL, and it is narrow enough to state rather than chase: a denylisted window that
+        // appears AND disappears entirely between the two checks would evade both. That is not the
+        // exploit above — an attacker wants the window visible while the shutter is open, and a window
+        // visible then is still visible microseconds later at this check.
+        if (await _denylistedVisible())
+            throw new ToolException(ToolErrorCode.TargetDenied,
+                "A credential/denylisted window became visible while this fallback scrape was being " +
+                "taken, so the image has been discarded.",
+                "dismiss the credential window, then retry");
+
+        return (image, unmasked, escalations);
     }
 
     /// <summary>TRUE when the window is still hung and the divert should happen. When the OS says it has
