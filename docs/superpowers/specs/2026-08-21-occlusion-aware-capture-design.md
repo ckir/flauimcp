@@ -181,6 +181,15 @@ same six lines removes the class:
   image is returned as a success**. Ordering is the whole defence: reject a degenerate `W1` before the
   yardstick can turn it into an empty mask set. *(Panel round 9, Fold Auditor.)*
 
+  ⚠ Since round 10 unified the scopes, this guard is **belt-and-braces for WINDOW scope and still
+  load-bearing for ELEMENT scope.** With `E = W1`, a degenerate `W1` makes `relative` degenerate, so the
+  crop's empty check refuses before any image is returned and the dropped mask set never reaches a
+  caller. Element scope is different: `E` is the ELEMENT's rect and can be perfectly valid while the
+  WINDOW rect is degenerate — UIA is capable of reporting exactly that inconsistency, which is why the
+  mask-escalation machinery exists at all. There `relative` is non-degenerate, the crop succeeds, and the
+  image ships with no masks. Keep the guard. *(Panel round 11 proposed deleting it as dead code; that is
+  true only for the scope it traced.)*
+
 ⚠ **A MINIMIZED window is NOT caught by an extents check, and must be re-tested at capture time.** F6
 measured the placeholder rect Windows gives a minimized window: `-32000,-32000` with extents `160x28` —
 **positive**. `ScreenshotTools.cs:55` already refuses `geo.Minimized` before capture, but that test
@@ -289,6 +298,17 @@ behavioural contract, not an implementation detail, and the two scopes need diff
   *(Panel round 10 argued the refusal overshoots. It does, in the non-reflowing case; the overshoot is
   the price of not being able to tell, and it is paid in a refusal rather than in a leak.)*
 
+  ⚠ **This IS a regression against today, and the apparent inconsistency is deliberate.** Today the tool
+  captures that window and returns an image; after this change it refuses. And §2 openly accepts the
+  general movement/relayout race as inherent and undetectable — so the design tolerates stale masks it
+  cannot see while refusing stale masks it can. That is not incoherent: **accepting an undetected risk
+  and shipping a known-bad image are different acts.** The first is a limit on what the tool can know;
+  the second is a decision to hand over an image after learning it may be under-redacted. The whole
+  reason this backend is worth having is that it can detect things the scrape could not, and detection is
+  only worth anything if it changes behaviour. *(Panel round 11, Regression Auditor, listed this as an
+  unjustified loss. It is a loss, and it is justified — but it belongs in the operator's ratification
+  alongside the privacy-posture widening, not buried as an implementation detail.)*
+
   ⚠ **The unscanned-pixel leak this rule does NOT cover is closed by the crop, not here.** A window that
   GREW exposes area the UIA walk never inspected, and an empty mask set says only that the OLD bounds
   were clean. §1's crop discards that region on both scopes, so "mask set empty → capture" is safe.
@@ -304,10 +324,21 @@ behavioural contract, not an implementation detail, and the two scopes need diff
   ⚠ **"Retry" must be BOUNDED, or a continuously-changing window is a livelock.** A window that animates
   — a progress dialog, a resizing splash, anything mid-transition — never satisfies
   `W1.Size == W2.Size`, so an unconditional retry hint tells the agent to loop forever on a capture that
-  can never succeed. Re-take the geometry-and-capture pair a small bounded number of times; if the sizes
-  still disagree, refuse with a DIFFERENT message — the window is changing continuously, so no consistent
-  capture is available — and do NOT suggest retrying. An honest terminal answer beats an instruction that
-  cannot terminate. *(Panel round 10, Consumer Advocate.)*
+  can never succeed. Re-take the geometry-and-capture pair a small bounded number of times.
+  *(Panel round 10, Consumer Advocate.)*
+
+  ⚠ **On exhaustion, FALL BACK TO THE SCRAPE — do not refuse.** An earlier draft refused here, and that
+  was a REGRESSION: spinners, progress dialogs and expanding windows are captured perfectly well today,
+  and a design that returns nothing for all of them is strictly worse than the one it replaces. This is
+  the same mechanism-failure case as the timeout (risk 2): the window is on screen with real pixels, and
+  what we cannot obtain is a consistent geometry-and-capture pair. The scrape takes both at one instant,
+  which is exactly what the tool does now. Report `captureMethod: "screenScrape"` and `scrapeFallback`.
+  *(Panel round 11, Regression Auditor.)*
+
+  ⚠ **The bound and the interval are the PLAN's, with an acceptance criterion**: the whole retry sequence
+  must terminate within a stated wall-clock budget small enough that a caller does not experience it as a
+  hang, and the budget must be documented in the tool description alongside the timeout. A retry loop
+  whose worst case is unbounded in time is the livelock in a different costume.
 
 *(Panel round 6, Altitude Auditor and direct question 1: the peer stuck at this exact abdication twice,
 and it was right to. "The plan owns what to do with that signal" was the spec declining to specify its
@@ -457,10 +488,20 @@ post-crop would warn constantly on valid captures.
 - **False POSITIVE:** a window that is genuinely one uniform colour (a colour-calibration app, a black
   loading screen) is warned about incorrectly. Accepted — the consequence is a spurious sentence.
 - **False NEGATIVE:** an ELEMENT crop that is entirely black inside a window that rendered fine — a
-  hardware-accelerated child viewport that failed to draw — passes with the flag `false`, because the
-  detector never saw the crop. Accepted for the same reason the pre-crop choice was made, but it is the
-  price of that choice and the spec previously stated only the other half. *(Panel round 1, BA-1, agy
-  seat.)*
+  hardware-accelerated child viewport that failed to draw — passes the WINDOW-level detector with `false`,
+  because that detector never saw the crop. *(Panel round 1, BA-1, agy seat.)*
+
+  ⚠ **This one is no longer merely accepted — it is a REGRESSION against today's behaviour, and it gets
+  its own signal.** The scrape composites that viewport correctly today, so an agent that sees the
+  control now would receive a silently black image after this change, with nothing saying so. Run the
+  same predicate a SECOND time on the cropped region, and emit `elementCanvasUniform` when the crop is
+  uniform but the full window bitmap was not. That difference is what makes it worth reporting: a
+  uniformly-coloured crop inside a uniformly-coloured window is just a solid window, already covered by
+  `uniformCanvas`. The extra false-positive rate — a genuinely blank panel, a flat background — is
+  accepted on the same grounds as every other warning here: the cost is a spurious sentence, and the
+  alternative is silent corruption. *(Panel round 11, Regression Auditor. §3's original argument for
+  evaluating PRE-crop stands — that is why this is an ADDITIONAL check with its own code, not a
+  relocation of the first one.)*
 
 ### 4. Failure mapping — the existing error path does not reach the new backend
 
@@ -505,7 +546,9 @@ contract undefined, which is the same abdication §5 exists to close:
 | `code` | fires when | `recourse` says, in substance |
 |---|---|---|
 | `uniformCanvas` | §3's detector finds the full window bitmap effectively one colour | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
-| `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture with an empty mask set | the window changed size mid-capture, so **any UIA tree or element ref you already hold for it is geometrically stale — re-snapshot before acting on this window**, and do not act on cached coordinates |
+| `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture with an empty mask set | the window changed size mid-capture. The image itself is sound — it was cropped back to the region you asked for — but the layout inside it **may** have reflowed, so any UIA tree or element ref you hold for this window may be geometrically stale. Re-snapshot before acting on cached coordinates |
+| `popupsNotRendered` | this window had one or more popup roots at geometry time (`PopupFinder.SearchRoots` returned more than the window itself) and the backend is `printWindow` | an open menu, dropdown or tooltip belonging to this window is a separate top-level window and is **not in this image**. Its absence is not evidence it failed to open — read the UIA tree to see it |
+| `elementCanvasUniform` | element scope only: the CROPPED region is effectively one colour while the full window bitmap was not | this element's pixels may have failed to render even though the window as a whole did — a hardware-accelerated child viewport is the usual cause. Verify through the UIA tree before concluding the control is blank |
 | `scrapeFallback` | §1's `PrintWindow` timeout expired and the scrape produced this image instead (see risk 2 and Out of scope) | this image is a screen scrape, so anything overlapping the window is in it; `captureMethod` says `screenScrape`. Treat occlusion as possible |
 
 Codes are camelCase, matching every other field in this response. *(Panel round 8, Fold Auditor: round
@@ -674,11 +717,34 @@ for each failure, or NONE — not whether the area was "covered".)*
    `captureMethod: "screenScrape"` and a `scrapeFallback` warning. It never returns a blank or partial
    `PrintWindow` image.
 
-   **Why this is the one place the scrape fallback is allowed**, when Out-of-scope bans it everywhere
-   else: that ban rests on the fallback needing an UNSOUND signal to trigger on, which would re-price
-   every detector error into a wrong-backend switch. **A timeout is not an unsound signal.** It is a
-   definite, mechanical fact — the call did not return — with no false-positive mode to re-price. And the
-   switch is not silent: `captureMethod` names the backend and the warning states the consequence.
+   **Why the scrape fallback is allowed here**, when Out-of-scope bans it everywhere else. The
+   distinguishing property is **NOT** that a timeout is "definite and mechanical" — an earlier draft said
+   that, and it was wrong, because every other refusal in this design is equally definite and mechanical
+   (a degenerate window, a minimized window, an empty crop). That rationale licensed the fallback
+   everywhere and collapsed the exclusion it was meant to carve an exception out of.
+   *(Panel round 11, Fold Auditor.)*
+
+   The property that actually separates them:
+
+   > **The fallback is allowed exactly where the TARGET has real, current, on-screen pixels and only OUR
+   > BACKEND failed to obtain them. It is banned where the failure is in the target itself, because there
+   > the scrape has nothing better to offer.**
+
+   - **Timeout — mechanism failure.** The window exists, is on screen, and is rendering to the desktop;
+     `PrintWindow` simply could not get a copy because the target's message loop is blocked. The scrape
+     reads the composited desktop and is unaffected. It genuinely has a better answer than nothing.
+   - **Retry exhaustion on a continuously-changing window — mechanism failure, same shape.** The window
+     is on screen with real pixels; what we cannot obtain is a CONSISTENT geometry-and-capture pair. The
+     scrape takes both at one instant and is what the tool does today. See the element-scope retry rule
+     in §1. *(Panel round 11, Regression Auditor: refusing here was a total outage for spinners, progress
+     dialogs and expanding windows, which work today.)*
+   - **Degenerate, minimized, or empty-crop — TARGET failure.** There are no pixels to get. A minimized
+     window has none on screen; a zero-extent window has none at all; an element outside the captured
+     region is not on screen where the crop looked. Falling back would photograph whatever happens to
+     occupy those coordinates, which is precisely the defect item 8 exists to fix.
+
+   And the switch is never silent: `captureMethod` names the backend and `scrapeFallback` states the
+   consequence.
 
    ⚠ **Refusing here would have been a REGRESSION, which is what makes this worth the exception.** A
    hung window is precisely where the scrape still works, because it composites independently of the
@@ -736,7 +802,9 @@ for each failure, or NONE — not whether the area was "covered".)*
 8. **Popup masks and popup pixels come apart.** This repo grafts masks from popup roots into a window's
    mask set (`PopupFinder.SearchRoots`, pinned by `PopupRootCoverageTests` — VERIFIED: that test's own
    doc comment at `:9` states it routes find through `PopupFinder.SearchRoots` so a window-child popup is
-   reachable, and `SearchRoots` is called from nine sites in `PerceptionManager.cs`). A popup is a SEPARATE
+   reachable, and `SearchRoots` is called from TWELVE sites in `PerceptionManager.cs` — lines 75, 89, 107,
+   126, 262, 283, 305, 539, 540, 740, 883 and 998. *(An earlier draft said nine. Panel round 11 filed the
+   count as unverified, correctly; it was wrong.)* A popup is a SEPARATE
    top-level HWND: the scrape includes its pixels and the grafted mask covers them, but `PrintWindow`
    renders one window and its CHILD windows, so the popup's pixels are absent while its mask rect
    survives. The result is a black rectangle over ordinary window content and a `redactions` count that
@@ -1043,3 +1111,41 @@ real, is now stated in the text, and is paid in a refusal rather than in a leak.
 **The Consumer Advocate seat found two defects on its first outing**, both invisible from the
 implementer's side: every prior seat had asked whether the design is correct, and neither of these is a
 correctness defect — they are a contract that misinforms the caller and one that cannot terminate.
+
+### AGY-AFTER adversarial panel — round 11
+
+Seats: Fold Auditor (round 10's edits, with the timeout INVERSION as its hardest target), Consumer
+Advocate second pass (against the changed contract), **Regression Auditor** (enumerate every case where
+an agent that succeeds TODAY fails or gets less after this change — a lens round 10's own finding
+justified). Report: `.clavity/scratch/item8-panel/agy-round11.md`. **Verdict: NOT GREEN.** Six folds:
+
+- **The timeout exception's RATIONALE over-licensed and collapsed the ban it was an exception to.** It
+  rested on a timeout being "definite and mechanical" — but a degenerate window, a minimized window and
+  an empty crop are all equally definite and mechanical, so the reasoning licensed the fallback
+  everywhere. Replaced with the property that actually separates them: **the fallback is allowed where
+  the TARGET has real on-screen pixels and only OUR BACKEND failed to get them, and banned where the
+  failure is in the target itself.**
+- **Refusing on retry exhaustion was a second regression**, and the corrected rationale resolves it: an
+  animating window is on screen with real pixels, so it is a mechanism failure and falls back to the
+  scrape rather than refusing. Spinners and progress dialogs work today; a total outage for them was not
+  a defensible trade.
+- **Two outcomes gave the calling agent no way to know what it was looking at.** `popupsNotRendered`
+  (an open menu belongs to a separate HWND and is structurally absent from a `PrintWindow` render — an
+  agent would conclude the menu failed to open) and `elementCanvasUniform` (a child viewport that failed
+  to draw inside a window that rendered fine — silently black today, with the window-level detector
+  structurally unable to see it).
+- **The `windowResized` recourse overstated.** Since the crop returns the pre-resize region, the image is
+  sound; it is the LAYOUT inside it that may have reflowed. Softened from "is stale" to "may be stale".
+- **A count in the text was wrong.** `SearchRoots` is called from TWELVE sites, not nine. The peer filed
+  it as unverified rather than asserting a number, which is the correct move; measuring it refuted the
+  spec.
+- **The refuse-on-resize rule is a REGRESSION and the text now says so**, alongside why the apparent
+  inconsistency — tolerating undetected staleness while refusing detected staleness — is deliberate.
+  Accepting a risk you cannot see and handing over an image you have just learned may be under-redacted
+  are different acts. It is now flagged for the operator's ratification rather than left implicit.
+
+**Rejected, with the reason recorded:** that round 9's degenerate-`W1` guard is now dead code. True for
+WINDOW scope, where `E = W1` makes the crop catch it. False for ELEMENT scope, where `E` can be a valid
+element rect inside a degenerate window rect — UIA reports exactly that kind of inconsistency, which is
+why the mask-escalation machinery exists. There the crop succeeds and the image ships unmasked. The guard
+stays. *(A correct trace of one scope, generalised to both.)*
