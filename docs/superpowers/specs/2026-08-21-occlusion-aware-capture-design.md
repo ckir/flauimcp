@@ -138,13 +138,12 @@ drafts left here to follow by mistake.
 The `PrintWindow` bitmap is a standalone image whose `(0,0)` corresponds to `W2`'s top-left — which is
 `GetWindowRect.left/top`, and by F6 the window's own UIA origin.
 
-**The algorithm — ELEMENT SCOPE.** Window scope needs no CROP, but it does need the same reconciliation;
-see "window scope" immediately after the block. Saying window scope "needs none of it" would leave it
-handing `Encode` a `W1`-sized `captureBounds` alongside a `W2`-sized bitmap the moment a resize occurs,
-which is the invariant violation this whole subsection exists to prevent.
+**The algorithm — BOTH SCOPES, one path.** `E` is the element rect for `window+ref`, and **`E = W1` for
+window scope**. There is no window-scope special case:
 
 ```
 relative  = E offset by W1.Location          // (E.X - W1.X, E.Y - W1.Y, E.Width, E.Height)
+                                             // window scope: E == W1, so this is (0, 0, W1.W, W1.H)
 effective = Intersect(relative, new Rectangle(0, 0, bitmap.Width, bitmap.Height))
 if (effective.Width <= 0 || effective.Height <= 0) -> refuse           // see the empty case below
 src       = bitmap cropped to `effective`
@@ -152,13 +151,21 @@ absolute  = effective offset back by W1.Location
 Encode(src, absolute, masks, maxWidth)       // src.Size == absolute.Size, by construction
 ```
 
-**Window scope, stated explicitly so it is not left to inference:**
+⚠ **Window scope is cropped too, and that crop is load-bearing rather than a no-op.** Earlier drafts
+exempted window scope on the grounds that the bitmap already IS the window. That is true only while
+`W1.Size == W2.Size`, and the exemption caused three separate defects across rounds 8, 9 and 10 — each
+fixed by adding another window-scope-only rule beside the general one. Running both scopes through the
+same six lines removes the class:
 
-- `absolute = W1` whenever `W1.Size == W2.Size`. Not `W2` — for the same reason element scope uses `W1`:
-  the masks were sampled alongside `W1`, so translating against it makes a pure MOVE harmless. Sizes
-  match, so `src.Size == absolute.Size` holds and no crop is needed.
-- `W1.Size != W2.Size` is the resize case, decided below. There is no path on which window scope hands
-  `Encode` a rectangle whose size differs from the bitmap's.
+- **A window that GREW between the two reads no longer leaks.** `W2` is larger than `W1`, so the bitmap
+  contains a region the UIA walk never inspected — pixels no mask was ever computed for, which could be
+  anything. `Intersect` discards exactly that region, because `relative` is `W1`-sized. Without the crop
+  the design would return unscanned pixels and call it a success. *(Panel round 10, Fold Auditor: this
+  leak was invisible while window scope had its own rule.)*
+- **A window that SHRANK is clamped**, as element scope already was, so nothing reads past the bitmap.
+- **A pure MOVE stays harmless**, because `W1` anchors both translations for both scopes.
+- **`src.Size == absolute.Size` holds by construction on every path**, which is the invariant the whole
+  subsection exists to protect — now with no branch that can violate it.
 
 ⚠ **A DEGENERATE WINDOW is a separate case, applies to BOTH scopes, and must be checked at TWO points.**
 
@@ -264,25 +271,43 @@ Movement and internal relayout without a size change remain undetectable and are
 behavioural contract, not an implementation detail, and the two scopes need different answers:
 
 - **Window scope: refuse if there are masks; capture and warn only if there are none.** An earlier
-  version of this spec said "capture and warn" unconditionally, on the grounds that the pixels are the
-  window's own current content and merely newer than expected. **That was wrong, and it was a leak.** The
-  mask rects were computed against the PRE-resize layout. After a resize the controls have moved, so the
-  masks no longer cover what they were sampled to cover, and the image comes back with sensitive regions
-  partly or wholly unredacted — the exact failure class SP4 existed to close, arriving through the door
-  this design opened. "Newer than expected" describes the pixels; it does not describe the masks.
-  So the rule follows the hazard:
-  - **mask set NON-EMPTY → REFUSE**, with a retry hint. There is no honest image to return.
+  version said "capture and warn" unconditionally, on the grounds that the pixels are the window's own
+  current content and merely newer than expected. **That was wrong, and it was a leak.** The mask rects
+  were computed against the PRE-resize layout. A resize reflows content, so the masks no longer
+  necessarily cover what they were sampled to cover, and the image comes back with sensitive regions
+  partly or wholly unredacted — the failure class SP4 existed to close, arriving through the door this
+  design opened. "Newer than expected" describes the pixels; it does not describe the masks. So:
+  - **mask set NON-EMPTY → REFUSE.** There is no honest image to return.
   - **mask set EMPTY → capture, and warn `windowResized`.** Nothing was going to be redacted, so no
-    misalignment is possible, and refusing would block a capture that really is fine.
+    misalignment is possible.
 
-  *(Panel round 9, Fold Auditor. It reached this by a different route — that labelling the algorithm
-  element-scope-only left window scope with no reconciled `absolute` — and the invariant violation it
-  named is the mechanism by which the masks scramble.)*
+  ⚠ **The false-refusal cost is real and is accepted with its eyes open.** A window that grew from its
+  right edge may not have reflowed at all, leaving every mask perfectly placed — and this rule refuses
+  that capture anyway. The reason is that *the two cases are indistinguishable from here*: a size change
+  is observable, a reflow is not, and nothing in the UIA data taken at `W1` can say whether the controls
+  moved. Guessing "probably fine" on a redaction question is the guess this project does not make.
+  *(Panel round 10 argued the refusal overshoots. It does, in the non-reflowing case; the overshoot is
+  the price of not being able to tell, and it is paid in a refusal rather than in a leak.)*
+
+  ⚠ **The unscanned-pixel leak this rule does NOT cover is closed by the crop, not here.** A window that
+  GREW exposes area the UIA walk never inspected, and an empty mask set says only that the OLD bounds
+  were clean. §1's crop discards that region on both scopes, so "mask set empty → capture" is safe.
+  *(Panel round 10, Fold Auditor: the leak was real; its proposed fix — crop window scope too — was
+  right and is adopted. Its further conclusion, that the crop makes the refusal unnecessary, is not: the
+  crop solves unscanned PIXELS, not reflowed MASKS.)*
 - **Element scope: REFUSE, with a retry hint.** The element's rect is from before the resize, so its
   offset within the window may no longer locate it. The crop can land on the wrong content and be masked
   consistently — the "flawless-looking PNG of the wrong region" this subsection exists to prevent. This
   is the case where §3's usual asymmetry inverts: there is no cheap warning available, because the wrong
   answer is indistinguishable from the right one.
+
+  ⚠ **"Retry" must be BOUNDED, or a continuously-changing window is a livelock.** A window that animates
+  — a progress dialog, a resizing splash, anything mid-transition — never satisfies
+  `W1.Size == W2.Size`, so an unconditional retry hint tells the agent to loop forever on a capture that
+  can never succeed. Re-take the geometry-and-capture pair a small bounded number of times; if the sizes
+  still disagree, refuse with a DIFFERENT message — the window is changing continuously, so no consistent
+  capture is available — and do NOT suggest retrying. An honest terminal answer beats an instruction that
+  cannot terminate. *(Panel round 10, Consumer Advocate.)*
 
 *(Panel round 6, Altitude Auditor and direct question 1: the peer stuck at this exact abdication twice,
 and it was right to. "The plan owns what to do with that signal" was the spec declining to specify its
@@ -480,7 +505,8 @@ contract undefined, which is the same abdication §5 exists to close:
 | `code` | fires when | `recourse` says, in substance |
 |---|---|---|
 | `uniformCanvas` | §3's detector finds the full window bitmap effectively one colour | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
-| `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture | the window changed size mid-capture, so this image is newer than the request; re-capture if the exact prior state mattered |
+| `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture with an empty mask set | the window changed size mid-capture, so **any UIA tree or element ref you already hold for it is geometrically stale — re-snapshot before acting on this window**, and do not act on cached coordinates |
+| `scrapeFallback` | §1's `PrintWindow` timeout expired and the scrape produced this image instead (see risk 2 and Out of scope) | this image is a screen scrape, so anything overlapping the window is in it; `captureMethod` says `screenScrape`. Treat occlusion as possible |
 
 Codes are camelCase, matching every other field in this response. *(Panel round 8, Fold Auditor: round
 7 settled the SHAPE and dropped the VALUES.)*
@@ -554,8 +580,9 @@ omission it warns against.)*
 - **Full-desktop scope.** Keeps the scrape.
 - **Minimized windows.** Still `ElementNotActionable`. `PrintWindow` on a minimized window is unreliable,
   and nothing in item 8 requires changing it.
-- **A scrape fallback when `PrintWindow` disappoints.** Rejected — **on error-budget grounds, which is a
-  different and better reason than the one this spec originally gave.** The original wording said the
+- **A scrape fallback when `PrintWindow` disappoints — with ONE exception, the timeout (risk 2).**
+  Rejected everywhere else — **on error-budget grounds, which is a different and better reason than the
+  one this spec originally gave.** The original wording said the
   choice "needs the unsound detector F4 rules out"; that is now imprecise, because §3 gives the detector
   explicit acceptance criteria. The exclusion still stands, and here is why: §3's error budget is
   calibrated to a CHEAP consequence — a false positive costs a spurious sentence. Reusing the same signal
@@ -565,6 +592,12 @@ omission it warns against.)*
   is not thereby good enough to switch on. *(Panel round 3, Scope Auditor: the flaw in the old rationale
   was real and is corrected; the conclusion it implied — that the exclusion should be revisited — is
   rejected.)*
+
+  **The timeout exception falls outside that reasoning rather than weakening it.** The ban is about
+  switching backends on an UNSOUND signal. A timeout has no false-positive mode to re-price: the call
+  either returned or it did not, and `captureMethod` plus a `scrapeFallback` warning make the switch
+  visible. Risk 2 carries the full argument, including why refusing there would have been a regression
+  against today's behaviour. *(Panel round 10, Adversary of the Reviewer.)*
 - **ROADMAP item 13** (bare catches) and any redaction-rule change.
 
 ## Privacy posture — an unstated widening, named here so it is ratified deliberately
@@ -637,12 +670,24 @@ for each failure, or NONE — not whether the area was "covered".)*
    RV-2.)*
 
    ⚠ **The timeout CONTRACT is settled here, so only the bound is a measurement.** If the call can block,
-   the plan bounds it — and **on expiry the capture REFUSES**. It does not return a blank image, a
-   partial image, or a warning. A target that is not pumping has not rendered anything, so there is no
-   image to annotate; returning one would be a graceful-looking wrong answer, and §3's warn-rather-than-
-   refuse asymmetry does not apply because there are no pixels to weigh against a false refusal. The
-   measurement chooses the bound; it does not choose the behaviour. *(Panel round 9, Completeness Critic:
-   this was one of two items marked NEITHER — not specified, and not deferred with a criterion either.)*
+   the plan bounds it — and **on expiry the capture FALLS BACK TO THE SCRAPE**, reporting
+   `captureMethod: "screenScrape"` and a `scrapeFallback` warning. It never returns a blank or partial
+   `PrintWindow` image.
+
+   **Why this is the one place the scrape fallback is allowed**, when Out-of-scope bans it everywhere
+   else: that ban rests on the fallback needing an UNSOUND signal to trigger on, which would re-price
+   every detector error into a wrong-backend switch. **A timeout is not an unsound signal.** It is a
+   definite, mechanical fact — the call did not return — with no false-positive mode to re-price. And the
+   switch is not silent: `captureMethod` names the backend and the warning states the consequence.
+
+   ⚠ **Refusing here would have been a REGRESSION, which is what makes this worth the exception.** A
+   hung window is precisely where the scrape still works, because it composites independently of the
+   target's message loop. Today, before this feature exists, an agent can photograph a hung window
+   perfectly well. A design that times out and then refuses would take that away and hand back nothing —
+   strictly worse than the behaviour it replaced, in the one scenario the feature was most expected to
+   help with. *(Panel round 9 settled this as "refuse on expiry". Panel round 10's Adversary seat, asked
+   which round-9 fold was most likely wrong, named exactly this one and gave the regression argument. It
+   was right, and the contract is inverted here.)*
 3. **Stale composition.** `PW_RENDERFULLCONTENT` may return the last frame DWM composed rather than
    forcing a fresh render. If the pixels are older than the UIA tree the masks were computed from, masks
    can miss data that IS in the image — a leak with a different shape from the ones above.
@@ -961,3 +1006,40 @@ round that most justified continuing.** Four folds, one of them a design correct
 **The seat aimed at the reviewer's own judgement paid for itself.** Eight rounds of folds had been checked
 independently only once. Pointed at them and asked which was WRONG rather than whether they were fine, it
 found one that was — using evidence already in the document.
+
+### AGY-AFTER adversarial panel — round 10
+
+Seats: Fold Auditor (round 9's edits, with the policy INVERSION as its stated target because inversions
+overshoot), Adversary of the Reviewer second pass (round 9's folds — made fast, under the persuasion of
+correct findings, and the least-scrutinised text in the document), **Consumer Advocate** (the design from
+the side of the AGENT that calls the tool and must act on the response — a side nothing had audited).
+Report: `.clavity/scratch/item8-panel/agy-round10.md`. **Verdict: NOT GREEN.** Four folds, and the best
+of them DELETED a special case rather than adding a guard:
+
+- **Window scope is no longer exempt from the crop, and the exemption was leaking.** A window that GREW
+  between the UIA walk and the capture put pixels in the bitmap that the walk never inspected — an empty
+  mask set proves only that the OLD bounds were clean. `Intersect` against a `W1`-sized `relative`
+  discards exactly that region. Setting `E = W1` makes window scope run the SAME six lines as element
+  scope, which removes the branch that produced a distinct defect in each of rounds 8, 9 and 10.
+- **The timeout contract from round 9 was a functional REGRESSION, and is inverted.** A hung window is
+  precisely where the scrape still works, because it composites independently of the target's message
+  loop — so "refuse on expiry" would hand back nothing in the one scenario an agent most needs this
+  feature, and strictly less than today's behaviour. The scrape fallback is allowed here and only here:
+  the Out-of-scope ban rests on the fallback needing an UNSOUND trigger, and a timeout has no
+  false-positive mode to re-price. `captureMethod` and a `scrapeFallback` warning keep the switch visible.
+- **The `windowResized` recourse was actively harmful.** It implied retrying was optional, while §5 tells
+  agents to act through the UIA tree — the tree the server has just detected is geometrically stale. An
+  agent following both would click where a control used to be. The recourse now says the tree must be
+  re-snapshotted and cached coordinates must not be used.
+- **Element scope's retry hint could not terminate.** A continuously animating window never satisfies
+  `W1.Size == W2.Size`, so "refuse, retry" is a livelock. Retries are now bounded, and exhaustion gives a
+  DIFFERENT terminal message that does not suggest retrying.
+
+**Rejected, with the reason recorded:** that cropping window scope makes the resize refusal unnecessary.
+The crop solves unscanned PIXELS; it does not solve reflowed MASKS. A size change is observable and a
+reflow is not, so the two cases are indistinguishable from here — the refusal's false-positive cost is
+real, is now stated in the text, and is paid in a refusal rather than in a leak.
+
+**The Consumer Advocate seat found two defects on its first outing**, both invisible from the
+implementer's side: every prior seat had asked whether the design is correct, and neither of these is a
+correctness defect — they are a contract that misinforms the caller and one that cannot terminate.
