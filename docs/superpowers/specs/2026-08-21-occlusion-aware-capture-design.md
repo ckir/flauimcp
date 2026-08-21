@@ -854,6 +854,7 @@ leaving the §1 refusals unmapped — an implementer would have invented a code 
 
 | Refusal | Code | Why that code |
 |---|---|---|
+| `GetWindowRect(HWND)` returns FALSE | `ElementNotActionable` | the window was destroyed between the walk and the capture; there is no target left to act on. Named in §1 and missing from this table until round 24 — in a table that claims to list EVERY refusal, an omission is a contradiction, not a gap |
 | `W1` or `W2` has zero/negative extents | `ElementNotActionable` | the window has no renderable area; the same class as the existing minimized refusal |
 | window is minimized at capture time | `ElementNotActionable` | matches the pre-existing check at `ScreenshotTools.cs:55`, which uses exactly this code |
 | element crop is empty (`effective` degenerate) **with `W1.Size == W2.Size`** | `ElementNotActionable` | the named element is not inside the pixels that were captured, so it cannot be acted on from this image. Scoped to the matching-size case because a shrink-induced empty crop is handled by the resize flow, which does not refuse |
@@ -1971,3 +1972,35 @@ carrying the round.
 
 **Verified, not folded:** `PerceptionManager.cs:883` and `:915` are exactly as cited — `target` resolves
 to the element when `@ref` is present, and `captureBounds` is read from `target.BoundingRectangle`.
+
+### AGY-AFTER adversarial panel — round 24
+
+Seats: Fold Auditor (round 23's decomposition edit), Seam Tracer fourth pass, Convergence Assessor fourth
+pass. Report: `.clavity/scratch/item8-panel/agy-round24.md`. **The panel returned GREEN — all three seats
+clean, and the Convergence Assessor took the exit it had refused in round 20, stating it could not name a
+part of the design still likely to be wrong.**
+
+**I am not recording this round as green, because its LENS ANSWER contained a real defect its FINDINGS
+list did not.** Asked where an executing engineer would first have to guess, the panel pointed at the
+refusal table — which opens by claiming to list "every refusal this design introduces" — and observed it
+has no row for `GetWindowRect` returning FALSE. §1 names that refusal and its code; the table omitted it.
+In a table that claims completeness, an omission is a contradiction rather than a gap. Folded.
+
+This is a documented failure mode in this project: on two of four capstone rounds elsewhere in this
+repository, a "no findings above the floor" verdict came with real defects sitting in the below-floor list
+and the lens answers. A verdict is not the whole report.
+
+**What the round did establish, and it is substantial:**
+
+- **The Fold Auditor was clean for the second consecutive round.** It confirmed the pure-function boundary
+  holds: `(bitmap dimensions, E, W1, W2)` is strictly sufficient to compute `(effective, absolute,
+  reported)` with no OS state, and the empty-crop guard reads only state the pure function computed.
+- **The Seam Tracer traced FIVE more joins and found every one SOUND** — the pure crop against the guards
+  on both sides of it; the injectable acquisition against the caller-owned scrape fallback;
+  `CaptureGeometry`'s fields against every consumer; the canonical order against the component ownership
+  (mocking acquisition bypasses exactly steps 4 and 6b, leaving the crop testable); and the ratify
+  section's five-measurement table against risks 1-5, one to one.
+- Twelve joins have now been traced explicitly across rounds 21-24. Two were broken when first traced.
+  Both are closed.
+
+**Verified, not folded:** `ScreenshotTools.cs:49` is the full-desktop `CaptureRectangle` call, as cited.
