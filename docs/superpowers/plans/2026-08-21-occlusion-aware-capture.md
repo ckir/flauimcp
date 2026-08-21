@@ -2166,8 +2166,32 @@ public class CaptureWindowTests
         Assert.Contains(o.Result!.CaptureWarnings, x => x.Code == "uniformCanvas");
     }
 
+    // ⚠ THE HOLE THIS CLOSES. An ELEMENT-scope capture of a window that failed to render entirely used to
+    // emit NOTHING: uniformCanvas was scoped window-only, and elementCanvasUniform fires only when the
+    // crop is uniform AND the window bitmap was NOT. The agent got a black crop, silently -- in breach of
+    // the design's own success criterion. uniformCanvas now fires on BOTH scopes.
+    [Fact]
+    public void An_element_capture_of_a_blank_window_still_warns_uniformCanvas()
+    {
+        var w1 = new Rectangle(0, 0, 400, 300);
+        var e  = new Rectangle(100, 100, 80, 60);
+        var flat = new FakeWindowImageSource(size =>
+        {
+            var b = new Bitmap(size.Width, size.Height);
+            using var g = Graphics.FromImage(b);
+            using var br = new SolidBrush(Color.Black);
+            g.FillRectangle(br, 0, 0, b.Width, b.Height);
+            return b;
+        });
+        var o = Run(Geo(e, w1), w1, CaptureScope.Element, flat);
+        Assert.Contains(o.Result!.CaptureWarnings, x => x.Code == "uniformCanvas");
+        // NOT elementCanvasUniform: the crop is not uniform *while the window was not* -- the window was.
+        Assert.DoesNotContain(o.Result.CaptureWarnings, x => x.Code == "elementCanvasUniform");
+    }
+
     // elementCanvasUniform fires ONLY when the crop is uniform and the full window bitmap was NOT. A
-    // uniformly-coloured crop inside a uniformly-coloured window is just a solid window, already covered.
+    // uniformly-coloured crop inside a uniformly-coloured window is just a solid window, already covered
+    // by uniformCanvas -- which, since the fix above, is now TRUE on element scope as well.
     [Fact]
     public void A_uniform_crop_inside_a_varied_window_warns_elementCanvasUniform()
     {
@@ -2282,8 +2306,13 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
 
         // uniformCanvas: evaluated on the FULL window bitmap, between 6b and 7. §3 requires it to see the
         // uncropped image, which does not exist after step 7.
+        // ⚠ BOTH SCOPES, not window only. uniformCanvas is a statement about the WINDOW BITMAP, and that
+        // bitmap exists on element scope too. Scoping it to window scope left a HOLE: an element-scope
+        // capture of a window that failed to render emitted NOTHING -- uniformCanvas excluded by scope,
+        // and elementCanvasUniform fires only when the crop is uniform AND the window bitmap was not. A
+        // black crop, silently, in breach of the design's own success criterion. See §5's note.
         bool windowUniform = UniformCanvasDetector.IsUniform(bitmap);
-        if (windowUniform && scope == CaptureScope.Window)
+        if (windowUniform)
             warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.UniformCanvas));
 
         // Step 7, the crop. Its empty case is reachable only when the sizes AGREE, because the resize
@@ -2323,7 +2352,7 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureWindowTests"`
-Expected: PASS — 13 passed.
+Expected: PASS — 14 passed.
 
 - [ ] **Step 5: Prove the gates are non-vacuous with three logic mutants**
 
@@ -2331,8 +2360,10 @@ Expected: PASS — 13 passed.
    Expected: `A_window_minimized_at_capture_time_refuses_and_does_not_report_a_resize` FAILS with a `Resized` outcome instead of the refusal — the exact ordering defect the canonical list was written to prevent.
 2. Change `if (scope == CaptureScope.Element || geo.MaskRects.Count > 0)` to `if (scope == CaptureScope.Element)`.
    Expected: `Window_scope_with_masks_reports_a_resize_rather_than_refusing` FAILS with `Completed`.
-3. Change the `windowUniform` gate on `elementCanvasUniform` to drop `&& !windowUniform`.
-   Expected: add a temporary case with a uniform window and a uniform crop and confirm it then emits BOTH codes; the shipped `A_uniform_crop_inside_a_varied_window_warns_elementCanvasUniform` does not cover it, so **strengthen that test with a second assertion for the uniform-window case before moving on.**
+3. Change `if (windowUniform)` back to `if (windowUniform && scope == CaptureScope.Window)` — i.e. restore the hole this design shipped with until 2026-08-21.
+   Expected: `An_element_capture_of_a_blank_window_still_warns_uniformCanvas` FAILS with an EMPTY warning list. That empty list is the defect: a black crop returned to an agent with nothing saying so.
+4. Drop `&& !windowUniform` from the `elementCanvasUniform` condition.
+   Expected: `An_element_capture_of_a_blank_window_still_warns_uniformCanvas` FAILS on its second assertion — both codes now fire, and `elementCanvasUniform` says the element failed while the window rendered, which is false.
 
 **Revert every mutant.**
 
@@ -3596,7 +3627,26 @@ builder.Services.AddSingleton(sp =>
 });
 ```
 
-Update `ScreenshotTools`' constructor to take `WindowCaptureCoordinator` and `CaptureAuditSignal` (Task 21) alongside `PerceptionManager`.
+And replace `ScreenshotTools`' fields and constructor (`ScreenshotTools.cs:14-15`) with:
+
+```csharp
+    private readonly PerceptionManager _perception;
+    private readonly FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator _coordinator;
+    private readonly FlaUI.Mcp.Server.Capture.CaptureAuditSignal _auditSignal;
+
+    public ScreenshotTools(PerceptionManager perception,
+                           FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator coordinator,
+                           FlaUI.Mcp.Server.Capture.CaptureAuditSignal auditSignal)
+    {
+        _perception = perception;
+        _coordinator = coordinator;
+        _auditSignal = auditSignal;
+    }
+```
+
+⚠ **`_perception` STAYS.** The full-desktop branch still calls `DenylistedWindowsVisibleAsync` and `AllMaskRectsAsync` on it directly — only the window/element branch moves to the coordinator.
+
+⚠ **`CaptureAuditSignal` is created in Task 21.** If you are executing Task 20 first, that type does not exist yet: do Task 21's Steps 4–5 before this step, or stub the field and come back. Do NOT drop the parameter and "add it later" — a signal wired in later is a signal nobody notices is missing.
 
 - [ ] **Step 8: Run the headless suite**
 

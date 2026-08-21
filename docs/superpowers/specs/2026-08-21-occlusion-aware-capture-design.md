@@ -1306,7 +1306,7 @@ contract undefined, which is the same abdication §5 exists to close:
 
 | `code` | fires when | `recourse` says, in substance |
 |---|---|---|
-| `uniformCanvas` | window scope and **`printWindow` only**: §3's detector finds the full WINDOW bitmap effectively one colour | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
+| `uniformCanvas` | window AND element scope, **`printWindow` only**: §3's detector finds the full WINDOW bitmap effectively one colour | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
 | `desktopCanvasUniform` | §3's detector finds a FULL-DESKTOP scrape effectively one colour | the whole desktop came back a single colour. The usual causes are a secure desktop (a UAC prompt), DRM-protected content, or a session in transition — **UIA is normally blocked in those states too, so `desktop_snapshot` will not help.** Wait for the condition to clear and re-capture |
 | `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture with an empty mask set | the window changed size mid-capture. The image itself is sound — it was cropped back to the region you asked for — but the layout inside it **may** have reflowed, so any UIA tree or element ref you hold for this window may be geometrically stale. Re-snapshot before acting on cached coordinates |
 | `popupsNotRendered` | this window had one or more popup roots at geometry time (`PopupFinder.SearchRoots` returned more than the window itself). **Fires on BOTH backends** | an open menu, dropdown or tooltip belonging to this window is a separate top-level window and may be **missing from this image** — structurally absent under `printWindow`, and cropped off under `screenScrape` wherever it extends beyond the window's rect. Its absence is not evidence it failed to open — read the UIA tree to see it |
@@ -1324,11 +1324,28 @@ worse contract than the boolean it replaced, not a better one. `code` is what a 
 `recourse` is what §3 requires so the signal arrives with its instruction. *(Panel round 7, Contract
 Integrity — the seat was right that the analogy was being claimed on the axis where it broke.)*
 
-⚠ **Codes are SCOPE-SPECIFIC, and some combinations are therefore unreachable.** `uniformCanvas` and
-`windowResized` are window-scope; `elementCanvasUniform` is element-scope; `desktopCanvasUniform` is
-full-desktop only. So `elementCanvasUniform` can never co-occur with `windowResized`. A consumer does not
-need to reason about that — it branches on the codes it receives — but the scoping is stated so nobody
-writes a handler for a pair that cannot arrive. *(Panel round 15, Failure-Mode Cartographer.)*
+⚠ **Codes are SCOPE-SPECIFIC, and some combinations are therefore unreachable.** `windowResized` is
+window-scope; `elementCanvasUniform` is element-scope; `desktopCanvasUniform` is full-desktop only;
+**`uniformCanvas` fires on BOTH window and element scope.** So `elementCanvasUniform` can never co-occur
+with `windowResized`. A consumer does not need to reason about that — it branches on the codes it
+receives — but the scoping is stated so nobody writes a handler for a pair that cannot arrive.
+*(Panel round 15, Failure-Mode Cartographer.)*
+
+⚠⚠ **`uniformCanvas` WAS window-scope-only until 2026-08-21, AND THAT WAS A HOLE THAT VIOLATED THIS
+DESIGN'S OWN SUCCESS CRITERION.** Under the old scoping, an ELEMENT-scope capture of a window that failed
+to render **emitted no warning at all**: `uniformCanvas` was excluded by scope, and `elementCanvasUniform`
+fires only when the crop is uniform *and the full window bitmap was NOT*. So the agent received a black
+crop, silently — the precise case the two-stage detector exists to report, and a direct breach of "no case
+where a wrong image is returned **without a machine-readable indication that it may be wrong**".
+
+The defect hid behind a JUSTIFICATION that was true for one scope and false for the other: §3 defends
+`elementCanvasUniform`'s `NOT uniform` condition on the grounds that "a uniformly-coloured crop inside a
+uniformly-coloured window is just a solid window, **already covered by `uniformCanvas`**" — which was only
+true on window scope, the scope where the condition never applies. Fixed by widening `uniformCanvas` to
+both scopes, which is what it always described: it is a statement about the WINDOW BITMAP, and that bitmap
+exists on both. *(Found by the driver's solo panel over the PLAN, 2026-08-21. Thirty rounds of spec review
+did not find it — the fourth time in this document a correct mechanic was defended by a rationale that did
+not hold everywhere it was applied.)*
 
 ⚠ **A warning is never a substitute for a refusal where §1 or §4 specifies one.** `captureWarnings`
 annotates an image that was returned; it does not downgrade a case the design decided to refuse.
