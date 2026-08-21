@@ -263,7 +263,19 @@ public static class UniformCanvasDetector
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~UniformCanvasDetectorTests"`
-Expected: PASS — **8 passed** (3 theory rows + 5 facts). The `Measurement`-trait test runs here because the filter names the class directly; the headless gate excludes it.
+Expected: PASS — **8 passed** (3 theory rows + 5 facts).
+
+⚠ **THE `Measurement` TRAIT DOES NOT EXCUSE THIS TEST FROM THE HEADLESS GATE — an earlier version of this
+line claimed it did, and that was wrong.** MEASURED: the headless baseline went 970 → **978** after this
+task, i.e. **all eight** ran under
+`--filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`. That filter excludes
+`Desktop`, `SyntheticInput` and `KnownDefect` — a test tagged `Measurement` satisfies all three
+inequalities and is therefore **included**. Only the *Desktop* gate carries `Category!=Measurement`
+(`phase-6-wiring-and-gates.md`).
+
+**Consequence, and it is the whole reason this correction matters:** had the timing test been left red,
+it would have broken the **headless gate**, not merely a class-filtered run. "It's Measurement-traited,
+so the gates stay green" was never true, and must not be used to justify leaving one red.
 
 ⚠ **This said 6 until the read path changed.** The two fallback tests were added with the format guard, because a guard whose fallback branch is never exercised is untested code that still ships.
 
