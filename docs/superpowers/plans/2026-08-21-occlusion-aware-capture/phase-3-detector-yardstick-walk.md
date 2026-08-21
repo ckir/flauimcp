@@ -327,6 +327,7 @@ No test of the yardstick's own logic can catch a CALLER omission, and §2 makes 
 ```csharp
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using Xunit;
 
@@ -342,6 +343,25 @@ public class CaptureGeometryCallSiteTests
         return d!.FullName;
     }
 
+    /// <summary>⚠ COMMENT-BLINDNESS IS THE DEFECT THIS REPO KEEPS SHIPPING, and both sweeps below need
+    /// this. MEASURED: PerceptionManager.cs:1130 is a `///` doc comment reading "Wraps
+    /// ResolveWindowCaptureGeometryAsync(handle," — the call-site sweep counted it as a fourth CALL,
+    /// which is the entire reason an earlier draft of this plan called that test "known-red". It was not
+    /// known-red; it was comment-blind. `///` starts with `//` so one prefix test covers both, and `*`
+    /// covers the interior of a block comment.</summary>
+    private static bool IsCode(string line)
+    {
+        var t = line.TrimStart();
+        return !(t.StartsWith("//", System.StringComparison.Ordinal)
+              || t.StartsWith("*", System.StringComparison.Ordinal));
+    }
+
+    private static List<(string File, int Line, string Text)> CodeLines(string root)
+        => Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+            .SelectMany(f => File.ReadAllLines(f).Select((l, i) => (File: f, Line: i + 1, Text: l)))
+            .Where(x => IsCode(x.Text))
+            .ToList();
+
     // The FULL-DESKTOP aggregator is the only caller that may clip. Every other call site takes the
     // unclipped default, and this pins that exactly one site names `clipToVirtualScreen: true`.
     //
@@ -350,12 +370,8 @@ public class CaptureGeometryCallSiteTests
     [Fact]
     public void Exactly_one_production_call_site_clips_the_yardstick()
     {
-        var root = RepoRoot();
-        var lines = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
-            .SelectMany(f => File.ReadAllLines(f).Select((l, i) => (File: f, Line: i + 1, Text: l)))
-            .ToList();
-
-        var clipping = lines.Where(x => x.Text.Contains("clipToVirtualScreen: true")).ToList();
+        var clipping = CodeLines(RepoRoot())
+            .Where(x => x.Text.Contains("clipToVirtualScreen: true")).ToList();
         Assert.Single(clipping);
         Assert.EndsWith("PerceptionManager.cs", clipping[0].File);
     }
@@ -363,11 +379,9 @@ public class CaptureGeometryCallSiteTests
     // Every call site of the geometry walk, counted. If this number changes, a new caller appeared and
     // somebody must decide its yardstick deliberately rather than inherit one.
     [Fact]
-    public void The_geometry_walk_has_exactly_four_production_call_sites()
+    public void The_geometry_walk_has_exactly_three_production_call_sites()
     {
-        var root = RepoRoot();
-        var calls = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
-            .SelectMany(f => File.ReadAllLines(f).Select((l, i) => (File: f, Line: i + 1, Text: l)))
+        var calls = CodeLines(RepoRoot())
             .Where(x => Regex.IsMatch(x.Text, @"ResolveWindowCaptureGeometryAsync\s*\("))
             .Where(x => !x.Text.Contains("public Task<CaptureGeometry>"))
             .ToList();
@@ -389,7 +403,7 @@ public class CaptureGeometryCallSiteTests
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureGeometryCallSiteTests"`
 Expected: FAIL — no site names `clipToVirtualScreen: true`; the count test fails at 3.
 
-*(Both assertions go green in Step 6 of this task. The count is **3** and stays 3 for the whole plan — the coordinator added in Task 17 takes the walk as a delegate and so adds no call site. An earlier draft of this plan predicted 4 and was wrong.)*
+*(Both assertions go green in Step 6 of this task — and that WAS correct; Step 6's "known-red" caveat was the wrong half and has been removed. The count is **3** and stays 3 for the whole plan: the coordinator added in Task 17 takes the walk as a delegate and so adds no call site. An earlier draft predicted 4, which is also where the test's original NAME — `..._exactly_four_production_call_sites`, asserting 3 — came from. Renamed to `..._exactly_three_...`.)*
 
 - [ ] **Step 3: Change the signature**
 
@@ -445,12 +459,20 @@ Replace `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 1181–1182 w
 - [ ] **Step 6: Run the headless suite**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: PASS except the known-red `The_geometry_walk_has_exactly_four_production_call_sites` (see Step 2's note). Build 0 warnings / 0 errors.
+Expected: **PASS, nothing red.** Build 0 warnings / 0 errors.
+
+⚠ **This line used to say "PASS except the known-red `The_geometry_walk_has_exactly_four_production_call_sites`", which contradicted Step 2's own note that both assertions go green here.** Neither was right: the test was not known-red, it was **COMMENT-BLIND**. MEASURED — `PerceptionManager.cs:1130` is a `///` doc comment reading *"Wraps ResolveWindowCaptureGeometryAsync(handle,"*, and the sweep counted it as a fourth CALL, so `Assert.Equal(3, ...)` failed against 4. With comment lines filtered it counts the three real sites and passes. **A task in this repo never commits red** — and the headless gate does not exempt anything here.
 
 - [ ] **Step 7: Prove the sweep is non-vacuous with a logic mutant**
 
-Temporarily change `PerceptionManager.cs:1181` to drop `clipToVirtualScreen: true`.
+**Mutant 1.** Temporarily change `PerceptionManager.cs:1181` to drop `clipToVirtualScreen: true`.
 Expected: `Exactly_one_production_call_site_clips_the_yardstick` FAILS with zero matches. **Revert.**
+
+**Mutant 2 — THE COMMENTED-OUT VARIANT, and it is mandatory here.** Do mutant 1 again, but ALSO paste `// clipToVirtualScreen: true` as a comment anywhere in `PerceptionManager.cs`.
+Expected: **it still FAILS.** If it PASSES, `IsCode` is not filtering and the sweep is defeated by typing two slashes — which is the defect this repo has now shipped or nearly shipped FOUR times (item 12's property sweep, this plan's metadata sweep, its warning-code reachability gate, and this very test). **Revert both.**
+
+**Mutant 3.** Add a line `var x = ResolveWindowCaptureGeometryAsync(h, null);` inside any production method.
+Expected: `The_geometry_walk_has_exactly_three_production_call_sites` FAILS at 4. **Revert.**
 
 - [ ] **Step 8: Commit**
 
@@ -737,7 +759,7 @@ Add to `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryShapeTests.cs`:
 - [ ] **Step 7: Run the headless suite**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: PASS except the known-red call-site count from Task 12. Build 0 warnings / 0 errors.
+Expected: **PASS, nothing red.** Build 0 warnings / 0 errors. *(Task 12's call-site count is no longer red — it was comment-blind, not known-red. See Task 12 Step 6.)*
 
 - [ ] **Step 8: Prove the gate is non-vacuous with a logic mutant**
 
