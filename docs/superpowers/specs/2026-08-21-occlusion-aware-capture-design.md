@@ -42,8 +42,14 @@ obsessing over the new one.)*
 
 ⚠ **`clipToVirtualScreen` is a GEOMETRY parameter, not an acquisition one.** It selects the yardstick,
 which is computed during the UIA walk in `PerceptionManager` — beside `skipIfNoRenderableOverlap`, the
-parameter §2 cites as its precedent. So it rides on the geometry call (`AllMaskRectsAsync` for
-full-desktop, the window/element geometry resolution otherwise), NOT on `ScreenCapture.CaptureRectangle`.
+parameter §2 cites as its precedent. **MEASURED, because an earlier draft named the wrong method:** that
+precedent parameter lives on the internal PER-WINDOW geometry method (`PerceptionManager.cs:853`), not on
+`AllMaskRectsAsync` (`:1157`, which takes no parameters at all and passes `skipIfNoRenderableOverlap:
+true` down to it at `:1182`). `clipToVirtualScreen` belongs in exactly the same place — on the per-window
+method, with the full-desktop aggregator passing `true` — and NOT on `ScreenCapture.CaptureRectangle`.
+*(Panel round 28, Baseline Auditor. Its conclusion was right and its stated reason was wrong: it argued
+the parameter concerns an element's overlap with its parent window, when it concerns overlap with the
+VIRTUAL SCREEN.)*
 An earlier version of the block above showed it on `CaptureRectangle`, which would have put a
 geometry-stage decision inside an acquisition seam that runs after the yardstick has already been used.
 *(Panel round 26, direct question raised as a finding — correctly, per this brief's instruction.)*
@@ -107,8 +113,14 @@ encodings are ruled out:
 - **Not `null` or a sentinel `CaptureResult`.** The caller must be able to distinguish "resized" from any
   other empty outcome, and a sentinel loses the observed `W2` the next attempt wants.
 
-What must cross the boundary: **an OUTCOME that is either a completed `CaptureResult` or a bare "resized"
-signal.** The outcome type WRAPS the result; it is not the result. That is the only shape satisfying both
+What must cross the boundary: **an OUTCOME that is one of THREE cases — a completed `CaptureResult`, a
+bare "resized" signal, or a bare "timed out" signal.**
+
+⚠ **The timeout case was missing, and without it the timeout fallback is unreachable.** Risk 2 puts the
+`PrintWindow` call inside the seam and the fallback in the CALLER; the caller can only act on what the
+seam tells it. An outcome type admitting only "result" and "resized" gives a timed-out capture no way to
+say so, so the scrape fallback specified in risk 2 could never fire. *(Panel round 28, Baseline Auditor —
+found by tracing what the TYPES can carry rather than what the rules say.)* The outcome type WRAPS the result; it is not the result. That is the only shape satisfying both
 this requirement and the two ruled-out encodings.
 
 ⚠ **The signal carries NO payload, and an earlier draft's justification for carrying `W2` was wrong.**
@@ -118,6 +130,14 @@ observed by the previous attempt. The seam reports THAT a resize happened; nothi
 measured. *(Panel round 21, Fold Auditor — a contract requiring data its only consumer discards.)* *(Panel round 19, Executable-Path Auditor — and its "furthest point before guessing",
 which was this exact gap.)* Exact member names are the plan's; the SHAPE is not, because
 this is the seam the whole design turns on.
+
+⚠ **`CaptureWindow` must ALSO accept the caller's accumulated warning list, for the same reason
+`CaptureRectangle` must.** `popupsNotRendered` is decided at GEOMETRY time — the caller knows whether
+popup roots were found — while `captureWarnings` is assembled at `Encode`, inside the seam. A seam taking
+only `(geo, maxWidth)` cannot receive that warning, and the alternative — the caller unpacking the
+returned `CaptureResult` and rebuilding it to insert one entry — is exactly the reconstruction §5's
+append-only rule exists to prevent. Round 27 fixed this for the scrape seam and left the `PrintWindow`
+seam with the identical hole. *(Panel round 28, Fold Auditor.)*
 
 ⚠ **The seam needs the native `HWND`, and nothing currently carries it there.** `PrintWindow(hwnd, hdc,
 flags)` takes an OS window handle. `CaptureGeometry` (`PerceptionManager.cs:1275`) carries `Bounds`,
@@ -282,6 +302,32 @@ it the same grep matches FlaUI's and System.Drawing's compiled assemblies under 
 form would have "refuted" a true claim. Panel round 22 filed this as unverified; verifying it corrected
 the command rather than the claim.)*
 
+#### What crosses each boundary — the DATA FLOW, not just the control flow
+
+Rounds 21-24 traced twelve JOINS and found them sound, but they traced the RULES meeting at each join, not
+the DATA TYPES crossing it. Rounds 27 and 28 then found three defects of exactly one shape: **a component
+was required to produce something the signature reaching it could not carry.** A seam could not receive a
+warning its caller had computed; another could not report a timeout it had experienced; a third could not
+tell which of two callers it was serving. Each was correct in isolation and impossible in composition.
+
+So the boundaries are specified as DATA, once:
+
+| Boundary | IN | OUT |
+|---|---|---|
+| caller → geometry walk | window handle, optional `@ref`, `clipToVirtualScreen` | `W1`, `E`, mask rects, native `HWND`, escalations, denied/minimized flags, and any warnings decided at geometry time (`popupsNotRendered`) |
+| caller → `CaptureWindow` | that geometry, `maxWidth`, **and the caller's accumulated warning list** | an OUTCOME: a completed `CaptureResult`, a bare "resized" signal, or a bare "timed out" signal |
+| caller → `CaptureRectangle` (scrape) | bounds, mask rects, `maxWidth`, **which scope it serves**, **and the caller's accumulated warning list** | a completed `CaptureResult` |
+| either seam → `Encode` | `src`, `absolute`, `reported`, mask rects, `maxWidth`, `method`, `warnings` | `CaptureResult` |
+| caller → tool response | `CaptureResult` | the JSON metadata of §5 |
+
+⚠ **Two rules follow from the table and are the point of having it.** First, **warnings only ever travel
+INWARD**: whoever decides a warning passes it down, and only `Encode` assembles the final list — no
+component unpacks a returned `CaptureResult` to add one, which §5's append-only rule forbids anyway.
+Second, **every outcome a component can experience must have a representation in what it returns**; a
+behaviour the design assigns to a caller is unreachable unless the callee can report the condition that
+triggers it. *(Panel round 28, Convergence Assessor: "the logic has converged, but the method signatures
+physically cannot transport the data that logic requires". Accepted, and this table is the response.)*
+
 #### The canonical ORDER of operations — stated once, whole
 
 Several guards in this design are individually correct and produce different outcomes depending on which
@@ -340,7 +386,12 @@ Full-desktop scope runs the scrape and steps 3 and 8 only, with the yardstick CL
 
 #### The invariant that keeps masking correct — state it, do not assume it
 
-`ScreenCapture.Encode` translates mask rects by `clip.X - captureBounds.X` (`ScreenCapture.cs:61-62`),
+`ScreenCapture.Encode` translates mask rects by `clip.X - captureBounds.X` (`ScreenCapture.cs:61-62`) —
+where **`clip` is an internal LOCAL**, recomputed per mask rect as `Rectangle.Intersect(r, captureBounds)`
+at `:60`, and `captureBounds` is the PARAMETER that the new signature renames to `absolute`. Neither
+`clip` nor anything derived from it crosses the call boundary. *(Stated because panel round 28 read the
+new signature, saw no `clip` parameter, and filed it as a broken baseline — a reasonable reading of text
+that never said which of the two was a local.)*
 which is indeed keyed on `captureBounds` and not on the acquisition backend. But it also computes the
 downscale factor from **`src.Width`** (`:48`). Both together mean masking is correct only while:
 
@@ -2206,3 +2257,34 @@ strongest form of that seat's output: it did not report "clean" and it did not r
 yardstick is unclipped for window/element scope; why the empty-crop refusal survives; why the seam reports
 rather than resolves) alongside its two fossils. Both fossils were, once again, reasons attached to
 mechanics that are correct.
+
+### AGY-AFTER adversarial panel — round 28
+
+Seats: Fold Auditor (round 27's edits), **Baseline Auditor** (hunt everything the design calls
+"untouched" and check whether it still is — the lens round 27's finding earned), Convergence Assessor
+seventh pass. Report: `.clavity/scratch/item8-panel/agy-round28.md`. **Verdict: NOT GREEN.** Three folds,
+one refutation, and a structural diagnosis that produced a new section:
+
+- **Round 27 fixed the scrape seam's warning plumbing and left the `PrintWindow` seam with the identical
+  hole.** `popupsNotRendered` is decided at geometry time by the CALLER; `captureWarnings` is assembled at
+  `Encode`, inside the seam. `CaptureWindow(geo, maxWidth)` could not receive it, and the only alternative
+  — unpacking the returned `CaptureResult` to insert an entry — is the reconstruction §5's append-only rule
+  forbids.
+- **The outcome type had no encoding for a TIMEOUT, which made risk 2's fallback unreachable.** The seam
+  owns the `PrintWindow` call; the caller owns the fallback; the caller can only act on what the seam
+  reports. Two cases ("result", "resized") gave a timed-out capture no way to say so. Now three.
+- **A precedent was cited on the wrong method.** `skipIfNoRenderableOverlap` lives on the internal
+  per-window geometry method (`PerceptionManager.cs:853`), not on `AllMaskRectsAsync` (`:1157`, no
+  parameters), which passes it down at `:1182`. `clipToVirtualScreen` belongs in the same place.
+
+**REFUTED by measurement:** that `Encode`'s new signature broke its mask translation by omitting `clip`.
+`clip` is an internal LOCAL, recomputed per mask rect as `Rectangle.Intersect(r, captureBounds)` at
+`ScreenCapture.cs:60`; nothing derived from it crosses the boundary. The reading was reasonable against
+text that never said which of the two names was a parameter, so the text now says it.
+
+**The Convergence Assessor's diagnosis is accepted and answered with a new subsection.** Its claim: the
+review traced twelve joins as RULES and never as TYPES, and findings 1, 2 and 4 are all one shape — a
+component required to produce something the signature reaching it cannot carry. Correct in isolation,
+impossible in composition. **"What crosses each boundary" now specifies the data flow as a table**, with
+the two rules that fall out of it: warnings travel only inward, and every outcome a component can
+experience must have a representation in what it returns.
