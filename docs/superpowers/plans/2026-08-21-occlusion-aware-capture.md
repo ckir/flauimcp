@@ -2550,9 +2550,23 @@ public sealed class PrintWindowImageSource : IWindowImageSource
         {
             // TIMED OUT. The thread is abandoned and whatever the blocked call holds is unreclaimable --
             // but anything it produces AFTER this point is now its own to release.
-            lock (handoff) { abandoned = true; }
+            lock (handoff)
+            {
+                abandoned = true;
+                // ⚠⚠ AND WHATEVER IT PUBLISHED IN THE GAP IS OURS. Join expiring and this lock being
+                // taken are not one atomic step: the thread can finish in between, see `abandoned` still
+                // false, and publish into `result` -- for a caller that is about to return null and will
+                // never look at it again. Setting the flag alone NARROWS that window without closing it,
+                // which is what an earlier version of this fix did. Both orderings are now covered: either
+                // the thread publishes first and we dispose here, or we set the flag first and it disposes
+                // there.
+                result?.Dispose();
+                result = null;
+            }
             return null;
         }
+        // Thread.Join establishes happens-before, so `result` and `failure` are visible here without
+        // further synchronisation.
         if (failure is not null) throw failure;
         return result;
     }
@@ -3268,11 +3282,10 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
                     // outcome applies -- window-with-masks refuses, element falls back. If the window is
                     // genuinely gone, the NEXT attempt's step-1 walk throws and that one is deliberately
                     // unguarded, so the agent still learns the target died.
-                    CaptureGeometry after;
                     bool confirmed;
                     try
                     {
-                        after = await _walk(handle, @ref);
+                        var after = await _walk(handle, @ref);
                         confirmed = MaskSetsMatch(geo, after);
                     }
                     catch (ToolException) { confirmed = false; }
