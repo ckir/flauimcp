@@ -6,8 +6,24 @@
 
 **Failure mode 3 of the three the spec names as having no test that would go red:** nothing asserts the metadata projection's shape, so a field silently dropped from the anonymous object reaches an agent as an absent field it has no way to notice. The precedent to follow is `test/FlaUI.Mcp.Tests/Perception/ListWindowsProjectionShapeTests.cs`.
 
+⛔ **RUN TASK 21 BEFORE THIS TASK. Not "Task 21's Steps 4-5" — the whole of Task 21.**
+
+This task needs `CaptureAuditSignal` in **two** places: Step 4's capture call and Step 7's constructor.
+MEASURED: the type does not exist until Task 21 creates it, and the dependency is strictly ONE-WAY —
+Task 21 references neither `WindowCaptureCoordinator` nor `ScreenshotTools` (0 occurrences of each), so
+nothing in it needs this task first. Running 21 → 20 is the only ordering that compiles at every step.
+
+⚠⚠ **AND DO NOT TAKE THE "STUB THE FIELD AND COME BACK" OPTION Step 7 used to offer.** A stubbed signal
+compiles and silently signals nothing, so Step 4's call site looks wired while the audit path is dead —
+and every test still passes. That is the same trap the circuit breaker presented at Task 17, where the
+whole class was moved rather than stubbed for exactly this reason. Step 7's own next sentence already
+says it: *"a signal wired in later is a signal nobody notices is missing."*
+
 **Files:**
-- Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:30-84`
+- Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs` — the window/element branch, the metadata
+  projection, the constructor, **and the tool description's field list (Step 5b)**. ⚠ The Files list
+  used to cite `:30-84`; the file has grown since. MEASURED now: fields/constructor at **14-15**, the
+  `return ToolResponse.Image(` at **84** running to **97**. Find each by name, not by line.
 - Modify: `src/FlaUI.Mcp.Server/Program.cs` (DI)
 - Test: `test/FlaUI.Mcp.Tests/Perception/ScreenshotProjectionShapeTests.cs`
 
@@ -139,7 +155,9 @@ Replace `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs` lines 30–59 with:
 
 - [ ] **Step 5: Extend the metadata projection**
 
-Replace lines 71–84's `return ToolResponse.Image(...)` object with:
+Replace the `return ToolResponse.Image(...)` object with the block below. ⚠ **The plan said "lines
+71-84"; MEASURED, the return starts at line 84 and runs to 97** — Tasks 10, 12 and 13 grew the file.
+Find it with `grep -n "return ToolResponse.Image" src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs`.
 
 ```csharp
             return ToolResponse.Image(result.Png, new
@@ -167,6 +185,30 @@ Replace lines 71–84's `return ToolResponse.Image(...)` object with:
             });
 ```
 
+- [ ] **Step 5b: Add the two new fields to the tool description — WITHOUT THIS, STEP 8 CANNOT GO GREEN**
+
+⛔ **THIS STEP DID NOT EXIST, AND ITS ABSENCE BLOCKS THIS TASK'S OWN GATE.** Step 5 above adds
+`captureMethod` and `captureWarnings` to the projection, and Step 6's test asserts the tool description
+enumerates **exactly** the fields the projection emits — nine of them. MEASURED: the live description
+lists **seven**:
+
+```
+JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses}
+```
+
+So `Assert.Equal(expected, documented)` fails, and no step in this task fixed it. **Task 22 owns the full
+description rewrite** — it carries the complete nine-field text — but Task 22 runs two tasks later, and
+Step 8 demands a green suite now.
+
+In the `[Description(...)]` attribute on `DesktopScreenshot`, change that enumeration to:
+
+```
+JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses,captureMethod,captureWarnings}
+```
+
+Change **nothing else** in the description here. Task 22 replaces the whole string later, including this
+list, so a minimal edit now is overwritten cleanly rather than conflicting.
+
 - [ ] **Step 6: Add the two-directional tripwire — the third test, and the real gate**
 
 ⚠ **Step 2's two tests pin literals and are green from the start; this is the test Step 3 expects to be RED.** Add it to the same file now. *(An earlier draft of this plan claimed it was "already written in Step 2" and it was not — so a literal implementer following Step 2 then hit a Step 3 expectation referring to a test that did not exist. AGY-AFTER round 2, Literal Implementer.)*
@@ -192,7 +234,10 @@ Add these two members to `ScreenshotProjectionShapeTests`:
     public void The_tool_description_enumerates_exactly_the_fields_the_projection_emits()
     {
         var root = RepoRoot();
-        var projection = File.ReadAllText(Path.Combine(root, "src", "FlaUI.Mcp.Server", "Tools", "ScreenshotTools.cs"));
+        // ONE read. An earlier version bound the identical path to two variables (`projection` and
+        // `src`), which reads as though two different files are being compared and is the kind of
+        // detail a reviewer trusts rather than checks. The description and the projection are both in
+        // this one file; that is the whole reason a single-file sweep can check both directions.
         var src = File.ReadAllText(Path.Combine(root, "src", "FlaUI.Mcp.Server", "Tools", "ScreenshotTools.cs"));
         var m = Regex.Match(src, @"JSON metadata \{([^}]+)\}");
         Assert.True(m.Success, "the tool description no longer contains a {field,field,...} enumeration");
@@ -211,7 +256,7 @@ Add these two members to `ScreenshotProjectionShapeTests`:
         // defeated by typing two slashes -- which is EXACTLY the defect item 12 shipped, reappearing
         // inside the very test written to prevent it. MEASURED: `\bcaptureMethod\s*=` matches the
         // commented line. Do not "simplify" this back.
-        var code = StripComments(projection);
+        var code = StripComments(src);
         foreach (var field in expected)
             Assert.True(Regex.IsMatch(code, $@"\b{Regex.Escape(field)}\s*="),
                 $"the tool description promises '{field}' but the metadata projection never assigns it");
@@ -275,7 +320,9 @@ And replace `ScreenshotTools`' fields and constructor (`ScreenshotTools.cs:14-15
 - [ ] **Step 8: Run the headless suite**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: PASS, 0 failed, build 0/0.
+Expected: PASS, 0 failed, build 0/0, **total 1045** — 1037 after Task 19, plus Task 21's five and this
+task's three. State the total verbatim: a bare "0 failed" cannot tell a suite that grew from one that
+silently lost tests.
 
 - [ ] **Step 9: Prove the gate is non-vacuous with a logic mutant**
 
@@ -289,7 +336,7 @@ Expected: PASS, 0 failed, build 0/0.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add src/FlaUI.Mcp.Server/ test/FlaUI.Mcp.Tests/Perception/ScreenshotProjectionShapeTests.cs
+git add src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs src/FlaUI.Mcp.Server/Program.cs test/FlaUI.Mcp.Tests/Perception/ScreenshotProjectionShapeTests.cs
 git commit -m "feat(capture): wire the coordinator into desktop_screenshot; pin the metadata projection"
 ```
 
