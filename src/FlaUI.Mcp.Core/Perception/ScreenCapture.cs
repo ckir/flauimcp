@@ -49,10 +49,28 @@ public static class ScreenCapture
         try { cap = Capture.Rectangle(absolute, null); }
         catch (System.Exception ex) when (ex is COMException or System.Runtime.InteropServices.ExternalException)
         { throw new ToolException(ToolErrorCode.CaptureUnavailable, "Screen capture failed (session may be disconnected/locked).", "reconnect to restore rendering"); }
-        using (cap) return Encode(cap.Bitmap, absolute, redactAbsolute, maxWidth);
+        using (cap) return Encode(cap.Bitmap, absolute, absolute, redactAbsolute, maxWidth, "screenScrape", System.Array.Empty<CaptureWarning>());
     }
 
-    private static CaptureResult Encode(Bitmap src, Rectangle captureBounds, IReadOnlyList<Rectangle> redactAbsolute, int maxWidth)
+    /// <summary>Mask, downscale, PNG-encode, and assemble the CaptureResult.
+    ///
+    /// ⚠ TWO rectangles cross this boundary and they are NOT interchangeable.
+    ///   `absolute` -- anchored to W1 -- drives the MASK arithmetic, because the mask rects arrive as
+    ///     absolute screen coords sampled alongside the element during the same walk.
+    ///   `reported` -- anchored to W2 -- becomes CaptureResult.X/Y, because that is where the pixels
+    ///     actually are. They differ by exactly the movement delta whenever the window moved, and
+    ///     conflating them makes the response a false statement about a moved window.
+    /// Sizes are equal by construction (see WindowCropGeometry), so W/H are the same either way.
+    ///
+    /// ⚠ Encode ASSEMBLES; it does not DETECT. The uniform-canvas detectors run where their operands
+    /// exist -- uniformCanvas on the full window bitmap before the crop, elementCanvasUniform on the
+    /// cropped src after it, desktopCanvasUniform in the scrape seam. Encode never sees the uncropped
+    /// bitmap and cannot evaluate the two-stage comparison.
+    ///
+    /// `clip` below is an INTERNAL LOCAL, recomputed per mask rect. It does not cross this boundary.</summary>
+    internal static CaptureResult Encode(Bitmap src, Rectangle absolute, Rectangle reported,
+                                         IReadOnlyList<Rectangle> redactAbsolute, int maxWidth,
+                                         string method, IReadOnlyList<CaptureWarning> warnings)
     {
         int cap = maxWidth <= 0 ? MaxCaptureWidth : System.Math.Min(maxWidth, MaxCaptureWidth);
         double scale = src.Width > cap ? (double)cap / src.Width : 1.0;
@@ -66,19 +84,18 @@ public static class ScreenCapture
             using var black = new SolidBrush(Color.Black);
             foreach (var r in redactAbsolute)
             {
-                if (!r.IntersectsWith(captureBounds)) continue; // off-crop field — don't count/paint
-                var clip = Rectangle.Intersect(r, captureBounds);  // clip to the captured region
+                if (!r.IntersectsWith(absolute)) continue; // off-crop field — don't count/paint
+                var clip = Rectangle.Intersect(r, absolute);  // clip to the captured region
                 var rel = new Rectangle(
-                    (int)System.Math.Round((clip.X - captureBounds.X) * scale), (int)System.Math.Round((clip.Y - captureBounds.Y) * scale),
+                    (int)System.Math.Round((clip.X - absolute.X) * scale), (int)System.Math.Round((clip.Y - absolute.Y) * scale),
                     (int)System.Math.Round(clip.Width * scale), (int)System.Math.Round(clip.Height * scale));
                 if (rel.Width <= 0 || rel.Height <= 0) continue;
                 g.FillRectangle(black, rel); painted++;
             }
             using var ms = new MemoryStream();
             outBmp.Save(ms, ImageFormat.Png);
-            return new CaptureResult(ms.ToArray(), captureBounds.X, captureBounds.Y, captureBounds.Width,
-                                     captureBounds.Height, scale, painted,
-                                     "screenScrape", System.Array.Empty<CaptureWarning>());
+            return new CaptureResult(ms.ToArray(), reported.X, reported.Y, reported.Width, reported.Height,
+                                     scale, painted, method, warnings);
         }
     }
 }
