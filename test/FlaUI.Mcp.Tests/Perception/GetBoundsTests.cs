@@ -22,7 +22,7 @@ public class GetBoundsTests : IClassFixture<TestAppFixture>
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
-        var tools = new ScreenshotTools(perception);
+        var tools = ScreenshotToolsFactory.For(perception);
         var window = new WindowTools(mgr, new ServerOptions(ReadOnly: false, AllowElevation: false), new FakePlatformEnvironment());
         var opened = await window.DesktopOpenWindow("pid", _app.Process.Id.ToString());
         var handle = JsonDocument.Parse(opened).RootElement.GetProperty("handle").GetString()!;

@@ -71,7 +71,7 @@ public class CaptureRectangleCallSiteTests
     // OCR path (FindTextTools) is the caller this sweep exists for -- it was invisible to the spec until
     // it was measured, and it is the one most likely to be forgotten again.
     //
-    // ⚠ FIVE CALL SITES, and the DECLARATION is not among them: it reads
+    // ⚠ FOUR CALL SITES, and the DECLARATION is not among them: it reads
     // `public static CaptureResult CaptureRectangle(` with no `ScreenCapture.` prefix, so the needle
     // never matches it. An earlier version asserted "1 declaration + 3 call sites" and would have failed
     // 4 != 3 even with every call site correctly updated.
@@ -92,7 +92,12 @@ public class CaptureRectangleCallSiteTests
     public void Every_production_CaptureRectangle_call_names_its_scope()
     {
         var calls = CallSites(RepoRoot());
-        Assert.Equal(5, calls.Count);
+        // ⚠ FIVE UNTIL TASK 20, FOUR AFTER IT, and the one that vanished is the point. `ScreenshotTools`
+        // used to scrape for window/element scope; Task 20 routed that branch through
+        // `WindowCaptureCoordinator`, which renders the window itself and only reaches a scrape through
+        // the forwarder below. Removing a direct scrape of a NAMED WINDOW is the entire feature, so this
+        // number going DOWN is the change landing, not a test decaying.
+        Assert.Equal(4, calls.Count);
 
         var forwarders = calls.Where(c =>
             Path.GetFileName(c.File) == "WindowCaptureCoordinator.cs").ToList();
@@ -102,32 +107,39 @@ public class CaptureRectangleCallSiteTests
         var fwd = Assert.Single(forwarders);
         Assert.Equal("(r, masks, w, sc, warn)", fwd.Args);
 
-        Assert.Equal(4, literal.Count);
+        Assert.Equal(3, literal.Count);
         foreach (var c in literal)
             Assert.True(Regex.IsMatch(c.Args, @"CaptureScope\.\w+"),
                 $"{Path.GetFileName(c.File)}:{c.Line} calls CaptureRectangle without naming a CaptureScope");
     }
 
-    // ⚠ THE ONE CALL SITE WHOSE SCOPE IS NOT CONSTANT, and the only guard on it.
+    // ⚠⚠ THE GUARD MOVED WITH THE CODE IT GUARDS — it did not become unnecessary.
     //
-    // ScreenshotTools' window/element call serves BOTH scopes and must choose between them from `@ref`.
-    // The two are NOT interchangeable: CaptureRectangle emits uniformCanvas for Window and deliberately
-    // NOT for Element, because on an element the captured region is the ELEMENT and claiming "the window
-    // rendered as one colour" is a statement the tool never measured.
+    // This used to assert that `ScreenshotTools`' window/element **`CaptureRectangle`** call chose its
+    // scope from `@ref` rather than hardcoding one. Task 20 deleted that call site: the branch now goes
+    // through `WindowCaptureCoordinator`. The old test died with
+    // `InvalidOperationException: Sequence contains no matching element` — a test whose subject no
+    // longer exists, which is exactly the shape that gets "fixed" by deletion and silently drops a guard.
     //
-    // MEASURED: collapsing that ternary to a bare `CaptureScope.Window` turned NOTHING red across the
-    // whole 986-test headless suite. Nothing exercises the discriminator -- ScreenshotTools reaches a
-    // live UIA walk and a real screen grab, so there is no headless route to it. This is a structural
-    // guard, not a behavioural one, and it is deliberately narrow: it catches exactly the mutation that
-    // was measured to slip through.
+    // The DISCRIMINATION still exists and still matters, one layer up: `ScreenshotTools` computes the
+    // scope and hands it to the coordinator. Collapsing that ternary to a constant would tell every
+    // element capture it was a window capture (or the reverse), which changes which detector runs and
+    // which warnings the agent sees. So the guard is retargeted at the surviving decision rather than
+    // retired with the call site it used to sit on.
+    //
+    // Still structural, and deliberately narrow: MEASURED at Task 20, nothing headless reaches this line
+    // — `ScreenshotTools` needs a live UIA walk and a real screen — so there is no behavioural route to
+    // it from this suite.
     [Fact]
-    public void The_window_element_call_site_still_discriminates_on_ref()
+    public void The_window_element_branch_still_derives_its_scope_from_ref()
     {
-        var site = CallSites(RepoRoot()).Single(c =>
-            c.File.EndsWith("ScreenshotTools.cs", StringComparison.Ordinal) &&
-            c.Args.Contains("geo.Bounds", StringComparison.Ordinal));
+        var src = File.ReadAllText(Path.Combine(RepoRoot(), "src", "FlaUI.Mcp.Server", "Tools", "ScreenshotTools.cs"));
+        var code = string.Join("\n", src.Split('\n').Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal)));
 
-        Assert.Contains("CaptureScope.Window", site.Args);
-        Assert.Contains("CaptureScope.Element", site.Args);
+        Assert.True(Regex.IsMatch(code, @"CaptureScope\.Window\s*:\s*CaptureScope\.Element"),
+            "the window/element branch no longer picks its scope from @ref - a constant there would " +
+            "mislabel every capture of the other kind");
+        Assert.True(Regex.IsMatch(code, @"_coordinator\.CaptureAsync\([^;]*\bscope\b"),
+            "the scope is computed but no longer reaches the coordinator");
     }
 }

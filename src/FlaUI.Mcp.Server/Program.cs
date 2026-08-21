@@ -116,6 +116,20 @@ builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.WaitCoordinator>();
 builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.PerceptionManager>();
 builder.Services.AddSingleton<SnapshotTools>();
 builder.Services.AddSingleton<FindTools>();
+builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.IWindowImageSource,
+                              FlaUI.Mcp.Server.Capture.PrintWindowImageSource>();
+builder.Services.AddSingleton(_ => FlaUI.Mcp.Core.Perception.CaptureCircuitBreaker.Default);
+// ⚠⚠ THE COMPOSITION LIVES IN `ForPerception`, NOT HERE, AND THAT IS THE POINT. This registration used
+// to build the coordinator inline, including two OPTIONAL delegates the plan calls load-bearing --
+// `denylistedVisible` (omitting it is what made round 5's denylist fix INERT in production while every
+// test still passed) and `desktopMasks`. Task 20 then broke five Desktop-test call sites that each would
+// have had to repeat that wiring by hand, which is five more chances to forget one. The factory closes
+// the seam over `PerceptionManager` in a single place that production and those tests share.
+builder.Services.AddSingleton(sp =>
+    FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator.ForPerception(
+        sp.GetRequiredService<FlaUI.Mcp.Core.Perception.PerceptionManager>(),
+        sp.GetRequiredService<FlaUI.Mcp.Core.Perception.IWindowImageSource>(),
+        sp.GetRequiredService<FlaUI.Mcp.Core.Perception.CaptureCircuitBreaker>()));
 builder.Services.AddSingleton<ScreenshotTools>();
 builder.Services.AddSingleton<InteractionTools>();
 builder.Services.AddSingleton<ContentTools>();

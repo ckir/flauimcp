@@ -25,7 +25,34 @@ says it: *"a signal wired in later is a signal nobody notices is missing."*
   used to cite `:30-84`; the file has grown since. MEASURED now: fields/constructor at **14-15**, the
   `return ToolResponse.Image(` at **84** running to **97**. Find each by name, not by line.
 - Modify: `src/FlaUI.Mcp.Server/Program.cs` (DI)
+- Modify: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs` — adds the `ForPerception` factory.
 - Test: `test/FlaUI.Mcp.Tests/Perception/ScreenshotProjectionShapeTests.cs`
+
+⛔ **FIVE MORE CALL SITES, IN THREE FILES THIS LIST NEVER MENTIONED — the constructor change below
+breaks the whole test assembly.** MEASURED: widening `ScreenshotTools`' constructor is `CS7036` at
+`GetBoundsTests.cs:25`, `ScreenshotToolTests.cs:23` and `:37`, `RedactionOracleTests.cs:67` and `:144`.
+The test project then does not build, so `dotnet test` cannot even DISCOVER tests and Step 8 is
+unreachable. All three are `[Trait("Category","Desktop")]`.
+
+- Modify: `test/FlaUI.Mcp.Tests/Perception/GetBoundsTests.cs`
+- Modify: `test/FlaUI.Mcp.Tests/Server/ScreenshotToolTests.cs`
+- Modify: `test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs`
+- Create: `test/FlaUI.Mcp.Tests/ScreenshotToolsFactory.cs`
+- Modify: `test/FlaUI.Mcp.Tests/Perception/CaptureRectangleCallSiteTests.cs` — see Step 8b.
+
+⚠⚠ **DO NOT FIX THIS BY GIVING THE NEW PARAMETERS DEFAULTS.** A `null` coordinator would make
+`RedactionOracleTests.cs:144` — which captures with `window:` set, i.e. the new per-window path — either
+throw a `NullReferenceException` or silently route back through the legacy scrape. **OPERATOR DECISION,
+2026-08-21:** extract `WindowCaptureCoordinator.ForPerception(...)`, used by BOTH the DI registration and
+a small test helper, so the two cannot drift. The reason is not tidiness: `denylistedVisible` and
+`desktopMasks` are OPTIONAL parameters, omitting the first is what made round 5's denylist fix INERT in
+production, and hand-rewiring at five call sites is five more chances to drop one. *(AGY-FIRST consult
+reached the same conclusion independently. Its "failure mode all options miss" — that a real audit
+signal would crash CI and a shared static breaker would cross-contaminate parallel tests — was REFUTED by
+measurement: `IAttentionSignal` contracts MUST-NEVER-THROW and `CaptureAuditSignal` catches anyway with a
+test proving it, `CaptureCircuitBreaker.Default` is an expression-bodied property returning a FRESH
+instance per read, and parallelisation is disabled repo-wide in both `xunit.runner.json` and an assembly
+attribute.)*
 
 - [ ] **Step 1: Read the precedent first**
 
@@ -282,7 +309,7 @@ builder.Services.AddSingleton<FlaUI.Mcp.Core.Perception.IWindowImageSource,
 builder.Services.AddSingleton(_ => FlaUI.Mcp.Core.Perception.CaptureCircuitBreaker.Default);
 builder.Services.AddSingleton(sp =>
 {
-    var perception = sp.GetRequiredService<PerceptionManager>();
+    var perception = sp.GetRequiredService<FlaUI.Mcp.Core.Perception.PerceptionManager>();  // <- see note
     return new FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator(
         (h, r) => perception.ResolveWindowCaptureGeometryAsync(h, r),
         sp.GetRequiredService<FlaUI.Mcp.Core.Perception.IWindowImageSource>(),
@@ -317,12 +344,66 @@ And replace `ScreenshotTools`' fields and constructor (`ScreenshotTools.cs:14-15
 
 ⚠ **`CaptureAuditSignal` is created in Task 21.** If you are executing Task 20 first, that type does not exist yet: do Task 21's Steps 4–5 before this step, or stub the field and come back. Do NOT drop the parameter and "add it later" — a signal wired in later is a signal nobody notices is missing.
 
+⚠ **THE BARE NAME `PerceptionManager` DOES NOT COMPILE IN `Program.cs`.** MEASURED: that file has **no**
+`using FlaUI.Mcp.Core.Perception;` and fully-qualifies the type everywhere else (e.g. line 116), so the
+pinned snippet was a `CS0246`. Qualify it, as above.
+
+⚠⚠ **AND PREFER THE FACTORY OVER THE INLINE CONSTRUCTION SHOWN ABOVE.** Per the operator decision in
+the Files list, this registration should read:
+
+```csharp
+builder.Services.AddSingleton(sp =>
+    FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator.ForPerception(
+        sp.GetRequiredService<FlaUI.Mcp.Core.Perception.PerceptionManager>(),
+        sp.GetRequiredService<FlaUI.Mcp.Core.Perception.IWindowImageSource>(),
+        sp.GetRequiredService<FlaUI.Mcp.Core.Perception.CaptureCircuitBreaker>()));
+```
+
+with `ForPerception` wiring the walk delegate, `denylistedVisible` and `desktopMasks` internally. **This
+MOVES the `ResolveWindowCaptureGeometryAsync` call rather than adding one**, which is what keeps
+`CaptureGeometryCallSiteTests` green at THREE.
+
+- [ ] **Step 7b: Remove the stale focus instruction — PULLED FORWARD FROM TASK 22, and REQUIRED here**
+
+Delete ` Focus the window first (no occlusion handling).` from the tool description.
+
+⛔ **THIS IS NOT COSMETIC AND IT CANNOT WAIT FOR TASK 22.** MEASURED: after Step 5b the description is
+**1507 chars against a hard 1500-char budget** enforced by
+`ToolTrapFactInvariantTests.No_tool_description_exceeds_the_budget`, so Step 8 fails. That test's own
+comment forbids the obvious workaround: *"Raising this number to make a new description fit is exactly
+the failure it exists to catch — trim the description instead."*
+
+This sentence is the right trim because **Task 20 is what makes it false**: window and element scope no
+longer scrape the screen, so focusing first is no longer required and "no occlusion handling" is now the
+opposite of the truth. Removing it takes the description to **1459**. Task 22 lists the same deletion as
+its Step 2; it becomes a no-op there.
+
 - [ ] **Step 8: Run the headless suite**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
 Expected: PASS, 0 failed, build 0/0, **total 1045** — 1037 after Task 19, plus Task 21's five and this
-task's three. State the total verbatim: a bare "0 failed" cannot tell a suite that grew from one that
-silently lost tests.
+task's three. **CONFIRMED by execution: 1045/1045.** State the total verbatim: a bare "0 failed" cannot
+tell a suite that grew from one that silently lost tests.
+
+- [ ] **Step 8b: Update `CaptureRectangleCallSiteTests` — TWO consequences, and neither is a decayed test**
+
+Step 4 deleted `ScreenshotTools`' direct `CaptureRectangle` call for window/element scope. Two gates in
+that file see it:
+
+1. **The count goes 5 → 4.** MEASURED. Removing a direct scrape of a NAMED WINDOW is the entire feature,
+   so this number going DOWN is the change landing. The `literal` (non-forwarder) count goes 4 → 3.
+2. **`The_window_element_call_site_still_discriminates_on_ref` loses its subject** and dies with
+   `InvalidOperationException: Sequence contains no matching element`. ⚠ **Do not delete it.** The
+   discrimination still exists one layer up — `ScreenshotTools` computes
+   `string.IsNullOrEmpty(@ref) ? CaptureScope.Window : CaptureScope.Element` and hands it to the
+   coordinator — and collapsing that ternary would mislabel every capture of the other kind, changing
+   which detector runs and which warnings the agent sees. **Retarget the guard at the surviving decision**
+   as `The_window_element_branch_still_derives_its_scope_from_ref`. A test whose subject moved is exactly
+   the shape that gets "fixed" by deletion, silently dropping a guard.
+
+⚠ When asserting on the coordinator call, match with `[^;]*` and **not** `[^)]*`: the call nests
+`new WindowHandle(window!)`, so the first `)` is not the call's terminator. MEASURED — the `[^)]*` form
+fails against correct code.
 
 - [ ] **Step 9: Prove the gate is non-vacuous with a logic mutant**
 
@@ -331,12 +412,28 @@ silently lost tests.
 2. **Comment it out** rather than deleting it: `// captureMethod = result.CaptureMethod,`.
    Expected: it FAILS the same way. **This mutant is the important one.** Item 12 shipped a sweep that passed against a commented-out property — the anti-gaming half of that feature was defeatable by typing `<!--`. If this mutant does NOT go red, the regex is matching the comment and the tripwire is worthless.
 
-**Revert both.**
+3. Collapse the scope ternary to a constant: `var scope = CaptureScope.Window;`.
+   Expected: `The_window_element_branch_still_derives_its_scope_from_ref` FAILS. This is the non-vacuity
+   proof for Step 8b's retargeted guard.
+
+**MEASURED RESULTS — all three produce EXACTLY ONE red, the intended test, with a clean build:**
+mutant 1 → `The_tool_description_enumerates_exactly_the_fields_the_projection_emits`;
+mutant 2 (commented out) → the same test, which is the proof that two slashes do not defeat the sweep;
+mutant 3 → `The_window_element_branch_still_derives_its_scope_from_ref`.
+
+**Revert all three.**
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs src/FlaUI.Mcp.Server/Program.cs test/FlaUI.Mcp.Tests/Perception/ScreenshotProjectionShapeTests.cs
+git add src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs src/FlaUI.Mcp.Server/Program.cs \
+        src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs \
+        test/FlaUI.Mcp.Tests/Perception/ScreenshotProjectionShapeTests.cs \
+        test/FlaUI.Mcp.Tests/ScreenshotToolsFactory.cs \
+        test/FlaUI.Mcp.Tests/Perception/CaptureRectangleCallSiteTests.cs \
+        test/FlaUI.Mcp.Tests/Perception/GetBoundsTests.cs \
+        test/FlaUI.Mcp.Tests/Perception/RedactionOracleTests.cs \
+        test/FlaUI.Mcp.Tests/Server/ScreenshotToolTests.cs
 git commit -m "feat(capture): wire the coordinator into desktop_screenshot; pin the metadata projection"
 ```
 
@@ -577,7 +674,17 @@ with exactly:
 
 - [ ] **Step 2: Edit 2 — remove the stale focus instruction**
 
-Delete `Focus the window first (no occlusion handling).` It stops being true, and a stale instruction in a tool description is read by every agent on every call.
+⚠ **ALREADY DONE, in Task 20's Step 7b.** Task 20 had to delete it there: after its Step 5b the
+description hit **1507 chars against a hard 1500 budget**, and the sentence is the right trim precisely
+because Task 20 is what makes it false. Confirm it is gone rather than deleting it again:
+
+```bash
+grep -c "Focus the window first" src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs
+```
+Expected: `0`.
+
+The original rationale still stands: it stops being true, and a stale instruction in a tool description
+is read by every agent on every call.
 
 - [ ] **Step 3: Edit 3 — add the new contract sentences**
 

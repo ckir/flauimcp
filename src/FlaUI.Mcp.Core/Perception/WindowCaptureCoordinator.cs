@@ -88,6 +88,36 @@ public sealed class WindowCaptureCoordinator
         _isHung = isHungProbe ?? IsHungAppWindow;
     }
 
+    /// <summary>The production composition, in ONE place, used by the DI container AND by the Desktop
+    /// tests. The coordinator itself deliberately takes a DELEGATE for the geometry walk rather than a
+    /// <see cref="PerceptionManager"/>, which is what keeps the whole retry/fallback path
+    /// headless-testable; this factory is the one spot that closes that seam over the real thing.
+    ///
+    /// ⚠⚠ IT EXISTS TO MAKE `denylistedVisible` AND `desktopMasks` IMPOSSIBLE TO FORGET. Both are
+    /// OPTIONAL constructor parameters, and omitting the first is exactly what made round 5's denylist
+    /// fix INERT in production while every test still passed. The seam now throws rather than silently
+    /// skipping the guard -- but a throw is a late, loud symptom, and the real fix is that no caller
+    /// gets to choose. Five Desktop test call sites would otherwise each have rewired this by hand.
+    ///
+    /// The environment-shaped dependencies stay parameters: tests inject their own image source, and an
+    /// isolated breaker keeps one test's tripped window from colouring another's.
+    ///
+    /// ⚠ THIS REPLACES THE INLINE LAMBDA THAT USED TO SIT IN THE DI REGISTRATION -- it does not add to
+    /// it. `CaptureGeometryCallSiteTests` pins the number of `ResolveWindowCaptureGeometryAsync` call
+    /// sites at THREE across `src/`, so moving the call here rather than duplicating it is what keeps
+    /// that sweep green.</summary>
+    public static WindowCaptureCoordinator ForPerception(
+        PerceptionManager perception,
+        IWindowImageSource source,
+        CaptureCircuitBreaker? breaker = null,
+        CaptureRetryOptions? options = null)
+        => new((h, r) => perception.ResolveWindowCaptureGeometryAsync(h, r),
+               source,
+               options ?? CaptureRetryOptions.Default,
+               breaker: breaker,
+               denylistedVisible: () => perception.DenylistedWindowsVisibleAsync(),
+               desktopMasks: () => perception.AllMaskRectsAsync());
+
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool IsHungAppWindow(IntPtr hWnd);
 
