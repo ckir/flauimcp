@@ -556,21 +556,23 @@ MEASURED at Task 13 time: `grep -rn "DefaultW2Probe" src/` returned nothing.
 was rejected — Task 15 declares that exact P/Invoke in that exact class, so they would collide as
 CS0111.)*
 
-⚠⚠ **OPEN QUESTION BEFORE YOU IMPLEMENT THIS — the guard as written is a PRE-CHECK, and a pre-check
-cannot close the race it is aimed at.** It runs `WindowSizeChanged` *immediately before* `Task.Run`, so
-a reflow between that check and the capture is undetected: the pixels come from the new layout while the
-masks describe the old one, and **this path OCRs the result and returns it as a string**. Checking
-*after* the pixels are acquired is what actually closes it, for one extra `GetWindowRect`.
-*(Raised by the AGY-FIRST consult's fourth answer.)*
+⚠⚠ **OPERATOR DECISION, 2026-08-21 — THIS IS A BOOKEND, NOT A PRE-CHECK.**
 
-**This is NOT what ROADMAP 19 already tracks, and the difference is the cost.** Item 19 defers an
-ELEMENT-level bookend because it is "a second full geometry walk" and `desktop_wait_for_text` re-resolves
-geometry every 750 ms, so a walk per poll would roughly double the polling cost. A window-level
-*post-capture* `GetWindowRect` is not a walk and costs microseconds. **Item 19's stated cost objection
-does not apply to it.**
+The guard was written to run `WindowSizeChanged` *immediately before* the capture. **A pre-check cannot
+close the race it is aimed at:** if the window reflows between the check and the capture, the pixels come
+from the new layout while the masks describe the old one, and **this path OCRs the result and returns the
+redacted text as a string**. Checking *after* the pixels are acquired is what actually closes it.
+*(Raised by the AGY-FIRST consult's fourth answer; the operator chose the bookend.)*
 
-⚠ **The operator has been asked whether to make this a bookend (check after, or before AND after) rather
-than a pre-check. Do not implement it as a pre-check-only until that is answered.**
+**This is NOT what ROADMAP 19 already tracks, and the difference is cost.** Item 19 defers an
+ELEMENT-level bookend because it is "a second full geometry walk", and `desktop_wait_for_text`
+re-resolves geometry every 750 ms, so a walk per poll would roughly double the polling cost. A
+window-level **post-capture `GetWindowRect`** is not a walk and costs microseconds. **Item 19's stated
+cost objection does not apply to it**, and item 19 stays open for the element-granularity case it
+actually describes.
+
+**The screenshot path already works this way** — §2.5's bookend validation walk re-walks after the
+capture. This closes the same asymmetry on the OCR path for two `GetWindowRect` calls.
 
 **Files:** `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` (the `TextCaptureGeometry` record and both
 `return` sites), `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs` (both capture sites),
@@ -599,20 +601,37 @@ public sealed record TextCaptureGeometry(bool Denied, string? DeniedProcess, boo
 
 Populate it from the geometry the wrapper already holds (`geo.NativeWindowHandle`) at both `return` sites in `ResolveTextCaptureGeometryAsync`.
 
-Then guard at **both** OCR capture sites, `FindTextTools.cs:62` and `:110`, immediately before the `Task.Run`:
+Then guard at **both** OCR capture sites, `FindTextTools.cs:62` and `:110`. **Each site gets BOTH halves** — one before the `Task.Run`, one immediately after it and BEFORE the pixels reach the OCR engine:
 
 ```csharp
-            // ⚠ A RESIZE BETWEEN THE WALK AND THE CAPTURE MISPLACES EVERY MASK, AND THIS PATH READS THE
-            // RESULT ALOUD. On the screenshot path a misplaced mask returns a wrong-looking image; here
-            // the OCR engine reads the unmasked pixels and returns the redacted text as a STRING. Cheap
-            // to check - one GetWindowRect - and the two consumers both do the right thing with the
-            // refusal: DesktopFindText propagates it, and DesktopWaitForText's catch at :108 degrades it
-            // to "not found" and keeps polling, which is correct for a window that is still settling.
+            // ⚠ BOOKEND, HALF 1 of 2 — FAIL FAST. If the window has ALREADY changed since the walk,
+            // there is no point paying for the capture. This half is cheap and catches the common case.
             if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
                                                 new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
                     "The window changed size between reading its redacted regions and capturing it, so " +
                     "those regions can no longer be located.",
+                    "wait for the window to settle, then retry");
+
+            var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(
+                geo.CaptureBounds, geo.MaskRects, maxWidth: 0, CaptureScope.OcrRegion,
+                System.Array.Empty<CaptureWarning>()));
+
+            // ⚠⚠ BOOKEND, HALF 2 of 2 — THIS IS THE HALF THAT CLOSES THE RACE, and half 1 alone does not.
+            // A reflow BETWEEN the pre-check and the capture leaves pixels from the NEW layout carrying
+            // masks computed for the OLD one. On the screenshot path that returns a wrong-looking image;
+            // here the OCR engine reads the newly-exposed pixels and returns the redacted text as a
+            // STRING. Re-reading the rect after acquisition is one GetWindowRect, and it is the only
+            // check that can see a change that happened DURING the capture.
+            //
+            // ⚠ A DISTINCT MESSAGE from half 1, deliberately. Both recourses are "wait and retry", but
+            // "changed DURING" and "changed BEFORE" are different diagnoses and this design's standing
+            // rule is that no two distinct causes share one message.
+            if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
+                                                new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "The window changed size while it was being captured, so the redacted regions in this " +
+                    "image can no longer be trusted to cover what they were computed for.",
                     "wait for the window to settle, then retry");
 ```
 
