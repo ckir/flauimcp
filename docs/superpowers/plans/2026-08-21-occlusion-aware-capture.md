@@ -2255,31 +2255,9 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
         System.Func<System.IntPtr, Rectangle?>? w2Probe = null,
         System.Func<System.IntPtr, bool>? minimizedProbe = null)
     {
-        var probeRect = w2Probe ?? DefaultW2Probe;
-        var probeMin  = minimizedProbe ?? DefaultMinimizedProbe;
-
-        // Step 4. A FALSE return means the window is gone. GetWindowRect does not reliably zero the
-        // struct on failure, so a design relying on the degenerate guard to catch a zeroed rect is
-        // relying on a coincidence.
-        var w2n = probeRect(geo.NativeWindowHandle);
-        if (w2n is null)
-            throw new ToolException(ToolErrorCode.ElementNotActionable,
-                "The target window was destroyed between the UIA walk and the capture.",
-                "re-list windows and retry against a live handle");
-        var w2 = w2n.Value;
-
-        // Step 5, TERMINAL target-state guards, before anything conditional.
-        if (w2.Width <= 0 || w2.Height <= 0)
-            throw new ToolException(ToolErrorCode.ElementNotActionable,
-                "The target window has no renderable area (zero or negative extents).",
-                "restore or resize the window, then retry");
-        // ⚠ NOT covered by the extents check above. F6 measured a minimized window's placeholder rect as
-        // -32000,-32000 with extents 160x28 -- POSITIVE. It would pass, and yield a 160x28 image that is
-        // not the window's content at all.
-        if (probeMin(geo.NativeWindowHandle))
-            throw new ToolException(ToolErrorCode.ElementNotActionable,
-                "Window is minimized; restore it first.",
-                "desktop_window_transform restore, then retry");
+        // Canonical steps 4-5. Extracted so EVERY path about to photograph a named window runs them --
+        // including the coordinator's circuit-breaker path, which skips this method entirely.
+        var w2 = GuardTargetState(geo.NativeWindowHandle, w2Probe, minimizedProbe);
 
         var w1 = geo.WindowBounds;
         var warnings = warningsSoFar;
@@ -2335,6 +2313,47 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
         // Step 8. Encode assembles; it does not detect.
         return CaptureOutcome.Completed(
             Encode(src, c.Absolute, c.Reported, geo.MaskRects, maxWidth, "printWindow", warnings));
+    }
+
+    /// <summary>Canonical steps 4-5 — the TERMINAL target-state guards — and the W2 they produce.
+    ///
+    /// PUBLIC and extracted because more than one path is about to photograph a named window, and these
+    /// guards are about the TARGET's state rather than about the backend. The coordinator's
+    /// circuit-breaker path skips CaptureWindow entirely and still owes them: without that, a hung window
+    /// that trips the breaker and then minimizes is scraped at the rectangle it used to occupy, returning
+    /// a photograph of whatever is now behind it — the exact failure this feature exists to remove.
+    ///
+    /// ⚠ ORDER IS LOAD-BEARING and these run before ANYTHING conditional. A window that minimizes
+    /// mid-capture also changes size; if the resize check ran first it would route a minimized window
+    /// into retry-and-fallback rather than refusing it.</summary>
+    public static Rectangle GuardTargetState(IntPtr hwnd,
+                                             System.Func<IntPtr, Rectangle?>? w2Probe = null,
+                                             System.Func<IntPtr, bool>? minimizedProbe = null)
+    {
+        // Step 4. A FALSE return means the window is gone. GetWindowRect does not reliably zero the
+        // struct on failure, so relying on the degenerate guard to catch a zeroed rect is relying on a
+        // coincidence.
+        var w2n = (w2Probe ?? DefaultW2Probe)(hwnd);
+        if (w2n is null)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "The target window was destroyed between the UIA walk and the capture.",
+                "re-list windows and retry against a live handle");
+        var w2 = w2n.Value;
+
+        if (w2.Width <= 0 || w2.Height <= 0)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "The target window has no renderable area (zero or negative extents).",
+                "restore or resize the window, then retry");
+
+        // ⚠ NOT covered by the extents check above. F6 MEASURED a minimized window's placeholder rect as
+        // -32000,-32000 with extents 160x28 -- POSITIVE. It would pass, and yield a 160x28 image that is
+        // not the window's content at all.
+        if ((minimizedProbe ?? DefaultMinimizedProbe)(hwnd))
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "Window is minimized; restore it first.",
+                "desktop_window_transform restore, then retry");
+
+        return w2;
     }
 
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
@@ -2491,6 +2510,18 @@ public sealed class PrintWindowImageSource : IWindowImageSource
 
         Bitmap? result = null;
         ToolException? failure = null;
+        // ⚠ THE ABANDONED THREAD MUST DISPOSE ITS OWN BITMAP. If the hung target eventually processes
+        // WM_PRINT, the abandoned thread unblocks, finishes Render(), and allocates a managed Bitmap
+        // wrapping GDI+ resources -- for a caller that returned long ago and will never dispose it. Those
+        // accumulate against the process's 10,000-handle GDI ceiling and are reclaimed only whenever the
+        // GC gets round to finalizing them, which is not a schedule this server can rely on.
+        //
+        // This does NOT make the leak go away: the thread, the HDC and the GDI bitmap held INSIDE a call
+        // that is still blocked are unreachable either way. What it removes is the ONE resource that
+        // becomes reclaimable after the fact and was being dropped anyway.
+        // *(AGY-AFTER panel over this plan, round 2, Resource Vampire.)*
+        var handoff = new object();
+        var abandoned = false;
 
         // ⚠ A DEDICATED BACKGROUND THREAD, NOT Task.Run. PrintWindow renders by sending WM_PRINT to the
         // TARGET synchronously, so a target whose message loop is blocked blocks this call with no
@@ -2503,12 +2534,25 @@ public sealed class PrintWindowImageSource : IWindowImageSource
         // The per-HWND circuit breaker in WindowCaptureCoordinator is what bounds the cumulative cost.
         var t = new Thread(() =>
         {
-            try { result = Render(hwnd, size); }
+            Bitmap? produced = null;
+            try { produced = Render(hwnd, size); }
             catch (ToolException ex) { failure = ex; }
+            lock (handoff)
+            {
+                // The caller already gave up: nobody will ever dispose this, so dispose it here.
+                if (abandoned) produced?.Dispose();
+                else result = produced;
+            }
         }) { IsBackground = true };
         t.Start();
 
-        if (!t.Join(timeoutMs)) return null;      // TIMED OUT. The thread is abandoned, still holding.
+        if (!t.Join(timeoutMs))
+        {
+            // TIMED OUT. The thread is abandoned and whatever the blocked call holds is unreclaimable --
+            // but anything it produces AFTER this point is now its own to release.
+            lock (handoff) { abandoned = true; }
+            return null;
+        }
         if (failure is not null) throw failure;
         return result;
     }
@@ -3410,6 +3454,40 @@ public class CaptureCircuitBreakerTests
         Assert.False(breaker.IsTripped(new IntPtr(1)));
     }
 
+    // ⚠⚠ THE BREAKER MUST NOT SMUGGLE A DEAD TARGET PAST THE GUARDS. A hung window trips the breaker,
+    // then minimizes. Short-circuiting straight to the scrape skips canonical steps 4-5, so the scrape
+    // photographs the rectangle the window USED to occupy and returns whatever is now behind it -- as a
+    // success. That is the exact defect item 8 exists to remove, reintroduced by the containment added
+    // for a different problem.
+    [Fact]
+    public async Task A_tripped_breaker_still_refuses_a_window_that_minimized()
+    {
+        var W = new Rectangle(0, 0, 400, 300);
+        var src = FakeWindowImageSource.TimesOut();
+        var breaker = new CaptureCircuitBreaker(TimeSpan.FromMinutes(5), () => DateTime.UtcNow);
+        bool minimized = false;
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(new CaptureGeometry(W, Array.Empty<Rectangle>(), false, false, null,
+                Array.Empty<MaskEscalationEntry>(), W, new IntPtr(0xBEEF), false)),
+            src, new CaptureRetryOptions(1, 50),
+            w2Probe: _ => W, minimizedProbe: _ => minimized,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, 0, "screenScrape", warns),
+            breaker: breaker);
+
+        // First capture times out and trips the breaker.
+        await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal(1, src.Calls);
+
+        // Now the window minimizes. The breaker is tripped, so PrintWindow is skipped -- but the target
+        // is gone from the screen and the scrape must NOT run.
+        minimized = true;
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0));
+        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+        Assert.Equal(1, src.Calls);   // still short-circuited; it refused rather than scraping
+    }
+
     [Fact]
     public async Task A_different_window_is_unaffected()
     {
@@ -3497,9 +3575,23 @@ Before the `ScreenCapture.CaptureWindow` call:
             // The breaker short-circuits BEFORE acquisition, which is the whole point: the leak happens
             // inside Acquire, so avoiding the call is the only way to avoid the leak.
             if (_breaker is not null && _breaker.IsTripped(geo.NativeWindowHandle))
+            {
+                // ⚠⚠ THE TARGET-STATE GUARDS STILL RUN. Skipping straight to the scrape also skips
+                // canonical steps 4-5, which live inside CaptureWindow -- and those are the guards that
+                // stop a DEAD or MINIMIZED window being photographed at the rectangle it used to occupy.
+                //
+                // The reachable defect: a hung window trips the breaker, then minimizes. Without this
+                // call the next capture scrapes its old rect and returns a photograph of whatever is now
+                // behind it -- confidently, as a success. That is precisely the failure item 8 exists to
+                // remove, reintroduced by the mechanism added to contain a different problem.
+                //
+                // These guards are about the TARGET's state, not about the backend, so every path that is
+                // about to photograph a named window owes them.
+                ScreenCapture.GuardTargetState(geo.NativeWindowHandle, _w2Probe, _minimizedProbe);
                 return new WindowCaptureOutcome(
                     Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive),
                     geo);
+            }
 ```
 
 In the `TimedOut` arm, before returning:
@@ -3627,9 +3719,9 @@ public class ScreenshotProjectionShapeTests
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ScreenshotProjectionShapeTests"`
 
-Expected: the first two tests PASS immediately (they pin literals) and `The_tool_description_enumerates_exactly_the_fields_the_projection_emits` FAILS — the description still lists seven fields and the projection still emits seven.
+Expected: both tests PASS immediately. **They pin literals, so they are green from the start and are NOT the gate** — they exist only so the expected shape is written down before production is touched.
 
-⚠ **The first two tests are VACUOUS on their own and are not the gate.** They exist only so the expected shape is written down before production is touched. The third test is the real tripwire, and it is the one the mutants in Step 9 must be able to turn red.
+⚠ **The real tripwire is `The_tool_description_enumerates_exactly_the_fields_the_projection_emits`, which Step 6 adds.** It is the test the Step 9 mutants must be able to turn red. It is written in Step 6 rather than here because it asserts against the production file, which Steps 4 and 5 have not yet changed — writing it now would leave it red for two steps for the wrong reason.
 
 - [ ] **Step 4: Rewrite the window/element branch to use the coordinator**
 
@@ -3708,9 +3800,11 @@ Replace lines 71–84's `return ToolResponse.Image(...)` object with:
             });
 ```
 
-- [ ] **Step 6: The two-directional tripwire (already written in Step 2 — this step just confirms it)**
+- [ ] **Step 6: Add the two-directional tripwire — the third test, and the real gate**
 
-Confirm the third test from Step 2 is present and reads BOTH sides of the promise. Repeated here so it cannot be skimmed past:
+⚠ **Step 2's two tests pin literals and are green from the start; this is the test Step 3 expects to be RED.** Add it to the same file now. *(An earlier draft of this plan claimed it was "already written in Step 2" and it was not — so a literal implementer following Step 2 then hit a Step 3 expectation referring to a test that did not exist. AGY-AFTER round 2, Literal Implementer.)*
+
+Add these two members to `ScreenshotProjectionShapeTests`:
 
 ```csharp
     // ⚠ Add these usings to the file: System.IO, System.Text.RegularExpressions.
@@ -4443,3 +4537,62 @@ independent agreement is worth recording even though there was nothing left to f
 ⚠ **The round is RED and the panel is NOT closed.** Three folds spawn their own edges — the corrected
 bookend comparison in particular is new code that has been reviewed by nobody. A further round should be
 run against the folded plan before Task 1 begins.
+
+## AGY-AFTER panel over this plan — round 2
+
+Brief `.clavity/seams/item8-plan-panel-r2.md`; report `.clavity/scratch/item8-plan-panel/agy-round2.md`.
+Seats rotated onto uncovered ground: Fold Auditor (round 1's edits only), Cascade Analyst, Resource
+Vampire. **Verdict: RED.** Plus a driver solo pass that ran before the peer's report returned.
+
+**Folded — from the peer:**
+
+1. **The abandoned acquisition thread leaked an undisposed managed `Bitmap`.** If a hung target eventually
+   processes `WM_PRINT`, the abandoned thread finishes `Render()` and allocates a `Bitmap` wrapping GDI+
+   resources for a caller that returned long ago. Those accumulate against the process's 10,000-handle GDI
+   ceiling, reclaimed only when the GC gets round to finalizing them. **The thread now disposes its own
+   output when the caller has given up.** This does not make the accepted leak go away — what is held
+   inside a still-blocked call is unreachable either way — it removes the one resource that becomes
+   reclaimable afterwards and was being dropped anyway.
+2. **Task 20's step ordering was broken for a literal implementer.** Step 3 expected a test to be RED that
+   Step 6 had not yet written, while Step 6's own header claimed it was "already written in Step 2". Both
+   are now correct: Step 2 writes two literal tests, Step 6 adds the real tripwire, and Step 3 says so.
+
+**Folded — from the driver's solo pass, before the peer's report arrived:**
+
+3. **The bookend walk was unguarded** — a throwing confirmation discarded a good image already in hand and
+   introduced a terminal refusal on element scope. *(The peer's Cascade Analyst found this independently.)*
+4. **The circuit breaker's dictionary was unbounded**, and because the OS recycles `HWND` values a stale
+   entry could mis-trip an unrelated window. *(The peer flagged the growth as a secondary finding.)*
+5. **The circuit breaker smuggled a dead target past the target-state guards.** Short-circuiting to the
+   scrape skipped canonical steps 4-5, so a hung window that tripped the breaker and then MINIMIZED was
+   scraped at the rectangle it used to occupy — returning a photograph of whatever was now behind it, as a
+   success. **That is the exact defect item 8 exists to remove, reintroduced by the containment added for a
+   different problem.** Steps 4-5 are now `ScreenCapture.GuardTargetState`, called by both paths.
+
+**REFUTED BY MEASUREMENT — do NOT re-raise:**
+
+6. **"A pure move leaves masks spatially offset inside the image, so `MaskSetsMatch` approving a move
+   returns a leaking image."** FALSE, and traced on the spec's own numbers: window `(-8,-8,1936,1036)` →
+   `(92,92,…)`, element `(100,200,300,50)`, mask `(110,210,50,20)`. The crop yields `absolute =
+   (100,200,300,50)` and the mask paints at `(10,10)` — exactly its true offset inside the element. The
+   claim assumes `c.Absolute` is `W2`-anchored; it is **`W1`-anchored**, which is §1's rule 1 and what
+   panel round 7 verified by hand. Masks and the rectangle that translates them come from the same
+   observation, which is the entire point of that rule.
+7. **"Task 24's `OccludedCaptureTests.cs` must be invented from scratch — namespace, usings, class
+   declaration and the `_app` fixture must all be guessed."** FALSE. Task 24 gives the complete file:
+   `namespace FlaUI.Mcp.Tests.Capture`, `public class OccludedCaptureTests : IClassFixture<TestAppFixture>`,
+   the `_app` field and its constructor. The instruction the finding quotes does not appear in the plan.
+8. **"The plan asserts `PerceptionPolicy.cs:48` reads `string.IsNullOrWhiteSpace(processName) || …`."**
+   FALSE. The plan mentions `PerceptionPolicy` **zero times**.
+9. **"`Autosound` being declared and parsed in `ServerOptions.cs` is unverified."** It is verified:
+   `ServerOptions.cs:11` declares `bool Autosound = false` and `:18` parses `args.Contains("--autosound")`.
+   The plan also instructs the engineer to read that file rather than copy an idiom.
+
+⚠ **Round 2 is RED and the panel is NOT closed.** Five folds, and three of them are new code — the
+extracted `GuardTargetState`, the guarded bookend, and the thread handoff. In this project a fix has
+carried its own defect in a large fraction of rounds.
+
+⚠ **The pattern across both rounds is worth stating for whoever runs round 3: every defect so far has been
+in a GUARD, not in the happy path.** The bookend contradicting the move rule, the anti-gaming sweep being
+gameable, the breaker smuggling a dead target past the guards, the containment leaking the thing it was
+containing. The common case has been correct throughout; the machinery added to protect it has not.
