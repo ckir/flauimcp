@@ -146,7 +146,18 @@ whose redaction masks may have moved. It also means the design **tolerates stale
 refusing stale masks it can** — defended in §1 as "accepting an undetected risk and shipping a known-bad
 image are different acts", but it is a judgement call and it is yours.
 
-**3. Accepted false positives and false negatives.**
+**3. A PERMANENT resource leak per hung-window capture — and the timeout does not prevent it.**
+Risk 2 accepts that a `PrintWindow` call blocked on a target's stalled message loop holds a threadpool
+thread, an HDC, a GDI bitmap and a managed bitmap **permanently**, because a blocked Win32 call cannot be
+cancelled. The bounded wait lets the REQUEST return; it does not reclaim what the blocked call is holding.
+So repeated captures of a hung window degrade the server cumulatively, and only a restart clears it.
+
+This is contingent on risk 2's unmeasured question (§4 below): if `PrintWindow` turns out not to block,
+the leak does not exist. If it does block, this is the design's most serious operational cost and it was
+missing from this list. *(Panel round 25, Completeness Sweep — found by checking this section's own claim
+that "everything below is a deliberate acceptance" against the acceptances actually made elsewhere.)*
+
+**4. Accepted false positives and false negatives.**
 - A window that is genuinely one uniform colour is warned about incorrectly (§3).
 - An element crop that is legitimately solid is warned about incorrectly (§3).
 - A window that grew without reflowing is refused even though its masks were fine (§1).
@@ -155,7 +166,7 @@ image are different acts", but it is a judgement call and it is yours.
 Every one of these is paid in a spurious warning or a refusal. **None is paid in a leak** — that is the
 invariant the whole design is built to hold.
 
-**4. FIVE measurements the plan must take before this ships — two of which could change the DESIGN, not
+**5. FIVE measurements the plan must take before this ships — two of which could change the DESIGN, not
 just its tuning.**
 
 | Measurement | Risk | Could it change the design? |
@@ -390,20 +401,20 @@ same six lines removes the class:
   image is returned as a success**. Ordering is the whole defence: reject a degenerate `W1` before the
   yardstick can turn it into an empty mask set. *(Panel round 9, Fold Auditor.)*
 
-  ⚠ **This guard is DEFENCE IN DEPTH, and it is kept knowingly rather than because nothing else covers
-  the case.** Traced against the rest of the design, every path from a degenerate `W1` does already end in
-  a refusal: window scope's crop goes empty (`E = W1`), and element scope hits the size-mismatch rule
-  because a degenerate `W1` cannot equal a valid `W2`. So it is redundant, and an earlier draft's
-  justification for it — that element scope had an uncovered path — was wrong. *(Panel rounds 11 and 13,
-  which traced it correctly.)*
+  ⚠ **This guard is LOAD-BEARING. An earlier draft called it redundant defence-in-depth, and that was
+  WRONG — the claim it rested on has been false since round 11.** The claim was: "every path from a
+  degenerate `W1` already ends in a refusal", via window scope's empty crop and element scope's
+  size-mismatch rule. **Element scope's size-mismatch rule does not refuse.** Round 11 changed it to
+  retry-then-fall-back-to-the-scrape, and it says so explicitly: *"There is no terminal refusal on this
+  path."* So without this guard:
 
-  It stays anyway, for one reason: **what it guarantees is that a DROPPED MASK SET never reaches a
-  caller, and that guarantee should not rest on a three-rule interaction.** Those three rules have each
-  been rewritten during this review, one of them three times. A single check at the source costs one
-  comparison and cannot be invalidated by a later change to the retry, fallback or crop logic — all of
-  which sit downstream of it and all of which have changed since it was added. That is the correct trade
-  for a leak-class guarantee, and it is a judgement call rather than a necessity, which is why it is
-  labelled as one.
+  a degenerate `W1` → degenerate yardstick → **the whole mask set is dropped** → element scope sees
+  `W1.Size != W2.Size` → retries → exhausts → **falls back to the scrape and returns an UNMASKED image.**
+
+  Rounds 11, 13 and 23 each re-derived the redundancy claim without re-checking that the rule it depended
+  on had changed underneath it. *(Panel round 25, Completeness Sweep — found by auditing the document's
+  claims of completeness rather than its mechanics, which is why three rounds of mechanical review missed
+  it.)*
 
 ⚠ **A MINIMIZED window is NOT caught by an extents check, and must be re-tested at capture time.** F6
 measured the placeholder rect Windows gives a minimized window: `-32000,-32000` with extents `160x28` —
@@ -423,8 +434,13 @@ because nothing guarded the degenerate window on either path.)*
 
 **Three rules that block is enforcing, each of which was a defect in an earlier draft:**
 
-1. **`W1` on BOTH translations, never `W2`.** The element rect and the origin that translates it must
-   come from the same observation, going in and coming back out. Use `W2` on the way in and a pure MOVE
+1. **`W1` on both MASK-SIDE translations — `relative` and `absolute` — never `W2`.** The third
+   translation, `reported`, uses `W2` deliberately and is not covered by this rule; see the note on the
+   two rectangles below. *(Panel round 25: this rule said "BOTH translations, never `W2`" and flatly
+   forbade `W2`, which was correct when there were two translations and became a direct contradiction of
+   the pseudocode when round 21 added a third. An engineer following the numbered rule would have
+   overridden the algorithm.)* The element rect and the origin that translates it must come from the same
+   observation, going in and coming back out. Use `W2` on the way in and a pure MOVE
    misaligns the crop by the movement delta; use `W2` on the way back and the masks land off-target by
    the same amount, because `Encode`'s arithmetic is absolute and the masks were sampled alongside `E`.
    *(Panel rounds 5-7. Round 7's fold auditor traced it: window at `(-8,-8,1936,1036)` moving to
@@ -854,6 +870,8 @@ leaving the §1 refusals unmapped — an implementer would have invented a code 
 
 | Refusal | Code | Why that code |
 |---|---|---|
+| denylisted process, at geometry time (step 1b) | `TargetDenied` | unchanged; already thrown at `ScreenshotTools.cs:54`. Listed because this table claims completeness — see the note below it |
+| window ALREADY minimized, at geometry time (step 1b) | `ElementNotActionable` | unchanged; already thrown at `ScreenshotTools.cs:55`. Distinct from the capture-time row below, which catches a window that minimizes AFTER the walk |
 | `GetWindowRect(HWND)` returns FALSE | `ElementNotActionable` | the window was destroyed between the walk and the capture; there is no target left to act on. Named in §1 and missing from this table until round 24 — in a table that claims to list EVERY refusal, an omission is a contradiction, not a gap |
 | `W1` or `W2` has zero/negative extents | `ElementNotActionable` | the window has no renderable area; the same class as the existing minimized refusal |
 | window is minimized at capture time | `ElementNotActionable` | matches the pre-existing check at `ScreenshotTools.cs:55`, which uses exactly this code |
@@ -864,6 +882,12 @@ leaving the §1 refusals unmapped — an implementer would have invented a code 
 
 No new `ToolErrorCode` values are introduced. Every refusal reuses a code the agent contract already
 documents, so a caller that branches on today's codes needs no change to handle this feature.
+
+⚠ **This table enumerates the WHOLE refusal surface of the window/element path, not only the refusals
+this design ADDS** — that is why the pre-existing guards appear in it. The distinction matters because
+the table asserts completeness, and a claim of completeness turns an omission into a contradiction. Two
+rounds running have found it incomplete: round 24 was missing the `GetWindowRect`-FALSE row, round 25 the
+two geometry-time guards. *(Panel round 25, Fold Auditor.)*
 
 The session-level guard is unaffected and still runs first: `ScreenshotTools.cs:27-28` throws
 `CaptureUnavailable` when `IsDesktopRenderable()` is false, which covers the locked/disconnected desktop
@@ -1195,8 +1219,16 @@ for each failure, or NONE — not whether the area was "covered".)*
 
    ⚠ **With a checkable acceptance criterion, not just an instruction to be careful:** GDI handle count
    and user-object count for the server process must return to their starting values after a run of
-   repeated captures, including runs that hit each refusal path above (degenerate window, minimized
-   mid-capture, empty crop, timeout). Those are the paths where a handle leaks, because they exit early.
+   repeated captures, including runs that hit **every path that exits AFTER the bitmap is allocated at
+   canonical step 6b** — namely: a null GDI handle during acquisition, a timeout, and an empty crop.
+
+   ⚠ **The degenerate, minimized and window-scope-resize refusals are NOT in that list, and cannot be.**
+   They all exit at canonical steps 2, 5 or 6 — before step 6b allocates anything — so there is no handle
+   for them to leak. An earlier version of this risk listed two of them and demanded handle-leak tests for
+   guards that hold no handles, because it was written before round 18 established the canonical order.
+   *(Panel round 25, Completeness Sweep. Its finding was right and its proposed correction — add the
+   window-scope resize refusal — was wrong for exactly the reason it had just given about the other two:
+   that refusal also precedes allocation.)*
    Measure with the process's handle counters before and after; flat is the pass condition.
    *(Panel round 9, Completeness Critic: the second of two items marked NEITHER.)*
 5. **The uniform-colour detector's sampling** — full-bitmap versus a grid — is a cost/accuracy tradeoff
@@ -2004,3 +2036,44 @@ and the lens answers. A verdict is not the whole report.
   Both are closed.
 
 **Verified, not folded:** `ScreenshotTools.cs:49` is the full-desktop `CaptureRectangle` call, as cited.
+
+### AGY-AFTER adversarial panel — round 25 (confirmation round)
+
+Seats: Fold Auditor (round 24's single edit, and the refusal table's COMPLETENESS claim rather than just
+the new row), **Completeness Sweep** (find every claim of completeness in the document — "every", "all",
+"exhaustive", "no other" — and verify each against what it enumerates), Convergence Assessor fifth pass.
+Report: `.clavity/scratch/item8-panel/agy-round25.md`. **Verdict: NOT GREEN. Five folds, and the round
+fully justified refusing round 24's green.**
+
+- **A conclusion held for three rounds was FALSE, and it made a leak reachable.** The degenerate-`W1`
+  guard was labelled redundant defence-in-depth on the claim that "every path from a degenerate `W1`
+  already ends in a refusal". Element scope's size-mismatch path does NOT refuse — round 11 changed it to
+  retry-then-scrape-fallback and says so in as many words. So without the guard: degenerate `W1` →
+  degenerate yardstick → whole mask set dropped → retries exhaust → **scrape returns an UNMASKED image.**
+  Rounds 11, 13 and 23 each re-derived the redundancy claim without re-checking the rule underneath it.
+- **The ratify section omitted a PERMANENT resource leak.** A blocked `PrintWindow` holds a threadpool
+  thread, an HDC and two bitmaps forever — a bounded wait lets the request return but reclaims nothing,
+  since a blocked Win32 call cannot be cancelled. Repeated captures of a hung window degrade the server
+  until restart. That is the design's most serious operational cost if risk 2 measures positive, and the
+  operator was never shown it.
+- **The refusal table was incomplete for the second round running** — missing both geometry-time guards
+  (`TargetDenied`, already-minimized). It now also states explicitly that it enumerates the whole refusal
+  surface, not just new refusals, which is why pre-existing guards belong in it.
+- **A numbered rule contradicted the pseudocode it governs.** Rule 1 said "`W1` on BOTH translations,
+  never `W2`" — correct for two translations, and a direct contradiction once round 21 added a third that
+  uses `W2` on purpose. An engineer following the rule would have overridden the algorithm.
+- **Risk 4 demanded handle-leak tests for guards that hold no handles.** Its list predated the canonical
+  order: degenerate, minimized and window-scope-resize all exit BEFORE step 6b allocates anything. The
+  list is now the three paths that exit AFTER allocation. *(Its finding was right and its proposed
+  correction — add the window-scope resize refusal — was wrong for the identical reason it had just
+  given about the others.)*
+
+**The Convergence Assessor's diagnosis is the round's most valuable output, and it is accepted:** the
+mechanics have converged while the JUSTIFICATIONS have not. Fixing a rule in one section repeatedly left
+its rationale in another section pointing at a version of the design that no longer exists. Four of this
+round's five findings are exactly that shape — not wrong mechanics, but a correct mechanic defended by a
+stale reason. **That is why the Completeness Sweep found what twenty-four rounds of mechanical review did
+not: it audited the document's CLAIMS rather than its BEHAVIOUR.**
+
+**Verified, not folded:** F6's minimized-placeholder measurement (`-32000,-32000`, extents `160x28`) is
+in this document's own evidence table, measured by `rect-probe.ps1`.
