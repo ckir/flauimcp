@@ -390,7 +390,34 @@ Expected: PASS, 0 failed. Build must be 0 warnings / 0 errors.
 
 - [ ] **Step 7: Prove the gate is non-vacuous with a logic mutant**
 
-Temporarily move `CaptureMethod` to sit before `Redactions` in the record. Re-run `CaptureResultShapeTests`. Expected: `The_positional_order_is_append_only` FAILS. **Revert.**
+⚠ **The mutant this step used to specify — moving `CaptureMethod` before `Redactions` — does NOT prove
+what this test exists to prove, and it was run before this was noticed.** MEASURED: it produces a BUILD
+failure (`CS1503`), because the *other* test's literal args (`0` then `"printWindow"`) stop type-checking
+against the new `string, int` order. The whole test assembly then fails to compile, so
+`The_positional_order_is_append_only` **never executes**. A structural break proves only that the symbol
+was referenced — the repo's standing rule — and here the compiler, not the test, did the catching.
+
+**Use a mutant the compiler CANNOT see.** Swap two *same-typed adjacent* fields — the exact hazard the
+test was written for, since `X/Y/W/H` are four interchangeable `int`s:
+
+```csharp
+public sealed record CaptureResult(byte[] Png, int Y, int X, int W, int H, double ScaleApplied, int Redactions,
+```
+
+Re-run `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureResultShapeTests"`.
+
+MEASURED expected result — the solution **builds cleanly**, and then:
+
+```
+The_positional_order_is_append_only [FAIL]
+  Assert.Equal() Failure: Collections differ
+                 ↓ (pos 1)
+  Expected: ["Png", "X", "Y", "W", "H", ···]
+  Actual:   ["Png", "Y", "X", "W", "H", ···]
+Failed!  - Failed: 1, Passed: 1, Total: 2
+```
+
+**Revert** (`git checkout -- src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs`) and confirm 2 passed.
 
 - [ ] **Step 8: Commit**
 
