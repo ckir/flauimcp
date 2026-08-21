@@ -25,7 +25,26 @@ result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects
 ```
 
 `CaptureWindow` owns the `PrintWindow` acquisition, the crop, and the **`W2`-side** guards — a failed
-`GetWindowRect`, a degenerate `W2`, minimized-at-capture, and DETECTING a size mismatch. **The `W1`-side
+`GetWindowRect`, a degenerate `W2`, minimized-at-capture, and DETECTING a size mismatch.
+
+⚠ **"Owns" means COMPOSES, not "contains as inseparable code" — and the difference decides whether this
+design's own tests can be written.** The Testing section requires HEADLESS tests for the element-crop
+invariant and for the clamp path. Both live in the crop. If the crop is inseparable from a component that
+calls `GetWindowRect` and `PrintWindow`, those tests cannot exist: the spec would be mandating tests
+against an architecture that forbids them. So the decomposition is fixed here rather than left to the plan:
+
+- **The crop is a PURE function** of `(bitmap dimensions, E, W1, W2)` returning `(effective, absolute,
+  reported)`. It touches no OS handle and no bitmap content, so a headless test calls it directly with
+  synthetic numbers and asserts every case the design cares about — grown, shrunk, moved, empty, degenerate.
+- **The acquisition is behind an injectable interface**, so `CaptureWindow` itself can also be exercised
+  headlessly against a fake that returns a synthetic bitmap.
+- `CaptureWindow` composes those two plus the guards. Only the real acquisition implementation is
+  Desktop-category.
+
+*(Panel round 23, Seam Tracer and Convergence Assessor, which reached this from opposite ends: the join
+between the testing section's headless claim and the seam's ownership statement was broken. Round 18 had
+justified headless testability on the assumption that the crop sat OUTSIDE the seam — true when that fold
+was written, and made false by rounds 16-17 moving the crop inside it. Neither round re-checked the other.)* **The `W1`-side
 guard is the CALLER's**, because it must run before the yardstick is computed and the yardstick is
 computed before this seam is ever invoked; see the canonical order. *(Panel round 19, Executable-Path
 Auditor: an earlier version said the seam owned "the guards that need only `W1`/`W2`", which assigned it a
@@ -1032,7 +1051,9 @@ should accept knowingly rather than inherit silently. *(Panel round 1, BS-1.)*
 
   ⚠ **Carrying an `HWND` in `CaptureGeometry` does NOT break that**, though it looks as though it should.
   The handle is data passed THROUGH the geometry and mask logic to the acquisition seam; nothing between
-  the walk and the seam dereferences it. A headless test constructs a `CaptureGeometry` with any handle
+  the walk and the seam dereferences it. ⚠ **This argument covers the geometry and mask logic only.** What
+  keeps the CROP headless-testable is a separate property — that it is a pure function of numbers, stated
+  under "The problem" — and an earlier version of this note was read as covering both. *(Panel round 23.)* A headless test constructs a `CaptureGeometry` with any handle
   value and a fake acquisition, and every crop, yardstick and mask assertion still runs. Only the seam
   itself needs a real window, which is exactly the split the injectable acquisition buys.
   *(Panel round 18, Fold Auditor, which flagged the coupling as breaking headless testability — it does
@@ -1915,3 +1936,38 @@ Four folds:
 fallback scrape reaches neither two-stage detector, a full-desktop scrape gets `desktopCanvasUniform`, and
 the element-canvas detector cannot be invoked without the window-sized bitmap it needs. That was round
 21's broken join; it is now traced closed rather than assumed closed.
+
+### AGY-AFTER adversarial panel — round 23
+
+Seats: Fold Auditor (round 22's edits), Seam Tracer third pass, Convergence Assessor third pass. Report:
+`.clavity/scratch/item8-panel/agy-round23.md`. **Verdict: NOT GREEN — but the shape of the round changed.**
+ONE fold, and two firsts:
+
+- **THE ONE FOLD: the spec mandated tests its own architecture forbids.** The Testing section requires
+  HEADLESS tests for the element-crop invariant and the clamp path; the seam ownership statement put the
+  crop inside a component that calls `GetWindowRect` and `PrintWindow`. Both were correct when written —
+  round 18 justified headless testability while the crop sat OUTSIDE the seam, and rounds 16-17 moved it
+  inside without either round re-checking the other. Resolved by fixing the decomposition here: **the crop
+  is a PURE function of numbers**, the acquisition is behind an injectable interface, and `CaptureWindow`
+  COMPOSES them. Only the real acquisition is Desktop-category.
+
+- **FIRST: the Fold Auditor returned NO NEW FINDINGS.** That seat had found a defect in the previous
+  round's fix in nineteen of twenty-two rounds. It traced round 22's four edits and confirmed each: both
+  rectangles reach `Encode`, no consumer reads the wrong one, the ratify row is correctly scoped, the
+  `dpiScale` divergence is documented, the grep is precise.
+
+- **FIRST: the Seam Tracer reported FIVE joins sound and one broken.** Sound: `reported` ↔ `dpiScale` ↔
+  the metadata table; the ratify table ↔ all three regressions' home sections; `captureWarnings` ↔ every
+  refusal path (refusals terminate before warnings are assembled); risk 2's timeout budget ↔ the retry
+  bound (mutually exclusive per attempt — the sizes-disagree path exits BEFORE `PrintWindow` is called, so
+  the two budgets never multiply); the `CaptureWarning` type ↔ the metadata projection ↔ the tool
+  description enumeration.
+
+**What that changes.** Every earlier round's findings were spread across the design; this round's single
+finding was at the one join nobody had traced, and every other join traced clean. The two seats that had
+been most productive — fold auditing and join tracing — now disagree with each other about whether
+anything is left, which is the first time the panel's own signals have converged rather than one lens
+carrying the round.
+
+**Verified, not folded:** `PerceptionManager.cs:883` and `:915` are exactly as cited — `target` resolves
+to the element when `@ref` is present, and `captureBounds` is read from `target.BoundingRectangle`.
