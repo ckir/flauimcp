@@ -169,6 +169,22 @@ supposed to judge. *(Panel round 1, AB-1.)*
 
 ## WHAT THE OPERATOR IS BEING ASKED TO RATIFY
 
+✅ **ALL FIVE WERE RATIFIED BY THE OPERATOR ON 2026-08-21, THREE OF THEM WITH MODIFICATIONS.** This
+section is now a RECORD of decisions taken, not an open question. Each item below carries its disposition
+inline. In summary:
+
+| # | Disposition | What changed |
+|---|---|---|
+| 1 | accepted **with a modification** | an occlusion audit signal on the EXISTING `IAttentionSignal` seam, flag-gated OFF by default (§2.6) |
+| 2 | accepted **with a modification** | window scope RETRIES before refusing, matching element scope; refuses only on exhaustion, never falls back to the scrape |
+| 3 | accepted **conditionally, in stages** | measure first; if it blocks, dedicated thread + per-HWND circuit breaker; the out-of-process worker is ROADMAP debt, not built here |
+| 4 | **REJECTED as written** | "none is paid in a leak" was FALSE — the relayout leak is real and is now closed by the bookend walk (§2.5) |
+| 5 | accepted **with additions** | two measurements added: the bookend's cost and static-window behaviour, and the OCR path's yardstick regression |
+
+Items 1, 2, 4 and 5 came out of an AGY-FIRST consult run after the panel closed; item 4 was the peer's
+finding and thirty panel rounds had missed it. The OCR third-caller defect in item 5 was found by the
+driver while verifying this spec's own citations against the code.
+
 **Read this section and nothing else if you are deciding whether to build this.** Everything below is a
 deliberate acceptance, not an oversight, and each is argued at the section named. This section exists
 because a review round pointed out that the spec told itself not to bury these and then buried them.
@@ -184,7 +200,7 @@ The existing denylist and refusal guards still hold, so this is not a hole; it i
 
 | What regresses | Today | After | Argued in |
 |---|---|---|---|
-| A **window-scope** capture of a window that resized mid-capture **and has redactable content** | returns an image | **REFUSED** | §1, resize policy |
+| A **window-scope** capture of a window that resized mid-capture **and has redactable content** | returns an image | **RETRIED, then REFUSED on exhaustion** | §1, resize policy |
 | An element whose hardware-accelerated viewport fails to render | scrape composites it correctly | black crop + `elementCanvasUniform` warning | §3 |
 | An open menu or tooltip belonging to the target | scrape captures it where it overlaps | absent under `PrintWindow`; `popupsNotRendered` warning | risk 8 |
 
@@ -193,6 +209,21 @@ it retries, and on exhaustion falls back to the scrape (§1). An earlier version
 "REFUSED" without the scope qualifier and so overstated the regression against a path the design
 explicitly recovers on. *(Panel round 22, Seam Tracer — the join between this summary and the section it
 summarises.)*
+
+⚠⚠ **RATIFIED WITH A MODIFICATION — OPERATOR DECISION, 2026-08-21. Window scope now RETRIES FIRST.**
+The design as panelled refused on the FIRST size mismatch while element scope retried for the IDENTICAL
+condition, and that asymmetry was unjustified: the retry loop already exists, so refusing immediately
+turned a transient — a window dragged or snapped once — into a hard failure for nothing. Window scope with
+a non-empty mask set now re-walks and retries on the same bound as element scope, and REFUSES only on
+exhaustion.
+
+**It does NOT fall back to the scrape on exhaustion, and that difference from element scope is the whole
+point.** A scraped image of a reflowed window carries the SAME stale masks; changing the acquisition
+mechanism does not fix a mask problem. Element scope may fall back because its failure is a geometry
+mismatch on an image that is otherwise sound; window-scope-with-masks may not, because its failure IS the
+mask set. *(AGY-FIRST consult, 2026-08-21: the driver and the peer reached the retry conclusion
+independently and without seeing each other's read; the peer supplied the exhaustion reasoning when asked
+directly what window scope does when the bound runs out — its first answer had omitted it.)*
 
 The first row is still the one to weigh: it is a deliberate choice to refuse rather than return an image
 whose redaction masks may have moved. It also means the design **tolerates stale masks it cannot detect while
@@ -210,14 +241,64 @@ the leak does not exist. If it does block, this is the design's most serious ope
 missing from this list. *(Panel round 25, Completeness Sweep — found by checking this section's own claim
 that "everything below is a deliberate acceptance" against the acceptances actually made elsewhere.)*
 
+⚠⚠ **RATIFIED CONDITIONALLY AND IN STAGES — OPERATOR DECISION, 2026-08-21.** The disposition depends on
+the measurement, and the measurement comes first:
+
+- **If `PrintWindow` does NOT block** (risk 2's probe) — this item evaporates. Build nothing.
+- **If it DOES block** — ship v1.0 with TWO cheap containments, and file the full fix as tracked debt:
+  1. **Run the `PrintWindow` call on a DEDICATED BACKGROUND THREAD, not a threadpool thread.** Today
+     `ScreenshotTools.cs:58` is `Task.Run(...)`, so a blocked call consumes a bounded CLR threadpool slot;
+     a hung target could therefore degrade every OTHER tool in the server, not just capture. A dedicated
+     `Thread` with `IsBackground = true` leaks a thread instead, and a background thread does not block
+     process exit.
+  2. **A per-HWND CIRCUIT BREAKER.** Remember a window whose capture timed out and route subsequent
+     captures of that window straight to the scrape for a cooldown, so N captures of a hung window cost
+     ONE leak rather than N. This is what bounds the *cumulative* degradation the paragraph above
+     describes.
+
+⚠ **Both of those CONTAIN; neither RECLAIMS — and the spec says so rather than implying otherwise.** The
+blocked call still holds its thread, its HDC, its GDI bitmap and its managed bitmap forever. The peer was
+asked to account for these two against its own proposal and answered honestly against its own interest:
+both reclaim **nothing**. Only killing a separate process reclaims, because only the OS can take those
+handles back.
+
+**The full fix — running the acquisition in a sacrificial out-of-process worker terminated on timeout — is
+therefore CORRECT and is NOT being built in this subproject.** It reclaims everything; it also costs IPC,
+bitmap serialization across a process boundary, child-process lifetime management, and a second DPI-aware
+CLR process that must be on the right desktop and session. Building that for a hazard that is still
+UNMEASURED is disproportionate. **It is filed as ROADMAP debt, to be built if and only if the measurement
+confirms the block and the containments prove insufficient in practice.** *(AGY-FIRST consult,
+2026-08-21: the peer proposed the worker and was right about what it buys; the driver's objection was
+proportion, not mechanism, and the operator settled it as staged.)*
+
 **4. Accepted false positives and false negatives.**
 - A window that is genuinely one uniform colour is warned about incorrectly (§3).
 - An element crop that is legitimately solid is warned about incorrectly (§3).
-- A window that grew without reflowing is refused even though its masks were fine (§1).
-- Movement and internal relayout WITHOUT a size change stay undetectable and unwarned (§2).
+- A window that grew without reflowing is retried and then refused even though its masks were fine (§1).
 
-Every one of these is paid in a spurious warning or a refusal. **None is paid in a leak** — that is the
-invariant the whole design is built to hold.
+Each of those three is paid in a spurious warning or a refusal — never in a leak.
+
+⚠⚠ **A FOURTH BULLET USED TO SIT HERE AND IT WAS LEAK-CLASS, WHICH MADE THIS SECTION'S HEADLINE CLAIM
+FALSE.** The bullet read: *"Movement and internal relayout WITHOUT a size change stay undetectable and
+unwarned"*, and the paragraph beneath it claimed **"none is paid in a leak"**. Those cannot both be true.
+
+A window can reflow massively without its outer rectangle changing size at all — a single-page app
+navigating, an accordion expanding, a splitter dragged, a virtualized list scrolling. `W1.Size ==
+W2.Size` holds throughout, so the resize guard never fires, and mask rects sampled during the walk are
+painted over the WRONG REGIONS of an image composed afterwards. Sensitive content is exposed, silently,
+with no warning and no refusal. That is a leak, and it is exactly the failure class SP4 existed to close.
+
+**This is PRE-EXISTING** — it is true today under the scrape, and item 8 does not create it. The repo
+documents the race in its own words at `PerceptionManager.cs:931-934`: *"if the window moves mid-walk,
+live mask rects land against a stale capture rect … that race is inherent to capturing a moving window."*
+Being pre-existing is not a disposition in this project.
+
+**RATIFIED — OPERATOR DECISION, 2026-08-21: the leak is CLOSED, by the BOOKEND VALIDATION WALK specified
+in §2.5.** The headline claim is restored to true rather than deleted: after §2.5, every accepted false
+positive and false negative in this design is paid in a spurious warning or a refusal, and **none is paid
+in a leak**. *(AGY-FIRST consult, 2026-08-21: the peer REJECTED this item outright and was right to — the
+sharpest finding of the consult, and one thirty panel rounds did not make. The driver verified the
+mechanism against the repo's own comment rather than folding the claim on assertion.)*
 
 **5. FIVE measurements the plan must take before this ships — two of which could change the DESIGN, not
 just its tuning.**
@@ -229,6 +310,8 @@ just its tuning.**
 | Does a Chromium browser render? Does an Electron app? (both, separately) | 1 | no — but a failure would narrow where the feature is usable |
 | Do GDI handle counts stay flat across repeated captures, including every refusal path? | 4 | no — a pass/fail gate on the implementation |
 | What sampling strategy does the uniform-colour detector use? | 5 | no — tuning, with acceptance criteria already fixed in §3 |
+| What does the §2.5 bookend walk cost on a masked capture, and does it fire on a static window? | 9 | no — a pass/fail gate; a bookend that fires on a STATIC window is a livelock, not a guard |
+| Does the OCR path (`desktop_find_text` / `desktop_wait_for_text`) change behaviour under the new yardstick default? | 6 | no — a regression gate on a THIRD caller the spec had not counted |
 
 The first two are unmeasured and labelled as such throughout. *(Panel round 17, Pattern Hunter: this
 summary said "two things the plan must measure before this ships" while the risks section mandates five —
@@ -422,7 +505,9 @@ For window and element scope, in this order:
    — scraping the rect it used to occupy, which now shows whatever is behind it.
 6. **Resize check** — `W1.Size` vs `W2.Size`. On a mismatch, three different things happen, and only two
    of them leave this sequence:
-   - **window scope, mask set NON-EMPTY** → REFUSE. Leaves the sequence.
+   - **window scope, mask set NON-EMPTY** → the caller's retry loop, and **REFUSE on exhaustion — never
+     the scrape fallback.** Leaves the sequence. *(Operator ratification 2026-08-21; the design as
+     panelled refused here immediately. See ratification item 2.)*
    - **window scope, mask set EMPTY** → record a `windowResized` warning and **CONTINUE to the crop.**
      ⚠ It must continue: the crop is what discards the region a GROWN window added that the walk never
      inspected. Skipping it would hand `Encode` a `W2`-sized bitmap against a `W1`-sized rectangle —
@@ -459,7 +544,34 @@ For window and element scope, in this order:
    Tracer: the gate was stated in §3 and not repeated where the codes are defined or where the sequence
    runs them, so a reader arriving from the fallback path would look for an operand that does not exist.)*
 
-Full-desktop scope runs the scrape and steps 3 and 8 only, with the yardstick CLIPPED.
+9. **The BOOKEND VALIDATION WALK (§2.5) — in the CALLER, after the seam returns.** If `M1` (this
+   attempt's mask rect list) is non-empty, re-run the geometry walk to obtain `M2` and compare the two as
+   ordered sequences. Equal → return the result. Different → discard this attempt and retry; on
+   exhaustion take the scope's terminal outcome from the resize rule (element scope falls back to the
+   scrape, window scope with masks refuses `RedactionUnmaskable`).
+
+   ⚠ **It CANNOT run between steps 6b and 7 where it would be cheapest, and the reason is the
+   decomposition, not an oversight.** Steps 4-8 are all inside `CaptureWindow`; the geometry walk lives in
+   `PerceptionManager` and the seam holds a finished `CaptureGeometry` with no way to perform one — the
+   identical constraint that moved the retry loop to the caller under "The problem". So the second walk
+   runs after the seam has returned a completed `CaptureResult`.
+
+   ⚠ **The cost of that placement, stated rather than discovered: a mismatch WASTES a full encode.** The
+   PNG has already been composed and compressed by the time the caller learns the mask set moved. This is
+   accepted — the mismatch is the rare path, and the alternative is giving the seam the ability to walk
+   the UIA tree, which is the coupling this design spent five panel rounds removing.
+
+   ⚠ **`M1` empty → skip the walk entirely.** There is nothing that could have gone stale, and this is
+   what keeps the common case free.
+
+10. **The AUDIT SIGNAL (§2.6) — in the tool layer, after the result is final.** If the flag is enabled,
+    the method was `printWindow`, and the target was not the foreground window, call
+    `IAttentionSignal.Signal(handle)`. Never before this point: a signal raised earlier can appear in the
+    captured pixels on the scrape path.
+
+Full-desktop scope runs the scrape and steps 3 and 8 only, with the yardstick CLIPPED. It runs neither
+step 9 nor step 10: it has no `M1`/`M2` pair worth comparing across a whole desktop, and it bypasses no
+occlusion.
 
 #### The invariant that keeps masking correct — state it, do not assume it
 
@@ -712,16 +824,27 @@ Movement and internal relayout without a size change remain undetectable and are
 **What a detected size change DOES, settled here rather than deferred** — because it is the tool's
 behavioural contract, not an implementation detail, and the two scopes need different answers:
 
-- **Window scope: refuse if there are masks; capture and warn only if there are none.** An earlier
+- **Window scope: RETRY if there are masks and refuse only on exhaustion; capture and warn only if
+  there are none.** *(The retry half is the OPERATOR's ratification of 2026-08-21; the design as panelled
+  refused on the first mismatch. Everything below about WHY a masked resize cannot ship an image is
+  unchanged and is what makes the terminal outcome a refusal rather than a fallback.)* An earlier
   version said "capture and warn" unconditionally, on the grounds that the pixels are the window's own
   current content and merely newer than expected. **That was wrong, and it was a leak.** The mask rects
   were computed against the PRE-resize layout. A resize reflows content, so the masks no longer
   necessarily cover what they were sampled to cover, and the image comes back with sensitive regions
   partly or wholly unredacted — the failure class SP4 existed to close, arriving through the door this
   design opened. "Newer than expected" describes the pixels; it does not describe the masks. So:
-  - **mask set NON-EMPTY → REFUSE.** There is no honest image to return.
+  - **mask set NON-EMPTY → RETRY, then REFUSE on exhaustion.** Re-take the geometry-and-capture pair on
+    the same bound element scope uses. If a consistent pair is obtained, proceed normally with the fresh
+    `W1`/`E`/mask set — no warning, because nothing is stale. On exhaustion there is no honest image to
+    return, so refuse with `RedactionUnmaskable`.
+    ⚠ **On exhaustion window scope does NOT fall back to the scrape, and element scope does.** The
+    difference is not inconsistency: element scope's failure is a GEOMETRY mismatch against an image that
+    is otherwise sound, so a scrape genuinely offers something better than nothing. Window-scope-with-masks
+    has a MASK failure, and a scrape reproduces it exactly — the same stale rects painted over the same
+    reflowed content. Switching backends cannot fix a mask problem.
   - **mask set EMPTY → capture, and warn `windowResized`.** Nothing was going to be redacted, so no
-    misalignment is possible.
+    misalignment is possible. No retry: there is nothing to stabilise.
 
   ⚠ **The false-refusal cost is real and is accepted with its eyes open.** A window that grew from its
   right edge may not have reflowed at all, leaving every mask perfectly placed — and this rule refuses
@@ -898,6 +1021,99 @@ to `false`, and `PerceptionManager.cs:958` says why: the window-scoped value is 
 forgotten call site fails safe. A parameter defaulting the other way would let a missed call site silently
 reinstate the leak this whole section exists to close. *(Panel round 1, AB-3.)*
 
+### 2.5 The bookend validation walk — closing the relayout leak
+
+*(Added by OPERATOR RATIFICATION, 2026-08-21, closing ratification item 4. Not panelled: it postdates the
+thirty rounds. Treat it with the suspicion the rest of this document earned — it is the newest and least
+attacked idea here.)*
+
+**The problem it closes.** The `W1`/`W2` check detects the WINDOW changing size. It cannot detect the
+window's CONTENTS reflowing at a constant outer size — an SPA navigating, an accordion opening, a splitter
+dragged, a virtualized list scrolling. Mask rects sampled during the walk are then painted over the wrong
+regions of an image composed afterwards, and sensitive content is exposed with no warning and no refusal.
+See ratification item 4 for the full argument and for why "pre-existing" is not a disposition here.
+
+**The mechanic, and it is deliberately the same shape as `W1`/`W2`.** Where that check compares the window
+rect before and after, this one compares the MASK SET before and after:
+
+| | |
+|---|---|
+| `M1` | the mask rect list from the geometry walk that preceded the capture |
+| `M2` | the mask rect list from a SECOND geometry walk, run after the capture completes |
+
+After acquisition, re-run the geometry walk and compare `M2` against `M1` as an ORDERED SEQUENCE of
+rectangles. Equal → the mask set was stable across the capture window, so the rects describe the pixels
+that were composed; proceed. Different → the layout moved under the capture; **discard the attempt and
+retry on the same bounded loop**, and on exhaustion take that scope's terminal outcome from the resize
+rule above (element scope falls back to the scrape; window scope with masks refuses).
+
+**Three properties that make this affordable rather than clever:**
+
+1. **It costs NOTHING when the mask set is empty**, which is the common case. An empty `M1` needs no
+   second walk — there is nothing that could have gone stale. Skip it entirely.
+2. **It needs no new element plumbing.** An earlier form of this idea re-queried each redacted ELEMENT's
+   bounding rectangle, which would require `CaptureGeometry` to carry element identity it does not have
+   today — `PerceptionManager.cs:1106` is `pw.Add(resolution.Rect)`, and the element is gone by the next
+   line. Re-running the WHOLE walk and comparing the resulting lists reuses the retry primitive the design
+   already has, and compares exactly the artifact that matters.
+3. **It reuses the existing loop.** This is a third condition feeding the same bounded retry, alongside
+   the resize mismatch and the degenerate-`W1` transient.
+
+⚠ **WHAT IT DOES NOT DO, stated because the peer that proposed it initially claimed it did.** It does
+**not** mitigate risk 3's stale composition. There the PIXELS are older than the tree and a sensitive value
+can be revealed or hidden IN PLACE — the element's rectangle is mathematically identical before and after,
+`M1 == M2`, and the walk passes a capture that is genuinely stale. Asked directly, the peer conceded this
+without argument. **The bookend walk closes the RELAYOUT leak and nothing else.** Risk 3 remains
+unmitigated and one-sided, exactly as it was.
+
+⚠ **A false POSITIVE here costs a retry, not a refusal — until the bound runs out.** A window whose
+content legitimately animates under a constant outer size (a progress bar with a moving redacted label, a
+live-updating list) will differ on every walk and can exhaust the bound. That is the same livelock shape
+the resize retry has, and it is bounded the same way, but it is a NEW way to reach a refusal on a window
+that works today. **This is why the measurement in ratification item 5 asks whether the bookend fires on a
+STATIC window**: a bookend that reports a difference for a window nobody touched is not a guard, it is an
+outage, and it must fail the gate.
+
+### 2.6 The occlusion audit signal — closing the privacy widening
+
+*(Added by OPERATOR RATIFICATION, 2026-08-21, closing ratification item 1. Also not panelled.)*
+
+The privacy widening is accepted (see *Privacy posture*), and it is accepted WITH a human-perceptible
+audit signal rather than on the denylist alone. The reasoning that carried it: the process denylist
+protects named APPLICATIONS, not the operator's spatial assumption that what is not on screen is not being
+read. `captureMethod` is a machine-readable audit record, but it is delivered only to the agent, so it
+audits nothing for the person at the console.
+
+**The channel already exists and this design builds no new one.** MEASURED, after the driver wrongly
+asserted the server had no notification surface and the peer corrected it from the tree:
+
+- **`IAttentionSignal`** (`src/FlaUI.Mcp.Core/Attention/IAttentionSignal.cs`) — a best-effort seam,
+  `bool Enabled` + `void Signal(WindowHandle target)`, with a `NullAttentionSignal` binding and a
+  `CompositeAttentionSignal` fan-out that swallows a faulting child. Its doc comment states the contract
+  this use depends on: *"Signal is best-effort and MUST NEVER throw — a failed signal must not turn a tool
+  result into an error."*
+- It is already registered in DI at `src/FlaUI.Mcp.Server/Program.cs:147-158`, always with `FlashSignal`
+  and additionally with `TtsSignal` when `--autosound` is set, and it already carries a debounce
+  (`TtsDebounce(capacity: 3, window: 30s)`, `Program.cs:145-146`).
+
+**The rule.** After a SUCCESSFUL capture whose `captureMethod` is `printWindow`, if the target window was
+not the foreground window, call `IAttentionSignal.Signal(handle)`.
+
+⚠ **The trigger is the hard part, not the channel — and the chosen predicate deliberately OVER-signals.**
+`GetForegroundWindow() != hwnd` is cheap and uses the `HWND` this design already plumbs to the seam, but a
+non-foreground window can be perfectly visible side-by-side, so it fires on captures that revealed nothing
+hidden. It never MISSES a covered window, which is the direction that matters. Computing true occlusion
+would need a hit-test this server does not do, and it was rejected as disproportionate.
+
+⚠ **Because it over-signals, it is OFF BY DEFAULT, behind a `ServerOptions` flag in the shape of the
+existing `--autosound`.** Agents screenshot non-foreground windows constantly — that is the tool's normal
+use — so a signal on by default would be continuous noise, and a notification everyone learns to ignore is
+worse than none, which is the same AB-9 reasoning §3 turns on. An operator who wants the audit enables it.
+
+⚠ **It fires AFTER the capture returns, never before.** A signal raised before or during acquisition can
+appear in the captured pixels on the scrape path, and `GdiActionOverlay` in particular draws a real
+top-most window on the screen.
+
 ### 3. Failure policy — no gate, a diagnostic with recourse
 
 Given F2 (the API cannot report failure) and F4 (the obvious detector is unsound), the design does **not**
@@ -1045,7 +1261,8 @@ leaving the §1 refusals unmapped — an implementer would have invented a code 
 | `W1` or `W2` has zero/negative extents | `ElementNotActionable` | the window has no renderable area; the same class as the existing minimized refusal |
 | window is minimized at capture time | `ElementNotActionable` | matches the pre-existing check at `ScreenshotTools.cs:55`, which uses exactly this code |
 | element crop is empty (`effective` degenerate) **with `W1.Size == W2.Size`** | `ElementNotActionable` | the named element is not inside the pixels that were captured, so it cannot be acted on from this image. Scoped to the matching-size case because a shrink-induced empty crop is handled by the resize flow, which does not refuse |
-| window-scope resize with a NON-EMPTY mask set | `RedactionUnmaskable` | this is precisely that code's meaning — the redacted regions cannot be reliably located — and it is the code SP4 established for "refuse rather than return an under-masked image" |
+| window-scope resize with a NON-EMPTY mask set, **after retry exhaustion** | `RedactionUnmaskable` | this is precisely that code's meaning — the redacted regions cannot be reliably located — and it is the code SP4 established for "refuse rather than return an under-masked image". **Reached only on exhaustion** since the operator ratification of 2026-08-21; a single mismatch retries |
+| **§2.5 bookend mismatch (`M1 != M2`) after retry exhaustion**, either scope | `RedactionUnmaskable` | the mask set moved under the capture, so the rects cannot be reliably located against the pixels that were composed — the same meaning, reached by the other detector |
 | null/zero GDI handle | `CaptureUnavailable` | environmental capture failure, matching the scrape path (`ScreenCapture.cs:40-41`) |
 | desktop not renderable | `CaptureUnavailable` | unchanged; already thrown at `ScreenshotTools.cs:27-28` |
 
@@ -1240,6 +1457,14 @@ The existing guards continue to hold: `geo.Denied` blocks denylisted processes (
 and the full-desktop denylist refusal is untouched. So this is not a hole. It is a widening the operator
 should accept knowingly rather than inherit silently. *(Panel round 1, BS-1.)*
 
+✅ **RATIFIED 2026-08-21, WITH A MODIFICATION: the widening is accepted TOGETHER WITH an audit signal,
+specified in §2.6.** The argument that carried the modification is that the guards named above protect
+named APPLICATIONS, while what the widening actually changes is the operator's spatial assumption that
+what is not on the screen is not being read — and a denylist has nothing to say about that. `captureMethod`
+records every occlusion-bypassing capture, but it records it to the AGENT, so it audits nothing for the
+person at the console. §2.6 routes a human-perceptible signal through the seam the server already has,
+flag-gated off by default because the honest trigger over-signals.
+
 ## Testing
 
 - **Headless** cannot exercise `PrintWindow` — it needs a real window. The seam makes this tractable:
@@ -1266,6 +1491,18 @@ should accept knowingly rather than inherit silently. *(Panel round 1, BS-1.)*
   and it is the regression test for the defect round 2's fix introduced.
 - **Desktop-category:** capture an occluded window and assert it is not the occluder's pixels. The probe
   shows this is stageable — a second window over the target, then compare against a known control.
+- **The bookend walk (§2.5) needs TWO headless tests**, because it has two failure directions and only
+  one of them is obvious: an `M1 != M2` pair must trigger a retry, and an `M1 == M2` pair on a static
+  window must NOT — a bookend that fires on a window nobody touched is an outage, not a guard. Both are
+  pure list comparisons once acquisition is injectable.
+- **The bookend's empty-`M1` short circuit needs a test** proving no second walk is performed when the
+  mask set is empty. That is the property keeping the common case free, and it is invisible if it breaks.
+- **The audit signal (§2.6) needs a headless test** against a fake `IAttentionSignal`, asserting it fires
+  for a non-foreground `printWindow` capture with the flag ON, does not fire with the flag OFF, and does
+  not fire on the scrape path. `NullAttentionSignal` and `CompositeAttentionSignal` already give the test
+  a seam to bind.
+- **The OCR path (risk 6) needs a regression test** pinning what `desktop_find_text` passes for the
+  yardstick switch, since it is a third caller that inherits every default this design adds.
 - **Every new gate needs a logic mutant** that turns that specific test red. Repo rule, no exceptions.
 
 ⚠ **Three failures in this design have NO test that would go red. Named, because an untested guard is a
@@ -1405,8 +1642,24 @@ for each failure, or NONE — not whether the area was "covered".)*
    *(Panel round 9, Completeness Critic: the second of two items marked NEITHER.)*
 5. **The uniform-colour detector's sampling** — full-bitmap versus a grid — is a cost/accuracy tradeoff
    the plan settles, with a measurement, not a guess.
-6. **`ScreenCapture.CaptureRectangle` has one other caller** (full-desktop, `ScreenshotTools.cs:49`). The
-   plan must confirm the signature change does not alter its behaviour. **The change itself is now
+6. **`ScreenCapture.CaptureRectangle` has THREE other callers, not one — and the third path is a SCOPE
+   this spec never counted.** MEASURED with `grep -rn "CaptureRectangle" --include=*.cs src/ test/`:
+   `ScreenshotTools.cs:49` (full-desktop), and **`FindTextTools.cs:62` and `:110`** — the OCR path behind
+   `desktop_find_text` and `desktop_wait_for_text`. Those two reach the mask walk through
+   `ResolveTextCaptureGeometryAsync` (`PerceptionManager.cs:1134`), which calls
+   `ResolveWindowCaptureGeometryAsync(handle, null)` at `:1136` and so takes the DEFAULT of every
+   parameter this design adds to that method.
+
+   **So the OCR path is a third caller of BOTH methods item 8 changes**, and the yardstick default flips
+   underneath it: today it always clips to the virtual screen, and after §2 it would not. For a window
+   sitting PARTIALLY off-screen that changes which masks the walk judges as escalation-worthy, on a
+   shipped feature that is not in item 8's scope and still SCRAPES.
+
+   The plan must decide that path explicitly rather than inheriting a default, must pass it a scope that
+   evaluates NO detector (it is neither full-desktop nor a `printWindow` capture), and must carry a
+   regression test. *(Found by the driver during plan-time citation verification, 2026-08-21 — not by any
+   of the thirty panel rounds. An earlier version of this entry said "one other caller", which is the
+   completeness-claim failure this document has now made four times.)* **The change itself is now
    SPECIFIED rather than deferred, and it is NOT the one an earlier draft named:** `clipToVirtualScreen`
    rides the GEOMETRY call, not this one (§2). What `CaptureRectangle` actually gains is the ability to
    tell full-desktop from a fallback scrape, and to accept the caller's accumulated warning list — see
@@ -1466,6 +1719,51 @@ to the tree is guidance it would otherwise lack.
 ⚠ **agy's unique-colour signal was never verified** — the probe that would have measured it was stopped.
 If the plan wants to use unique-colour count as the warning trigger, **it must measure the claim first**:
 that a failed render yields exactly one unique ARGB value while a dark-themed success yields hundreds.
+
+### AGY-FIRST consult — the five ratification items (2026-08-21, AFTER the panel closed)
+
+Brief: `.clavity/seams/item8-ratification.md`. Reports: `.clavity/scratch/item8-ratify/agy-ratification.md`
+and `…-r2.md`. Two rounds — an independent read of all five items, then one AGY-NEGOTIATE turn on the two
+material disagreements. Tree verified clean before and after; no review-only breach.
+
+**The peer's calls:** item 1 accept-with-modification (an audit signal); item 2 **reject** (the
+window/element asymmetry is unjustified); item 3 accept-with-modification (an out-of-process worker);
+item 4 **reject** ("none is paid in a leak" is false); item 5 accept-with-additions.
+
+**What was folded, and why each survived verification:**
+
+- **Item 4 is the consult's most valuable finding and thirty panel rounds missed it.** The peer showed the
+  section's headline claim was false: internal relayout at a constant window size is leak-class, not
+  warning-class. The driver did NOT fold it on assertion — the mechanism was checked against the repo's
+  own comment at `PerceptionManager.cs:931-934`, which documents exactly that race. Closed by §2.5.
+- **Item 2 was reached independently by both parties before either saw the other's read**, which is the
+  strongest signal in the consult. The peer's fix was INCOMPLETE — it never said what window scope does on
+  exhaustion — and answered that question directly it gave the right answer and the right reason: refuse,
+  do not fall back, because a scrape reproduces a mask failure rather than fixing it.
+- **Item 1's factual basis was the driver's error, corrected by the peer.** The driver asserted the server
+  had no notification surface, having grepped only for `toast|notifyicon|balloon`. The peer named
+  `Overlay/GdiActionOverlay.cs` and `Attention/TtsSignal.cs`; both exist and both are registered in
+  `Program.cs`. **The channel was free all along and the driver's objection was wrong.** What survived from
+  the driver's side was the TRIGGER problem, which the peer had not addressed and which is why §2.6 is
+  off by default.
+
+**Where the peer was overruled, and it was proportion rather than mechanism:**
+
+- **Item 3's out-of-process worker is CORRECT and is not being built.** Asked to account for it against two
+  cheaper containments, the peer answered honestly against its own proposal: a dedicated thread and a
+  per-HWND circuit breaker reclaim **nothing** — they contain. Only killing a process reclaims. That
+  accounting is accepted in full and is recorded in ratification item 3. It is still disproportionate to
+  build a second process for a hazard that has not yet been measured to exist, so the containments ship and
+  the worker is ROADMAP debt.
+- **The peer over-claimed its own best idea.** It offered the bookend walk as a mitigation for BOTH the
+  relayout leak and risk 3's stale composition. Asked whether a bounds re-query detects a value revealed
+  IN PLACE — where the rectangle is identical before and after — it conceded without argument that it does
+  not. §2.5 therefore claims the relayout leak and nothing else, and risk 3 stays unmitigated.
+
+**Process note.** Two of the five items turned on a bare factual claim, and in BOTH the party who was wrong
+was confident: the peer about `captureMethod` being sufficient (it is not, and it conceded), the driver
+about the notification channel (it exists, and the driver was refuted by the peer's own reading of the
+tree). Neither would have been caught without pointing the other at files rather than at conclusions.
 
 ### AGY-AFTER adversarial panel — round 1
 
