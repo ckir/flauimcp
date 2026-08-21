@@ -518,9 +518,19 @@ Expected: PASS — 14 passed.
 2. Change `if (w1.Size != w2.Size) return CaptureOutcome.Resized;` to
    `if (w1.Size != w2.Size && geo.MaskRects.Count > 0) return CaptureOutcome.Resized;` — i.e. restore the
    empty-mask-set shortcut panel round 11 removed.
-   Expected: `Window_scope_without_masks_still_reports_a_resize_rather_than_continuing` FAILS with
-   `Completed`. **That failure is the leak**: an image returned for a window whose layout reflowed, with a
-   mask set computed before the reflow.
+   Expected: **TWO tests FAIL, both with `Completed`** —
+   `Window_scope_without_masks_still_reports_a_resize_rather_than_continuing` **and**
+   `Element_scope_reports_a_resize_for_the_callers_retry_loop`.
+   **That failure is the leak**: an image returned for a window whose layout reflowed, with a mask set
+   computed before the reflow.
+
+   ⚠ **This step named only the first test until it was executed.** MEASURED: both go red, because
+   `Geo(capture, window, params Rectangle[] masks)` defaults `masks` to EMPTY, and both of those tests
+   call it without any — so both hit the restored `geo.MaskRects.Count > 0` shortcut. Exactly two tests
+   combine a resize with an empty mask set; the third resize test (`Geo(w1, w1, new Rectangle(10, 10, 50, 20))`)
+   passes a mask and is unaffected. **Second time in this plan a mutant's predicted red set was wrong —
+   Task 8's mutant 3 named a test that CANNOT fail, this one missed a test that must. Ask for the COMPLETE
+   red set, never for confirmation of the expected one.**
 3. Change `if (windowUniform)` back to `if (windowUniform && scope == CaptureScope.Window)` — i.e. restore the hole this design shipped with until 2026-08-21.
    Expected: `An_element_capture_of_a_blank_window_still_warns_uniformCanvas` FAILS with an EMPTY warning list. That empty list is the defect: a black crop returned to an agent with nothing saying so.
 4. Drop `&& !windowUniform` from the `elementCanvasUniform` condition.
