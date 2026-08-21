@@ -534,13 +534,13 @@ public enum CaptureOutcomeKind
 }
 
 /// <summary>What CaptureWindow returns. It WRAPS a CaptureResult rather than being one, because the seam
-/// has three outcomes and a CaptureResult can express only the first.
+/// has four outcomes and a CaptureResult can express only the first.
 ///
 /// ⚠ Not an exception: this is ordinary, expected control flow on a path the design does not refuse, and
 /// throwing here would collide with the ToolException conversions surrounding this code.
 /// ⚠ Not a null or sentinel CaptureResult: the caller must distinguish "resized" from "timed out" from
 /// any other empty outcome, and a sentinel collapses them.
-/// ⚠ The two signals carry NO payload. Retrying means a fresh UIA walk, which discovers the new geometry
+/// ⚠ The two EMPTY signals -- Resized and TimedOut -- carry NO payload. Retrying means a fresh UIA walk, which discovers the new geometry
 /// itself; nothing consumes a rectangle the failed attempt observed.</summary>
 public sealed record CaptureOutcome(CaptureOutcomeKind Kind, CaptureResult? Result,
                                     string? TransientReason = null)
@@ -567,15 +567,29 @@ Expected: PASS — 5 passed.
 
 - [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
 
-Temporarily delete the `TimedOut` enum member and its factory. Re-run. Expected: `There_are_exactly_four_cases` FAILS (and the file no longer compiles, which is the structural half — the count assertion is the behavioural half). **Revert.**
+⚠ **This step used to say "delete the `TimedOut` enum member and its factory", conceding in the same breath that "the file no longer compiles".** That concession is the defect, not a caveat: `CaptureOutcomeTests` references `CaptureOutcomeKind.TimedOut` directly, so deleting it fails the test assembly's build and `There_are_exactly_four_cases` **never executes**. A mutant that prevents the test from running proves nothing about the test — the repo's standing rule is a LOGIC mutant turning *that specific test* red. **This is the second instance of this exact mistake in Phase 1**; Task 6's was found and corrected the same way.
 
-⚠ **This step named `There_are_exactly_three_cases` until execution — a test that does not exist.** It, and this task's heading, were fossils from before `TargetTransient` was added as a fourth case; the code block was updated and the prose around it was not. An implementer following the old text would have gone looking for a test that was never written.
+**Use a mutant the compiler cannot see — ADD a fifth member** rather than removing one. Nothing references it, so everything still compiles, and only the count assertion can catch it:
+
+```csharp
+    TargetTransient,
+    /// <summary>MUTANT ONLY - delete after the run.</summary>
+    MutantFifthCase,
+}
+```
+
+Re-run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureOutcomeTests"`
+Expected: the solution **builds cleanly**, then `There_are_exactly_four_cases` FAILS with `Assert.Equal() Failure: Expected: 4, Actual: 5`, and the other four tests still pass (`Failed: 1, Passed: 4, Total: 5`).
+
+**Revert** with `git checkout -- src/FlaUI.Mcp.Core/Perception/CaptureOutcome.cs` and confirm 5 passed.
+
+⚠ **This step also named `There_are_exactly_three_cases` — a test that does not exist.** That, and this task's heading, were fossils from before `TargetTransient` was added as a fourth case; the code block was updated and the prose around it was not.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/FlaUI.Mcp.Core/Perception/CaptureOutcome.cs test/FlaUI.Mcp.Tests/Perception/CaptureOutcomeTests.cs
-git commit -m "feat(capture): CaptureOutcome - completed, resized, timed out"
+git commit -m "feat(capture): CaptureOutcome - completed, resized, timed out, target-transient"
 ```
 
 ---
