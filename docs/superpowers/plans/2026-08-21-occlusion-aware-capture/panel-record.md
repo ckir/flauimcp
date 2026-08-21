@@ -325,3 +325,28 @@ Only the operator may reverse it, and the same argument would apply to window sc
 
 **Refuted:** the direct answer's claim that item 18 would be "lost to the void" (committed at
 `ROADMAP.md:651`), and that `PerceptionManager.cs:1199`'s rethrow was unverified (measured this session).
+
+### Round 8's escalation — OPERATOR DECISION, and it reversed one of the review's own folds
+
+**The operator relaxed the resize refusal for BOTH scopes.** Ratification item 2 said window scope
+retries then refuses and never falls back, *because "a scrape reproduces a mask failure rather than fixing
+it"*. **Panel round 6 made that premise false**: `ScrapeAsync` now performs a FRESH desktop mask walk at
+capture time, so a fallback acquires its image and its mask set together.
+
+- **Both scopes now FALL BACK** on resize exhaustion, with `scrapeFallbackTargetChanging`.
+- **The BOOKEND mismatch still REFUSES**, both scopes. There the mask set is *proven* to have moved, which
+  is evidence rather than possibility, and no re-walk can make a moved mask set describe a frame already
+  composed. That distinction is the whole reason the two are treated differently.
+- Every target-state guard is untouched: degenerate, minimized, destroyed, denylisted.
+- The residual risk is unchanged and disclosed: `geo.Bounds` is still the pre-resize rect, so the captured
+  REGION may be stale even though its masks are not. That is §2's inherent walk-then-capture race.
+
+⚠ **The relaxation rests entirely on the fallback's masks being fresh, so that property now has its own
+test and its own mutant:** `A_fallback_scrape_uses_FRESH_masks_not_the_stale_target_set`, and the Task 17
+mutant list now says undoing round 6 must turn *that* test red before the relaxation can be trusted.
+`_desktopMasks` was also made **fail-closed** in the same pass — an unwired walk would silently restore
+the stale masks and turn the relaxation into a leak.
+
+**This is the value of the Adversary-of-the-Reviewer seat, stated for the next panel:** it was asked to
+name the fold most likely to be WRONG, and it named one of the review's own — correctly. Eight rounds of
+folds had left a guard standing whose reason had been removed two rounds earlier by another fold.

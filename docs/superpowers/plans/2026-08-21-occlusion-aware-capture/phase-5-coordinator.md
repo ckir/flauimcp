@@ -78,18 +78,23 @@ public class WindowCaptureCoordinatorTests
         Assert.DoesNotContain(r.Result.CaptureWarnings, w => w.Code == "windowResized");
     }
 
-    // ...and REFUSES on exhaustion. Never falls back to the scrape: a scraped image of a reflowed window
-    // carries the SAME stale masks, so switching backends cannot fix a mask problem.
+    // ...and on exhaustion FALLS BACK, with masks re-measured at capture time.
+    //
+    // ⚠ This REFUSED between panel rounds 4 and 8. The refusal existed because the mask rects were
+    // measured at T1 and painted onto a T2 scrape; `ScrapeAsync` now takes a FRESH desktop mask walk at
+    // T2, so image and masks are in sync and the refusal only cost a total outage on any animating window
+    // that happened to hold one redactable field. Operator decision, 2026-08-21, reversing part of
+    // ratification item 2 on evidence its own premise had become false.
     [Fact]
-    public async Task Window_scope_with_masks_refuses_on_exhaustion_and_never_scrapes()
+    public async Task Window_scope_with_masks_falls_back_on_exhaustion_with_fresh_masks()
     {
         var w1 = new Rectangle(0, 0, 800, 600);
         var mask = new Rectangle(10, 10, 50, 20);
         var c = Make(Walk(Geo(w1, w1, mask)), FakeWindowImageSource.Solid(Color.White),
                      _ => new Rectangle(0, 0, 900, 600));
-        var ex = await Assert.ThrowsAsync<ToolException>(() =>
-            c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0));
-        Assert.Equal(ToolErrorCode.RedactionUnmaskable, ex.Code);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("screenScrape", r.Result.CaptureMethod);
+        Assert.Contains(r.Result.CaptureWarnings, w => w.Code == "scrapeFallbackTargetChanging");
     }
 
     // Element scope on exhaustion DOES fall back -- its failure is a geometry mismatch on an image that
@@ -106,12 +111,13 @@ public class WindowCaptureCoordinatorTests
         Assert.Contains(r.Result.CaptureWarnings, w => w.Code == "scrapeFallbackTargetChanging");
     }
 
-    // ⚠⚠ ...BUT ONLY WHEN THERE IS NOTHING TO MASK. A resize reflows the WINDOW's layout regardless of
-    // which scope asked, so painting pre-resize mask rects onto a post-resize scrape under-redacts exactly
-    // as it would for window scope. The test above passes an EMPTY mask set, which is the population the
-    // fallback was justified by -- spinners, progress dialogs, expanding windows.
+    // ⚠ A NON-EMPTY MASK SET FALLS BACK TOO, and the masks it paints are FRESH. Between rounds 4 and 8
+    // this refused, on the reasoning that a resize reflows the window's layout so pre-resize rects
+    // under-redact a post-resize scrape. Round 6 removed the premise: `ScrapeAsync` re-walks the desktop
+    // at capture time. What still refuses is a BOOKEND mismatch, where the mask set is PROVEN to have
+    // moved and no re-walk can fix the frame already composed.
     [Fact]
-    public async Task Element_scope_WITH_masks_refuses_on_exhaustion_rather_than_scraping()
+    public async Task Element_scope_WITH_masks_falls_back_with_FRESH_masks_rather_than_refusing()
     {
         var w1 = new Rectangle(0, 0, 800, 600);
         var e  = new Rectangle(100, 100, 200, 150);
@@ -125,10 +131,10 @@ public class WindowCaptureCoordinatorTests
             scrape: (b, m, mw, s, warns) => { scraped = true; return new CaptureResult(Array.Empty<byte>(),
                 b.X, b.Y, b.Width, b.Height, 1.0, m.Count, "screenScrape", warns); });
 
-        var ex = await Assert.ThrowsAsync<ToolException>(() =>
-            c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0));
-        Assert.Equal(ToolErrorCode.RedactionUnmaskable, ex.Code);
-        Assert.False(scraped, "pre-resize masks must never be painted onto a post-resize scrape");
+        var r = await c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0);
+        Assert.Equal("screenScrape", r.Result.CaptureMethod);
+        Assert.True(scraped, "the fallback must run - its masks come fresh from the T2 desktop walk");
+        Assert.Contains(r.Result.CaptureWarnings, w => w.Code == "scrapeFallbackTargetChanging");
     }
 
     // The fallback must use the LAST attempt's geometry. Reusing the first would hand the scrape
@@ -443,16 +449,26 @@ public sealed class WindowCaptureCoordinator
         // pre-resize layout; a resize reflows content, so they no longer necessarily cover what they were
         // sampled to cover. A scrape reproduces that exactly -- the same stale rects over the same
         // reflowed content -- so switching backends cannot fix a MASK problem.
-        // ⚠ ONE GUARD, BOTH SCOPES. An earlier version had TWO consecutive refusals here -- this one
-        // qualified by `scope == CaptureScope.Window`, and an identical one below for element scope --
-        // which threw the same code with the same message. The scope condition was dead: the second
-        // caught everything the first did. Two guards that look different and do the same thing invite
-        // someone to change one of them. *(AGY-AFTER round 7, Guard-Consistency Auditor.)*
+        // ⚠⚠ NEITHER SCOPE REFUSES HERE ANY MORE — OPERATOR DECISION, 2026-08-21, REVERSING PART OF
+        // RATIFICATION ITEM 2 ON EVIDENCE THAT ITEM 2's OWN PREMISE HAD BECOME FALSE.
         //
-        // The reachability argument that makes a single test correct: window scope with an EMPTY mask set
-        // never arrives here at all -- `CaptureWindow` warns `windowResized` and continues to the crop --
-        // so the only callers are window-with-masks, element-with-masks, and element-without. The first
-        // two refuse for the same reason and the third falls back.
+        // The refusal existed because the mask rects were measured at T1 and the fallback scrape happened
+        // at T2, so a reflow in between could leave them covering the wrong content. `ScrapeAsync` now
+        // performs a FRESH desktop mask walk at T2 (panel round 6), so the fallback acquires its image and
+        // its mask set together and they are in sync. The skew this guard existed to prevent no longer
+        // exists on this path, and keeping the refusal cost a TOTAL OUTAGE for any animating window that
+        // happened to contain one redactable field — windows today's tool captures perfectly well.
+        //
+        // ⚠ WHAT STILL REFUSES, and why the distinction is real: a BOOKEND mismatch. There the mask set is
+        // PROVEN to have moved, which is evidence rather than possibility, and no fresh walk can make a
+        // moved mask set describe the frame that was already composed. Every target-state guard
+        // (degenerate, minimized, destroyed, denylisted) is untouched.
+        //
+        // ⚠ The residual risk is UNCHANGED and disclosed: `geo.Bounds` is still the T1 rect, so the
+        // captured REGION may be stale even though its masks are not. That is the inherent walk-then-
+        // capture race §2 has always accepted, and `scrapeFallbackTargetChanging` is what names it.
+        // *(AGY-AFTER panel over this plan, round 8, Adversary of the Reviewer — the seat asked to find
+        // the fold most likely to be WRONG, which found one of the review's own.)*
 
         // ⚠⚠ ELEMENT SCOPE WITH A NON-EMPTY MASK SET REFUSES TOO, and an earlier version of this plan
         // let it fall back. A resize reflows the WINDOW's layout regardless of which scope asked for the
@@ -466,10 +482,6 @@ public sealed class WindowCaptureCoordinator
         // different population. Spinners, progress dialogs and expanding windows -- the cases the fallback
         // was justified by -- carry NO redacted content, so they still fall back. Only a resizing window
         // that also holds something worth masking now refuses.
-        if (geo.MaskRects.Count > 0)
-            throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                "The window kept changing size, so its redacted regions cannot be reliably located.",
-                "wait for the window to settle, then retry, or capture a different window");
 
 
         // ELEMENT SCOPE, NOTHING TO MASK: fall back. Its failure is a GEOMETRY mismatch on an image that
@@ -610,8 +622,10 @@ Expected: PASS, 0 failed, build 0 warnings / 0 errors.
 
 - [ ] **Step 8: Prove the gates are non-vacuous with three logic mutants**
 
-1. Change `OnResizeExhausted`'s window-scope branch to fall through to `Scrape`.
-   Expected: `Window_scope_with_masks_refuses_on_exhaustion_and_never_scrapes` FAILS.
+1. Make `ScrapeAsync` use `geo.MaskRects` instead of the fresh desktop walk (i.e. undo round 6).
+   Expected: `A_fallback_scrape_uses_FRESH_masks_not_the_stale_target_set` FAILS — and that failure is
+   the whole justification for relaxing the resize refusal, so it is the one mutant in this task that
+   must be seen to go red before the relaxation is trusted.
 2. Change the degenerate branch to `throw` immediately instead of `continue`.
    Expected: `A_degenerate_W1_retries_rather_than_failing_terminally` FAILS.
 3. Hoist `warnings` outside the `for` loop and accumulate into it across attempts.
@@ -710,6 +724,34 @@ public class BookendWalkTests
         var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
         Assert.Equal("printWindow", r.Result.CaptureMethod);
         Assert.Equal(4, walks());
+    }
+
+    // ⚠⚠ THE TEST THE WHOLE RELAXATION RESTS ON. Both scopes now fall back on resize exhaustion instead
+    // of refusing, and that is only safe because the fallback re-measures its masks at capture time. If
+    // this ever goes green while `ScrapeAsync` uses the stale target set, the relaxation is a leak.
+    [Fact]
+    public async Task A_fallback_scrape_uses_FRESH_masks_not_the_stale_target_set()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var staleMask = new Rectangle(10, 10, 50, 20);
+        var freshMask = new Rectangle(400, 300, 60, 25);
+        IReadOnlyList<Rectangle> painted = Array.Empty<Rectangle>();
+
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(new CaptureGeometry(w1, new[] { staleMask }, false, false, null,
+                Array.Empty<MaskEscalationEntry>(), w1, new IntPtr(0x1234), false)),
+            FakeWindowImageSource.Solid(Color.White), new CaptureRetryOptions(2, 1000),
+            w2Probe: _ => new Rectangle(0, 0, 900, 600), minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => { painted = m; return new CaptureResult(Array.Empty<byte>(),
+                b.X, b.Y, b.Width, b.Height, 1.0, m.Count, "screenScrape", warns); },
+            denylistedVisible: () => Task.FromResult(false),
+            desktopMasks: () => Task.FromResult(new DesktopMaskSet(
+                new[] { freshMask }, Array.Empty<MaskEscalationEntry>(), Array.Empty<string>())));
+
+        await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+
+        Assert.Equal(new[] { freshMask }, painted);
+        Assert.DoesNotContain(staleMask, painted);
     }
 
     // ⚠ A PURE MOVE MUST NOT TRIP IT. Mask rects are ABSOLUTE screen coordinates, so a user dragging the
@@ -1345,10 +1387,11 @@ Before the `ScreenCapture.CaptureWindow` call:
                 // hung window that RECOVERS and resizes during the cooldown would be scraped with stale
                 // W1 masks and never checked -- bypassing the exact protection the seam path enforces.
                 // *(AGY-AFTER panel over this plan, round 4, Guard-Consistency Auditor.)*
-                if (geo.WindowBounds.Size != bw2.Size && geo.MaskRects.Count > 0)
-                    throw new ToolException(ToolErrorCode.RedactionUnmaskable,
-                        "The window changed size, so its redacted regions cannot be reliably located.",
-                        "wait for the window to settle, then retry, or capture a different window");
+                // ⚠ The resize case needs no refusal here either, for the reason given in
+                // OnResizeExhaustedAsync: this path scrapes with a FRESH desktop mask walk, so a size
+                // change between the walk and the capture cannot leave the masks stale. It is recorded
+                // rather than deleted because round 4 added the check here deliberately and a future
+                // reader will wonder where it went.
 
                 var (breakerImage, breakerUnmasked, breakerEsc) = await ScrapeAsync(
                     geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive);
