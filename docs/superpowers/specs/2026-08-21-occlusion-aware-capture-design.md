@@ -112,12 +112,18 @@ The existing denylist and refusal guards still hold, so this is not a hole; it i
 
 | What regresses | Today | After | Argued in |
 |---|---|---|---|
-| A window that resized mid-capture **and has redactable content** | returns an image | **REFUSED** | §1, resize policy |
+| A **window-scope** capture of a window that resized mid-capture **and has redactable content** | returns an image | **REFUSED** | §1, resize policy |
 | An element whose hardware-accelerated viewport fails to render | scrape composites it correctly | black crop + `elementCanvasUniform` warning | §3 |
 | An open menu or tooltip belonging to the target | scrape captures it where it overlaps | absent under `PrintWindow`; `popupsNotRendered` warning | risk 8 |
 
-The first is the one to weigh: it is a deliberate choice to refuse rather than return an image whose
-redaction masks may have moved. It also means the design **tolerates stale masks it cannot detect while
+⚠ **The first row is WINDOW scope only.** An ELEMENT-scope capture of a resizing window does not refuse:
+it retries, and on exhaustion falls back to the scrape (§1). An earlier version of this table said
+"REFUSED" without the scope qualifier and so overstated the regression against a path the design
+explicitly recovers on. *(Panel round 22, Seam Tracer — the join between this summary and the section it
+summarises.)*
+
+The first row is still the one to weigh: it is a deliberate choice to refuse rather than return an image
+whose redaction masks may have moved. It also means the design **tolerates stale masks it cannot detect while
 refusing stale masks it can** — defended in §1 as "accepting an undetected risk and shipping a known-bad
 image are different acts", but it is a judgement call and it is yours.
 
@@ -207,8 +213,11 @@ Window scope and window+ref element scope acquire via `PrintWindow(hwnd, hdc, PW
 **replacing** the scrape. Full-desktop scope keeps the scrape — `PrintWindow` is inherently per-window and
 has no full-desktop analogue.
 
-This introduces the repo's first native interop of this kind: `grep -rn "PrintWindow|BitBlt|GetWindowDC"
-src/` currently returns nothing.
+This introduces the repo's first native interop of this kind: MEASURED, `grep -rnE --include=*.cs
+"PrintWindow|BitBlt|GetWindowDC" src/` returns nothing. *(The `--include=*.cs` is load-bearing — without
+it the same grep matches FlaUI's and System.Drawing's compiled assemblies under `bin/`, so the unqualified
+form would have "refuted" a true claim. Panel round 22 filed this as unverified; verifying it corrected
+the command rather than the claim.)*
 
 #### The canonical ORDER of operations — stated once, whole
 
@@ -320,7 +329,10 @@ if (effective.Width <= 0 || effective.Height <= 0) -> refuse           // see th
                                              // reaches this line -- see the ordering note below
 src       = bitmap cropped to `effective`
 absolute  = effective offset back by W1.Location
-Encode(src, absolute, masks, maxWidth, method, warnings)   // src.Size == absolute.Size, by construction
+reported  = effective offset back by W2.Location        // where the pixels ACTUALLY are (see below)
+Encode(src, absolute, reported, masks, maxWidth, method, warnings)
+                                             // src.Size == absolute.Size == reported.Size, by construction
+                                             // absolute drives the MASK arithmetic; reported becomes X/Y
 ```
 
 `Encode` constructs the `CaptureResult`, so the two new fields reach it the same way every other field
@@ -415,6 +427,10 @@ the movement delta. So:
 
 - **`Encode` receives `absolute`** — anchored to `W1.Location`. Masks land correctly.
 - **`CaptureResult.X/Y` report `effective` anchored to `W2.Location`** — where the pixels actually are.
+  ⚠ `Encode` must be HANDED that rectangle; it cannot derive it. It builds the `CaptureResult`, so
+  passing it only the `W1`-anchored rectangle and then requiring `W2`-anchored output is a contract it
+  physically cannot meet. Both cross the call. *(Panel round 22, Fold Auditor — exactly the failure this
+  seat was pointed at: round 21's fix introduced a second rectangle and did not plumb it.)*
 - `W/H` are the same either way, so `src.Size == absolute.Size` is untouched.
 
 They coincide whenever the window did not move, which is the common case. *(Panel round 21, Fold Auditor:
@@ -912,6 +928,20 @@ Appended, never inserted — see below. `CaptureWarnings` is never null; empty i
 a POSITIONAL record, constructed positionally at `ScreenCapture.cs:69`. **Append only, never insert** — a
 field added mid-list silently rebinds arguments wherever the types happen to line up. *(Panel round 1,
 PP-3.)*
+
+#### `dpiScale` describes the PIXELS, not the tree
+
+`ScreenshotTools.cs:60` derives `dpiScale` from `result.X, result.Y`, which since round 21 is the
+`W2`-anchored origin. So it names the monitor the returned pixels came from.
+
+⚠ **After a cross-monitor MOVE those two provenances part company**: the mask rects and the UIA tree
+were sampled while the window was on `W1`'s monitor, at that monitor's scale, while `dpiScale` now
+reports `W2`'s. A pure move is undetectable (§2), so nothing warns about it. The consequence is bounded
+rather than absent: every coordinate this server publishes is a PHYSICAL pixel and `dpiScale` is
+documented as informational, so no arithmetic in the pipeline consumes it. It is stated here so the field
+has a defined meaning — *the monitor of the returned image* — rather than an ambiguous one.
+*(Panel round 22, Double-Duty Auditor: `X/Y` serves both as factual pixel origin and as the DPI lookup
+key, and those two jobs diverge the moment a window crosses a screen boundary.)*
 
 #### `bounds` stops supporting image→screen coordinate mapping
 
@@ -1855,3 +1885,33 @@ had walked.
 
 **Verified, not folded:** `src/FlaUI.Mcp.Server/app.manifest:5` is exactly
 `<dpiAwareness ...>PerMonitorV2</dpiAwareness>`.
+
+### AGY-AFTER adversarial panel — round 22
+
+Seats: Fold Auditor (round 21's edits, aimed at the SECOND rectangle it introduced), Seam Tracer second
+pass, **Double-Duty Auditor** (hunt the CLASS round 21's second finding revealed — anything serving two
+purposes that can diverge). Report: `.clavity/scratch/item8-panel/agy-round22.md`. **Verdict: NOT GREEN.**
+Four folds:
+
+- **Round 21's fix introduced a second rectangle and did not plumb it** — precisely what this seat was
+  pointed at. `Encode` builds the `CaptureResult`, was handed only the `W1`-anchored rectangle, and was
+  then required to emit `W2`-anchored `X/Y`. A contract it could not physically meet. Both rectangles now
+  cross the call.
+- **The ratify section overstated a regression.** It listed "a window that resized mid-capture and has
+  redactable content → REFUSED" without a scope qualifier, but only WINDOW scope refuses; element scope
+  retries and falls back to the scrape. A summary that overstates a cost is as wrong as one that hides it,
+  and this is the section the operator decides from.
+- **`dpiScale` and the reported origin are the same value doing two jobs.** `X/Y` is both the factual
+  pixel origin and the DPI lookup key; after a cross-monitor MOVE the pixels' monitor and the monitor the
+  UIA tree was sampled on differ, and a pure move is undetectable. Bounded rather than dangerous — every
+  published coordinate is a physical pixel and `dpiScale` is informational — but the field now has a
+  DEFINED meaning: the monitor of the returned image.
+- **A grep in the problem statement was right but its command was wrong.** Unqualified, it matches FlaUI's
+  and System.Drawing's compiled assemblies under `bin/`; `--include=*.cs` is load-bearing. Verifying a
+  claim filed as unverified corrected the COMMAND rather than the claim — worth noting, because the
+  unqualified form would have "refuted" something true.
+
+**The Seam Tracer reported a second join SOUND:** the detector gate against the three backends. A
+fallback scrape reaches neither two-stage detector, a full-desktop scrape gets `desktopCanvasUniform`, and
+the element-canvas detector cannot be invoked without the window-sized bitmap it needs. That was round
+21's broken join; it is now traced closed rather than assumed closed.
