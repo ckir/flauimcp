@@ -494,9 +494,29 @@ Three things the seam needs that nothing currently carries there.
 **The degenerate-`W1` guard must be RETRYABLE and distinguishable from already-minimized.** A window caught mid-open can report a degenerate rect for one frame — exactly the transient the retry loop absorbs. If the walk simply throws, the throw escapes the loop and the capture fails terminally on the first bad frame. And the caller cannot recover by catching, because an already-minimized window raises the identical `ElementNotActionable` and must NOT be retried. So the walk signals the two differently even though both surface to the agent as `ElementNotActionable` once retries are exhausted.
 
 **Files:**
-- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:1275-1276` (the record)
-- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:854-863, 915-935, 963-971, 1110` (every construction site)
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` — the `CaptureGeometry` record declaration
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` — **every `new CaptureGeometry(` site**
 - Test: `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryShapeTests.cs`
+
+⚠ **EVERY LINE NUMBER BELOW IS ALREADY STALE BY THE TIME YOU READ IT — Task 12 runs first and inserts
+~15 lines of doc comment above `:853`, shifting everything after it.** The citations were
+`:1275-1276` for the record and `:854-863, 915-935, 963-971, 1110` for the construction sites; all were
+**VERIFIED CORRECT immediately before Task 12 ran**, so they are accurate as a description and useless as
+coordinates. **Find both by symbol.**
+
+**MEASURED before Task 12 — there are exactly FOUR construction sites, all in `PerceptionManager.cs`,
+and ZERO in `test/`:**
+
+```
+:858   denied         -> new CaptureGeometry(default, ..., false, true, procName, ...)
+:863   minimized      -> new CaptureGeometry(default, ..., true, false, null, ...)
+:964   no-overlap     -> new CaptureGeometry(captureBounds, ...)
+:1110  the happy path -> new CaptureGeometry(captureBounds, pw, false, false, null, escalations)
+```
+
+`grep -rn "new CaptureGeometry(" src/` re-derives that list in one command. **Adding three fields to a
+positional record means ALL FOUR must be updated or the project does not build** — the same shape as
+Task 10's four call sites, where the plan listed three and the build broke.
 
 - [ ] **Step 1: Write the failing test**
 
