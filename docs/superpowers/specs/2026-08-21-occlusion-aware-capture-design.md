@@ -55,9 +55,15 @@ encodings are ruled out:
 - **Not `null` or a sentinel `CaptureResult`.** The caller must be able to distinguish "resized" from any
   other empty outcome, and a sentinel loses the observed `W2` the next attempt wants.
 
-What must cross the boundary: **an OUTCOME that is either a completed `CaptureResult` or a "resized"
-report carrying the observed `W2`.** The outcome type WRAPS the result; it is not the result. That is the
-only shape satisfying both this requirement and the two ruled-out encodings. *(Panel round 19, Executable-Path Auditor — and its "furthest point before guessing",
+What must cross the boundary: **an OUTCOME that is either a completed `CaptureResult` or a bare "resized"
+signal.** The outcome type WRAPS the result; it is not the result. That is the only shape satisfying both
+this requirement and the two ruled-out encodings.
+
+⚠ **The signal carries NO payload, and an earlier draft's justification for carrying `W2` was wrong.**
+It claimed "a sentinel loses the observed `W2` the next attempt wants". The next attempt does not want it:
+retrying means a fresh UIA walk, which discovers the new geometry itself and has no input for a rectangle
+observed by the previous attempt. The seam reports THAT a resize happened; nothing needs to know what it
+measured. *(Panel round 21, Fold Auditor — a contract requiring data its only consumer discards.)* *(Panel round 19, Executable-Path Auditor — and its "furthest point before guessing",
 which was this exact gap.)* Exact member names are the plan's; the SHAPE is not, because
 this is the seam the whole design turns on.
 
@@ -251,6 +257,12 @@ For window and element scope, in this order:
 7. **Crop** (the algorithm below). Its empty-intersection refusal is now reachable only when the sizes
    AGREE, which narrows it to a provider reporting an element outside its own window.
 8. **Detect** the uniform-canvas conditions (§3) and **encode**, assembling `captureWarnings`.
+   ⚠ `uniformCanvas` and `elementCanvasUniform` run **only when the backend was `printWindow`**. On any
+   scrape — full-desktop, or an element/window scope that fell back — there is no full-window bitmap
+   distinct from the captured region, so the two-stage comparison has no second operand. A full-desktop
+   scrape instead gets `desktopCanvasUniform`; a fallback scrape gets neither. *(Panel round 21, Seam
+   Tracer: the gate was stated in §3 and not repeated where the codes are defined or where the sequence
+   runs them, so a reader arriving from the fallback path would look for an operand that does not exist.)*
 
 Full-desktop scope runs the scrape and steps 3 and 8 only, with the yardstick CLIPPED.
 
@@ -394,6 +406,21 @@ because nothing guarded the degenerate window on either path.)*
    breath: the scale factor then comes off the clamped `src.Width` while masks translate against the
    unclamped origin — the very misalignment this subsection exists to prevent, reintroduced by its own
    fix. `absolute` is derived FROM `effective`, so it cannot drift from it.
+
+⚠ **`absolute` is the MASK-ARITHMETIC rectangle. It is NOT what `bounds` should report, and conflating
+the two makes the response lie whenever the window MOVED.** The bitmap's `(0,0)` is the window's position
+at capture time, `W2.Location`; `absolute` is anchored to `W1.Location` because the mask rects were
+sampled alongside `W1` and `Encode`'s arithmetic must meet them there. Those two origins differ by exactly
+the movement delta. So:
+
+- **`Encode` receives `absolute`** — anchored to `W1.Location`. Masks land correctly.
+- **`CaptureResult.X/Y` report `effective` anchored to `W2.Location`** — where the pixels actually are.
+- `W/H` are the same either way, so `src.Size == absolute.Size` is untouched.
+
+They coincide whenever the window did not move, which is the common case. *(Panel round 21, Fold Auditor:
+§5 requires that "a bounds that describes a region the pixels are not is simply a false statement in the
+response", and the single rectangle was serving both purposes while only one of them can be right when the
+origins differ.)*
 
 `CaptureResult`'s `X/Y/W/H` then describe the region actually captured rather than the region that was
 requested. *(Panel round 3, Fold Auditor — a defect introduced by round 2's own fix.)*
@@ -833,11 +860,11 @@ contract undefined, which is the same abdication §5 exists to close:
 
 | `code` | fires when | `recourse` says, in substance |
 |---|---|---|
-| `uniformCanvas` | §3's detector finds the full WINDOW bitmap effectively one colour (`printWindow` only) | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
+| `uniformCanvas` | window scope and **`printWindow` only**: §3's detector finds the full WINDOW bitmap effectively one colour | the image may not be usable; read the UIA tree via `desktop_snapshot` instead |
 | `desktopCanvasUniform` | §3's detector finds a FULL-DESKTOP scrape effectively one colour | the whole desktop came back a single colour. The usual causes are a secure desktop (a UAC prompt), DRM-protected content, or a session in transition — **UIA is normally blocked in those states too, so `desktop_snapshot` will not help.** Wait for the condition to clear and re-capture |
 | `windowResized` | §1's `W1.Size != W2.Size` check fires on a WINDOW-scope capture with an empty mask set | the window changed size mid-capture. The image itself is sound — it was cropped back to the region you asked for — but the layout inside it **may** have reflowed, so any UIA tree or element ref you hold for this window may be geometrically stale. Re-snapshot before acting on cached coordinates |
 | `popupsNotRendered` | this window had one or more popup roots at geometry time (`PopupFinder.SearchRoots` returned more than the window itself). **Fires on BOTH backends** | an open menu, dropdown or tooltip belonging to this window is a separate top-level window and may be **missing from this image** — structurally absent under `printWindow`, and cropped off under `screenScrape` wherever it extends beyond the window's rect. Its absence is not evidence it failed to open — read the UIA tree to see it |
-| `elementCanvasUniform` | element scope only: the CROPPED region is effectively one colour while the full window bitmap was not | this element's pixels may have failed to render even though the window as a whole did — a hardware-accelerated child viewport is the usual cause. Verify through the UIA tree before concluding the control is blank |
+| `elementCanvasUniform` | element scope **and `captureMethod: "printWindow"` only**: the CROPPED region is effectively one colour while the full window bitmap was not | this element's pixels may have failed to render even though the window as a whole did — a hardware-accelerated child viewport is the usual cause. Verify through the UIA tree before concluding the control is blank |
 | `scrapeFallbackTargetUnresponsive` | `PrintWindow` timed out because the target's message loop is blocked, and the scrape produced this image instead (risk 2) | this image is a screen scrape, so anything overlapping the window is in it — treat occlusion as possible. **The target is not pumping messages**: it will not respond to input either, so do not queue clicks against it |
 | `scrapeFallbackTargetChanging` | element-scope retries were exhausted because the window kept resizing, and the scrape produced this image instead (§1) | this image is a screen scrape, so treat occlusion as possible. **The target is changing continuously** — it is alive and busy, not stuck; waiting and re-capturing may succeed |
 
@@ -1797,3 +1824,34 @@ the path between them never traced. Inviting the honest null answer is what made
 credible.
 
 **Verified, not folded:** `ScreenCapture.cs:39` is exactly `cap = Capture.Rectangle(absolute, null);`.
+
+### AGY-AFTER adversarial panel — round 21
+
+Seats: Fold Auditor (round 20's edits), **Seam Tracer** (audit the JOINS, not the rules — the lens round
+20's leak earned, with the census of joins traced SOUND as part of the deliverable), Convergence Assessor
+second pass. Report: `.clavity/scratch/item8-panel/agy-round21.md`. **Verdict: NOT GREEN.** Three folds:
+
+- **One rectangle was serving two purposes that disagree when the window MOVES.** `absolute` is anchored
+  to `W1.Location` because the mask rects were sampled there and `Encode`'s arithmetic must meet them —
+  but the bitmap's origin is `W2.Location`, so reporting `absolute` as `bounds` claims the pixels are
+  somewhere they are not, by exactly the movement delta. §5's own rule says a `bounds` that describes a
+  region the pixels are not is a false statement. Split: `Encode` gets the `W1`-anchored rectangle,
+  `CaptureResult.X/Y` report the `W2`-anchored one, sizes identical so the invariant is untouched.
+- **The report channel required data its only consumer discards.** The "resized" signal was specified to
+  carry the observed `W2` on the grounds that "the next attempt wants it". It does not: retrying means a
+  fresh UIA walk, which discovers the geometry itself and has no input for a rectangle the previous
+  attempt measured. The signal is now bare.
+- **A gate stated in §3 was missing everywhere it is acted on.** Both uniform-canvas detectors are
+  `printWindow`-only, but neither the code table nor canonical step 8 said so — so a reader arriving from
+  the element-scope FALLBACK path would try to evaluate `elementCanvasUniform`, whose rule needs a full
+  window bitmap that a scrape of an element's rect structurally never produced. Stated in all three
+  places now.
+
+**The Seam Tracer justified its seat on its first outing, and its SOUND census is worth as much as its
+finding.** It traced the geometry-time guards against the capture-time guards and reported them
+non-overlapping and mutually unbypassable — a join this review had assumed rather than checked. The broken
+join it found was the same shape as round 20's: two components each correct, connected by a path nobody
+had walked.
+
+**Verified, not folded:** `src/FlaUI.Mcp.Server/app.manifest:5` is exactly
+`<dpiAwareness ...>PerMonitorV2</dpiAwareness>`.
