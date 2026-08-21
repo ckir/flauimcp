@@ -509,7 +509,9 @@ Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureWindowTests"`
 Expected: PASS — 14 passed.
 
-- [ ] **Step 5: Prove the gates are non-vacuous with three logic mutants**
+- [ ] **Step 5: Prove the gates are non-vacuous with FOUR logic mutants**
+
+⚠ **This heading said "three" while listing four** — the same count-fossil family as Task 5's "11 passed", Task 7's "three-case", and Task 12's test name. All four below ARE logic mutants (expression and ordering changes), so each should build cleanly and turn a NAMED test red; if any produces a BUILD ERROR instead, the test never ran and the mutant proved nothing — say so and stop.
 
 1. Move the `probeMin` check to AFTER the resize branch.
    Expected: `A_window_minimized_at_capture_time_refuses_and_does_not_report_a_resize` FAILS with a `Resized` outcome instead of the refusal — the exact ordering defect the canonical list was written to prevent.
