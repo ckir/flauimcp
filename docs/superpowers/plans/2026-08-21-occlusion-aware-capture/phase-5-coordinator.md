@@ -561,11 +561,15 @@ public sealed class WindowCaptureCoordinator
                 "This capture can only fall back to a screen scrape, and the desktop mask walk is not wired.",
                 "this is a server wiring defect - report it rather than retrying");
 
-        var masks = geo.MaskRects;
-        IReadOnlyList<string> unmasked = System.Array.Empty<string>();
-        IReadOnlyList<MaskEscalationEntry> escalations = geo.Escalations;
-        {
-            // ⚠ THE ESCALATIONS MUST COME FROM THE SAME WALK AS THE MASKS. The tool publishes
+        // ⚠⚠ THERE IS NO FALLBACK TO `geo.MaskRects` HERE, AND THE ABSENCE IS DELIBERATE. An earlier shape
+        // initialised these three from the TARGET's walk and overwrote them inside a conditional. Once the
+        // guard above made `_desktopMasks` non-null the conditional was always taken, so those
+        // initialisers were DEAD CODE THAT READ AS A LIVE PATH — and the path it appeared to offer was
+        // exactly the stale-mask leak the desktop walk exists to close. **Do not "restore" a fallback:
+        // there is nothing safe to fall back to.** If `_desktopMasks` is missing, the correct outcome is
+        // the refusal above, not the target's masks.
+        //
+        // ⚠ THE ESCALATIONS MUST COME FROM THE SAME WALK AS THE MASKS. The tool publishes
             // `maskEscalations` and `escalated` beside the image; taking the masks from the desktop walk
             // while reporting the TARGET walk's escalations describes a mask set that is not the one
             // painted. An operator looking at a giant black box and `maskEscalations: 0` has been handed
@@ -578,11 +582,10 @@ public sealed class WindowCaptureCoordinator
             // STRICTER THAN NECESSARY and it is accepted deliberately: the alternative is scraping with a
             // mask set we know to be incomplete, which is the leak this fold closed. The hint below is
             // what keeps it actionable rather than baffling.
-            var desk = await _desktopMasks();
-            masks = desk.Rects;
-            unmasked = desk.UnmaskedProcesses;
-            escalations = desk.Escalations;
-        }
+        var desk = await _desktopMasks();
+        var masks = desk.Rects;
+        var unmasked = desk.UnmaskedProcesses;
+        var escalations = desk.Escalations;
 
         return (_scrape(geo.Bounds, masks, maxWidth, scope,
                         ScreenCapture.Append(warnings, CaptureWarnings.For(code))), unmasked, escalations);
