@@ -817,6 +817,79 @@ git commit -m "test(capture): the occlusion success criterion, plus the runtime 
 
 ### Task 25: Full gates, and complete the measurements record
 
+- [ ] **Step 0: Pin the refusal surface against the spec's table**
+
+⚠ **The spec's §4 table asserts it enumerates the WHOLE refusal surface, and it has now gone stale THREE times** — panel rounds 24 and 25 during the spec review, and again at plan round 8, when four refusals the plan's own panel had introduced were missing from it. Every time, a fold added a refusal and **nothing mechanically noticed**.
+
+This is the gate that notices. Create `test/FlaUI.Mcp.Tests/Perception/RefusalSurfaceSweepTests.cs`:
+
+```csharp
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class RefusalSurfaceSweepTests
+{
+    private static string RepoRoot()
+    {
+        var d = new DirectoryInfo(Directory.GetCurrentDirectory());
+        while (d is not null && !File.Exists(Path.Combine(d.FullName, "FlaUI.Mcp.slnx"))) d = d.Parent;
+        Assert.NotNull(d);
+        return d!.FullName;
+    }
+
+    // Every ToolErrorCode this feature's capture path can throw, with the reason it exists. Adding a
+    // refusal WITHOUT adding it here fails this test, which is the only thing standing between the
+    // spec's completeness claim and another silent drift.
+    //
+    // ⚠ This does NOT verify the spec prose - a test cannot read intent. What it pins is that the SET of
+    // codes thrown by these files is the set someone deliberately wrote down. When it goes red, the fix
+    // is to update BOTH this list and the spec's section 4 table, in the same commit.
+    private static readonly HashSet<string> Documented = new()
+    {
+        "TargetDenied",           // denylisted process at geometry time; denylisted window on a fallback
+        "ElementNotActionable",   // minimized, destroyed, degenerate-on-exhaustion, empty crop, OCR degenerate
+        "RedactionUnmaskable",    // resize/bookend exhaustion with masks; the desktop walk refusing
+        "CaptureUnavailable",     // null GDI handle, desktop not renderable, unwired denylist guard
+    };
+
+    [Fact]
+    public void The_capture_path_throws_only_documented_error_codes()
+    {
+        var root = RepoRoot();
+        var files = new[]
+        {
+            Path.Combine(root, "src", "FlaUI.Mcp.Core", "Perception", "ScreenCapture.cs"),
+            Path.Combine(root, "src", "FlaUI.Mcp.Core", "Perception", "WindowCaptureCoordinator.cs"),
+            Path.Combine(root, "src", "FlaUI.Mcp.Server", "Capture", "PrintWindowImageSource.cs"),
+        };
+
+        var thrown = new HashSet<string>();
+        foreach (var f in files)
+        {
+            Assert.True(File.Exists(f), $"{f} does not exist - the sweep is pointing at the wrong path");
+            foreach (Match m in Regex.Matches(File.ReadAllText(f), @"ToolErrorCode\.(\w+)"))
+                thrown.Add(m.Groups[1].Value);
+        }
+
+        Assert.NotEmpty(thrown);
+        var undocumented = thrown.Except(Documented).OrderBy(x => x).ToList();
+        Assert.True(undocumented.Count == 0,
+            "these error codes are thrown but not documented in the spec's section 4 refusal table: " +
+            string.Join(", ", undocumented));
+    }
+}
+```
+
+- [ ] **Step 0b: Prove the sweep is non-vacuous with a logic mutant**
+
+Temporarily add `throw new ToolException(ToolErrorCode.NotImplemented, "x", "y");` inside `WindowCaptureCoordinator`.
+Expected: `The_capture_path_throws_only_documented_error_codes` FAILS naming `NotImplemented`. **Revert.**
+
 - [ ] **Step 1: Build clean**
 
 Run: `dotnet build FlaUI.Mcp.slnx`
