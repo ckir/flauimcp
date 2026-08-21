@@ -648,6 +648,37 @@ injection cure. These are stable, documented behaviors — reference, not backlo
   superpowers once the core was proven. With v1 feature-complete, the emphasis shifts to
   *provable correctness* (Track A) before new surface (Track B).
 
+### 17. A hung-window `PrintWindow` capture leaks for as long as the target lives — the containments bound the multiplier, nothing reclaims
+
+`PrintWindow` sends `WM_PRINT` synchronously to the target, so a target whose message loop is blocked
+blocks the call, and a blocked Win32 call cannot be cancelled. Item 8 ships two CONTAINMENTS — a dedicated
+background thread so the leak is a thread rather than a CLR threadpool slot, and a per-HWND circuit
+breaker so N captures of a hung window cost one leak rather than N. **Neither reclaims anything in
+process:** the blocked call keeps its thread, its HDC, its GDI bitmap and its managed bitmap for as long
+as the **target** process stays alive and wedged.
+
+MEASURED in Phase 0: three abandoned calls took GDI from 0 to 9 with no ceiling, and everything was
+released on either exit — the target's message loop resuming, or the target process being killed
+(within **130 ms**, GDI back to `0`). Treat it as unbounded anyway: neither event is under this server's
+control. The heading of this item previously said "leaks permanently", which the same measurement
+refuted.
+
+⚠ **AND THE BREAKER BOUNDS THE MULTIPLIER, NOT THE TOTAL — the cross-window sum is UNBOUNDED.** It is
+keyed **per-HWND**, so it makes N captures of one hung window cost one leak instead of N. Across **M
+distinct** hung windows the server still pays M concurrent leaks, and a per-HWND breaker is blind to
+that sum. In a server built to run for weeks, that is the accumulation nothing contains. *(AGY-AFTER
+panel, round 1, Cascade Analyst — confirmed against the plan's own text, not a hypothetical. The panel
+also asserted "20 hung windows = ~660 MB"; that figure was never measured by anyone and is deliberately
+NOT repeated here — the structural finding stands without it.)*
+
+The fix that DOES reclaim is running the acquisition in a sacrificial out-of-process worker terminated on
+timeout, letting the OS take the handles back. It costs IPC, bitmap serialization across a process
+boundary, child-process lifetime management, and a second DPI-aware CLR process that must be on the right
+desktop and session. Deliberately not built in item 8 — see that spec's ratification item 3, where the
+operator accepted the containments and staged this.
+
+Build it if the containments prove insufficient in practice.
+
 ### 18. The OCR path scrapes without the denylist guard — same hole item 8 closed on its own fallbacks
 
 `desktop_find_text` and `desktop_wait_for_text` capture via `ScreenCapture.CaptureRectangle`

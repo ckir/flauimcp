@@ -128,6 +128,67 @@ public sealed class WindowCaptureCoordinator
                 ? new[] { CaptureWarnings.For(CaptureWarnings.PopupsNotRendered) }
                 : Array.Empty<CaptureWarning>();
 
+            // The breaker short-circuits BEFORE acquisition, which is the whole point: the leak happens
+            // inside Acquire, so avoiding the call is the only way to avoid the leak.
+            // Two conditions divert to the scrape, and they cover different windows in time: the breaker
+            // covers everything AFTER a timeout was observed, the in-flight check covers the gap DURING
+            // the first request, before any timeout has been recorded.
+            // ⚠⚠ AND THE BREAKER ASKS WHETHER THE TARGET IS STILL HUNG BEFORE IT DIVERTS. Without this
+            // the path emits `scrapeFallbackTargetUnresponsive`, whose recourse tells the agent in the
+            // PRESENT TENSE that "the target is not pumping messages: it will not respond to input
+            // either, so do not queue clicks against it" -- on the strength of a timeout that may be
+            // almost five minutes old. An app that hung once and recovered would have every capture
+            // degraded to a scrape, and every one of them labelled with a false statement about it.
+            //
+            // `IsHungAppWindow` is the OS's own answer to this question -- it is what Task Manager uses --
+            // and it does not block on the target's message loop, so asking is safe on precisely the
+            // window we are avoiding. A recovered window RESETS the breaker and takes the normal path, so
+            // the cooldown becomes a bound on how long a STILL-hung window is skipped rather than a flat
+            // penalty for having hung once.
+            // *(Driver's solo Guard-Consistency pass, round 5: a warning whose text is false of the image
+            // it annotates is the same defect class as a guard that disagrees with its neighbour.)*
+            if (_breaker is not null
+                && (_breaker.IsTripped(geo.NativeWindowHandle)
+                    || _breaker.AnotherAcquisitionIsStuck(geo.NativeWindowHandle,
+                                                          TimeSpan.FromMilliseconds(_opts.TimeoutMs)))
+                && HungOrReset(geo.NativeWindowHandle))
+            {
+                // ⚠⚠ THE TARGET-STATE GUARDS STILL RUN. Skipping straight to the scrape also skips
+                // canonical steps 4-5, which live inside CaptureWindow -- and those are the guards that
+                // stop a DEAD or MINIMIZED window being photographed at the rectangle it used to occupy.
+                //
+                // The reachable defect: a hung window trips the breaker, then minimizes. Without this
+                // call the next capture scrapes its old rect and returns a photograph of whatever is now
+                // behind it -- confidently, as a success. That is precisely the failure item 8 exists to
+                // remove, reintroduced by the mechanism added to contain a different problem.
+                //
+                // These guards are about the TARGET's state, not about the backend, so every path that is
+                // about to photograph a named window owes them.
+                var bw2 = ScreenCapture.GuardTargetState(geo.NativeWindowHandle, _w2Probe, _minimizedProbe);
+                // Degeneracy is retryable here for the same reason it is inside the seam, and scraping a
+                // window with no renderable area would photograph whatever now occupies its old rect.
+                if (bw2.Width <= 0 || bw2.Height <= 0)
+                {
+                    if (attempt < _opts.MaxAttempts) continue;
+                    throw new ToolException(ToolErrorCode.ElementNotActionable,
+                        "The target window reported no renderable area on every attempt.",
+                        "restore or resize the window, then retry");
+                }
+                // ⚠⚠ AND THE RESIZE CHECK. Skipping the seam also skips `if (w1.Size != w2.Size)`, so a
+                // hung window that RECOVERS and resizes during the cooldown would be scraped with stale
+                // W1 masks and never checked -- bypassing the exact protection the seam path enforces.
+                // *(AGY-AFTER panel over this plan, round 4, Guard-Consistency Auditor.)*
+                // ⚠ The resize case needs no refusal here either, for the reason given in
+                // OnResizeExhaustedAsync: this path scrapes with a FRESH desktop mask walk, so a size
+                // change between the walk and the capture cannot leave the masks stale. It is recorded
+                // rather than deleted because round 4 added the check here deliberately and a future
+                // reader will wonder where it went.
+
+                var (breakerImage, breakerUnmasked, breakerEsc) = await ScrapeAsync(
+                    geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive);
+                return new WindowCaptureOutcome(breakerImage, geo, breakerUnmasked, breakerEsc);
+            }
+
             // Steps 4-8, inside the seam. The in-flight marker brackets the acquisition so a CONCURRENT
             // request for the same window can see that this one is stuck before any timeout is recorded.
             CaptureOutcome outcome;
@@ -210,6 +271,7 @@ public sealed class WindowCaptureCoordinator
                 }
 
                 case CaptureOutcomeKind.TimedOut:
+                    _breaker?.Trip(geo.NativeWindowHandle);
                     // A MECHANISM failure: the window is on screen with real pixels and PrintWindow simply
                     // could not get a copy because the target's loop is blocked. The scrape reads the
                     // composited desktop and is unaffected, so it genuinely has a better answer than
@@ -502,10 +564,13 @@ public sealed class WindowCaptureCoordinator
 /// those windows straight to the scrape for a cooldown.
 ///
 /// ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. Each blocked call keeps its thread, its HDC, its GDI bitmap and
-/// its managed bitmap permanently -- a blocked Win32 call cannot be cancelled, so nothing in-process can
-/// take them back. What this bounds is the MULTIPLIER: N captures of a hung window cost ONE leak instead
-/// of N. Operator ratification of 2026-08-21 accepted that trade explicitly; the out-of-process worker
-/// that would actually reclaim is filed as ROADMAP debt.</summary>
+/// its managed bitmap for as long as the TARGET PROCESS lives -- a blocked Win32 call cannot be
+/// cancelled, so nothing in-process can take them back. MEASURED (Phase 0): they are released when the
+/// target's message loop resumes, and within 130ms of the target process exiting. Treat that as
+/// unbounded, because neither event is under this server's control. What this bounds is the
+/// MULTIPLIER: N captures of a hung window cost ONE leak instead of N. Operator ratification of
+/// 2026-08-21 accepted that trade explicitly; the out-of-process worker that would actually reclaim is
+/// filed as ROADMAP debt.</summary>
 public sealed class CaptureCircuitBreaker
 {
     private readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, DateTime> _tripped = new();
