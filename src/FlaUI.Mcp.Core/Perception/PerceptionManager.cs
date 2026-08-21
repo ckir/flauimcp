@@ -455,6 +455,38 @@ public sealed class PerceptionManager
     /// this branch three separate times — do not re-inline it.</summary>
     private static string? SafeProcessName(AutomationElement el) => ProcessIdentity.OfElement(el);
 
+    /// <summary>W1 — the WINDOW's own rect, needed even when `target` is an element. Guarded because it
+    /// is a UIA read on a possibly-dying window and this region must never raise a raw exception.
+    ///
+    /// ⚠⚠ ON FAILURE IT RETURNS `default` — AN EMPTY RECT — NOT THE ELEMENT'S RECT, and an earlier
+    /// version of this plan returned the element's. That looked harmless and POISONED A DOWNSTREAM GUARD:
+    /// the resize check compares `geo.WindowBounds.Size` against a `GetWindowRect` read of the WINDOW, so
+    /// substituting the ELEMENT's size guarantees a mismatch on every element-scope capture whose window
+    /// rect read happened to fail. Every one of them would burn the whole retry budget and then refuse or
+    /// fall back — a total outage for that window, caused by the fallback that was meant to soften a
+    /// failure. *(AGY-AFTER panel over this plan, round 6, Guard-Consistency Auditor.)*
+    ///
+    /// An empty rect flows into the degeneracy check immediately below and becomes
+    /// `DegenerateWindow: true` — a RETRYABLE transient, which is the honest answer: we could not read
+    /// the window's geometry this frame. Signalling failure beats substituting a plausible wrong value.</summary>
+    private static System.Drawing.Rectangle SafeWindowRect(AutomationElement win)
+    {
+        try { return win.BoundingRectangle; }
+        catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                          and not System.OperationCanceledException)
+        { _ = ex; return default; }
+    }
+
+    /// <summary>The native HWND. IntPtr.Zero when unavailable; the acquisition seam treats zero as an
+    /// unusable target and refuses rather than calling PrintWindow with it.</summary>
+    private static System.IntPtr NativeHandleOf(AutomationElement win)
+    {
+        try { return win.Properties.NativeWindowHandle.ValueOrDefault; }
+        catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                          and not System.OperationCanceledException)
+        { _ = ex; return System.IntPtr.Zero; }
+    }
+
     /// <summary><paramref name="resolveRefs"/> is the registry the ROOT REF resolves against; refs minted
     /// by the walk always register into <paramref name="refs"/>. They are the same registry for every
     /// existing caller (default null => refs), and DIFFERENT only for the wait paths, which resolve a
@@ -879,12 +911,12 @@ public sealed class PerceptionManager
         {
             var procName = SafeProcessName(win);
             if (PerceptionPolicy.IsDenied(procName))
-                return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), false, true, procName, System.Array.Empty<MaskEscalationEntry>());
+                return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), false, true, procName, System.Array.Empty<MaskEscalationEntry>(), default, System.IntPtr.Zero, false);
             try
             {
                 var wp = win.Patterns.Window.PatternOrDefault;
                 if (wp is not null && wp.WindowVisualState.ValueOrDefault == FlaUI.Core.Definitions.WindowVisualState.Minimized)
-                    return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), true, false, null, System.Array.Empty<MaskEscalationEntry>());
+                    return new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(), true, false, null, System.Array.Empty<MaskEscalationEntry>(), default, System.IntPtr.Zero, false);
             }
             // ⚠ Criticals excluded: a bare catch here swallowed OutOfMemoryException too, which defeated the
             // filters on every converting catch below it. Added at capstone round 3.
@@ -948,6 +980,29 @@ public sealed class PerceptionManager
                     "retry once the UI has settled, or capture a different window");
             }
 
+            // ⚠ W1 DEGENERACY, GUARDED BEFORE THE YARDSTICK. LOAD-BEARING, and an earlier design called
+            // it redundant on a claim that stopped being true when element scope gained a scrape fallback.
+            // Without it: a degenerate W1 makes the yardstick degenerate, the window-scoped branch below
+            // falls back to `yardstick = captureBounds` which is still degenerate, every mask is judged
+            // against a rect nothing intersects, THE WHOLE SET IS DROPPED -- and this file's own comment
+            // names the outcome: "every mask dropped, capture returned unmasked. A guard producing a
+            // leak." Element scope then sees W1.Size != W2.Size, retries, exhausts, falls back to the
+            // scrape, and returns an UNMASKED image as a success.
+            //
+            // ⚠ RETURNED, NOT THROWN. A throw escapes the caller's retry loop, so a window caught mid-open
+            // would fail terminally on its first bad frame. The caller cannot recover by catching either,
+            // because an already-minimized window raises the identical ElementNotActionable and must NOT
+            // be retried.
+            //
+            // ⚠ The guard sits HERE and not in the caller because there is no point between for a caller
+            // to stand: the walk produces the mask rects, producing them REQUIRES the yardstick, so by the
+            // time a caller holds W1 the yardstick has already run and the mask set may already be gone.
+            var windowBounds = string.IsNullOrEmpty(@ref) ? captureBounds : SafeWindowRect(win);
+            if (windowBounds.Width <= 0 || windowBounds.Height <= 0)
+                return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
+                    false, false, null, System.Array.Empty<MaskEscalationEntry>(),
+                    windowBounds, NativeHandleOf(win), DegenerateWindow: true);
+
             // The yardstick is the capture clipped to the RENDERABLE desktop. A maximized window's rect
             // bleeds past the monitor by its invisible resize border, and comparing against that bleed is
             // what let a full-monitor mask pass the blacks-out check. Read once, so the rect the decision
@@ -988,7 +1043,8 @@ public sealed class PerceptionManager
                 // case the clipping exists for cannot arise when nothing is on screen to bleed over.
                 if (skipIfNoRenderableOverlap)
                     return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
-                                               false, false, null, System.Array.Empty<MaskEscalationEntry>());
+                                               false, false, null, System.Array.Empty<MaskEscalationEntry>(),
+                                               windowBounds, NativeHandleOf(win), false);
                 // ⚠ The UNCLIPPED rect becomes the yardstick here, and MaskEscalation's parameter contract
                 // says that is allowed: the requirement is NON-DEGENERATE, not "clipped". Clipping has
                 // already produced a degenerate rect for this target, and judging every mask against THAT
@@ -1133,7 +1189,7 @@ public sealed class PerceptionManager
                     if (resolution.Escalated) escalations.Add(new MaskEscalationEntry(aid, ct));
                 }
             }
-            return new CaptureGeometry(captureBounds, pw, false, false, null, escalations);
+            return new CaptureGeometry(captureBounds, pw, false, false, null, escalations, windowBounds, NativeHandleOf(win), false);
             }
             catch (ToolException) { throw; }
             // ⚠ A CRITICAL failure is NOT a redaction outcome. Reclassifying OutOfMemoryException — or a
@@ -1163,6 +1219,17 @@ public sealed class PerceptionManager
         if (geo.Denied || geo.Minimized)
             return new TextCaptureGeometry(geo.Denied, geo.DeniedProcess, geo.Minimized,
                 geo.Bounds, geo.MaskRects, geo.Bounds.X, geo.Bounds.Y, geo.Bounds.Width, geo.Bounds.Height);
+
+        // ⚠ A DEGENERATE WINDOW MUST REFUSE HERE TOO. The walk returns an EMPTY mask set for one, and this
+        // path OCRs what it captures -- so proceeding would read redacted text back as plaintext once the
+        // window returns to a valid size before the capture. THROWN rather than returned as a flag,
+        // because TextCaptureGeometry has no field for it and the two consumers both do the right thing:
+        // DesktopFindText propagates it, and DesktopWaitForText's catch degrades it to "not found" and
+        // keeps polling, which is correct for a window that is still opening.
+        if (geo.DegenerateWindow)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "The window reported no renderable area, so its redacted regions cannot be located.",
+                "wait for the window to finish opening, then retry");
 
         var win = geo.Bounds; // full window physical rect (target was `win` itself since @ref is null)
         var capture = TextCaptureGeometry.ComputeCaptureBounds(win, region);
@@ -1299,8 +1366,29 @@ public sealed class PerceptionManager
 
 public sealed record FocusedElementInfo(string Ref, string DescriptorLine, string Title, int Pid, string? WindowHandle);
 
+/// <summary>What the geometry walk produces for one window.
+///
+/// ⚠ POSITIONAL RECORD. APPEND ONLY, NEVER INSERT — the same rule and the same reason as CaptureResult.
+///
+/// <paramref name="Bounds"/> is the CAPTURE rect: the ELEMENT's rect when a @ref was given, the window's
+/// otherwise. <paramref name="WindowBounds"/> is ALWAYS the window's own rect (W1) — for window scope the
+/// two are equal, and for element scope they are not, which is why both must cross.
+///
+/// <paramref name="NativeWindowHandle"/> is the OS HWND. It is NOT the WindowHandle the tool layer holds:
+/// that is this server's own wN identifier (WindowHandle.cs:4 is `record struct WindowHandle(string Id)`),
+/// and PrintWindow needs the real handle. Carrying it here does NOT break headless testability — nothing
+/// between the walk and the acquisition seam dereferences it, so a headless test constructs a geometry
+/// with any handle value and a fake acquisition and every crop and mask assertion still runs.
+///
+/// <paramref name="DegenerateWindow"/> — W1 had zero or negative extents when the walk read it. A SEPARATE
+/// flag from Minimized on purpose: a window caught mid-open or mid-animation reports a degenerate rect for
+/// a frame and is exactly the transient the retry loop absorbs, while an already-minimized window never
+/// stops being minimized and retrying it just burns the budget. Both surface to the AGENT as
+/// ElementNotActionable once retries exhaust; the internal signal is what differs, and this is the one
+/// place in the design where the agent-facing code and the internal signal deliberately part company.</summary>
 public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects, bool Minimized, bool Denied, string? DeniedProcess,
-    IReadOnlyList<MaskEscalationEntry> Escalations);
+    IReadOnlyList<MaskEscalationEntry> Escalations,
+    System.Drawing.Rectangle WindowBounds, System.IntPtr NativeWindowHandle, bool DegenerateWindow);
 
 /// <summary>The mask set for a FULL-DESKTOP capture: every visible non-denied window's rects, plus the
 /// elements across all of them whose mask came from an ancestor. Lists rather than a tuple so the
