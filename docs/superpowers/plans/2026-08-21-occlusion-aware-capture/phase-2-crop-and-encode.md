@@ -444,9 +444,27 @@ git commit -m "feat(capture): Encode takes absolute+reported, method and warning
 
 The scrape seam now has three callers with divergent requirements: full-desktop must evaluate `desktopCanvasUniform`, a fallback scrape must not and carries a `scrapeFallback*` code its caller decided, and the OCR path must not either.
 
+⚠⚠ **THIS TASK HAD A BUILD-BREAKING OMISSION AND IT IS FIXED BELOW: there are FOUR call sites, not three.**
+MEASURED — `grep -rn "ScreenCapture.CaptureRectangle(" src/` returns:
+
+```
+FindTextTools.cs:62      OCR
+FindTextTools.cs:110     OCR
+ScreenshotTools.cs:49    full desktop
+ScreenshotTools.cs:58    window / element   <-- the plan never listed this one
+```
+
+Step 3 makes `scope` and `warningsSoFar` REQUIRED (no defaults, deliberately). Updating only three call
+sites leaves `:58` calling a five-parameter method with three arguments — **CS7036, the project does not
+build.** The plan's own index says `ScreenshotTools.cs:49,58` are both modified; only this task's Files
+list and Step 4 dropped `:58`.
+
+*(Why it was missed: the index describes `:58` as the caller being REPLACED by the coordinator in
+Phase 6, so it was mentally filed as "handled later". But it still has to compile in the meantime.)*
+
 **Files:**
-- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs:36-43`
-- Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:49`
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` — the `CaptureRectangle` method (find it by NAME; earlier line citations in this plan have already drifted twice)
+- Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:49` **and `:58`**
 - Modify: `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62,110`
 - Modify: `test/FlaUI.Mcp.Tests/Perception/ScreenCaptureTests.cs:28`
 - Test: `test/FlaUI.Mcp.Tests/Perception/CaptureRectangleCallSiteTests.cs`
@@ -486,10 +504,17 @@ public class CaptureRectangleCallSiteTests
             .Where(x => x.Text.Contains("ScreenCapture.CaptureRectangle("))
             .ToList();
 
-        Assert.Equal(4, sites.Count);   // 1 declaration + 3 call sites
+        // ⚠ FOUR CALL SITES, and the DECLARATION is not among them. The declaration reads
+        // `public static CaptureResult CaptureRectangle(` -- no `ScreenCapture.` prefix -- so the
+        // Contains() filter above never matches it. An earlier version of this test asserted
+        // "1 declaration + 3 call sites" and then filtered for the declaration text that cannot be
+        // present; it would have failed 4 != 3 even with every call site correctly updated.
+        Assert.Equal(4, sites.Count);
 
+        // Kept as a defensive filter in case the declaration is ever rewritten to self-qualify, but it
+        // matches nothing today -- which is why the expected count is unchanged at 4.
         var calls = sites.Where(x => !x.Text.Contains("public static CaptureResult")).ToList();
-        Assert.Equal(3, calls.Count);
+        Assert.Equal(4, calls.Count);
 
         foreach (var c in calls)
             Assert.True(Regex.IsMatch(c.Text, @"CaptureScope\.\w+"),
@@ -562,7 +587,7 @@ Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 36–43 with:
 
 Add `using System.Collections.Generic;` to the file's using block if the analyzer flags it.
 
-- [ ] **Step 4: Update all three call sites**
+- [ ] **Step 4: Update all FOUR call sites**
 
 `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:49`:
 
@@ -571,6 +596,26 @@ Add `using System.Collections.Generic;` to the file's using block if the analyze
                     vbounds, desk.Rects, maxWidth, CaptureScope.FullDesktop,
                     System.Array.Empty<CaptureWarning>()));
 ```
+
+`src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:58` — **the site the plan originally omitted**:
+
+```csharp
+                // ⚠ SCOPE IS NOT CONSTANT HERE. This one call serves BOTH window and element capture,
+                // and the two are not interchangeable: CaptureRectangle emits uniformCanvas for Window
+                // and deliberately NOT for Element, because on an element the captured region is the
+                // ELEMENT and claiming "the window rendered as one colour" would be a statement the tool
+                // never measured. `@ref` is exactly the window-vs-element discriminator the enclosing
+                // branch already used to resolve `geo`.
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(
+                    geo.Bounds, geo.MaskRects, maxWidth,
+                    @ref is null ? CaptureScope.Window : CaptureScope.Element,
+                    System.Array.Empty<CaptureWarning>()));
+```
+
+⚠ **This does change behaviour at this task, and the change is intended.** A uniform WINDOW scrape can
+now raise `uniformCanvas` where before it raised nothing. Nothing projects `CaptureWarnings` onto the
+wire until Task 20, so the warning is computed and discarded for now — but if the headless suite goes
+red here, read the failure before "fixing" it: it may be a test that asserted the old silence.
 
 `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62`:
 
