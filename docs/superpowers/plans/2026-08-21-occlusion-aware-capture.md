@@ -1,0 +1,3362 @@
+# Occlusion-Aware Window Capture (`PrintWindow`) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Capture a window's own pixels regardless of occlusion, without touching focus, with redaction masks still landing on the right regions and no wrong image ever returned unlabelled.
+
+**Architecture:** Window and element scope stop scraping the screen and acquire through `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)`. Full-desktop and OCR keep the scrape. A new `WindowCaptureCoordinator` owns the retry loop, the bookend mask-validation walk and the scrape fallbacks; a new `ScreenCapture.CaptureWindow` seam owns acquisition, the `W2`-side guards and the crop; acquisition sits behind `IWindowImageSource` so everything except the interop is headless-testable.
+
+**Tech Stack:** C# / .NET 10 (`net10.0-windows10.0.19041.0`), xUnit, `System.Drawing`, FlaUI, Win32 interop (`user32`/`gdi32`).
+
+---
+
+## READ THIS BEFORE TASK 1
+
+**Source spec:** `docs/superpowers/specs/2026-08-21-occlusion-aware-capture-design.md` at commit `b11b87b`. Read §1, §2, §2.5, §2.6, §4 and §5 before starting. **Do not read the spec at `6ab0087`** — that is the pre-ratification version and three of its rules are superseded.
+
+**Five things this plan carries that re-deriving from the panel record would undo:**
+
+1. **§2.5 and §2.6 did not exist when the panel ran.** They were added by operator ratification on 2026-08-21 and have had **no adversarial review at all**. They are the newest and least-attacked ideas in the design. Treat every claim in them as unproven.
+2. **Window scope RETRIES before refusing** (ratification item 2). The panel-era rule refused on the first size mismatch. Do not restore it.
+3. **The hung-window leak is staged** (ratification item 3): measure first; the containments ship, the out-of-process worker does not.
+4. **`CaptureRectangle` has THREE other callers, not one.** `ScreenshotTools.cs:49`, `FindTextTools.cs:62`, `FindTextTools.cs:110`. Risk 6 in the spec said "one" until this plan corrected it.
+5. **Two measurements gate the design, not just its tuning.** Tasks 1 and 2 come first for that reason, and Task 3 is a hard stop.
+
+**Repo rules that will fail the build if ignored:**
+
+- **Warnings are errors repo-wide** (root `Directory.Build.props`, since `54b1dc5`). Every build must be 0 warnings / 0 errors.
+- **Never pass `--no-build` to `dotnet test`.** A deleted test still runs from the stale DLL.
+- The solution is **`FlaUI.Mcp.slnx`**. There is no `.sln`.
+- **Every new gate needs a logic mutant** proving that *specific* test goes red. A structural break (deleting a property) proves only that the symbol was referenced.
+- `CaptureResult` and `CaptureGeometry` are **positional records**: **append fields, never insert**.
+
+**Branch:** `item8-occlusion-aware-capture`, already created from master `6ab0087`. Spec amendment is `b11b87b`. Nothing is pushed this release.
+
+---
+
+## File Structure
+
+**New files — `src/FlaUI.Mcp.Core/Perception/`**
+
+| File | Responsibility |
+|---|---|
+| `CaptureScope.cs` | The four-value scope enum both seams branch on |
+| `CaptureWarning.cs` | The `{code, recourse}` pair, the seven code constants, and their recourse text |
+| `CaptureOutcome.cs` | The three-case seam outcome: completed / resized / timed out |
+| `WindowCropGeometry.cs` | The PURE crop function — rectangles in, rectangles out, no handles, no pixels |
+| `IWindowImageSource.cs` | The injectable acquisition seam |
+| `UniformCanvasDetector.cs` | The uniform-colour predicate and its sampling strategy |
+| `WindowCaptureCoordinator.cs` | Steps 1–9: the walk, the retry loop, the bookend walk, the fallbacks |
+
+**New files — `src/FlaUI.Mcp.Server/Capture/`**
+
+| File | Responsibility |
+|---|---|
+| `PrintWindowImageSource.cs` | The real interop. The ONLY Desktop-category production file in this feature |
+
+**Modified**
+
+| File | Change |
+|---|---|
+| `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs:9` | `CaptureResult` gains two appended fields |
+| `…/ScreenCapture.cs:36` | `CaptureRectangle` gains `scope` + `warningsSoFar` |
+| `…/ScreenCapture.cs:45` | `Encode` gains `reported`, `method`, `warnings`; `captureBounds` renames to `absolute` |
+| `…/ScreenCapture.cs:11-14` | Class doc loses the occlusion + never-black claims |
+| `…/PerceptionManager.cs:852` | `ResolveWindowCaptureGeometryAsync` gains `clipToVirtualScreen` |
+| `…/PerceptionManager.cs:915-935` | The degenerate-`W1` guard, between the bounds read and the yardstick |
+| `…/PerceptionManager.cs:935` | The yardstick becomes conditional |
+| `…/PerceptionManager.cs:1275` | `CaptureGeometry` gains three appended fields |
+| `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:17` | Tool description: three separate edits |
+| `…/ScreenshotTools.cs:49,58,71-84` | Call sites and the metadata projection |
+| `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62,110` | The third caller — explicit scope, explicit yardstick |
+| `src/FlaUI.Mcp.Server/Program.cs` | DI for `IWindowImageSource`; the audit-signal flag |
+| `src/FlaUI.Mcp.Server/ServerOptions.cs` | The audit-signal flag |
+| `ROADMAP.md` | The out-of-process worker as tracked debt |
+
+---
+
+## Phase 0 — Measurements that gate the design
+
+**Tasks 1–3 produce no production code.** Two of the three answers can change what Phases 1–6 build, so nothing else starts until Task 3 records them.
+
+### Task 1: Measure whether `PrintWindow` blocks on a window that is not pumping messages
+
+This is **risk 2**, and it decides whether ratification item 3's containments get built at all.
+
+**Files:**
+- Create: `.clavity/scratch/item8-plan/hang-probe/HangProbe.ps1`
+- Create: `.clavity/scratch/item8-plan/hang-probe/HangWindow.ps1`
+- Create: `docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md`
+
+- [ ] **Step 1: Write the fixture that stops pumping**
+
+A WinForms window that renders once, then blocks its UI thread inside a button handler. Save as `.clavity/scratch/item8-plan/hang-probe/HangWindow.ps1`:
+
+```powershell
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$f = New-Object Windows.Forms.Form
+$f.Text = 'HANGPROBE'; $f.Width = 640; $f.Height = 400
+$f.BackColor = [Drawing.Color]::FromArgb(0, 120, 215)
+$lbl = New-Object Windows.Forms.Label
+$lbl.Text = 'PUMPING'; $lbl.AutoSize = $true; $lbl.Location = '20,20'
+$lbl.Font = New-Object Drawing.Font('Segoe UI', 24)
+$f.Controls.Add($lbl)
+# Block the UI thread 8s after Shown, so the window has definitely rendered first.
+$t = New-Object Windows.Forms.Timer
+$t.Interval = 8000
+$t.Add_Tick({ $t.Stop(); $lbl.Text = 'HUNG'; [Threading.Thread]::Sleep(120000) })
+$f.Add_Shown({ $t.Start() })
+[Windows.Forms.Application]::Run($f)
+```
+
+- [ ] **Step 2: Write the probe that times the call**
+
+Save as `.clavity/scratch/item8-plan/hang-probe/HangProbe.ps1`:
+
+```powershell
+param([Parameter(Mandatory=$true)][string]$TitleMatch)
+
+Add-Type -AssemblyName System.Drawing
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class PW {
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L,T,R,B; }
+}
+'@
+[void][PW]::SetProcessDPIAware()
+
+$p = Get-Process | Where-Object { $_.MainWindowTitle -like "*$TitleMatch*" } | Select-Object -First 1
+if (-not $p) { throw "no window matching '$TitleMatch'" }
+$h = $p.MainWindowHandle
+$r = New-Object PW+RECT
+[void][PW]::GetWindowRect($h, [ref]$r)
+$w = $r.R - $r.L; $ht = $r.B - $r.T
+Write-Host "hwnd=$h rect=${w}x${ht} title='$($p.MainWindowTitle)'"
+
+$bmp = New-Object Drawing.Bitmap $w, $ht
+$g   = [Drawing.Graphics]::FromImage($bmp)
+$hdc = $g.GetHdc()
+$sw  = [Diagnostics.Stopwatch]::StartNew()
+$ok  = [PW]::PrintWindow($h, $hdc, 2)
+$sw.Stop()
+$g.ReleaseHdc($hdc); $g.Dispose()
+Write-Host "RESULT ret=$ok elapsedMs=$($sw.ElapsedMilliseconds)"
+$bmp.Save("$PSScriptRoot\hang-$TitleMatch-$($sw.ElapsedMilliseconds)ms.png")
+$bmp.Dispose()
+```
+
+- [ ] **Step 3: Run the control — the window while it is still pumping**
+
+Launch the fixture, then within 8 seconds run:
+
+```
+powershell -ExecutionPolicy Bypass -File .clavity/scratch/item8-plan/hang-probe/HangProbe.ps1 -TitleMatch HANGPROBE
+```
+
+Expected: `RESULT ret=True elapsedMs=<small>`, and a PNG showing `PUMPING`. This is the baseline the hung case is compared against. If this does not complete quickly, stop — the probe itself is wrong.
+
+- [ ] **Step 4: Run the experiment — the same window once it is hung**
+
+Wait for the label to read `HUNG` (past the 8s timer), then run the identical command. Record `elapsedMs`.
+
+**This is the measurement the design turns on:**
+- **elapsed is small and `ret=True`** → `PrintWindow` does NOT block. Ratification item 3 evaporates. Tasks 15 and 19's timeout and containments are **not built**; `CaptureOutcome.TimedOut` and `scrapeFallbackTargetUnresponsive` still ship (they cost nothing and the code is already specified) but are unreachable in practice, and the plan says so.
+- **elapsed runs to the 120s sleep** → it DOES block. Build the timeout, the dedicated thread and the circuit breaker.
+
+- [ ] **Step 5: Run it a second and third time against the still-hung window**
+
+If it blocks, each call is a permanent leak. Record the process's GDI handle count between runs:
+
+```
+powershell -Command "(Get-Process -Id (Get-Process -Name FlaUI.Mcp.Server -ErrorAction SilentlyContinue).Id).HandleCount"
+```
+
+This confirms or refutes the *cumulative* degradation claim in ratification item 3 — the claim the circuit breaker exists to bound. A cumulative rise confirms it.
+
+- [ ] **Step 6: Record the result**
+
+Create `docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md` with a `## Risk 2 — does PrintWindow block?` section holding the exact command, the control number, the experiment number, the repeat-run handle counts, and a one-line **VERDICT: BLOCKS** or **VERDICT: DOES NOT BLOCK**.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md
+git commit -m "measure(item8): risk 2 - does PrintWindow block on a non-pumping window"
+```
+
+### Task 2: Measure stale composition, Chromium and Electron
+
+This is **risks 1 and 3**, folded into one session because they need the same window. Risk 3's answer can change the design; risk 1's cannot.
+
+**Files:**
+- Create: `.clavity/scratch/item8-plan/stale-probe/StaleProbe.ps1`
+- Modify: `docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md`
+
+- [ ] **Step 1: Write the probe**
+
+It captures via `PrintWindow` and reads the UIA tree with no delay between them, so the two observations are as close to simultaneous as the harness allows. Save as `.clavity/scratch/item8-plan/stale-probe/StaleProbe.ps1`:
+
+```powershell
+param([Parameter(Mandatory=$true)][string]$TitleMatch,
+      [int]$Iterations = 40)
+
+Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class PW2 {
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L,T,R,B; }
+}
+'@
+[void][PW2]::SetProcessDPIAware()
+
+$p = Get-Process | Where-Object { $_.MainWindowTitle -like "*$TitleMatch*" } | Select-Object -First 1
+if (-not $p) { throw "no window matching '$TitleMatch'" }
+$h = $p.MainWindowHandle
+$r = New-Object PW2+RECT; [void][PW2]::GetWindowRect($h, [ref]$r)
+$w = $r.R - $r.L; $ht = $r.B - $r.T
+
+$root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+$mismatch = 0
+for ($i = 0; $i -lt $Iterations; $i++) {
+  $bmp = New-Object Drawing.Bitmap $w, $ht
+  $g = [Drawing.Graphics]::FromImage($bmp); $hdc = $g.GetHdc()
+  [void][PW2]::PrintWindow($h, $hdc, 2)
+  $g.ReleaseHdc($hdc); $g.Dispose()
+  # Tree read immediately after the pixels.
+  $name = $root.Current.Name
+  # Sample a 12x12 grid and hash it, so a frame change is detectable without storing every PNG.
+  $sb = New-Object Text.StringBuilder
+  for ($y = 0; $y -lt 12; $y++) { for ($x = 0; $x -lt 12; $x++) {
+    [void]$sb.Append($bmp.GetPixel([int]($x * ($w-1) / 11), [int]($y * ($ht-1) / 11)).ToArgb())
+  } }
+  Write-Host ("{0:d3} treeName='{1}' pixHash={2}" -f $i, $name, $sb.ToString().GetHashCode())
+  $bmp.Save("$PSScriptRoot\stale-$TitleMatch-$i.png")
+  $bmp.Dispose()
+}
+```
+
+- [ ] **Step 2: Run it against a Chromium browser**
+
+Open Chrome or Edge on a page with a visible state you can toggle fast (a password field with a reveal button is ideal). Start the probe, and while it runs, toggle the state repeatedly.
+
+```
+powershell -ExecutionPolicy Bypass -File .clavity/scratch/item8-plan/stale-probe/StaleProbe.ps1 -TitleMatch Chrome
+```
+
+Two questions from one run:
+- **Risk 1:** do the PNGs show real page content, or are they blank/black? Record the answer. A blank result narrows where the feature is usable but changes no design.
+- **Risk 3:** does any PNG show the OLD state while the tree line beside it reports the NEW one? Inspect the frames around each toggle.
+
+- [ ] **Step 3: Run it against an Electron app**
+
+VS Code, Slack, Discord — whichever is installed. **Do not treat the Chromium result as a proxy for this**: Electron embeds Chromium but drives its own compositor and window chrome.
+
+```
+powershell -ExecutionPolicy Bypass -File .clavity/scratch/item8-plan/stale-probe/StaleProbe.ps1 -TitleMatch "Visual Studio Code"
+```
+
+- [ ] **Step 4: Record the result, honouring the one-sidedness**
+
+Append to the measurements doc. **The stale-composition probe is ONE-SIDED and the record must say so in those words:** a positive result CONFIRMS the race; a negative does NOT refute it, because this is a timing race between an asynchronous compositor and a separate tree walk, so a finite number of clean runs means "not observed at these timings", never "cannot happen".
+
+Write the verdict as one of:
+- **CONFIRMED** — the race is real. Stop and escalate to the operator: the spec has no mitigation designed for it and §2.5 explicitly does not cover it.
+- **NOT OBSERVED IN N RUNS** — ship with the risk documented and unmitigated. **Do not delete risk 3.**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md
+git commit -m "measure(item8): risks 1+3 - Chromium, Electron, and the stale-composition probe"
+```
+
+### Task 3: The design gate — stop, report, confirm
+
+**Files:**
+- Modify: `docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md`
+
+- [ ] **Step 1: Write the gate section**
+
+Append a `## DESIGN GATE` section answering exactly three questions:
+
+```markdown
+## DESIGN GATE (Task 3)
+
+1. Does PrintWindow BLOCK on a non-pumping window?   BLOCKS | DOES NOT BLOCK
+   -> If DOES NOT BLOCK: Tasks 15b and 19b are NOT BUILT. Record that here.
+2. Is the stale composition CONFIRMED?               CONFIRMED | NOT OBSERVED IN <n> RUNS
+   -> If CONFIRMED: STOP. Escalate to the operator before any further task.
+3. Do Chromium AND Electron render under PW_RENDERFULLCONTENT?  BOTH | ONE | NEITHER
+   -> If not BOTH: record which, and add the limitation to the tool description in Task 22.
+```
+
+- [ ] **Step 2: Stop and report to the operator**
+
+Do not begin Phase 1 until the operator has seen these three answers. Question 2 in particular is an unmitigated privacy risk being accepted, and the spec states plainly that accepting it is the operator's call and not the plan's.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md
+git commit -m "measure(item8): design gate - the three answers Phases 1-6 depend on"
+```
+
+---
+
+## Phase 1 — The contract types
+
+Everything here is headless, has no dependency on the measurements, and is what every later phase compiles against. Build it first so the decomposition is pinned in real signatures rather than in prose — that is the layer thirty panel rounds could not settle.
+
+### Task 4: `CaptureScope` — the enum both seams branch on
+
+Two seams must branch on scope and neither can infer it. `CaptureWindow` cannot infer window-vs-element from `E == W1`, because an element that exactly covers its window would take the wrong branch. `CaptureRectangle` cannot infer full-desktop from anything it receives.
+
+**Files:**
+- Create: `src/FlaUI.Mcp.Core/Perception/CaptureScope.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureScopeTests.cs`
+
+- [ ] **Step 1: Write the failing test**
+
+```csharp
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureScopeTests
+{
+    // The scrape seam runs the desktopCanvasUniform detector for FullDesktop and for NOTHING else.
+    // OcrRegion and a fallback scrape must both come back false, and they are different callers, so
+    // this is pinned per-value rather than as "not FullDesktop".
+    [Theory]
+    [InlineData(CaptureScope.FullDesktop, true)]
+    [InlineData(CaptureScope.Window, false)]
+    [InlineData(CaptureScope.Element, false)]
+    [InlineData(CaptureScope.OcrRegion, false)]
+    public void Only_full_desktop_runs_the_desktop_detector(CaptureScope scope, bool expected)
+        => Assert.Equal(expected, scope.RunsDesktopUniformDetector());
+
+    // The two-stage uniform detector needs a full-window bitmap distinct from the crop, which only the
+    // printWindow backend produces. Every scrape path -- including a fallback -- must be false.
+    [Theory]
+    [InlineData(CaptureScope.Window, true)]
+    [InlineData(CaptureScope.Element, true)]
+    [InlineData(CaptureScope.FullDesktop, false)]
+    [InlineData(CaptureScope.OcrRegion, false)]
+    public void Only_window_and_element_acquire_per_window(CaptureScope scope, bool expected)
+        => Assert.Equal(expected, scope.AcquiresPerWindow());
+
+    [Fact]
+    public void OcrRegion_exists_because_FindTextTools_is_a_third_caller()
+        => Assert.Equal(4, System.Enum.GetValues<CaptureScope>().Length);
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureScopeTests"`
+Expected: FAIL — `CaptureScope` does not exist (CS0246).
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/FlaUI.Mcp.Core/Perception/CaptureScope.cs`:
+
+```csharp
+namespace FlaUI.Mcp.Core.Perception;
+
+/// <summary>Which caller a capture seam is serving. Neither seam can infer this from its other
+/// arguments, and both must branch on it, so it crosses the boundary explicitly (spec §1, data flow).
+///
+/// ⚠ CaptureWindow must NOT infer window-vs-element from `E == W1`: an element that exactly covers its
+/// window would take the resize branch meant for the other scope.
+///
+/// ⚠ OcrRegion is a REAL third caller, not a placeholder. FindTextTools.cs:62 and :110 back
+/// desktop_find_text and desktop_wait_for_text, reach the mask walk through
+/// ResolveTextCaptureGeometryAsync, and would otherwise inherit every default this feature adds. The
+/// spec's risk 6 said CaptureRectangle had "one other caller" until this was measured.</summary>
+public enum CaptureScope
+{
+    /// <summary>desktop_screenshot with a window handle and no ref. Acquires via PrintWindow.</summary>
+    Window,
+    /// <summary>desktop_screenshot with a window handle AND a ref. Acquires via PrintWindow, then crops.</summary>
+    Element,
+    /// <summary>desktop_screenshot with no window. Scrapes the virtual screen; the ONLY scope that runs
+    /// the desktopCanvasUniform detector.</summary>
+    FullDesktop,
+    /// <summary>desktop_find_text / desktop_wait_for_text. Scrapes a window or a sub-region of one.
+    /// Runs NO detector: it is neither full-desktop nor a PrintWindow capture, so it has no second
+    /// operand for the two-stage comparison and no whole-desktop claim to make.</summary>
+    OcrRegion,
+}
+
+public static class CaptureScopeExtensions
+{
+    /// <summary>TRUE only for FullDesktop. A fallback scrape and the OCR path both get NO detector:
+    /// the two-stage comparison has no second operand on a scrape, and neither is a whole desktop.</summary>
+    public static bool RunsDesktopUniformDetector(this CaptureScope scope) => scope == CaptureScope.FullDesktop;
+
+    /// <summary>TRUE for the two scopes that acquire through PrintWindow. Note this describes the scope's
+    /// INTENDED backend, not the backend a given attempt actually used -- a Window-scope capture that fell
+    /// back to the scrape still answers true here, which is why the uniform detectors are additionally
+    /// gated on the method that produced the image.</summary>
+    public static bool AcquiresPerWindow(this CaptureScope scope)
+        => scope is CaptureScope.Window or CaptureScope.Element;
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureScopeTests"`
+Expected: PASS — 9 passed.
+
+- [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
+
+Temporarily change `RunsDesktopUniformDetector` to `=> scope != CaptureScope.Window;`. Re-run. Expected: `Only_full_desktop_runs_the_desktop_detector` FAILS on the `Element` and `OcrRegion` rows. **Revert the mutant.**
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/CaptureScope.cs test/FlaUI.Mcp.Tests/Perception/CaptureScopeTests.cs
+git commit -m "feat(capture): CaptureScope - the enum both seams branch on"
+```
+
+### Task 5: `CaptureWarning` and the seven codes
+
+**Files:**
+- Create: `src/FlaUI.Mcp.Core/Perception/CaptureWarning.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureWarningTests.cs`
+
+- [ ] **Step 1: Write the failing test**
+
+```csharp
+using System.Linq;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureWarningTests
+{
+    // The wire contract. These strings are read by every consuming agent, so they are pinned here
+    // rather than left to drift. camelCase, matching every other field in the response.
+    [Theory]
+    [InlineData("uniformCanvas")]
+    [InlineData("desktopCanvasUniform")]
+    [InlineData("elementCanvasUniform")]
+    [InlineData("windowResized")]
+    [InlineData("popupsNotRendered")]
+    [InlineData("scrapeFallbackTargetUnresponsive")]
+    [InlineData("scrapeFallbackTargetChanging")]
+    public void Every_shipped_code_has_a_recourse(string code)
+    {
+        var w = CaptureWarnings.For(code);
+        Assert.Equal(code, w.Code);
+        Assert.False(string.IsNullOrWhiteSpace(w.Recourse));
+    }
+
+    [Fact]
+    public void Exactly_seven_codes_ship()
+        => Assert.Equal(7, CaptureWarnings.AllCodes.Count);
+
+    // §5: `code` is what a caller branches on, so it must be a stable identifier -- never prose.
+    [Fact]
+    public void Codes_are_camelCase_identifiers_not_sentences()
+        => Assert.All(CaptureWarnings.AllCodes, c =>
+        {
+            Assert.DoesNotContain(' ', c);
+            Assert.True(char.IsLower(c[0]), $"'{c}' must start lowercase");
+        });
+
+    [Fact]
+    public void An_unknown_code_throws_rather_than_inventing_a_recourse()
+        => Assert.Throws<System.ArgumentOutOfRangeException>(() => CaptureWarnings.For("notACode"));
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureWarningTests"`
+Expected: FAIL — `CaptureWarnings` does not exist (CS0103).
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/FlaUI.Mcp.Core/Perception/CaptureWarning.cs`:
+
+```csharp
+using System;
+using System.Collections.Generic;
+
+namespace FlaUI.Mcp.Core.Perception;
+
+/// <summary>One condition that may make a returned image unusable. `Code` is a stable identifier a
+/// caller branches on; `Recourse` is the sentence telling an agent what to do instead.
+///
+/// ⚠ Deliberately an OBJECT, not a bare sentence. The analogy this field is built on is
+/// unmaskedProcesses -- an always-present list, empty when nothing is wrong -- and that analogy holds
+/// only on the axis where the entries are programmatic identifiers. A list of English prose would force
+/// a consumer to regex wording that will drift, which is a worse contract than the boolean it replaced.</summary>
+public sealed record CaptureWarning(string Code, string Recourse);
+
+/// <summary>The seven codes this feature ships, with their recourse text. Centralised so the wire
+/// contract has exactly one definition -- §5 settles these strings, not the implementation.</summary>
+public static class CaptureWarnings
+{
+    public const string UniformCanvas = "uniformCanvas";
+    public const string DesktopCanvasUniform = "desktopCanvasUniform";
+    public const string ElementCanvasUniform = "elementCanvasUniform";
+    public const string WindowResized = "windowResized";
+    public const string PopupsNotRendered = "popupsNotRendered";
+    public const string ScrapeFallbackTargetUnresponsive = "scrapeFallbackTargetUnresponsive";
+    public const string ScrapeFallbackTargetChanging = "scrapeFallbackTargetChanging";
+
+    private static readonly Dictionary<string, string> Recourses = new(StringComparer.Ordinal)
+    {
+        [UniformCanvas] =
+            "The whole window rendered as a single colour, so this image may not be usable. " +
+            "Read the UIA tree with desktop_snapshot instead.",
+        [DesktopCanvasUniform] =
+            "The whole desktop came back a single colour. The usual causes are a secure desktop (a UAC " +
+            "prompt), DRM-protected content, or a session in transition. UIA is normally blocked in " +
+            "those states too, so desktop_snapshot will not help - wait for the condition to clear and " +
+            "re-capture.",
+        [ElementCanvasUniform] =
+            "This element's pixels may have failed to render even though the window as a whole did - a " +
+            "hardware-accelerated child viewport is the usual cause. Verify through the UIA tree before " +
+            "concluding the control is blank.",
+        [WindowResized] =
+            "The window changed size mid-capture. The image itself is sound - it was cropped back to the " +
+            "region you asked for - but the layout inside it may have reflowed, so any UIA tree or " +
+            "element ref you hold for this window may be geometrically stale. Re-snapshot before acting " +
+            "on cached coordinates.",
+        [PopupsNotRendered] =
+            "An open menu, dropdown or tooltip belonging to this window is a separate top-level window " +
+            "and may be missing from this image - structurally absent under printWindow, and cropped off " +
+            "under screenScrape wherever it extends beyond the window's rect. Its absence is not evidence " +
+            "it failed to open - read the UIA tree to see it.",
+        [ScrapeFallbackTargetUnresponsive] =
+            "This image is a screen scrape, so anything overlapping the window is in it - treat occlusion " +
+            "as possible. The target is not pumping messages: it will not respond to input either, so do " +
+            "not queue clicks against it.",
+        [ScrapeFallbackTargetChanging] =
+            "This image is a screen scrape, so treat occlusion as possible. The target is changing " +
+            "continuously - it is alive and busy, not stuck; waiting and re-capturing may succeed.",
+    };
+
+    public static IReadOnlyList<string> AllCodes { get; } = new[]
+    {
+        UniformCanvas, DesktopCanvasUniform, ElementCanvasUniform, WindowResized,
+        PopupsNotRendered, ScrapeFallbackTargetUnresponsive, ScrapeFallbackTargetChanging,
+    };
+
+    /// <summary>Build the warning for a code. Throws on an unknown code rather than inventing a
+    /// recourse: a warning whose instruction is empty is the failure mode §3 exists to prevent.</summary>
+    public static CaptureWarning For(string code)
+        => Recourses.TryGetValue(code, out var r)
+            ? new CaptureWarning(code, r)
+            : throw new ArgumentOutOfRangeException(nameof(code), code, "not a shipped capture-warning code");
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureWarningTests"`
+Expected: PASS — 10 passed.
+
+- [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
+
+Temporarily set `[WindowResized]` to `""`. Re-run. Expected: `Every_shipped_code_has_a_recourse` FAILS on the `windowResized` row. **Revert.**
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/CaptureWarning.cs test/FlaUI.Mcp.Tests/Perception/CaptureWarningTests.cs
+git commit -m "feat(capture): CaptureWarning and the seven wire codes with their recourse text"
+```
+
+### Task 6: `CaptureResult` gains its two fields — appended, never inserted
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs:9`
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs:69` (the one construction site)
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureResultShapeTests.cs`
+
+- [ ] **Step 1: Write the failing test**
+
+```csharp
+using System.Linq;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureResultShapeTests
+{
+    // CaptureResult is a POSITIONAL record constructed positionally. A field added mid-list silently
+    // rebinds arguments wherever the types happen to line up -- int X, int Y, int W, int H are four
+    // interchangeable ints. This pins the ORDER, so an insertion fails a test instead of shipping.
+    [Fact]
+    public void The_positional_order_is_append_only()
+    {
+        var ctor = typeof(CaptureResult).GetConstructors().Single();
+        var names = ctor.GetParameters().Select(p => p.Name).ToArray();
+        Assert.Equal(new[]
+        {
+            "Png", "X", "Y", "W", "H", "ScaleApplied", "Redactions",
+            "CaptureMethod", "CaptureWarnings",
+        }, names);
+    }
+
+    [Fact]
+    public void CaptureWarnings_is_never_null_when_constructed_empty()
+    {
+        var r = new CaptureResult(System.Array.Empty<byte>(), 0, 0, 1, 1, 1.0, 0,
+                                  "printWindow", System.Array.Empty<CaptureWarning>());
+        Assert.NotNull(r.CaptureWarnings);
+        Assert.Empty(r.CaptureWarnings);
+    }
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureResultShapeTests"`
+Expected: FAIL — the constructor has 7 parameters, not 9.
+
+- [ ] **Step 3: Change the record**
+
+In `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs`, replace line 9 with:
+
+```csharp
+/// <summary>A captured, masked, encoded image plus the metadata the tool layer projects.
+///
+/// ⚠ POSITIONAL RECORD, constructed positionally at the single site in Encode. APPEND ONLY, NEVER
+/// INSERT: X/Y/W/H are four interchangeable ints, so a field added mid-list rebinds arguments silently
+/// wherever the types line up. CaptureResultShapeTests pins the order for exactly that reason.
+///
+/// CaptureMethod is "printWindow" or "screenScrape". CaptureWarnings is ALWAYS present and is empty in
+/// the normal case -- never null. A diagnostic that appears only on failure teaches consumers to ignore
+/// its absence (AB-9).</summary>
+public sealed record CaptureResult(byte[] Png, int X, int Y, int W, int H, double ScaleApplied, int Redactions,
+                                   string CaptureMethod, IReadOnlyList<CaptureWarning> CaptureWarnings);
+```
+
+- [ ] **Step 4: Fix the one construction site so the project compiles**
+
+`Encode` is rewritten fully in Task 9. For now, make line 69 compile by passing the scrape's values:
+
+```csharp
+            return new CaptureResult(ms.ToArray(), captureBounds.X, captureBounds.Y, captureBounds.Width,
+                                     captureBounds.Height, scale, painted,
+                                     "screenScrape", System.Array.Empty<CaptureWarning>());
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureResultShapeTests"`
+Expected: PASS — 2 passed.
+
+- [ ] **Step 6: Run the whole headless suite — this record has many readers**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: PASS, 0 failed. Build must be 0 warnings / 0 errors.
+
+- [ ] **Step 7: Prove the gate is non-vacuous with a logic mutant**
+
+Temporarily move `CaptureMethod` to sit before `Redactions` in the record. Re-run `CaptureResultShapeTests`. Expected: `The_positional_order_is_append_only` FAILS. **Revert.**
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs test/FlaUI.Mcp.Tests/Perception/CaptureResultShapeTests.cs
+git commit -m "feat(capture): CaptureResult carries captureMethod and captureWarnings (appended)"
+```
+
+### Task 7: `CaptureOutcome` — the three-case seam return
+
+The seam must be able to say "no image; the window resized" and "no image; the call timed out". Neither an exception nor a null/sentinel `CaptureResult` can express that: exceptions are wrong because this is ordinary expected control flow that collides with the surrounding `ToolException` conversions, and a sentinel cannot be told apart from any other empty outcome.
+
+**Files:**
+- Create: `src/FlaUI.Mcp.Core/Perception/CaptureOutcome.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureOutcomeTests.cs`
+
+- [ ] **Step 1: Write the failing test**
+
+```csharp
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureOutcomeTests
+{
+    [Fact]
+    public void A_completed_outcome_carries_the_result()
+    {
+        var r = new CaptureResult(System.Array.Empty<byte>(), 1, 2, 3, 4, 1.0, 0,
+                                  "printWindow", System.Array.Empty<CaptureWarning>());
+        var o = CaptureOutcome.Completed(r);
+        Assert.Equal(CaptureOutcomeKind.Completed, o.Kind);
+        Assert.Same(r, o.Result);
+    }
+
+    // The signals carry NO payload, deliberately. An earlier design had "resized" carry the observed W2
+    // "for the next attempt" -- but retrying means a fresh UIA walk, which discovers the new geometry
+    // itself and has no input for a rectangle the previous attempt measured. A contract requiring data
+    // its only consumer discards is a contract that will drift.
+    [Fact]
+    public void The_resized_signal_carries_no_payload()
+    {
+        Assert.Equal(CaptureOutcomeKind.Resized, CaptureOutcome.Resized.Kind);
+        Assert.Null(CaptureOutcome.Resized.Result);
+    }
+
+    [Fact]
+    public void The_timed_out_signal_exists_and_carries_no_payload()
+    {
+        Assert.Equal(CaptureOutcomeKind.TimedOut, CaptureOutcome.TimedOut.Kind);
+        Assert.Null(CaptureOutcome.TimedOut.Result);
+    }
+
+    // Without a TimedOut case the risk-2 scrape fallback is UNREACHABLE: the caller owns the fallback and
+    // can only act on what the seam tells it.
+    [Fact]
+    public void There_are_exactly_three_cases()
+        => Assert.Equal(3, System.Enum.GetValues<CaptureOutcomeKind>().Length);
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureOutcomeTests"`
+Expected: FAIL — `CaptureOutcome` does not exist (CS0103).
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/FlaUI.Mcp.Core/Perception/CaptureOutcome.cs`:
+
+```csharp
+namespace FlaUI.Mcp.Core.Perception;
+
+public enum CaptureOutcomeKind
+{
+    /// <summary>An image was produced. Result is non-null.</summary>
+    Completed,
+    /// <summary>W1.Size != W2.Size. No image. The CALLER decides what happens next, and the answer
+    /// differs by scope.</summary>
+    Resized,
+    /// <summary>PrintWindow did not return within the bound. No image. The caller falls back to the
+    /// scrape with scrapeFallbackTargetUnresponsive.</summary>
+    TimedOut,
+}
+
+/// <summary>What CaptureWindow returns. It WRAPS a CaptureResult rather than being one, because the seam
+/// has three outcomes and a CaptureResult can express only the first.
+///
+/// ⚠ Not an exception: this is ordinary, expected control flow on a path the design does not refuse, and
+/// throwing here would collide with the ToolException conversions surrounding this code.
+/// ⚠ Not a null or sentinel CaptureResult: the caller must distinguish "resized" from "timed out" from
+/// any other empty outcome, and a sentinel collapses them.
+/// ⚠ The two signals carry NO payload. Retrying means a fresh UIA walk, which discovers the new geometry
+/// itself; nothing consumes a rectangle the failed attempt observed.</summary>
+public sealed record CaptureOutcome(CaptureOutcomeKind Kind, CaptureResult? Result)
+{
+    public static CaptureOutcome Completed(CaptureResult result) => new(CaptureOutcomeKind.Completed, result);
+    public static readonly CaptureOutcome Resized = new(CaptureOutcomeKind.Resized, null);
+    public static readonly CaptureOutcome TimedOut = new(CaptureOutcomeKind.TimedOut, null);
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureOutcomeTests"`
+Expected: PASS — 4 passed.
+
+- [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
+
+Temporarily delete the `TimedOut` enum member and its factory. Re-run. Expected: `There_are_exactly_three_cases` FAILS (and the file no longer compiles, which is the structural half — the count assertion is the behavioural half). **Revert.**
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/CaptureOutcome.cs test/FlaUI.Mcp.Tests/Perception/CaptureOutcomeTests.cs
+git commit -m "feat(capture): CaptureOutcome - completed, resized, timed out"
+```
+
+---
+
+## Phase 2 — The crop and the encode path
+
+### Task 8: `WindowCropGeometry` — the pure function the whole design turns on
+
+This is the single most reviewed block in the spec: six panel rounds each corrected it, and twice the correction landed *below* the text it was correcting. **Implement exactly the algorithm below and do not re-derive it.**
+
+Three observations, and which one you use is the whole game:
+
+| | |
+|---|---|
+| `W1` | the WINDOW rect observed during the UIA walk |
+| `E` | the ELEMENT rect from that SAME walk (`= W1` for window scope) |
+| `W2` | the `GetWindowRect` taken at capture time, which sized the bitmap |
+
+**Files:**
+- Create: `src/FlaUI.Mcp.Core/Perception/WindowCropGeometry.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/WindowCropGeometryTests.cs`
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+using System.Drawing;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class WindowCropGeometryTests
+{
+    // Window scope: E == W1, nothing moved, nothing resized. The crop is the whole bitmap and both
+    // translations land back on the window's own origin.
+    [Fact]
+    public void Window_scope_static_window_is_the_whole_bitmap()
+    {
+        var w1 = new Rectangle(100, 200, 800, 600);
+        var g = WindowCropGeometry.Compute(new Size(800, 600), e: w1, w1: w1, w2: w1);
+        Assert.NotNull(g);
+        Assert.Equal(new Rectangle(0, 0, 800, 600), g!.Value.Effective);
+        Assert.Equal(new Rectangle(100, 200, 800, 600), g.Value.Absolute);
+        Assert.Equal(new Rectangle(100, 200, 800, 600), g.Value.Reported);
+    }
+
+    // THE MOVE CASE. This is the numeric trace panel round 7 verified by hand and it is the reason W1
+    // anchors the mask side: window (-8,-8,1936,1036) moves to (92,92,...), element at (100,200,300,50).
+    // Using W2 on the way back would give absolute=(200,300) against masks sampled at (100,200) -- every
+    // mask 100px off.
+    [Fact]
+    public void A_pure_move_keeps_masks_on_W1_and_reports_on_W2()
+    {
+        var w1 = new Rectangle(-8, -8, 1936, 1036);
+        var w2 = new Rectangle(92, 92, 1936, 1036);
+        var e  = new Rectangle(100, 200, 300, 50);
+        var g = WindowCropGeometry.Compute(new Size(1936, 1036), e, w1, w2);
+        Assert.NotNull(g);
+        Assert.Equal(new Rectangle(108, 208, 300, 50), g!.Value.Effective);
+        Assert.Equal(new Rectangle(100, 200, 300, 50), g.Value.Absolute);   // masks land here
+        Assert.Equal(new Rectangle(200, 300, 300, 50), g.Value.Reported);   // pixels are actually here
+    }
+
+    // A window that GREW exposes area the UIA walk never inspected -- pixels no mask was computed for.
+    // Intersect discards exactly that region because `relative` is W1-sized. Without this the design
+    // returns unscanned pixels and calls it a success.
+    [Fact]
+    public void A_grown_window_is_cropped_back_to_the_region_that_was_scanned()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var w2 = new Rectangle(0, 0, 1000, 700);
+        var g = WindowCropGeometry.Compute(new Size(1000, 700), e: w1, w1: w1, w2: w2);
+        Assert.NotNull(g);
+        Assert.Equal(new Rectangle(0, 0, 800, 600), g!.Value.Effective);
+        Assert.Equal(800, g.Value.Absolute.Width);
+        Assert.Equal(600, g.Value.Absolute.Height);
+    }
+
+    [Fact]
+    public void A_shrunk_window_clamps_so_nothing_reads_past_the_bitmap()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var w2 = new Rectangle(0, 0, 500, 400);
+        var g = WindowCropGeometry.Compute(new Size(500, 400), e: w1, w1: w1, w2: w2);
+        Assert.NotNull(g);
+        Assert.Equal(new Rectangle(0, 0, 500, 400), g!.Value.Effective);
+    }
+
+    // The invariant the whole subsection exists to protect, asserted on every case above at once.
+    [Theory]
+    [InlineData(0, 0, 800, 600, 0, 0, 800, 600)]
+    [InlineData(-8, -8, 1936, 1036, 92, 92, 1936, 1036)]
+    [InlineData(0, 0, 800, 600, 0, 0, 1000, 700)]
+    [InlineData(0, 0, 800, 600, 0, 0, 500, 400)]
+    public void Src_absolute_and_reported_always_share_one_size(
+        int x1, int y1, int cx1, int cy1, int x2, int y2, int cx2, int cy2)
+    {
+        var w1 = new Rectangle(x1, y1, cx1, cy1);
+        var w2 = new Rectangle(x2, y2, cx2, cy2);
+        var g = WindowCropGeometry.Compute(new Size(cx2, cy2), e: w1, w1: w1, w2: w2);
+        Assert.NotNull(g);
+        Assert.Equal(g!.Value.Effective.Size, g.Value.Absolute.Size);
+        Assert.Equal(g.Value.Effective.Size, g.Value.Reported.Size);
+    }
+
+    // An element that fell entirely outside the new bitmap. Returns null; the caller refuses. Unguarded,
+    // Bitmap.Clone on this throws ArgumentException, which ScreenCapture.cs:40's COMException/
+    // ExternalException filter does NOT catch, so it escapes as a raw unmapped exception.
+    [Fact]
+    public void An_element_entirely_outside_the_bitmap_returns_null()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var w2 = new Rectangle(0, 0, 200, 150);
+        var e  = new Rectangle(500, 400, 100, 40);
+        Assert.Null(WindowCropGeometry.Compute(new Size(200, 150), e, w1, w2));
+    }
+
+    // GUARD ON EXTENTS, NOT IsEmpty. Rectangle.Intersect yields a ZERO-EXTENT rect at NON-ZERO
+    // coordinates for rects that merely TOUCH along an edge, and IsEmpty is false there. This repo has
+    // already shipped the wrong form of this exact guard and documents the resulting leak at
+    // PerceptionManager.cs:942-946. An element touching the window's right edge is that case.
+    [Fact]
+    public void A_zero_width_touching_intersection_is_rejected_even_though_IsEmpty_is_false()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var e  = new Rectangle(800, 100, 50, 30);   // starts exactly at the right edge
+        var g = WindowCropGeometry.Compute(new Size(800, 600), e, w1, w2: w1);
+        Assert.Null(g);
+    }
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~WindowCropGeometryTests"`
+Expected: FAIL — `WindowCropGeometry` does not exist (CS0103).
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/FlaUI.Mcp.Core/Perception/WindowCropGeometry.cs`:
+
+```csharp
+using System.Drawing;
+
+namespace FlaUI.Mcp.Core.Perception;
+
+/// <summary>The three rectangles a crop produces. Sizes are equal by construction.</summary>
+public readonly record struct CropGeometry(Rectangle Effective, Rectangle Absolute, Rectangle Reported);
+
+/// <summary>The crop GEOMETRY -- a PURE function of (bitmap size, E, W1, W2). Rectangles in, rectangles
+/// out: no OS handle, no pixels, no allocation. This is what makes the element-crop invariant and the
+/// clamp path HEADLESS-testable, which the spec's Testing section requires; if this logic lived inside
+/// the component that calls GetWindowRect and PrintWindow, those tests could not exist.
+///
+/// Crop EXTRACTION -- `src = bitmap cropped to Effective` -- is a separate, decision-free bitmap
+/// operation that lives in the seam. Every rectangle it uses was already computed here.</summary>
+public static class WindowCropGeometry
+{
+    /// <summary>Compute the crop. Returns null when the intersection has no AREA, which the caller turns
+    /// into a defined refusal.</summary>
+    /// <param name="bitmap">The PrintWindow bitmap's size. Its (0,0) corresponds to W2's top-left.</param>
+    /// <param name="e">The element rect from the UIA walk, absolute screen coords. EQUALS w1 for window
+    /// scope -- there is no window-scope special case, and adding one caused three separate defects.</param>
+    /// <param name="w1">The window rect from that SAME walk. Anchors BOTH mask-side translations.</param>
+    /// <param name="w2">The GetWindowRect taken at capture time. Anchors ONLY the reported origin.</param>
+    public static CropGeometry? Compute(Size bitmap, Rectangle e, Rectangle w1, Rectangle w2)
+    {
+        // W1 on the way IN. Using W2 here would misalign the crop by the movement delta on a pure move.
+        var relative = new Rectangle(e.X - w1.X, e.Y - w1.Y, e.Width, e.Height);
+
+        var effective = Rectangle.Intersect(relative, new Rectangle(0, 0, bitmap.Width, bitmap.Height));
+
+        // ⚠ EXTENTS, not IsEmpty. Rectangle.Intersect compares with >= and so yields a zero-extent rect
+        // at NON-ZERO coordinates -- (100,50,0,30) -- for two rects that merely touch along an edge, and
+        // IsEmpty is FALSE there. MEASURED on this runtime. The existing yardstick guard at
+        // PerceptionManager.cs:947 tests exactly this way, for exactly this reason.
+        if (effective.Width <= 0 || effective.Height <= 0) return null;
+
+        // Clamp ONCE, then derive BOTH operands from that one rectangle, so they cannot drift. An earlier
+        // draft clamped the crop while handing Encode the UNCLAMPED bounds: the scale factor then came off
+        // the clamped src.Width while masks translated against the unclamped origin -- the very
+        // misalignment this guard exists to prevent, reintroduced by its own fix.
+        return new CropGeometry(
+            effective,
+            // W1 on the way BACK for the MASK rectangle. Encode's arithmetic is absolute and the masks
+            // were sampled alongside E, so they must meet at the same origin.
+            new Rectangle(effective.X + w1.X, effective.Y + w1.Y, effective.Width, effective.Height),
+            // W2 for the REPORTED rectangle -- where the pixels actually are. These two origins differ by
+            // exactly the movement delta, and conflating them makes the response lie about a moved window.
+            new Rectangle(effective.X + w2.X, effective.Y + w2.Y, effective.Width, effective.Height));
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~WindowCropGeometryTests"`
+Expected: PASS — 11 passed.
+
+- [ ] **Step 5: Prove the gates are non-vacuous with three logic mutants**
+
+Each mutant must turn a *named* test red. Run them one at a time and revert each.
+
+1. Change `effective.X + w1.X` to `effective.X + w2.X` in the `Absolute` line.
+   Expected: `A_pure_move_keeps_masks_on_W1_and_reports_on_W2` FAILS with absolute `(200,300)` — the exact 100px misalignment from the spec's trace.
+2. Change the guard to `if (effective.IsEmpty) return null;`.
+   Expected: `A_zero_width_touching_intersection_is_rejected_even_though_IsEmpty_is_false` FAILS.
+3. Change `relative` to use `e` unmodified (drop the `- w1` translation).
+   Expected: `A_pure_move_keeps_masks_on_W1_and_reports_on_W2` and `A_grown_window_is_cropped_back_to_the_region_that_was_scanned` both FAIL.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/WindowCropGeometry.cs test/FlaUI.Mcp.Tests/Perception/WindowCropGeometryTests.cs
+git commit -m "feat(capture): the pure crop geometry - effective, absolute, reported"
+```
+
+### Task 9: `Encode` takes the two rectangles, the method and the warnings
+
+`Encode` builds the `CaptureResult`, so it must be HANDED the `W2`-anchored rectangle — it cannot derive one from the other. Both cross the call.
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs:45-71`
+- Test: `test/FlaUI.Mcp.Tests/Perception/EncodeContractTests.cs`
+
+- [ ] **Step 1: Make `Encode` internal so it can be tested directly**
+
+`Encode` is currently `private static`. Change it to `internal static` and add to `src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj` inside the existing `<PropertyGroup>` if not already present:
+
+```xml
+  <ItemGroup>
+    <InternalsVisibleTo Include="FlaUI.Mcp.Tests" />
+  </ItemGroup>
+```
+
+Check first — run `grep -n "InternalsVisibleTo" src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj`. If it already exists, add nothing.
+
+- [ ] **Step 2: Write the failing test**
+
+```csharp
+using System.Drawing;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class EncodeContractTests
+{
+    private static Bitmap Solid(int w, int h, Color c)
+    {
+        var b = new Bitmap(w, h);
+        using var g = Graphics.FromImage(b);
+        using var brush = new SolidBrush(c);
+        g.FillRectangle(brush, 0, 0, w, h);
+        return b;
+    }
+
+    // THE AB-2 CASE, and it is leak-shaped. A WINDOW-sized bitmap cropped to an ELEMENT-sized rect: the
+    // mask must land relative to the ELEMENT's origin, not the window's. Under the scrape this invariant
+    // was structural; under PrintWindow it must be re-established by hand.
+    [Fact]
+    public void A_mask_lands_relative_to_the_absolute_rectangle_it_was_given()
+    {
+        // src is the already-cropped element region: 200x100 at absolute (300,400).
+        using var src = Solid(200, 100, Color.White);
+        var absolute = new Rectangle(300, 400, 200, 100);
+        var mask = new Rectangle(350, 430, 50, 20);   // 50,30 inside the element
+
+        var r = ScreenCapture.Encode(src, absolute, reported: absolute, new[] { mask }, maxWidth: 0,
+                                     method: "printWindow", warnings: System.Array.Empty<CaptureWarning>());
+
+        Assert.Equal(1, r.Redactions);
+        using var ms = new System.IO.MemoryStream(r.Png);
+        using var outBmp = new Bitmap(ms);
+        Assert.Equal(Color.Black.ToArgb(), outBmp.GetPixel(60, 40).ToArgb());   // inside the mask
+        Assert.Equal(Color.White.ToArgb(), outBmp.GetPixel(10, 10).ToArgb());   // outside it
+    }
+
+    // X/Y come from REPORTED (where the pixels are), never from ABSOLUTE (where the masks are). They
+    // differ by exactly the movement delta whenever the window moved.
+    [Fact]
+    public void XY_report_the_W2_anchored_rectangle_not_the_mask_rectangle()
+    {
+        using var src = Solid(80, 60, Color.Gray);
+        var absolute = new Rectangle(100, 200, 80, 60);
+        var reported = new Rectangle(300, 500, 80, 60);
+
+        var r = ScreenCapture.Encode(src, absolute, reported, System.Array.Empty<Rectangle>(), 0,
+                                     "printWindow", System.Array.Empty<CaptureWarning>());
+
+        Assert.Equal(300, r.X);
+        Assert.Equal(500, r.Y);
+        Assert.Equal(80, r.W);
+        Assert.Equal(60, r.H);
+    }
+
+    [Fact]
+    public void The_method_and_warnings_reach_the_result_unchanged()
+    {
+        using var src = Solid(10, 10, Color.Red);
+        var warn = new[] { CaptureWarnings.For(CaptureWarnings.WindowResized) };
+        var r = ScreenCapture.Encode(src, new Rectangle(0, 0, 10, 10), new Rectangle(0, 0, 10, 10),
+                                     System.Array.Empty<Rectangle>(), 0, "printWindow", warn);
+        Assert.Equal("printWindow", r.CaptureMethod);
+        Assert.Single(r.CaptureWarnings);
+        Assert.Equal("windowResized", r.CaptureWarnings[0].Code);
+    }
+
+    // THE CLAMP PATH. src is SMALLER than the element rect originally requested, because the crop clamped
+    // it. Masks must still land correctly and nothing may throw. This is the regression test for the
+    // defect panel round 2's own fix introduced.
+    [Fact]
+    public void A_clamped_src_still_places_masks_correctly()
+    {
+        using var src = Solid(120, 90, Color.White);            // clamped down from 200x100
+        var absolute = new Rectangle(300, 400, 120, 90);        // derived FROM the clamped rect
+        var mask = new Rectangle(320, 420, 30, 20);
+
+        var r = ScreenCapture.Encode(src, absolute, absolute, new[] { mask }, 0, "printWindow",
+                                     System.Array.Empty<CaptureWarning>());
+
+        Assert.Equal(1, r.Redactions);
+        using var ms = new System.IO.MemoryStream(r.Png);
+        using var outBmp = new Bitmap(ms);
+        Assert.Equal(Color.Black.ToArgb(), outBmp.GetPixel(25, 25).ToArgb());
+    }
+}
+```
+
+- [ ] **Step 3: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~EncodeContractTests"`
+Expected: FAIL — `Encode` takes 4 parameters, not 7.
+
+- [ ] **Step 4: Rewrite `Encode`**
+
+Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 45–71 with:
+
+```csharp
+    /// <summary>Mask, downscale, PNG-encode, and assemble the CaptureResult.
+    ///
+    /// ⚠ TWO rectangles cross this boundary and they are NOT interchangeable.
+    ///   `absolute` -- anchored to W1 -- drives the MASK arithmetic, because the mask rects arrive as
+    ///     absolute screen coords sampled alongside the element during the same walk.
+    ///   `reported` -- anchored to W2 -- becomes CaptureResult.X/Y, because that is where the pixels
+    ///     actually are. They differ by exactly the movement delta whenever the window moved, and
+    ///     conflating them makes the response a false statement about a moved window.
+    /// Sizes are equal by construction (see WindowCropGeometry), so W/H are the same either way.
+    ///
+    /// ⚠ Encode ASSEMBLES; it does not DETECT. The uniform-canvas detectors run where their operands
+    /// exist -- uniformCanvas on the full window bitmap before the crop, elementCanvasUniform on the
+    /// cropped src after it, desktopCanvasUniform in the scrape seam. Encode never sees the uncropped
+    /// bitmap and cannot evaluate the two-stage comparison.
+    ///
+    /// `clip` below is an INTERNAL LOCAL, recomputed per mask rect. It does not cross this boundary.</summary>
+    internal static CaptureResult Encode(Bitmap src, Rectangle absolute, Rectangle reported,
+                                         IReadOnlyList<Rectangle> redactAbsolute, int maxWidth,
+                                         string method, IReadOnlyList<CaptureWarning> warnings)
+    {
+        int cap = maxWidth <= 0 ? MaxCaptureWidth : System.Math.Min(maxWidth, MaxCaptureWidth);
+        double scale = src.Width > cap ? (double)cap / src.Width : 1.0;
+        int outW = System.Math.Max(1, (int)System.Math.Round(src.Width * scale));
+        int outH = System.Math.Max(1, (int)System.Math.Round(src.Height * scale));
+        using var outBmp = new Bitmap(outW, outH);
+        using (var g = Graphics.FromImage(outBmp))
+        {
+            g.DrawImage(src, new Rectangle(0, 0, outW, outH));
+            int painted = 0;
+            using var black = new SolidBrush(Color.Black);
+            foreach (var r in redactAbsolute)
+            {
+                if (!r.IntersectsWith(absolute)) continue; // off-crop field — don't count/paint
+                var clip = Rectangle.Intersect(r, absolute);  // clip to the captured region
+                var rel = new Rectangle(
+                    (int)System.Math.Round((clip.X - absolute.X) * scale), (int)System.Math.Round((clip.Y - absolute.Y) * scale),
+                    (int)System.Math.Round(clip.Width * scale), (int)System.Math.Round(clip.Height * scale));
+                if (rel.Width <= 0 || rel.Height <= 0) continue;
+                g.FillRectangle(black, rel); painted++;
+            }
+            using var ms = new MemoryStream();
+            outBmp.Save(ms, ImageFormat.Png);
+            return new CaptureResult(ms.ToArray(), reported.X, reported.Y, reported.Width, reported.Height,
+                                     scale, painted, method, warnings);
+        }
+    }
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~EncodeContractTests"`
+Expected: PASS — 4 passed.
+
+- [ ] **Step 6: Prove the gates are non-vacuous with two logic mutants**
+
+1. Change `reported.X, reported.Y` back to `absolute.X, absolute.Y`.
+   Expected: `XY_report_the_W2_anchored_rectangle_not_the_mask_rectangle` FAILS with `(100,200)`.
+2. Change `clip.X - absolute.X` to `clip.X - reported.X`.
+   Expected: `A_mask_lands_relative_to_the_absolute_rectangle_it_was_given` still passes (the two are equal there) but `XY_report...` does not cover it — so **also** temporarily change that first test to pass `reported: new Rectangle(500, 600, 200, 100)` and confirm the mask assertion then FAILS. Revert both.
+
+   *(This second mutant is the one that proves the two rectangles are genuinely doing different jobs. If it cannot be made to fail, the test set does not yet pin the distinction and the test must be strengthened before moving on.)*
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs src/FlaUI.Mcp.Core/FlaUI.Mcp.Core.csproj test/FlaUI.Mcp.Tests/Perception/EncodeContractTests.cs
+git commit -m "feat(capture): Encode takes absolute+reported, method and warnings"
+```
+
+### Task 10: `CaptureRectangle` learns its scope — and the third caller is wired explicitly
+
+The scrape seam now has three callers with divergent requirements: full-desktop must evaluate `desktopCanvasUniform`, a fallback scrape must not and carries a `scrapeFallback*` code its caller decided, and the OCR path must not either.
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs:36-43`
+- Modify: `src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:49`
+- Modify: `src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62,110`
+- Modify: `test/FlaUI.Mcp.Tests/Perception/ScreenCaptureTests.cs:28`
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureRectangleCallSiteTests.cs`
+
+- [ ] **Step 1: Write the failing call-site sweep**
+
+This is a **source sweep**, the idiom the repo already owns (`BuildPropertySweepTests`). It exists because no test of `CaptureRectangle`'s own logic can catch a CALLER that forgot the parameter.
+
+```csharp
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureRectangleCallSiteTests
+{
+    private static string RepoRoot()
+    {
+        var d = new DirectoryInfo(Directory.GetCurrentDirectory());
+        while (d is not null && !File.Exists(Path.Combine(d.FullName, "FlaUI.Mcp.slnx"))) d = d.Parent;
+        Assert.NotNull(d);
+        return d!.FullName;
+    }
+
+    // Every production call site must name its scope EXPLICITLY. There is no safe default: the scope
+    // decides which detector runs, and a caller that inherits one silently gets the wrong answer. The
+    // OCR path (FindTextTools) is the caller this sweep exists for -- it was invisible to the spec until
+    // it was measured, and it is the one most likely to be forgotten again.
+    [Fact]
+    public void Every_production_CaptureRectangle_call_names_its_scope()
+    {
+        var root = RepoRoot();
+        var sites = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+            .SelectMany(f => File.ReadAllLines(f).Select((l, i) => (File: f, Line: i + 1, Text: l)))
+            .Where(x => x.Text.Contains("ScreenCapture.CaptureRectangle("))
+            .ToList();
+
+        Assert.Equal(4, sites.Count);   // 1 declaration + 3 call sites
+
+        var calls = sites.Where(x => !x.Text.Contains("public static CaptureResult")).ToList();
+        Assert.Equal(3, calls.Count);
+
+        foreach (var c in calls)
+            Assert.True(Regex.IsMatch(c.Text, @"CaptureScope\.\w+"),
+                $"{Path.GetFileName(c.File)}:{c.Line} calls CaptureRectangle without naming a CaptureScope");
+    }
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureRectangleCallSiteTests"`
+Expected: FAIL — no call site names a scope.
+
+- [ ] **Step 3: Change the signature**
+
+Replace `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` lines 36–43 with:
+
+```csharp
+    /// <summary>Scrape a screen rectangle. Serves THREE callers with divergent requirements, and cannot
+    /// tell them apart without being told, which is why `scope` has no default:
+    ///   FullDesktop -- runs the desktopCanvasUniform detector.
+    ///   OcrRegion   -- runs no detector; it is neither a whole desktop nor a PrintWindow capture.
+    ///   Window/Element -- a FALLBACK scrape. Runs no detector, and its caller has already decided a
+    ///     scrapeFallback* code, which arrives in `warningsSoFar`.
+    ///
+    /// ⚠ On this path `absolute` and `reported` are the SAME rectangle. The scrape captures exactly the
+    /// region it was asked for, in one observation -- there is no W1/W2 pair, so the two cannot differ.
+    /// Only the PrintWindow path derives them separately.</summary>
+    public static CaptureResult CaptureRectangle(Rectangle absolute, IReadOnlyList<Rectangle> redactAbsolute,
+                                                 int maxWidth, CaptureScope scope,
+                                                 IReadOnlyList<CaptureWarning> warningsSoFar)
+    {
+        CaptureImage cap;
+        try { cap = Capture.Rectangle(absolute, null); }
+        catch (System.Exception ex) when (ex is COMException or System.Runtime.InteropServices.ExternalException)
+        { throw new ToolException(ToolErrorCode.CaptureUnavailable, "Screen capture failed (session may be disconnected/locked).", "reconnect to restore rendering"); }
+        using (cap)
+        {
+            var warnings = warningsSoFar;
+            // The detector runs where the bitmap lives, so the seam cannot delegate this decision upward.
+            if (scope.RunsDesktopUniformDetector() && UniformCanvasDetector.IsUniform(cap.Bitmap))
+                warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.DesktopCanvasUniform));
+            return Encode(cap.Bitmap, absolute, absolute, redactAbsolute, maxWidth, "screenScrape", warnings);
+        }
+    }
+
+    /// <summary>Append one warning. Never mutates the caller's list -- warnings travel INWARD only, and
+    /// nobody unpacks a returned CaptureResult to add one.</summary>
+    internal static IReadOnlyList<CaptureWarning> Append(IReadOnlyList<CaptureWarning> list, CaptureWarning w)
+    {
+        var next = new List<CaptureWarning>(list.Count + 1);
+        next.AddRange(list);
+        next.Add(w);
+        return next;
+    }
+```
+
+Add `using System.Collections.Generic;` to the file's using block if the analyzer flags it.
+
+- [ ] **Step 4: Update all three call sites**
+
+`src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs:49`:
+
+```csharp
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(
+                    vbounds, desk.Rects, maxWidth, CaptureScope.FullDesktop,
+                    System.Array.Empty<CaptureWarning>()));
+```
+
+`src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:62`:
+
+```csharp
+            // ⚠ OcrRegion, not Window. This path SCRAPES and always has; it is neither a whole desktop
+            // nor a PrintWindow capture, so it runs NO uniform detector. Item 8 did not change this
+            // path's backend -- it only forced the scope to be named. See risk 6.
+            var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(
+                geo.CaptureBounds, geo.MaskRects, maxWidth: 0, CaptureScope.OcrRegion,
+                System.Array.Empty<CaptureWarning>())); // maxWidth:0 -> best OCR accuracy (still 1920-clamped)
+```
+
+`src/FlaUI.Mcp.Server/Tools/FindTextTools.cs:110` — the same replacement, same comment omitted (the one above covers both; add `// scope: see :62`):
+
+```csharp
+                var cap = await Task.Run(() => ScreenCapture.CaptureRectangle(
+                    geo.CaptureBounds, geo.MaskRects, maxWidth: 0, CaptureScope.OcrRegion,
+                    System.Array.Empty<CaptureWarning>())); // scope: see the note at :62
+```
+
+- [ ] **Step 5: Update the existing Desktop test at `ScreenCaptureTests.cs:28`**
+
+```csharp
+        var result = ScreenCapture.CaptureRectangle(winRect, new[] { secretRect }, 1600,
+                                                    CaptureScope.Window, System.Array.Empty<CaptureWarning>());
+```
+
+- [ ] **Step 6: Run the sweep and the headless suite**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: PASS, 0 failed, build 0 warnings / 0 errors.
+
+- [ ] **Step 7: Prove the sweep is non-vacuous with a logic mutant**
+
+Temporarily revert `FindTextTools.cs:110` to omit `CaptureScope.OcrRegion` (pass the old four arguments and let it fail to compile — then instead pass `default` for scope, which compiles). Re-run the sweep. Expected: `Every_production_CaptureRectangle_call_names_its_scope` FAILS naming `FindTextTools.cs:110`. **Revert.**
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs src/FlaUI.Mcp.Server/Tools/ScreenshotTools.cs src/FlaUI.Mcp.Server/Tools/FindTextTools.cs test/FlaUI.Mcp.Tests/
+git commit -m "feat(capture): CaptureRectangle takes an explicit scope; wire the OCR third caller"
+```
+
+---
+
+## Phase 3 — The detector, the yardstick, and the geometry walk
+
+### Task 11: `UniformCanvasDetector` — settle the sampling by measurement
+
+This is **risk 5**. The predicate's PURPOSE is settled by the spec and must not grow into a correctness gate: it tells an agent this image may not be usable and that the UIA tree is the fallback.
+
+**Its acceptance criteria are fixed, so this is a test rather than an observation.** The predicate and its sampling strategy pass if and only if:
+1. it classifies the F1 flag-0 blank renders as **true**, and
+2. it classifies the F4 row — the 0.044 non-black, dark-themed, **pixel-perfect** capture — as **false**, and
+3. it does not measurably change capture latency.
+
+**F4 is why a darkness heuristic is banned:** that 0.044 PNG was dumped and inspected and is a flawless render of an occluded window — nav rail, toggles, body text. 0.044 is a dark theme. A darkness heuristic would have rejected a perfect capture.
+
+**Files:**
+- Create: `src/FlaUI.Mcp.Core/Perception/UniformCanvasDetector.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/UniformCanvasDetectorTests.cs`
+- Modify: `docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md`
+
+- [ ] **Step 1: Write the failing tests, including the two acceptance criteria as tests**
+
+```csharp
+using System.Diagnostics;
+using System.Drawing;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class UniformCanvasDetectorTests
+{
+    private static Bitmap Solid(int w, int h, Color c)
+    {
+        var b = new Bitmap(w, h);
+        using var g = Graphics.FromImage(b);
+        using var brush = new SolidBrush(c);
+        g.FillRectangle(brush, 0, 0, w, h);
+        return b;
+    }
+
+    // Criterion 1: a failed render is one colour. Black is the common case; white and a mid-grey are
+    // included because "uniform" is the property, not "dark" -- F4 proved a darkness heuristic unsound.
+    [Theory]
+    [InlineData(0, 0, 0)]
+    [InlineData(255, 255, 255)]
+    [InlineData(128, 128, 128)]
+    public void A_uniform_bitmap_is_detected(int r, int g, int b)
+    {
+        using var bmp = Solid(400, 300, Color.FromArgb(r, g, b));
+        Assert.True(UniformCanvasDetector.IsUniform(bmp));
+    }
+
+    // Criterion 2: THE F4 CASE. A dark-themed but real render -- mostly near-black with sparse light
+    // content, ~4% non-black. This MUST come back false. It is the single case that rules out every
+    // darkness-based predicate.
+    [Fact]
+    public void The_F4_dark_themed_real_render_is_not_uniform()
+    {
+        using var bmp = Solid(400, 300, Color.FromArgb(18, 18, 18));   // a dark theme's background
+        using (var g = Graphics.FromImage(bmp))
+        using (var brush = new SolidBrush(Color.FromArgb(230, 230, 230)))
+        {
+            // ~4% of the area as light content, scattered the way real UI chrome is.
+            for (int i = 0; i < 12; i++) g.FillRectangle(brush, 20 + i * 30, 20 + (i % 5) * 50, 24, 8);
+        }
+        Assert.False(UniformCanvasDetector.IsUniform(bmp));
+    }
+
+    // A single differing pixel is still not uniform. This pins that the predicate is about COLOUR COUNT
+    // and not about a proportion threshold that could be tuned into swallowing real content.
+    [Fact]
+    public void One_differing_region_is_enough_to_be_non_uniform()
+    {
+        using var bmp = Solid(400, 300, Color.Black);
+        using (var g = Graphics.FromImage(bmp))
+        using (var brush = new SolidBrush(Color.White))
+            g.FillRectangle(brush, 200, 150, 12, 12);
+        Assert.False(UniformCanvasDetector.IsUniform(bmp));
+    }
+
+    // Criterion 3: it runs over a bitmap that is already allocated and already being encoded. A detector
+    // that costs real time has chosen the wrong sampling strategy. 4K-wide is the worst realistic case.
+    [Fact]
+    [Trait("Category", "Measurement")]
+    public void It_costs_no_measurable_time_on_a_4K_bitmap()
+    {
+        using var bmp = Solid(3840, 2160, Color.FromArgb(18, 18, 18));
+        var sw = Stopwatch.StartNew();
+        for (int i = 0; i < 20; i++) UniformCanvasDetector.IsUniform(bmp);
+        sw.Stop();
+        Assert.True(sw.ElapsedMilliseconds < 100,
+            $"20 detections took {sw.ElapsedMilliseconds}ms; the sampling strategy is too expensive");
+    }
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~UniformCanvasDetectorTests"`
+Expected: FAIL — `UniformCanvasDetector` does not exist (CS0103).
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/FlaUI.Mcp.Core/Perception/UniformCanvasDetector.cs`:
+
+```csharp
+using System.Drawing;
+
+namespace FlaUI.Mcp.Core.Perception;
+
+/// <summary>Is this bitmap effectively a single colour? A DIAGNOSTIC, never a gate (§3).
+///
+/// ⚠ NOT a darkness heuristic, and this is proven rather than argued. Evidence row F4 is an occluded
+/// XAML window captured pixel-perfectly -- nav rail, toggles, body text, a warning banner -- whose
+/// non-black fraction is 0.044 because it is a DARK THEME. A darkness predicate rejects a flawless
+/// capture. The property is UNIFORMITY, not luminance.
+///
+/// ⚠ It must never grow into a correctness gate. §3's whole error budget is calibrated on the
+/// consequence of a false positive being a spurious sentence; reusing this signal to SELECT A BACKEND
+/// would re-price every error in it, and a false positive would then silently return a scrape -- for an
+/// occluded window, a photograph of the occluder, the exact defect this feature exists to remove.</summary>
+public static class UniformCanvasDetector
+{
+    // A sparse grid, not the full bitmap. Cost is O(GridN^2) regardless of resolution, which is what
+    // satisfies criterion 3 on a 4K window. 64x64 = 4096 samples: dense enough that a real UI cannot hide
+    // all of its contrast between the sample points, cheap enough to be free next to a PNG encode.
+    private const int GridN = 64;
+
+    /// <summary>TRUE when every sampled pixel has the same ARGB value.</summary>
+    public static bool IsUniform(Bitmap bmp)
+    {
+        if (bmp.Width <= 0 || bmp.Height <= 0) return true;   // nothing to disagree
+
+        int stepX = System.Math.Max(1, bmp.Width / GridN);
+        int stepY = System.Math.Max(1, bmp.Height / GridN);
+
+        int first = bmp.GetPixel(0, 0).ToArgb();
+        for (int y = 0; y < bmp.Height; y += stepY)
+            for (int x = 0; x < bmp.Width; x += stepX)
+                if (bmp.GetPixel(x, y).ToArgb() != first) return false;
+
+        // The far edges are sampled explicitly: a stride that does not divide the dimension would
+        // otherwise never look at the last row/column, and a render that failed only at one edge is
+        // exactly the shape a grid can miss.
+        for (int y = 0; y < bmp.Height; y += stepY)
+            if (bmp.GetPixel(bmp.Width - 1, y).ToArgb() != first) return false;
+        for (int x = 0; x < bmp.Width; x += stepX)
+            if (bmp.GetPixel(x, bmp.Height - 1).ToArgb() != first) return false;
+
+        return true;
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~UniformCanvasDetectorTests"`
+Expected: PASS — 6 passed. The `Measurement`-trait test runs here because the filter names the class directly; the headless gate excludes it.
+
+- [ ] **Step 5: Record the sampling measurement**
+
+Append a `## Risk 5 — the detector's sampling` section to the measurements doc: the chosen strategy (64×64 grid plus the two far edges), the measured time for 20 detections on a 3840×2160 bitmap, and an explicit statement that criteria 1 and 2 are enforced by `A_uniform_bitmap_is_detected` and `The_F4_dark_themed_real_render_is_not_uniform` rather than by inspection.
+
+- [ ] **Step 6: Prove the gate is non-vacuous with a logic mutant**
+
+Change `IsUniform` to `=> AverageLuminance(bmp) < 0.10;` (a darkness heuristic, written inline).
+Expected: `The_F4_dark_themed_real_render_is_not_uniform` FAILS — which is precisely the defect F4 was measured to prevent, and it is worth seeing fail once. **Revert.**
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/UniformCanvasDetector.cs test/FlaUI.Mcp.Tests/Perception/UniformCanvasDetectorTests.cs docs/superpowers/plans/2026-08-21-occlusion-aware-capture-measurements.md
+git commit -m "feat(capture): uniform-canvas detector, sampling settled by measurement"
+```
+
+### Task 12: The yardstick switch, defaulting to the mask-preserving direction
+
+**F5 falsifies the premise the existing early return rests on.** `PrintWindow` returns pixels that are on no monitor, so a window with no renderable overlap CAN contribute pixels, and dropping its mask set is a leak of exactly the class SP4 existed to close.
+
+**The default MUST be unclipped.** This is inherited from the precedent beside it: `skipIfNoRenderableOverlap` already defaults to `false` because the window-scoped value is the safe one, so a forgotten call site fails safe.
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:852-853` (signature)
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:935` (the yardstick line)
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:1181-1182` (full-desktop passes true)
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryCallSiteTests.cs`
+
+- [ ] **Step 1: Write the failing call-site sweep**
+
+No test of the yardstick's own logic can catch a CALLER omission, and §2 makes that default the thing standing between this feature and a mask-dropping leak. This is failure mode 1 of the three the spec names as having no test that would go red.
+
+```csharp
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureGeometryCallSiteTests
+{
+    private static string RepoRoot()
+    {
+        var d = new DirectoryInfo(Directory.GetCurrentDirectory());
+        while (d is not null && !File.Exists(Path.Combine(d.FullName, "FlaUI.Mcp.slnx"))) d = d.Parent;
+        Assert.NotNull(d);
+        return d!.FullName;
+    }
+
+    // The FULL-DESKTOP aggregator is the only caller that may clip. Every other call site takes the
+    // unclipped default, and this pins that exactly one site names `clipToVirtualScreen: true`.
+    //
+    // ⚠ This sweep is the ONLY thing that catches a new caller silently inheriting the wrong yardstick.
+    // A test of the yardstick logic itself cannot see a caller that never passed the parameter.
+    [Fact]
+    public void Exactly_one_production_call_site_clips_the_yardstick()
+    {
+        var root = RepoRoot();
+        var lines = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+            .SelectMany(f => File.ReadAllLines(f).Select((l, i) => (File: f, Line: i + 1, Text: l)))
+            .ToList();
+
+        var clipping = lines.Where(x => x.Text.Contains("clipToVirtualScreen: true")).ToList();
+        Assert.Single(clipping);
+        Assert.EndsWith("PerceptionManager.cs", clipping[0].File);
+    }
+
+    // Every call site of the geometry walk, counted. If this number changes, a new caller appeared and
+    // somebody must decide its yardstick deliberately rather than inherit one.
+    [Fact]
+    public void The_geometry_walk_has_exactly_four_production_call_sites()
+    {
+        var root = RepoRoot();
+        var calls = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+            .SelectMany(f => File.ReadAllLines(f).Select((l, i) => (File: f, Line: i + 1, Text: l)))
+            .Where(x => Regex.IsMatch(x.Text, @"ResolveWindowCaptureGeometryAsync\s*\("))
+            .Where(x => !x.Text.Contains("public Task<CaptureGeometry>"))
+            .ToList();
+
+        // ScreenshotTools:53 (window/element), PerceptionManager:1136 (OCR), PerceptionManager:1181
+        // (full-desktop), plus the coordinator added in Task 17.
+        Assert.Equal(4, calls.Count);
+    }
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureGeometryCallSiteTests"`
+Expected: FAIL — no site names `clipToVirtualScreen: true`; the count test fails at 3.
+
+*(The count test stays red until Task 17 adds the coordinator's call. That is expected and is noted here so the executing engineer does not "fix" it by changing the number. If Task 17 is not yet done, temporarily assert `3` and change it to `4` in Task 17 — the change is part of Task 17's diff.)*
+
+- [ ] **Step 3: Change the signature**
+
+Replace `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 848–853 with:
+
+```csharp
+    /// <param name="skipIfNoRenderableOverlap">TRUE only for the full-desktop mask sweep, where a window with no
+    /// renderable overlap contributes no pixels and may be skipped. FALSE for a caller that NAMED this
+    /// window and will photograph its rect regardless — suppressing that window's masks would hand back an
+    /// unmasked image of the named target, which is the one thing this feature must not do.</param>
+    /// <param name="clipToVirtualScreen">TRUE only for the full-desktop scrape. Selects the YARDSTICK the
+    /// mask walk judges against.
+    ///
+    /// ⚠ DEFAULTS TO FALSE — the mask-preserving direction — and that is not a style choice. Evidence F5
+    /// measured a 1920x1020 window captured in full while the physical display was 1366x768: PrintWindow
+    /// returns pixels that are on NO monitor. So a window with no renderable overlap CAN contribute pixels,
+    /// and clipping its yardstick drops the whole mask set for a window whose pixels are in the image.
+    /// The default follows skipIfNoRenderableOverlap's precedent for the same reason given at :958 — the
+    /// window-scoped value is the safe one, so a forgotten call site fails safe.
+    ///
+    /// ⚠ It follows the SCOPE, never the BACKEND. Window and element scope take the default INCLUDING when
+    /// they fall back to the scrape: clipping exists to stop a maximized window's invisible resize-border
+    /// bleed from defeating the full-desktop blacks-out check, which is a property of that CALLER.
+    ///
+    /// ⚠ The OCR path (FindTextTools, via ResolveTextCaptureGeometryAsync at :1136) also takes the default
+    /// and so changes behaviour for a PARTIALLY off-screen window: today it always clips. That is a
+    /// deliberate, tested consequence — see risk 6 — not an oversight.</param>
+    public Task<CaptureGeometry> ResolveWindowCaptureGeometryAsync(WindowHandle handle, string? @ref,
+                                                                   bool skipIfNoRenderableOverlap = false,
+                                                                   bool clipToVirtualScreen = false) =>
+```
+
+- [ ] **Step 4: Make the yardstick conditional**
+
+Replace `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` line 935 with:
+
+```csharp
+            var yardstick = clipToVirtualScreen
+                ? System.Drawing.Rectangle.Intersect(captureBounds, ScreenCapture.VirtualScreenBounds())
+                : captureBounds;
+```
+
+- [ ] **Step 5: Make the full-desktop aggregator clip explicitly**
+
+Replace `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 1181–1182 with:
+
+```csharp
+                var geo = await ResolveWindowCaptureGeometryAsync(new WindowHandle(w.Handle), null,
+                                                                  skipIfNoRenderableOverlap: true,
+                                                                  clipToVirtualScreen: true);
+```
+
+- [ ] **Step 6: Run the headless suite**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: PASS except the known-red `The_geometry_walk_has_exactly_four_production_call_sites` (see Step 2's note). Build 0 warnings / 0 errors.
+
+- [ ] **Step 7: Prove the sweep is non-vacuous with a logic mutant**
+
+Temporarily change `PerceptionManager.cs:1181` to drop `clipToVirtualScreen: true`.
+Expected: `Exactly_one_production_call_site_clips_the_yardstick` FAILS with zero matches. **Revert.**
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs test/FlaUI.Mcp.Tests/Perception/CaptureGeometryCallSiteTests.cs
+git commit -m "feat(capture): clipToVirtualScreen on the geometry walk, defaulting mask-preserving"
+```
+
+### Task 13: `CaptureGeometry` carries `W1`, the native `HWND`, and the retryable degenerate signal
+
+Three things the seam needs that nothing currently carries there.
+
+**The `HWND` is not optional:** `PrintWindow(hwnd, hdc, flags)` takes an OS window handle, and the `WindowHandle` the tool layer holds is this server's own `wN` identifier — verified, `src/FlaUI.Mcp.Core/Windows/WindowHandle.cs:4` is `public readonly record struct WindowHandle(string Id)`.
+
+**`W1` is not optional either:** `CaptureGeometry.Bounds` is the ELEMENT rect for element scope (`PerceptionManager.cs:883` resolves `target` to the element, `:915` reads `target.BoundingRectangle`), so the window rect is genuinely absent.
+
+**The degenerate-`W1` guard must be RETRYABLE and distinguishable from already-minimized.** A window caught mid-open can report a degenerate rect for one frame — exactly the transient the retry loop absorbs. If the walk simply throws, the throw escapes the loop and the capture fails terminally on the first bad frame. And the caller cannot recover by catching, because an already-minimized window raises the identical `ElementNotActionable` and must NOT be retried. So the walk signals the two differently even though both surface to the agent as `ElementNotActionable` once retries are exhausted.
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:1275-1276` (the record)
+- Modify: `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs:854-863, 915-935, 963-971, 1110` (every construction site)
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryShapeTests.cs`
+
+- [ ] **Step 1: Write the failing test**
+
+```csharp
+using System.Linq;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureGeometryShapeTests
+{
+    // Positional record, same append-only rule as CaptureResult and for the same reason.
+    [Fact]
+    public void The_positional_order_is_append_only()
+    {
+        var ctor = typeof(CaptureGeometry).GetConstructors().Single();
+        Assert.Equal(new[]
+        {
+            "Bounds", "MaskRects", "Minimized", "Denied", "DeniedProcess", "Escalations",
+            "WindowBounds", "NativeWindowHandle", "DegenerateWindow",
+        }, ctor.GetParameters().Select(p => p.Name).ToArray());
+    }
+
+    // THE DISTINCTION THAT MAKES THE RETRY LOOP WORK. Both surface to the agent as
+    // ElementNotActionable, but one is a transient worth retrying and the other never will be.
+    [Fact]
+    public void Degenerate_and_minimized_are_separate_flags()
+    {
+        var degenerate = new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(),
+            Minimized: false, Denied: false, null, System.Array.Empty<MaskEscalationEntry>(),
+            default, System.IntPtr.Zero, DegenerateWindow: true);
+        var minimized = new CaptureGeometry(default, System.Array.Empty<System.Drawing.Rectangle>(),
+            Minimized: true, Denied: false, null, System.Array.Empty<MaskEscalationEntry>(),
+            default, System.IntPtr.Zero, DegenerateWindow: false);
+
+        Assert.True(degenerate.DegenerateWindow);
+        Assert.False(degenerate.Minimized);
+        Assert.True(minimized.Minimized);
+        Assert.False(minimized.DegenerateWindow);
+    }
+
+    // A headless test can construct one with ANY handle value and a fake acquisition, and every crop,
+    // yardstick and mask assertion still runs -- nothing between the walk and the seam dereferences it.
+    // That is what keeps the HWND from breaking headless testability.
+    [Fact]
+    public void A_synthetic_handle_is_carried_through_untouched()
+    {
+        var geo = new CaptureGeometry(new System.Drawing.Rectangle(10, 20, 30, 40),
+            System.Array.Empty<System.Drawing.Rectangle>(), false, false, null,
+            System.Array.Empty<MaskEscalationEntry>(),
+            new System.Drawing.Rectangle(0, 0, 100, 200), new System.IntPtr(0xDEAD), false);
+        Assert.Equal(new System.IntPtr(0xDEAD), geo.NativeWindowHandle);
+        Assert.Equal(new System.Drawing.Rectangle(0, 0, 100, 200), geo.WindowBounds);
+        Assert.Equal(new System.Drawing.Rectangle(10, 20, 30, 40), geo.Bounds);   // the ELEMENT rect
+    }
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureGeometryShapeTests"`
+Expected: FAIL — the constructor has 6 parameters, not 9.
+
+- [ ] **Step 3: Extend the record**
+
+Replace `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` lines 1275–1276 with:
+
+```csharp
+/// <summary>What the geometry walk produces for one window.
+///
+/// ⚠ POSITIONAL RECORD. APPEND ONLY, NEVER INSERT — the same rule and the same reason as CaptureResult.
+///
+/// <paramref name="Bounds"/> is the CAPTURE rect: the ELEMENT's rect when a @ref was given, the window's
+/// otherwise. <paramref name="WindowBounds"/> is ALWAYS the window's own rect (W1) — for window scope the
+/// two are equal, and for element scope they are not, which is why both must cross.
+///
+/// <paramref name="NativeWindowHandle"/> is the OS HWND. It is NOT the WindowHandle the tool layer holds:
+/// that is this server's own wN identifier (WindowHandle.cs:4 is `record struct WindowHandle(string Id)`),
+/// and PrintWindow needs the real handle. Carrying it here does NOT break headless testability — nothing
+/// between the walk and the acquisition seam dereferences it, so a headless test constructs a geometry
+/// with any handle value and a fake acquisition and every crop and mask assertion still runs.
+///
+/// <paramref name="DegenerateWindow"/> — W1 had zero or negative extents when the walk read it. A SEPARATE
+/// flag from Minimized on purpose: a window caught mid-open or mid-animation reports a degenerate rect for
+/// a frame and is exactly the transient the retry loop absorbs, while an already-minimized window never
+/// stops being minimized and retrying it just burns the budget. Both surface to the AGENT as
+/// ElementNotActionable once retries exhaust; the internal signal is what differs, and this is the one
+/// place in the design where the agent-facing code and the internal signal deliberately part company.</summary>
+public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyList<System.Drawing.Rectangle> MaskRects, bool Minimized, bool Denied, string? DeniedProcess,
+    IReadOnlyList<MaskEscalationEntry> Escalations,
+    System.Drawing.Rectangle WindowBounds, System.IntPtr NativeWindowHandle, bool DegenerateWindow);
+```
+
+- [ ] **Step 4: Add the degenerate guard between the bounds read and the yardstick**
+
+The ordering is the whole defence. Insert immediately after the `captureBounds` read block ends at `PerceptionManager.cs:925` and **before** the yardstick comment at `:927`:
+
+```csharp
+            // ⚠ W1 DEGENERACY, GUARDED BEFORE THE YARDSTICK. LOAD-BEARING, and an earlier design called
+            // it redundant on a claim that stopped being true when element scope gained a scrape fallback.
+            // Without it: a degenerate W1 makes the yardstick degenerate, `:947`'s window-scoped branch
+            // falls back to `yardstick = captureBounds` which is still degenerate, every mask is judged
+            // against a rect nothing intersects, THE WHOLE SET IS DROPPED -- and the repo's own comment at
+            // :942-946 names the outcome: "every mask dropped, capture returned unmasked. A guard producing
+            // a leak." Element scope then sees W1.Size != W2.Size, retries, exhausts, falls back to the
+            // scrape, and returns an UNMASKED image as a success.
+            //
+            // ⚠ RETURNED, NOT THROWN. A throw escapes the caller's retry loop, so a window caught mid-open
+            // would fail terminally on its first bad frame. The caller cannot recover by catching either,
+            // because an already-minimized window raises the identical ElementNotActionable and must NOT
+            // be retried.
+            //
+            // ⚠ The guard sits HERE and not in the caller because there is no point between for a caller
+            // to stand: the walk produces the mask rects, producing them REQUIRES the yardstick, so by the
+            // time a caller holds W1 the yardstick has already run and the mask set may already be gone.
+            var windowBounds = string.IsNullOrEmpty(@ref) ? captureBounds : SafeWindowRect(win, captureBounds);
+            if (windowBounds.Width <= 0 || windowBounds.Height <= 0)
+                return new CaptureGeometry(captureBounds, System.Array.Empty<System.Drawing.Rectangle>(),
+                    false, false, null, System.Array.Empty<MaskEscalationEntry>(),
+                    windowBounds, NativeHandleOf(win), DegenerateWindow: true);
+```
+
+- [ ] **Step 5: Add the two helpers**
+
+Add as private static members of `PerceptionManager`:
+
+```csharp
+    /// <summary>W1 — the WINDOW's own rect, needed even when `target` is an element. Guarded because it
+    /// is a UIA read on a possibly-dying window and this region must never raise a raw exception; a
+    /// failure yields the capture rect, which the degeneracy check above then judges normally.</summary>
+    private static System.Drawing.Rectangle SafeWindowRect(AutomationElement win, System.Drawing.Rectangle fallback)
+    {
+        try { return win.BoundingRectangle; }
+        catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                          and not System.OperationCanceledException)
+        { _ = ex; return fallback; }
+    }
+
+    /// <summary>The native HWND. IntPtr.Zero when unavailable; the acquisition seam treats zero as an
+    /// unusable target and refuses rather than calling PrintWindow with it.</summary>
+    private static System.IntPtr NativeHandleOf(AutomationElement win)
+    {
+        try { return win.Properties.NativeWindowHandle.ValueOrDefault; }
+        catch (System.Exception ex) when (ex is not System.OutOfMemoryException
+                                          and not System.OperationCanceledException)
+        { _ = ex; return System.IntPtr.Zero; }
+    }
+```
+
+- [ ] **Step 6: Update every remaining construction site**
+
+There are four, and all must be found — an omission here is a compile error, which is the good case, but the VALUES matter. Run `grep -n "new CaptureGeometry(" src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs` and update each:
+
+- `:858` (denied) — append `default, System.IntPtr.Zero, false`
+- `:863` (minimized) — append `default, System.IntPtr.Zero, false`
+- `:964` (no renderable overlap, full-desktop) — append `windowBounds, NativeHandleOf(win), false`
+- `:1110` (the success return) — append `windowBounds, NativeHandleOf(win), false`
+
+- [ ] **Step 7: Run the headless suite**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: PASS except the known-red call-site count from Task 12. Build 0 warnings / 0 errors.
+
+- [ ] **Step 8: Prove the gate is non-vacuous with a logic mutant**
+
+Temporarily change the guard to set `DegenerateWindow: false`.
+Expected: `Degenerate_and_minimized_are_separate_flags` still passes (it constructs records directly), so this mutant proves the *record* is fine and the *guard* is not covered here — the guard's behavioural test arrives in Task 18, where the coordinator can observe the retry. **Note this explicitly in the commit message rather than pretending the coverage exists now.** **Revert.**
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs test/FlaUI.Mcp.Tests/Perception/CaptureGeometryShapeTests.cs
+git commit -m "feat(capture): CaptureGeometry carries W1, the HWND and a retryable degenerate signal
+
+The guard's BEHAVIOUR (that a degenerate W1 causes a retry rather than a
+terminal failure) is not yet covered - the coordinator that observes it
+does not exist until Task 18. Only the record shape is pinned here."
+```
+
+---
+
+## Phase 4 — The acquisition seam
+
+### Task 14: `IWindowImageSource` — the injectable acquisition
+
+This interface is what makes everything except the interop headless-testable. Without it the crop tests, the resize tests and the detector-placement tests cannot exist, and the spec's Testing section would be mandating tests against an architecture that forbids them.
+
+**Files:**
+- Create: `src/FlaUI.Mcp.Core/Perception/IWindowImageSource.cs`
+- Create: `test/FlaUI.Mcp.Tests/Perception/FakeWindowImageSource.cs`
+
+- [ ] **Step 1: Write the interface**
+
+Create `src/FlaUI.Mcp.Core/Perception/IWindowImageSource.cs`:
+
+```csharp
+using System;
+using System.Drawing;
+
+namespace FlaUI.Mcp.Core.Perception;
+
+/// <summary>Acquire a bitmap of one window's own content. The ONLY part of this feature that touches
+/// Win32, which is what keeps every other part headless-testable.</summary>
+public interface IWindowImageSource
+{
+    /// <summary>Render the window into a new bitmap of exactly <paramref name="size"/>.
+    ///
+    /// Returns NULL when the call did not complete within <paramref name="timeoutMs"/>. The caller turns
+    /// that into CaptureOutcome.TimedOut and falls back to the scrape.
+    ///
+    /// THROWS ToolException(CaptureUnavailable) when GDI hands back a null or zero handle. GDI does not
+    /// throw -- CreateCompatibleDC, CreateCompatibleBitmap and SelectObject return null/zero on failure --
+    /// so the scrape path's COMException/ExternalException catch never fires here and nothing else would
+    /// take its place. Given ROADMAP item 13 (108 bare catches) the realistic outcome of skipping the
+    /// null checks is an NRE surfacing as something unhelpful, or a garbage bitmap returned as a capture.
+    ///
+    /// The returned bitmap is the CALLER's to dispose.</summary>
+    Bitmap? Acquire(IntPtr hwnd, Size size, int timeoutMs);
+}
+```
+
+- [ ] **Step 2: Write the fake**
+
+Create `test/FlaUI.Mcp.Tests/Perception/FakeWindowImageSource.cs`:
+
+```csharp
+using System;
+using System.Drawing;
+using FlaUI.Mcp.Core.Perception;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+/// <summary>A synthetic acquisition for headless tests. Every knob a test needs to stage one of the
+/// seam's outcomes without a real window.</summary>
+public sealed class FakeWindowImageSource : IWindowImageSource
+{
+    private readonly Func<Size, Bitmap?> _make;
+    public int Calls { get; private set; }
+    public Size LastRequestedSize { get; private set; }
+    public IntPtr LastHwnd { get; private set; }
+
+    public FakeWindowImageSource(Func<Size, Bitmap?> make) => _make = make;
+
+    /// <summary>A bitmap of the requested size filled with one colour, with a distinguishing 4x4 marker
+    /// at (1,1) so a test can prove the crop moved the origin rather than merely resizing.</summary>
+    public static FakeWindowImageSource Solid(Color c) => new(size =>
+    {
+        var b = new Bitmap(Math.Max(1, size.Width), Math.Max(1, size.Height));
+        using var g = Graphics.FromImage(b);
+        using var brush = new SolidBrush(c);
+        g.FillRectangle(brush, 0, 0, b.Width, b.Height);
+        using var marker = new SolidBrush(Color.Magenta);
+        g.FillRectangle(marker, 1, 1, 4, 4);
+        return b;
+    });
+
+    /// <summary>Stages the timeout path.</summary>
+    public static FakeWindowImageSource TimesOut() => new(_ => null);
+
+    /// <summary>Stages the null-GDI-handle path.</summary>
+    public static FakeWindowImageSource FailsWithCaptureUnavailable() => new(_ =>
+        throw new FlaUI.Mcp.Core.Errors.ToolException(
+            FlaUI.Mcp.Core.Errors.ToolErrorCode.CaptureUnavailable,
+            "GDI resources are exhausted; the capture could not be allocated.",
+            "close some windows and retry"));
+
+    public Bitmap? Acquire(IntPtr hwnd, Size size, int timeoutMs)
+    {
+        Calls++;
+        LastHwnd = hwnd;
+        LastRequestedSize = size;
+        return _make(size);
+    }
+}
+```
+
+- [ ] **Step 3: Build to confirm it compiles**
+
+Run: `dotnet build FlaUI.Mcp.slnx`
+Expected: 0 warnings, 0 errors.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/IWindowImageSource.cs test/FlaUI.Mcp.Tests/Perception/FakeWindowImageSource.cs
+git commit -m "feat(capture): the injectable acquisition seam and its headless fake"
+```
+
+### Task 15: `CaptureWindow` — the seam that composes the guards, the acquire, the crop and the detectors
+
+**"Owns" means COMPOSES.** The crop geometry is the pure function from Task 8; the extraction is one bitmap operation; acquisition is the injectable seam. `CaptureWindow` puts them together and adds the `W2`-side guards.
+
+**Order is load-bearing.** Terminal target-state guards run BEFORE the resize check, because a window that minimizes mid-capture also changes size — and if the resize check ran first, a minimized window would be sent into the retry-and-fallback path, scraping the rect it used to occupy, which now shows whatever is behind it.
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` (add `CaptureWindow` + the P/Invokes it needs)
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureWindowTests.cs`
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+using System;
+using System.Drawing;
+using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Perception;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureWindowTests
+{
+    private static CaptureGeometry Geo(Rectangle capture, Rectangle window,
+                                       params Rectangle[] masks)
+        => new(capture, masks, false, false, null, Array.Empty<MaskEscalationEntry>(),
+               window, new IntPtr(0x1234), false);
+
+    // W2 is injected rather than read from the OS, so the whole seam is headless.
+    private static CaptureOutcome Run(CaptureGeometry geo, Rectangle w2, CaptureScope scope,
+                                      IWindowImageSource src,
+                                      IReadOnlyList<CaptureWarning>? warnings = null)
+        => ScreenCapture.CaptureWindow(geo, maxWidth: 0, scope, warnings ?? Array.Empty<CaptureWarning>(),
+                                       src, timeoutMs: 1000, w2Probe: _ => w2, minimizedProbe: _ => false);
+
+    [Fact]
+    public void A_static_window_completes_and_reports_printWindow()
+    {
+        var w = new Rectangle(100, 100, 400, 300);
+        var o = Run(Geo(w, w), w, CaptureScope.Window, FakeWindowImageSource.Solid(Color.White));
+        Assert.Equal(CaptureOutcomeKind.Completed, o.Kind);
+        Assert.Equal("printWindow", o.Result!.CaptureMethod);
+        Assert.Equal(100, o.Result.X);
+        Assert.Equal(400, o.Result.W);
+    }
+
+    // ORDERING: minimized is checked BEFORE the resize branch. A window that minimized mid-capture also
+    // changed size, and if resize won it would be sent to retry-and-fallback -- scraping the rect it used
+    // to occupy, which now shows whatever is behind it.
+    [Fact]
+    public void A_window_minimized_at_capture_time_refuses_and_does_not_report_a_resize()
+    {
+        var w1 = new Rectangle(100, 100, 400, 300);
+        var w2 = new Rectangle(-32000, -32000, 160, 28);   // the real placeholder rect, from F6
+        var ex = Assert.Throws<ToolException>(() =>
+            ScreenCapture.CaptureWindow(Geo(w1, w1), 0, CaptureScope.Window, Array.Empty<CaptureWarning>(),
+                                        FakeWindowImageSource.Solid(Color.White), 1000,
+                                        w2Probe: _ => w2, minimizedProbe: _ => true));
+        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+    }
+
+    // F6 measured a minimized window's placeholder as 160x28 -- POSITIVE extents. An extents check alone
+    // would pass it and yield a 160x28 image that is not the window's content at all.
+    [Fact]
+    public void A_degenerate_W2_refuses()
+    {
+        var w1 = new Rectangle(100, 100, 400, 300);
+        var ex = Assert.Throws<ToolException>(() =>
+            Run(Geo(w1, w1), new Rectangle(100, 100, 0, 300), CaptureScope.Window,
+                FakeWindowImageSource.Solid(Color.White)));
+        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+    }
+
+    [Fact]
+    public void A_failed_GetWindowRect_refuses_rather_than_trusting_a_zeroed_struct()
+    {
+        var w1 = new Rectangle(100, 100, 400, 300);
+        var ex = Assert.Throws<ToolException>(() =>
+            ScreenCapture.CaptureWindow(Geo(w1, w1), 0, CaptureScope.Window, Array.Empty<CaptureWarning>(),
+                                        FakeWindowImageSource.Solid(Color.White), 1000,
+                                        w2Probe: _ => null, minimizedProbe: _ => false));
+        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+    }
+
+    // WINDOW SCOPE, MASKS PRESENT, RESIZED -> Resized signal. The seam REPORTS; the caller retries and
+    // decides the terminal outcome. Since the 2026-08-21 ratification this is no longer an immediate
+    // refusal, and the seam is the component that must not make that decision.
+    [Fact]
+    public void Window_scope_with_masks_reports_a_resize_rather_than_refusing()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var w2 = new Rectangle(0, 0, 900, 600);
+        var o = Run(Geo(w1, w1, new Rectangle(10, 10, 50, 20)), w2, CaptureScope.Window,
+                    FakeWindowImageSource.Solid(Color.White));
+        Assert.Equal(CaptureOutcomeKind.Resized, o.Kind);
+        Assert.Null(o.Result);
+    }
+
+    // WINDOW SCOPE, NO MASKS, RESIZED -> CONTINUE to the crop and warn. It MUST continue: the crop is what
+    // discards the region a GROWN window added that the walk never inspected. Skipping it would hand
+    // Encode a W2-sized bitmap against a W1-sized rect AND return unscanned pixels.
+    [Fact]
+    public void Window_scope_without_masks_crops_and_warns_on_a_resize()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var w2 = new Rectangle(0, 0, 1000, 700);
+        var o = Run(Geo(w1, w1), w2, CaptureScope.Window, FakeWindowImageSource.Solid(Color.White));
+        Assert.Equal(CaptureOutcomeKind.Completed, o.Kind);
+        Assert.Equal(800, o.Result!.W);        // cropped back to the scanned region
+        Assert.Equal(600, o.Result.H);
+        Assert.Contains(o.Result.CaptureWarnings, w => w.Code == "windowResized");
+    }
+
+    [Fact]
+    public void Element_scope_reports_a_resize_for_the_callers_retry_loop()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var e  = new Rectangle(100, 100, 200, 150);
+        var o = Run(Geo(e, w1), new Rectangle(0, 0, 700, 600), CaptureScope.Element,
+                    FakeWindowImageSource.Solid(Color.White));
+        Assert.Equal(CaptureOutcomeKind.Resized, o.Kind);
+    }
+
+    [Fact]
+    public void A_timeout_becomes_the_TimedOut_outcome_not_an_exception()
+    {
+        var w = new Rectangle(0, 0, 400, 300);
+        var o = Run(Geo(w, w), w, CaptureScope.Window, FakeWindowImageSource.TimesOut());
+        Assert.Equal(CaptureOutcomeKind.TimedOut, o.Kind);
+    }
+
+    [Fact]
+    public void A_null_GDI_handle_becomes_CaptureUnavailable()
+    {
+        var w = new Rectangle(0, 0, 400, 300);
+        var ex = Assert.Throws<ToolException>(() =>
+            Run(Geo(w, w), w, CaptureScope.Window, FakeWindowImageSource.FailsWithCaptureUnavailable()));
+        Assert.Equal(ToolErrorCode.CaptureUnavailable, ex.Code);
+    }
+
+    // Sizes AGREE and the element still falls outside the window's own bitmap -- a provider reporting an
+    // element outside its own window. Pathological rather than impossible; this repo's mask-escalation
+    // machinery exists because UIA does report inconsistent rectangles.
+    [Fact]
+    public void An_empty_element_crop_at_matching_sizes_refuses()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var e  = new Rectangle(900, 900, 100, 50);
+        var ex = Assert.Throws<ToolException>(() =>
+            Run(Geo(e, w1), w1, CaptureScope.Element, FakeWindowImageSource.Solid(Color.White)));
+        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+    }
+
+    // THE DETECTORS RUN WHERE THEIR OPERANDS EXIST. uniformCanvas sees the FULL window bitmap, before the
+    // crop -- §3 requires it, and after the crop that bitmap no longer exists.
+    [Fact]
+    public void A_uniform_window_bitmap_warns_uniformCanvas()
+    {
+        var w = new Rectangle(0, 0, 400, 300);
+        // Solid() paints a magenta marker, so use a genuinely flat source for this one.
+        var flat = new FakeWindowImageSource(size =>
+        {
+            var b = new Bitmap(size.Width, size.Height);
+            using var g = Graphics.FromImage(b);
+            using var br = new SolidBrush(Color.Black);
+            g.FillRectangle(br, 0, 0, b.Width, b.Height);
+            return b;
+        });
+        var o = Run(Geo(w, w), w, CaptureScope.Window, flat);
+        Assert.Contains(o.Result!.CaptureWarnings, x => x.Code == "uniformCanvas");
+    }
+
+    // elementCanvasUniform fires ONLY when the crop is uniform and the full window bitmap was NOT. A
+    // uniformly-coloured crop inside a uniformly-coloured window is just a solid window, already covered.
+    [Fact]
+    public void A_uniform_crop_inside_a_varied_window_warns_elementCanvasUniform()
+    {
+        var w1 = new Rectangle(0, 0, 400, 300);
+        var e  = new Rectangle(200, 200, 100, 80);   // lands in the flat right-hand region
+        var varied = new FakeWindowImageSource(size =>
+        {
+            var b = new Bitmap(size.Width, size.Height);
+            using var g = Graphics.FromImage(b);
+            using var black = new SolidBrush(Color.Black);
+            g.FillRectangle(black, 0, 0, b.Width, b.Height);
+            using var white = new SolidBrush(Color.White);
+            g.FillRectangle(white, 0, 0, 60, 60);     // contrast, but far from the element
+            return b;
+        });
+        var o = Run(Geo(e, w1), w1, CaptureScope.Element, varied);
+        Assert.Contains(o.Result!.CaptureWarnings, x => x.Code == "elementCanvasUniform");
+        Assert.DoesNotContain(o.Result.CaptureWarnings, x => x.Code == "uniformCanvas");
+    }
+
+    // Warnings travel INWARD. The caller's geometry-time findings must reach Encode through the seam --
+    // the alternative, unpacking the returned CaptureResult to insert one, is exactly the reconstruction
+    // the append-only rule exists to prevent.
+    [Fact]
+    public void The_callers_accumulated_warnings_reach_the_result()
+    {
+        var w = new Rectangle(0, 0, 400, 300);
+        var carried = new[] { CaptureWarnings.For(CaptureWarnings.PopupsNotRendered) };
+        var o = Run(Geo(w, w), w, CaptureScope.Window, FakeWindowImageSource.Solid(Color.White), carried);
+        Assert.Contains(o.Result!.CaptureWarnings, x => x.Code == "popupsNotRendered");
+    }
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureWindowTests"`
+Expected: FAIL — `CaptureWindow` does not exist (CS0117).
+
+- [ ] **Step 3: Write `CaptureWindow`**
+
+Append to `src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs` inside the class:
+
+```csharp
+    /// <summary>Acquire one window's own pixels via the injected source, guard the capture-time target
+    /// state, detect a resize, crop, and encode. Canonical steps 4-8.
+    ///
+    /// ⚠ It does NOT own the retry loop or the scrape fallback. Retrying means re-walking the UIA tree
+    /// for a fresh W1/E/mask set, and that walk lives in PerceptionManager -- a seam handed a finished
+    /// CaptureGeometry has no way to perform it. This method REPORTS a mismatch; it does not resolve one.
+    ///
+    /// ⚠ ORDER IS LOAD-BEARING. The terminal target-state guards run BEFORE the resize branch, because a
+    /// window that minimizes mid-capture ALSO changes size: if resize won, a minimized window would be
+    /// routed to retry-and-fallback and the scrape would photograph the rect it used to occupy.
+    ///
+    /// w2Probe and minimizedProbe are injected so the whole method is headless-testable; production
+    /// passes the real Win32 reads.</summary>
+    public static CaptureOutcome CaptureWindow(
+        CaptureGeometry geo, int maxWidth, CaptureScope scope,
+        IReadOnlyList<CaptureWarning> warningsSoFar, IWindowImageSource source, int timeoutMs,
+        System.Func<System.IntPtr, Rectangle?>? w2Probe = null,
+        System.Func<System.IntPtr, bool>? minimizedProbe = null)
+    {
+        var probeRect = w2Probe ?? DefaultW2Probe;
+        var probeMin  = minimizedProbe ?? DefaultMinimizedProbe;
+
+        // Step 4. A FALSE return means the window is gone. GetWindowRect does not reliably zero the
+        // struct on failure, so a design relying on the degenerate guard to catch a zeroed rect is
+        // relying on a coincidence.
+        var w2n = probeRect(geo.NativeWindowHandle);
+        if (w2n is null)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "The target window was destroyed between the UIA walk and the capture.",
+                "re-list windows and retry against a live handle");
+        var w2 = w2n.Value;
+
+        // Step 5, TERMINAL target-state guards, before anything conditional.
+        if (w2.Width <= 0 || w2.Height <= 0)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "The target window has no renderable area (zero or negative extents).",
+                "restore or resize the window, then retry");
+        // ⚠ NOT covered by the extents check above. F6 measured a minimized window's placeholder rect as
+        // -32000,-32000 with extents 160x28 -- POSITIVE. It would pass, and yield a 160x28 image that is
+        // not the window's content at all.
+        if (probeMin(geo.NativeWindowHandle))
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "Window is minimized; restore it first.",
+                "desktop_window_transform restore, then retry");
+
+        var w1 = geo.WindowBounds;
+        var warnings = warningsSoFar;
+
+        // Step 6, the resize check. Sizes, not rectangles: a pure move changes only the origin and the
+        // crop already makes it harmless, so flagging it would be a false positive.
+        if (w1.Size != w2.Size)
+        {
+            // Element scope: the caller retries and, on exhaustion, falls back to the scrape.
+            // Window scope WITH masks: the caller retries and, on exhaustion, REFUSES -- the masks were
+            // computed against the pre-resize layout and a reflow moves what they were sampled to cover.
+            if (scope == CaptureScope.Element || geo.MaskRects.Count > 0)
+                return CaptureOutcome.Resized;
+
+            // Window scope with NO masks: nothing was going to be redacted, so no misalignment is
+            // possible. Warn and CONTINUE -- the crop below is what discards the region a grown window
+            // added that the walk never inspected.
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.WindowResized));
+        }
+
+        // Step 6b. Allocate at W2's size and render.
+        using var bitmap = source.Acquire(geo.NativeWindowHandle, w2.Size, timeoutMs);
+        if (bitmap is null) return CaptureOutcome.TimedOut;
+
+        // uniformCanvas: evaluated on the FULL window bitmap, between 6b and 7. §3 requires it to see the
+        // uncropped image, which does not exist after step 7.
+        bool windowUniform = UniformCanvasDetector.IsUniform(bitmap);
+        if (windowUniform && scope == CaptureScope.Window)
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.UniformCanvas));
+
+        // Step 7, the crop. Its empty case is reachable only when the sizes AGREE, because the resize
+        // check above already left the sequence otherwise.
+        var crop = WindowCropGeometry.Compute(new Size(bitmap.Width, bitmap.Height), geo.Bounds, w1, w2);
+        if (crop is null)
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                "The requested element is not inside the pixels that were captured.",
+                "re-snapshot the window for fresh element bounds, then retry");
+        var c = crop.Value;
+
+        using var src = bitmap.Clone(c.Effective, bitmap.PixelFormat);
+
+        // elementCanvasUniform: evaluated on `src` AFTER the crop, and ONLY when the full window bitmap
+        // was NOT uniform -- a uniform crop inside a uniform window is just a solid window, already
+        // covered by uniformCanvas.
+        if (scope == CaptureScope.Element && !windowUniform && UniformCanvasDetector.IsUniform(src))
+            warnings = Append(warnings, CaptureWarnings.For(CaptureWarnings.ElementCanvasUniform));
+
+        // Step 8. Encode assembles; it does not detect.
+        return CaptureOutcome.Completed(
+            Encode(src, c.Absolute, c.Reported, geo.MaskRects, maxWidth, "printWindow", warnings));
+    }
+
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
+    [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
+
+    private static Rectangle? DefaultW2Probe(IntPtr hwnd)
+        => GetWindowRect(hwnd, out var r)
+            ? new Rectangle(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top)
+            : null;
+
+    private static bool DefaultMinimizedProbe(IntPtr hwnd) => IsIconic(hwnd);
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureWindowTests"`
+Expected: PASS — 13 passed.
+
+- [ ] **Step 5: Prove the gates are non-vacuous with three logic mutants**
+
+1. Move the `probeMin` check to AFTER the resize branch.
+   Expected: `A_window_minimized_at_capture_time_refuses_and_does_not_report_a_resize` FAILS with a `Resized` outcome instead of the refusal — the exact ordering defect the canonical list was written to prevent.
+2. Change `if (scope == CaptureScope.Element || geo.MaskRects.Count > 0)` to `if (scope == CaptureScope.Element)`.
+   Expected: `Window_scope_with_masks_reports_a_resize_rather_than_refusing` FAILS with `Completed`.
+3. Change the `windowUniform` gate on `elementCanvasUniform` to drop `&& !windowUniform`.
+   Expected: add a temporary case with a uniform window and a uniform crop and confirm it then emits BOTH codes; the shipped `A_uniform_crop_inside_a_varied_window_warns_elementCanvasUniform` does not cover it, so **strengthen that test with a second assertion for the uniform-window case before moving on.**
+
+**Revert every mutant.**
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/ScreenCapture.cs test/FlaUI.Mcp.Tests/Perception/CaptureWindowTests.cs
+git commit -m "feat(capture): the CaptureWindow seam - guards, resize detection, crop, detectors"
+```
+
+### Task 16: `PrintWindowImageSource` — the real interop, and the only Desktop-category production file
+
+**Build the timeout and the dedicated thread ONLY if Task 1 measured a block.** If it did not, implement `Acquire` synchronously and note in the file's doc comment that the timeout parameter is honoured but unreachable, citing the measurement.
+
+**Files:**
+- Create: `src/FlaUI.Mcp.Server/Capture/PrintWindowImageSource.cs`
+- Test: `test/FlaUI.Mcp.Tests/Capture/PrintWindowImageSourceTests.cs`
+
+- [ ] **Step 1: Write the Desktop-category test**
+
+```csharp
+using System;
+using System.Drawing;
+using FlaUI.Mcp.Core.Threading;
+using FlaUI.Mcp.Core.Windows;
+using FlaUI.Mcp.Server.Capture;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Capture;
+
+[Trait("Category", "Desktop")]
+public class PrintWindowImageSourceTests : IClassFixture<TestAppFixture>
+{
+    private readonly TestAppFixture _app;
+    public PrintWindowImageSourceTests(TestAppFixture app) => _app = app;
+
+    [Fact]
+    public async Task It_renders_the_test_app_window_as_something_other_than_one_colour()
+    {
+        using var dispatcher = new AutomationDispatcher();
+        using var mgr = new WindowManager(dispatcher);
+        var handle = await mgr.OpenByPidAsync(_app.Process.Id);
+        var (hwnd, rect) = await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
+            (win.Properties.NativeWindowHandle.ValueOrDefault, win.BoundingRectangle));
+
+        var src = new PrintWindowImageSource();
+        using var bmp = src.Acquire(hwnd, new Size(rect.Width, rect.Height), timeoutMs: 5000);
+
+        Assert.NotNull(bmp);
+        Assert.Equal(rect.Width, bmp!.Width);
+        Assert.Equal(rect.Height, bmp.Height);
+        // F1: PW_RENDERFULLCONTENT is mandatory -- flag 0 returns blank for four of five window classes.
+        // If this asserts, check the flag before anything else.
+        Assert.False(FlaUI.Mcp.Core.Perception.UniformCanvasDetector.IsUniform(bmp),
+            "the window rendered as a single colour; check PW_RENDERFULLCONTENT (flag 2) is being passed");
+    }
+
+    // A zero handle must refuse rather than calling into Win32 with it.
+    [Fact]
+    public void A_zero_handle_throws_CaptureUnavailable()
+    {
+        var src = new PrintWindowImageSource();
+        var ex = Assert.Throws<FlaUI.Mcp.Core.Errors.ToolException>(() =>
+            src.Acquire(IntPtr.Zero, new Size(100, 100), 1000));
+        Assert.Equal(FlaUI.Mcp.Core.Errors.ToolErrorCode.CaptureUnavailable, ex.Code);
+    }
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~PrintWindowImageSourceTests"`
+Expected: FAIL — `PrintWindowImageSource` does not exist.
+
+- [ ] **Step 3: Write the implementation**
+
+Create `src/FlaUI.Mcp.Server/Capture/PrintWindowImageSource.cs`:
+
+```csharp
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Threading;
+using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Perception;
+
+namespace FlaUI.Mcp.Server.Capture;
+
+/// <summary>The real PrintWindow acquisition. The ONLY production file in this feature that touches
+/// Win32, which is what keeps the crop, the guards and the detectors headless-testable.
+///
+/// ⚠ PW_RENDERFULLCONTENT (flag 2) is MANDATORY. MEASURED: flag 0 returns blank for four of the five
+/// window classes probed -- DirectX/Atlas, XAML/UWP, WPF and the shell all come back empty.
+///
+/// ⚠ THE BOOL RETURN IS WORTHLESS AS A SUCCESS SIGNAL. MEASURED: ret=True on every call, including every
+/// all-black one. No failure handling here may be driven by it.
+///
+/// ⚠ GDI DOES NOT THROW. CreateCompatibleDC, CreateCompatibleBitmap and SelectObject return null/zero
+/// handles on failure, so the scrape path's COMException/ExternalException catch never fires on this path
+/// and nothing else would take its place. Every handle is checked.</summary>
+public sealed class PrintWindowImageSource : IWindowImageSource
+{
+    private const uint PW_RENDERFULLCONTENT = 2;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindowDC(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int w, int h);
+    [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr h);
+    [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr hdc);
+
+    public Bitmap? Acquire(IntPtr hwnd, Size size, int timeoutMs)
+    {
+        if (hwnd == IntPtr.Zero)
+            throw new ToolException(ToolErrorCode.CaptureUnavailable,
+                "The target window has no native handle to capture.",
+                "re-list windows and retry against a live handle");
+        if (size.Width <= 0 || size.Height <= 0)
+            throw new ToolException(ToolErrorCode.CaptureUnavailable,
+                "The target window has no renderable area to allocate.",
+                "restore or resize the window, then retry");
+
+        Bitmap? result = null;
+        ToolException? failure = null;
+
+        // ⚠ A DEDICATED BACKGROUND THREAD, NOT Task.Run. PrintWindow renders by sending WM_PRINT to the
+        // TARGET synchronously, so a target whose message loop is blocked blocks this call with no
+        // cancellation. On a threadpool thread that consumes a bounded CLR slot and a hung target could
+        // degrade every OTHER tool in the server. IsBackground keeps a leaked thread from blocking exit.
+        //
+        // ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. A blocked call still holds its thread, its HDC, its GDI
+        // bitmap and its managed bitmap FOREVER -- a blocked Win32 call cannot be cancelled. Only killing
+        // a separate process reclaims those, and that is filed as ROADMAP debt rather than built here.
+        // The per-HWND circuit breaker in WindowCaptureCoordinator is what bounds the cumulative cost.
+        var t = new Thread(() =>
+        {
+            try { result = Render(hwnd, size); }
+            catch (ToolException ex) { failure = ex; }
+        }) { IsBackground = true };
+        t.Start();
+
+        if (!t.Join(timeoutMs)) return null;      // TIMED OUT. The thread is abandoned, still holding.
+        if (failure is not null) throw failure;
+        return result;
+    }
+
+    private static Bitmap Render(IntPtr hwnd, Size size)
+    {
+        IntPtr windowDc = IntPtr.Zero, memDc = IntPtr.Zero, hbm = IntPtr.Zero, prev = IntPtr.Zero;
+        try
+        {
+            windowDc = GetWindowDC(hwnd);
+            if (windowDc == IntPtr.Zero) throw Gdi();
+            memDc = CreateCompatibleDC(windowDc);
+            if (memDc == IntPtr.Zero) throw Gdi();
+            hbm = CreateCompatibleBitmap(windowDc, size.Width, size.Height);
+            if (hbm == IntPtr.Zero) throw Gdi();
+            prev = SelectObject(memDc, hbm);
+            if (prev == IntPtr.Zero) throw Gdi();
+
+            // The BOOL is deliberately ignored: MEASURED as True on every call including every blank one.
+            _ = PrintWindow(hwnd, memDc, PW_RENDERFULLCONTENT);
+
+            // Copy out before the GDI objects are released.
+            using var shared = Image.FromHbitmap(hbm);
+            return new Bitmap(shared);
+        }
+        finally
+        {
+            if (prev != IntPtr.Zero) SelectObject(memDc, prev);
+            if (hbm != IntPtr.Zero) DeleteObject(hbm);
+            if (memDc != IntPtr.Zero) DeleteDC(memDc);
+            if (windowDc != IntPtr.Zero) ReleaseDC(hwnd, windowDc);
+        }
+    }
+
+    private static ToolException Gdi() => new(ToolErrorCode.CaptureUnavailable,
+        "GDI could not allocate the resources for this capture (handle exhaustion is the usual cause).",
+        "close some windows to free GDI handles, then retry");
+}
+```
+
+- [ ] **Step 4: Run the Desktop test**
+
+Run on a **physical console** (not RDP), on a quiet machine, and do not co-run anything else:
+
+`dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~PrintWindowImageSourceTests"`
+Expected: PASS — 2 passed.
+
+- [ ] **Step 5: Prove the gate is non-vacuous with a logic mutant**
+
+Change `PW_RENDERFULLCONTENT` to `0`.
+Expected: `It_renders_the_test_app_window_as_something_other_than_one_colour` FAILS with the "check PW_RENDERFULLCONTENT" message — which is evidence row F1 reproducing on this machine. **Revert.**
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Server/Capture/PrintWindowImageSource.cs test/FlaUI.Mcp.Tests/Capture/PrintWindowImageSourceTests.cs
+git commit -m "feat(capture): PrintWindow acquisition on a dedicated thread, all GDI handles checked"
+```
+
+---
+
+## Phase 5 — The coordinator: the retry loop, the bookend walk, the fallbacks
+
+**The caller owns the loop, and this is the component that IS the caller.** `CaptureWindow` reports a mismatch; it cannot resolve one, because resolving means re-walking the UIA tree and a seam handed a finished `CaptureGeometry` has no way to do that.
+
+**Why a new class rather than putting this in `ScreenshotTools`:** the loop takes the geometry walk as a delegate, which makes the whole of steps 1–9 headless-testable against a fake walk and a fake acquisition. That is the only way the bookend walk and the retry policy get tests at all, and those two are the least-reviewed parts of the design.
+
+### Task 17: `WindowCaptureCoordinator` — the retry loop and the resize policy
+
+**Files:**
+- Create: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/WindowCaptureCoordinatorTests.cs`
+- Modify: `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryCallSiteTests.cs` (the count goes 3 → 4)
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Threading.Tasks;
+using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Perception;
+using FlaUI.Mcp.Core.Windows;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class WindowCaptureCoordinatorTests
+{
+    private static CaptureGeometry Geo(Rectangle capture, Rectangle window, params Rectangle[] masks)
+        => new(capture, masks, false, false, null, Array.Empty<MaskEscalationEntry>(),
+               window, new IntPtr(0x1234), false);
+
+    /// <summary>A walk that returns a scripted sequence, one entry per attempt, so a test can stage a
+    /// window that settles on attempt N.</summary>
+    private static Func<WindowHandle, string?, Task<CaptureGeometry>> Walk(params CaptureGeometry[] seq)
+    {
+        int i = 0;
+        return (_, _) => Task.FromResult(seq[Math.Min(i++, seq.Length - 1)]);
+    }
+
+    private static WindowCaptureCoordinator Make(
+        Func<WindowHandle, string?, Task<CaptureGeometry>> walk,
+        IWindowImageSource source,
+        Func<IntPtr, Rectangle?> w2,
+        CaptureRetryOptions? opts = null)
+        => new(walk, source, opts ?? new CaptureRetryOptions(MaxAttempts: 3, TimeoutMs: 1000),
+               w2Probe: w2, minimizedProbe: _ => false,
+               scrape: (bounds, masks, mw, scope, warns) =>
+                   new CaptureResult(Array.Empty<byte>(), bounds.X, bounds.Y, bounds.Width, bounds.Height,
+                                     1.0, masks.Count, "screenScrape", warns));
+
+    [Fact]
+    public async Task A_static_window_captures_on_the_first_attempt()
+    {
+        var w = new Rectangle(0, 0, 400, 300);
+        var c = Make(Walk(Geo(w, w)), FakeWindowImageSource.Solid(Color.White), _ => w);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("printWindow", r.Result.CaptureMethod);
+        Assert.Empty(r.Result.CaptureWarnings);
+    }
+
+    // THE RATIFIED BEHAVIOUR. Window scope WITH masks retries rather than refusing on the first mismatch.
+    // Attempt 1 sees a resize; attempt 2 is consistent; the capture succeeds with NO warning, because
+    // nothing about the returned image is stale.
+    [Fact]
+    public async Task Window_scope_with_masks_retries_and_succeeds_when_the_window_settles()
+    {
+        var stale  = new Rectangle(0, 0, 800, 600);
+        var settled = new Rectangle(0, 0, 900, 600);
+        var mask = new Rectangle(10, 10, 50, 20);
+        var c = Make(Walk(Geo(stale, stale, mask), Geo(settled, settled, mask)),
+                     FakeWindowImageSource.Solid(Color.White), _ => settled);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("printWindow", r.Result.CaptureMethod);
+        Assert.DoesNotContain(r.Result.CaptureWarnings, w => w.Code == "windowResized");
+    }
+
+    // ...and REFUSES on exhaustion. Never falls back to the scrape: a scraped image of a reflowed window
+    // carries the SAME stale masks, so switching backends cannot fix a mask problem.
+    [Fact]
+    public async Task Window_scope_with_masks_refuses_on_exhaustion_and_never_scrapes()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var mask = new Rectangle(10, 10, 50, 20);
+        var c = Make(Walk(Geo(w1, w1, mask)), FakeWindowImageSource.Solid(Color.White),
+                     _ => new Rectangle(0, 0, 900, 600));
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0));
+        Assert.Equal(ToolErrorCode.RedactionUnmaskable, ex.Code);
+    }
+
+    // Element scope on exhaustion DOES fall back -- its failure is a geometry mismatch on an image that
+    // is otherwise sound, so the scrape genuinely offers something better than nothing.
+    [Fact]
+    public async Task Element_scope_falls_back_to_the_scrape_on_exhaustion()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var e  = new Rectangle(100, 100, 200, 150);
+        var c = Make(Walk(Geo(e, w1)), FakeWindowImageSource.Solid(Color.White),
+                     _ => new Rectangle(0, 0, 700, 600));
+        var r = await c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0);
+        Assert.Equal("screenScrape", r.Result.CaptureMethod);
+        Assert.Contains(r.Result.CaptureWarnings, w => w.Code == "scrapeFallbackTargetChanging");
+    }
+
+    // The fallback must use the LAST attempt's geometry. Reusing the first would hand the scrape
+    // coordinates staler by the entire duration of the loop -- the loop actively degrading the fallback
+    // it exists to reach.
+    [Fact]
+    public async Task The_fallback_scrape_uses_the_LAST_attempts_geometry()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var first  = new Rectangle(100, 100, 200, 150);
+        var latest = new Rectangle(140, 160, 200, 150);
+        var c = Make(Walk(Geo(first, w1), Geo(latest, w1), Geo(latest, w1)),
+                     FakeWindowImageSource.Solid(Color.White),
+                     _ => new Rectangle(0, 0, 700, 600));
+        var r = await c.CaptureAsync(new WindowHandle("w1"), "e5", CaptureScope.Element, 0);
+        Assert.Equal(140, r.Result.X);
+        Assert.Equal(160, r.Result.Y);
+    }
+
+    // A timeout is a MECHANISM failure: the window is on screen with real pixels and PrintWindow simply
+    // could not get a copy. Refusing here would be a regression -- an agent can photograph a hung window
+    // perfectly well today.
+    [Fact]
+    public async Task A_timeout_falls_back_to_the_scrape_with_the_unresponsive_code()
+    {
+        var w = new Rectangle(0, 0, 400, 300);
+        var c = Make(Walk(Geo(w, w)), FakeWindowImageSource.TimesOut(), _ => w);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("screenScrape", r.Result.CaptureMethod);
+        Assert.Contains(r.Result.CaptureWarnings, w => w.Code == "scrapeFallbackTargetUnresponsive");
+    }
+
+    // A window caught mid-open reports a degenerate rect for a frame. That is the transient the loop
+    // exists to absorb, and it must NOT fail terminally on the first bad frame.
+    [Fact]
+    public async Task A_degenerate_W1_retries_rather_than_failing_terminally()
+    {
+        var good = new Rectangle(0, 0, 400, 300);
+        var degenerate = new CaptureGeometry(default, Array.Empty<Rectangle>(), false, false, null,
+            Array.Empty<MaskEscalationEntry>(), default, new IntPtr(0x1234), DegenerateWindow: true);
+        var c = Make(Walk(degenerate, Geo(good, good)), FakeWindowImageSource.Solid(Color.White), _ => good);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("printWindow", r.Result.CaptureMethod);
+    }
+
+    // ...but an ALREADY-MINIMIZED window must NOT be retried: retrying just fails identically until the
+    // budget runs out. Both surface as ElementNotActionable; the internal signal is what differs.
+    [Fact]
+    public async Task An_already_minimized_window_refuses_without_burning_the_retry_budget()
+    {
+        var minimized = new CaptureGeometry(default, Array.Empty<Rectangle>(), Minimized: true, false, null,
+            Array.Empty<MaskEscalationEntry>(), default, new IntPtr(0x1234), false);
+        int walks = 0;
+        var c = Make((_, _) => { walks++; return Task.FromResult(minimized); },
+                     FakeWindowImageSource.Solid(Color.White), _ => new Rectangle(0, 0, 1, 1));
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0));
+        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+        Assert.Equal(1, walks);
+    }
+
+    [Fact]
+    public async Task A_denied_window_refuses_with_TargetDenied()
+    {
+        var denied = new CaptureGeometry(default, Array.Empty<Rectangle>(), false, Denied: true, "keeper",
+            Array.Empty<MaskEscalationEntry>(), default, IntPtr.Zero, false);
+        var c = Make(Walk(denied), FakeWindowImageSource.Solid(Color.White), _ => new Rectangle(0, 0, 1, 1));
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0));
+        Assert.Equal(ToolErrorCode.TargetDenied, ex.Code);
+    }
+
+    // WARNINGS ARE SCOPED TO THE ATTEMPT. Each retry re-walks, so each attempt has its OWN geometry-time
+    // warnings. Carrying attempt 1's popupsNotRendered into attempt 2's successful result would state
+    // something false about the image that was actually returned.
+    [Fact]
+    public async Task A_discarded_attempts_warnings_are_discarded_with_it()
+    {
+        var w1 = new Rectangle(0, 0, 800, 600);
+        var settled = new Rectangle(0, 0, 900, 600);
+        // Attempt 1 has a popup root; attempt 2 does not.
+        var withPopup = new CaptureGeometry(w1, Array.Empty<Rectangle>(), false, false, null,
+            Array.Empty<MaskEscalationEntry>(), w1, new IntPtr(0x1234), false) { HasPopupRoots = true };
+        var without = Geo(settled, settled);
+        var c = Make(Walk(withPopup, without), FakeWindowImageSource.Solid(Color.White), _ => settled);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.DoesNotContain(r.Result.CaptureWarnings, w => w.Code == "popupsNotRendered");
+    }
+}
+```
+
+- [ ] **Step 2: Add `HasPopupRoots` to `CaptureGeometry`**
+
+The test above needs it and so does `popupsNotRendered`, which is decided at geometry time. Add it as an **init-only property**, not a positional parameter, so the append-only ordering test is unaffected:
+
+In `src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs`, change the `CaptureGeometry` declaration's closing `;` to a body:
+
+```csharp
+    System.Drawing.Rectangle WindowBounds, System.IntPtr NativeWindowHandle, bool DegenerateWindow)
+{
+    /// <summary>This window had popup roots at geometry time — PopupFinder.SearchRoots returned more
+    /// than the window itself. Decided during the WALK, consumed by the caller, which is why it travels
+    /// on the geometry rather than being re-derived downstream.
+    ///
+    /// An init-only PROPERTY rather than a positional parameter, deliberately: the positional list is
+    /// pinned by CaptureGeometryShapeTests and adding to it would churn every construction site for a
+    /// flag most of them do not care about.</summary>
+    public bool HasPopupRoots { get; init; }
+}
+```
+
+Then set it at the success return (`PerceptionManager.cs:1110`), where `roots` is in scope:
+
+```csharp
+            return new CaptureGeometry(captureBounds, pw, false, false, null, escalations,
+                                       windowBounds, NativeHandleOf(win), false)
+            { HasPopupRoots = roots.Count > 1 };
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~WindowCaptureCoordinatorTests"`
+Expected: FAIL — `WindowCaptureCoordinator` does not exist.
+
+- [ ] **Step 4: Write the coordinator**
+
+Create `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`:
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Threading.Tasks;
+using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Windows;
+
+namespace FlaUI.Mcp.Core.Perception;
+
+/// <param name="MaxAttempts">The retry bound. "Retry" MUST be bounded or a continuously-changing window
+/// is a livelock: an animating window never satisfies W1.Size == W2.Size, so an unconditional retry tells
+/// the agent to loop forever on a capture that can never succeed.</param>
+/// <param name="TimeoutMs">The per-acquisition bound handed to IWindowImageSource.</param>
+public sealed record CaptureRetryOptions(int MaxAttempts, int TimeoutMs)
+{
+    /// <summary>The whole retry sequence must terminate within a wall-clock budget small enough that a
+    /// caller does not experience it as a hang, and that budget is documented in the tool description
+    /// alongside the timeout. A retry loop whose worst case is unbounded in time is the livelock in a
+    /// different costume. 3 x 1500ms = 4.5s worst case.</summary>
+    public static readonly CaptureRetryOptions Default = new(MaxAttempts: 3, TimeoutMs: 1500);
+
+    public int WorstCaseMs => MaxAttempts * TimeoutMs;
+}
+
+/// <summary>What a capture produced, plus the geometry it came from — the tool layer needs both, because
+/// escalations live on the geometry and not on the result.</summary>
+public sealed record WindowCaptureOutcome(CaptureResult Result, CaptureGeometry Geometry);
+
+/// <summary>Canonical steps 1-9: the walk, the retry loop, the bookend validation walk and the scrape
+/// fallbacks. THE CALLER, in the sense the spec uses that word.
+///
+/// The geometry walk arrives as a DELEGATE so this whole class is headless-testable against a scripted
+/// walk and a fake acquisition. That is the only way the retry policy and the bookend walk get tests, and
+/// they are the two least-reviewed parts of this design.</summary>
+public sealed class WindowCaptureCoordinator
+{
+    private readonly Func<WindowHandle, string?, Task<CaptureGeometry>> _walk;
+    private readonly IWindowImageSource _source;
+    private readonly CaptureRetryOptions _opts;
+    private readonly Func<IntPtr, Rectangle?>? _w2Probe;
+    private readonly Func<IntPtr, bool>? _minimizedProbe;
+    private readonly Func<Rectangle, IReadOnlyList<Rectangle>, int, CaptureScope,
+                          IReadOnlyList<CaptureWarning>, CaptureResult> _scrape;
+
+    public WindowCaptureCoordinator(
+        Func<WindowHandle, string?, Task<CaptureGeometry>> walk,
+        IWindowImageSource source,
+        CaptureRetryOptions opts,
+        Func<IntPtr, Rectangle?>? w2Probe = null,
+        Func<IntPtr, bool>? minimizedProbe = null,
+        Func<Rectangle, IReadOnlyList<Rectangle>, int, CaptureScope,
+             IReadOnlyList<CaptureWarning>, CaptureResult>? scrape = null)
+    {
+        _walk = walk; _source = source; _opts = opts;
+        _w2Probe = w2Probe; _minimizedProbe = minimizedProbe;
+        _scrape = scrape ?? ScreenCapture.CaptureRectangle;
+    }
+
+    public async Task<WindowCaptureOutcome> CaptureAsync(WindowHandle handle, string? @ref,
+                                                         CaptureScope scope, int maxWidth)
+    {
+        CaptureGeometry geo = default!;
+
+        for (int attempt = 1; attempt <= _opts.MaxAttempts; attempt++)
+        {
+            // Step 1. Every attempt re-walks, which is what makes a retry meaningful.
+            geo = await _walk(handle, @ref);
+
+            // Step 1b. The EXISTING geometry-time refusals, unchanged. Neither is retryable.
+            if (geo.Denied)
+                throw new ToolException(ToolErrorCode.TargetDenied,
+                    $"Capturing windows owned by '{geo.DeniedProcess}' is blocked.",
+                    "capture a non-sensitive window");
+            if (geo.Minimized)
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "Window is minimized; restore it first.",
+                    "desktop_window_transform restore, then retry");
+
+            // Step 2's signal. RETRYABLE, and distinguishable from minimized above -- a window caught
+            // mid-open reports a degenerate rect for a frame, which is exactly the transient this loop
+            // exists to absorb. Both surface to the agent as ElementNotActionable once the budget is
+            // spent; the internal signal is what differs.
+            if (geo.DegenerateWindow)
+            {
+                if (attempt < _opts.MaxAttempts) continue;
+                throw new ToolException(ToolErrorCode.ElementNotActionable,
+                    "The target window reported no renderable area on every attempt.",
+                    "restore or resize the window, then retry");
+            }
+
+            // Warnings are scoped to THIS ATTEMPT. A discarded attempt's warnings are discarded with it.
+            var warnings = geo.HasPopupRoots
+                ? new[] { CaptureWarnings.For(CaptureWarnings.PopupsNotRendered) }
+                : Array.Empty<CaptureWarning>();
+
+            // Steps 4-8, inside the seam.
+            var outcome = ScreenCapture.CaptureWindow(geo, maxWidth, scope, warnings, _source,
+                                                      _opts.TimeoutMs, _w2Probe, _minimizedProbe);
+
+            switch (outcome.Kind)
+            {
+                case CaptureOutcomeKind.Completed:
+                    // Step 9 is added in Task 18.
+                    return new WindowCaptureOutcome(outcome.Result!, geo);
+
+                case CaptureOutcomeKind.TimedOut:
+                    // A MECHANISM failure: the window is on screen with real pixels and PrintWindow simply
+                    // could not get a copy because the target's loop is blocked. The scrape reads the
+                    // composited desktop and is unaffected, so it genuinely has a better answer than
+                    // nothing. Refusing here would take away behaviour that works today.
+                    return new WindowCaptureOutcome(
+                        Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive),
+                        geo);
+
+                case CaptureOutcomeKind.Resized:
+                    if (attempt < _opts.MaxAttempts) continue;
+                    return new WindowCaptureOutcome(OnResizeExhausted(geo, scope, maxWidth, warnings), geo);
+            }
+        }
+
+        throw new ToolException(ToolErrorCode.ElementNotActionable,
+            "The capture did not converge within the retry budget.",
+            "wait for the window to settle, then retry");
+    }
+
+    /// <summary>The terminal outcome when the size never settled. The two scopes differ, and the
+    /// difference is NOT inconsistency.</summary>
+    private CaptureResult OnResizeExhausted(CaptureGeometry geo, CaptureScope scope, int maxWidth,
+                                            IReadOnlyList<CaptureWarning> warnings)
+    {
+        // WINDOW SCOPE WITH MASKS: REFUSE, and never scrape. The mask rects were computed against the
+        // pre-resize layout; a resize reflows content, so they no longer necessarily cover what they were
+        // sampled to cover. A scrape reproduces that exactly -- the same stale rects over the same
+        // reflowed content -- so switching backends cannot fix a MASK problem.
+        if (scope == CaptureScope.Window && geo.MaskRects.Count > 0)
+            throw new ToolException(ToolErrorCode.RedactionUnmaskable,
+                "The window kept changing size, so its redacted regions cannot be reliably located.",
+                "wait for the window to settle, then retry, or capture a different window");
+
+        // ELEMENT SCOPE: fall back. Its failure is a GEOMETRY mismatch on an image that is otherwise
+        // sound, and the scrape is what this tool does for this window today -- so the fallback restores
+        // current behaviour rather than returning nothing.
+        return Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetChanging);
+    }
+
+    /// <summary>The fallback scrape, using the LAST attempt's geometry. Reusing the first attempt's would
+    /// hand the scrape coordinates staler by the entire duration of the loop.
+    ///
+    /// ⚠ The scrape is NOT synchronised with the geometry, and nothing here claims it is: it takes PIXELS
+    /// at one instant while the element rect still comes from a UIA walk that happened earlier. That
+    /// staleness is the inherent race §2 documents -- it is today's behaviour, not a new defect -- and the
+    /// fallback is justified by "better than nothing", not by synchronisation it does not have.</summary>
+    private CaptureResult Scrape(CaptureGeometry geo, CaptureScope scope, int maxWidth,
+                                 IReadOnlyList<CaptureWarning> warnings, string code)
+        => _scrape(geo.Bounds, geo.MaskRects, maxWidth, scope,
+                   ScreenCapture.Append(warnings, CaptureWarnings.For(code)));
+}
+```
+
+- [ ] **Step 5: Make `ScreenCapture.Append` visible to the coordinator**
+
+It is `internal` and both types are in `FlaUI.Mcp.Core`, so no change is needed. Confirm with `dotnet build FlaUI.Mcp.slnx`.
+
+- [ ] **Step 6: Update the call-site count in Task 12's sweep**
+
+In `test/FlaUI.Mcp.Tests/Perception/CaptureGeometryCallSiteTests.cs`, the coordinator takes the walk as a delegate rather than calling `ResolveWindowCaptureGeometryAsync` directly, so the production count stays **3**, not 4. Change the assertion to `Assert.Equal(3, calls.Count)` and update the comment to name the three sites: `ScreenshotTools:53`, `PerceptionManager:1136` (OCR), `PerceptionManager:1181` (full-desktop). **The Task 12 note predicting 4 was wrong — the delegate injection is what changed it, and recording that here is the point.**
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: PASS, 0 failed, build 0 warnings / 0 errors.
+
+- [ ] **Step 8: Prove the gates are non-vacuous with three logic mutants**
+
+1. Change `OnResizeExhausted`'s window-scope branch to fall through to `Scrape`.
+   Expected: `Window_scope_with_masks_refuses_on_exhaustion_and_never_scrapes` FAILS.
+2. Change the degenerate branch to `throw` immediately instead of `continue`.
+   Expected: `A_degenerate_W1_retries_rather_than_failing_terminally` FAILS.
+3. Hoist `warnings` outside the `for` loop and accumulate into it across attempts.
+   Expected: `A_discarded_attempts_warnings_are_discarded_with_it` FAILS.
+
+**Revert every mutant.**
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs src/FlaUI.Mcp.Core/Perception/PerceptionManager.cs test/FlaUI.Mcp.Tests/Perception/
+git commit -m "feat(capture): the coordinator - bounded retry, ratified resize policy, scrape fallbacks"
+```
+
+### Task 18: The bookend validation walk
+
+**This closes the relayout leak, and it is the newest and least-reviewed idea in the design.** It postdates all thirty panel rounds. Treat every claim in §2.5 as unproven.
+
+**What it does NOT do:** it does not mitigate risk 3's stale composition. There the pixels are older than the tree and a value can be revealed in place, leaving the element's rectangle mathematically identical. `M1 == M2` and the walk passes a genuinely stale capture.
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/BookendWalkTests.cs`
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Threading.Tasks;
+using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Perception;
+using FlaUI.Mcp.Core.Windows;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class BookendWalkTests
+{
+    private static CaptureGeometry Geo(Rectangle w, params Rectangle[] masks)
+        => new(w, masks, false, false, null, Array.Empty<MaskEscalationEntry>(),
+               w, new IntPtr(0x1234), false);
+
+    private static WindowCaptureCoordinator Make(List<CaptureGeometry> script, out Func<int> walkCount)
+    {
+        int i = 0;
+        walkCount = () => i;
+        var walk = new Func<WindowHandle, string?, Task<CaptureGeometry>>(
+            (_, _) => Task.FromResult(script[Math.Min(i++, script.Count - 1)]));
+        return new WindowCaptureCoordinator(walk, FakeWindowImageSource.Solid(Color.White),
+            new CaptureRetryOptions(3, 1000),
+            w2Probe: _ => new Rectangle(0, 0, 400, 300), minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, m.Count, "screenScrape", warns));
+    }
+
+    private static readonly Rectangle W = new(0, 0, 400, 300);
+
+    // THE PROPERTY THAT KEEPS THE COMMON CASE FREE. An empty mask set needs no second walk: there is
+    // nothing that could have gone stale. Invisible if it breaks, so it is pinned.
+    [Fact]
+    public async Task An_empty_mask_set_performs_no_second_walk()
+    {
+        var c = Make(new List<CaptureGeometry> { Geo(W) }, out var walks);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("printWindow", r.Result.CaptureMethod);
+        Assert.Equal(1, walks());   // ONE walk, not two
+    }
+
+    [Fact]
+    public async Task A_stable_mask_set_performs_a_second_walk_and_succeeds()
+    {
+        var mask = new Rectangle(10, 10, 50, 20);
+        var c = Make(new List<CaptureGeometry> { Geo(W, mask), Geo(W, mask) }, out var walks);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("printWindow", r.Result.CaptureMethod);
+        Assert.Equal(2, walks());   // pre-capture + bookend
+    }
+
+    // THE LEAK THIS CLOSES. The window did not change size -- W1.Size == W2.Size throughout, so the
+    // resize guard never fires -- but the content reflowed and the mask moved. Without the bookend the
+    // stale rect is painted over the wrong region and sensitive content is exposed silently.
+    [Fact]
+    public async Task A_mask_that_moved_under_the_capture_triggers_a_retry()
+    {
+        var before = new Rectangle(10, 10, 50, 20);
+        var after  = new Rectangle(10, 90, 50, 20);   // reflowed down, window size unchanged
+        var c = Make(new List<CaptureGeometry>
+        {
+            Geo(W, before),   // attempt 1 pre-capture
+            Geo(W, after),    // attempt 1 bookend  -> MISMATCH, retry
+            Geo(W, after),    // attempt 2 pre-capture
+            Geo(W, after),    // attempt 2 bookend  -> match, succeed
+        }, out var walks);
+        var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal("printWindow", r.Result.CaptureMethod);
+        Assert.Equal(4, walks());
+    }
+
+    // A window whose masked content animates continuously never settles. Window scope with masks refuses
+    // -- the SAME terminal outcome as the resize case, reached by the other detector.
+    [Fact]
+    public async Task A_continuously_moving_mask_set_refuses_for_window_scope()
+    {
+        int n = 0;
+        var walk = new Func<WindowHandle, string?, Task<CaptureGeometry>>(
+            (_, _) => Task.FromResult(Geo(W, new Rectangle(10, 10 + (n++ * 7), 50, 20))));
+        var c = new WindowCaptureCoordinator(walk, FakeWindowImageSource.Solid(Color.White),
+            new CaptureRetryOptions(3, 1000),
+            w2Probe: _ => W, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, m.Count, "screenScrape", warns));
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0));
+        Assert.Equal(ToolErrorCode.RedactionUnmaskable, ex.Code);
+    }
+
+    // ⚠ THE PROPERTY THAT KEEPS IT A GUARD RATHER THAN AN OUTAGE. A bookend that reports a difference for
+    // a window nobody touched would refuse every masked capture on the machine. This is ratification item
+    // 5's added measurement, expressed as a test.
+    [Fact]
+    public async Task A_static_window_never_trips_the_bookend()
+    {
+        var mask = new Rectangle(10, 10, 50, 20);
+        var script = new List<CaptureGeometry>();
+        for (int i = 0; i < 10; i++) script.Add(Geo(W, mask));
+        var c = Make(script, out var walks);
+        for (int i = 0; i < 5; i++)
+        {
+            var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+            Assert.Equal("printWindow", r.Result.CaptureMethod);
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~BookendWalkTests"`
+Expected: FAIL — `An_empty_mask_set_performs_no_second_walk` passes trivially, the rest fail because no second walk happens.
+
+- [ ] **Step 3: Add step 9 to the coordinator**
+
+Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
+
+```csharp
+                case CaptureOutcomeKind.Completed:
+                {
+                    // Step 9. THE BOOKEND VALIDATION WALK (§2.5). Closes the relayout leak: a window can
+                    // reflow massively at a CONSTANT outer size -- an SPA navigating, an accordion
+                    // opening, a splitter dragged -- so W1.Size == W2.Size holds, the resize guard never
+                    // fires, and mask rects sampled during the walk are painted over the WRONG REGIONS of
+                    // an image composed afterwards.
+                    //
+                    // ⚠ IT DOES NOT COVER RISK 3's STALE COMPOSITION. There the pixels are older than the
+                    // tree and a value can be revealed IN PLACE, leaving the element's rect mathematically
+                    // identical. M1 == M2 and this walk passes a genuinely stale capture. It closes the
+                    // RELAYOUT leak and nothing else.
+                    //
+                    // ⚠ It CANNOT run between steps 6b and 7 where it would be cheapest: those are both
+                    // inside CaptureWindow, and the walk lives out here. So a mismatch WASTES a full
+                    // encode. Accepted -- the mismatch is the rare path, and the alternative is giving the
+                    // seam the ability to walk the UIA tree.
+                    //
+                    // ⚠ An EMPTY mask set skips the walk entirely. Nothing could have gone stale, and this
+                    // is what keeps the common case free.
+                    if (geo.MaskRects.Count == 0)
+                        return new WindowCaptureOutcome(outcome.Result!, geo);
+
+                    var after = await _walk(handle, @ref);
+                    if (MaskSetsMatch(geo.MaskRects, after.MaskRects))
+                        return new WindowCaptureOutcome(outcome.Result!, geo);
+
+                    if (attempt < _opts.MaxAttempts) continue;
+                    return new WindowCaptureOutcome(OnResizeExhausted(geo, scope, maxWidth, warnings), geo);
+                }
+```
+
+Add the comparison as a private static member:
+
+```csharp
+    /// <summary>M1 vs M2, as an ORDERED SEQUENCE. Ordered rather than as a set because the walk is
+    /// deterministic -- it enumerates roots and descendants in a fixed order -- so a reordering is itself
+    /// evidence the tree changed under the capture, which is exactly what this is looking for.</summary>
+    private static bool MaskSetsMatch(IReadOnlyList<Rectangle> a, IReadOnlyList<Rectangle> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~BookendWalkTests"`
+Expected: PASS — 5 passed.
+
+- [ ] **Step 5: Prove the gates are non-vacuous with two logic mutants**
+
+1. Change `MaskSetsMatch` to `=> true`.
+   Expected: `A_mask_that_moved_under_the_capture_triggers_a_retry` FAILS at `Assert.Equal(4, walks())` with 2 — the leak is open again, and seeing this fail once is the point.
+2. Delete the `if (geo.MaskRects.Count == 0)` short circuit.
+   Expected: `An_empty_mask_set_performs_no_second_walk` FAILS with 2 walks.
+
+**Revert both.**
+
+- [ ] **Step 6: Run the whole headless suite**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
+Expected: PASS, 0 failed, build 0/0.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs test/FlaUI.Mcp.Tests/Perception/BookendWalkTests.cs
+git commit -m "feat(capture): the bookend validation walk - closes the relayout leak (ratification 4)
+
+Closes the leak that made the spec's 'none is paid in a leak' claim false:
+a window can reflow at a constant outer size, so the resize guard never
+fires and stale masks land on the wrong regions. Compares the mask list
+before and after the capture; empty mask set skips it entirely.
+
+Does NOT cover risk 3's stale composition - a value revealed IN PLACE
+leaves the rect identical. That risk remains unmitigated and one-sided."
+```
+
+### Task 19: The per-HWND circuit breaker
+
+**Build this only if Task 1 measured a block.** If it did not, skip the task and record the skip in the measurements doc.
+
+**Files:**
+- Modify: `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`
+- Test: `test/FlaUI.Mcp.Tests/Perception/CaptureCircuitBreakerTests.cs`
+
+- [ ] **Step 1: Write the failing test**
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Threading.Tasks;
+using FlaUI.Mcp.Core.Perception;
+using FlaUI.Mcp.Core.Windows;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureCircuitBreakerTests
+{
+    private static readonly Rectangle W = new(0, 0, 400, 300);
+
+    private static CaptureGeometry Geo() =>
+        new(W, Array.Empty<Rectangle>(), false, false, null, Array.Empty<MaskEscalationEntry>(),
+            W, new IntPtr(0xBEEF), false);
+
+    // N captures of a hung window must cost ONE leaked acquisition, not N. This CONTAINS the cumulative
+    // degradation; it does NOT reclaim anything -- the first blocked call still holds its thread, its HDC
+    // and both bitmaps forever. Only killing a separate process reclaims, and that is ROADMAP debt.
+    [Fact]
+    public async Task A_window_that_timed_out_is_not_retried_through_PrintWindow_during_the_cooldown()
+    {
+        var src = FakeWindowImageSource.TimesOut();
+        var breaker = new CaptureCircuitBreaker(cooldown: TimeSpan.FromMinutes(5), clock: () => DateTime.UtcNow);
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(Geo()), src, new CaptureRetryOptions(1, 50),
+            w2Probe: _ => W, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, 0, "screenScrape", warns),
+            breaker: breaker);
+
+        for (int i = 0; i < 5; i++)
+        {
+            var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+            Assert.Equal("screenScrape", r.Result.CaptureMethod);
+            Assert.Contains(r.Result.CaptureWarnings, w => w.Code == "scrapeFallbackTargetUnresponsive");
+        }
+
+        Assert.Equal(1, src.Calls);   // ONE leak, not five
+    }
+
+    [Fact]
+    public async Task The_breaker_reopens_after_the_cooldown()
+    {
+        var now = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
+        var src = FakeWindowImageSource.TimesOut();
+        var breaker = new CaptureCircuitBreaker(TimeSpan.FromMinutes(5), () => now);
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(Geo()), src, new CaptureRetryOptions(1, 50),
+            w2Probe: _ => W, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, 0, "screenScrape", warns),
+            breaker: breaker);
+
+        await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal(1, src.Calls);
+        await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal(1, src.Calls);           // still tripped
+
+        now = now.AddMinutes(6);
+        await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        Assert.Equal(2, src.Calls);           // reopened, and leaked once more
+    }
+
+    [Fact]
+    public async Task A_different_window_is_unaffected()
+    {
+        var src = FakeWindowImageSource.TimesOut();
+        var breaker = new CaptureCircuitBreaker(TimeSpan.FromMinutes(5), () => DateTime.UtcNow);
+        int hwnd = 1;
+        var c = new WindowCaptureCoordinator(
+            (_, _) => Task.FromResult(new CaptureGeometry(W, Array.Empty<Rectangle>(), false, false, null,
+                Array.Empty<MaskEscalationEntry>(), W, new IntPtr(hwnd), false)),
+            src, new CaptureRetryOptions(1, 50),
+            w2Probe: _ => W, minimizedProbe: _ => false,
+            scrape: (b, m, mw, s, warns) => new CaptureResult(Array.Empty<byte>(), b.X, b.Y, b.Width,
+                                                             b.Height, 1.0, 0, "screenScrape", warns),
+            breaker: breaker);
+
+        await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
+        hwnd = 2;
+        await c.CaptureAsync(new WindowHandle("w2"), null, CaptureScope.Window, 0);
+        Assert.Equal(2, src.Calls);   // the breaker is PER-HWND
+    }
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureCircuitBreakerTests"`
+Expected: FAIL — `CaptureCircuitBreaker` does not exist.
+
+- [ ] **Step 3: Write the breaker**
+
+Append to `src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs`:
+
+```csharp
+/// <summary>Remembers windows whose PrintWindow acquisition timed out, and routes subsequent captures of
+/// those windows straight to the scrape for a cooldown.
+///
+/// ⚠ THIS CONTAINS; IT DOES NOT RECLAIM. Each blocked call keeps its thread, its HDC, its GDI bitmap and
+/// its managed bitmap permanently -- a blocked Win32 call cannot be cancelled, so nothing in-process can
+/// take them back. What this bounds is the MULTIPLIER: N captures of a hung window cost ONE leak instead
+/// of N. Operator ratification of 2026-08-21 accepted that trade explicitly; the out-of-process worker
+/// that would actually reclaim is filed as ROADMAP debt.</summary>
+public sealed class CaptureCircuitBreaker
+{
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, DateTime> _tripped = new();
+    private readonly TimeSpan _cooldown;
+    private readonly Func<DateTime> _clock;
+
+    public CaptureCircuitBreaker(TimeSpan cooldown, Func<DateTime> clock)
+    { _cooldown = cooldown; _clock = clock; }
+
+    public static CaptureCircuitBreaker Default => new(TimeSpan.FromMinutes(5), () => DateTime.UtcNow);
+
+    public bool IsTripped(IntPtr hwnd)
+        => _tripped.TryGetValue(hwnd, out var at) && _clock() - at < _cooldown;
+
+    public void Trip(IntPtr hwnd) => _tripped[hwnd] = _clock();
+}
+```
+
+- [ ] **Step 4: Wire it into the coordinator**
+
+Add a `CaptureCircuitBreaker? breaker = null` constructor parameter stored as `_breaker`, then:
+
+Before the `ScreenCapture.CaptureWindow` call:
+
+```csharp
+            // The breaker short-circuits BEFORE acquisition, which is the whole point: the leak happens
+            // inside Acquire, so avoiding the call is the only way to avoid the leak.
+            if (_breaker is not null && _breaker.IsTripped(geo.NativeWindowHandle))
+                return new WindowCaptureOutcome(
+                    Scrape(geo, scope, maxWidth, warnings, CaptureWarnings.ScrapeFallbackTargetUnresponsive),
+                    geo);
+```
+
+In the `TimedOut` arm, before returning:
+
+```csharp
+                case CaptureOutcomeKind.TimedOut:
+                    _breaker?.Trip(geo.NativeWindowHandle);
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CaptureCircuitBreakerTests"`
+Expected: PASS — 3 passed.
+
+- [ ] **Step 6: Prove the gate is non-vacuous with a logic mutant**
+
+Change `IsTripped` to `=> false`.
+Expected: `A_window_that_timed_out_is_not_retried_through_PrintWindow_during_the_cooldown` FAILS with `src.Calls == 5` — five leaks instead of one. **Revert.**
+
+- [ ] **Step 7: File the out-of-process worker as ROADMAP debt**
+
+Append to `ROADMAP.md`:
+
+```markdown
+### 17. A hung-window `PrintWindow` capture leaks permanently — the containments bound it, nothing reclaims it
+
+`PrintWindow` sends `WM_PRINT` synchronously to the target, so a target whose message loop is blocked
+blocks the call, and a blocked Win32 call cannot be cancelled. Item 8 ships two CONTAINMENTS — a dedicated
+background thread so the leak is a thread rather than a CLR threadpool slot, and a per-HWND circuit
+breaker so N captures of a hung window cost one leak rather than N. **Neither reclaims anything:** the
+blocked call keeps its thread, its HDC, its GDI bitmap and its managed bitmap until the process exits.
+
+The fix that DOES reclaim is running the acquisition in a sacrificial out-of-process worker terminated on
+timeout, letting the OS take the handles back. It costs IPC, bitmap serialization across a process
+boundary, child-process lifetime management, and a second DPI-aware CLR process that must be on the right
+desktop and session. Deliberately not built in item 8 — see that spec's ratification item 3, where the
+operator accepted the containments and staged this.
+
+Build it if the containments prove insufficient in practice.
+```
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Core/Perception/WindowCaptureCoordinator.cs test/FlaUI.Mcp.Tests/Perception/CaptureCircuitBreakerTests.cs ROADMAP.md
+git commit -m "feat(capture): per-HWND circuit breaker; file the out-of-process worker as ROADMAP item 17"
+```
