@@ -1200,7 +1200,7 @@ Replace the `case CaptureOutcomeKind.Completed:` arm in `CaptureAsync` with:
 Add the comparison as a private static member:
 
 ```csharp
-    /// <summary>M1 vs M2, as an ORDERED SEQUENCE of WINDOW-RELATIVE rectangles.
+    /// <summary>M1 vs M2, as an ORDER-INSENSITIVE SET of WINDOW-RELATIVE rectangles.
     ///
     /// ⚠⚠ WINDOW-RELATIVE, NOT ABSOLUTE, AND THAT IS THE WHOLE CORRECTNESS OF THIS GUARD. Mask rects are
     /// absolute SCREEN coordinates. Comparing them absolutely means a user DRAGGING the window between
@@ -1212,8 +1212,13 @@ Add the comparison as a private static member:
     /// *(AGY-AFTER panel over this plan, round 1, Type-Flow Auditor. The bookend walk is not panel-tested
     /// -- it postdates the spec's thirty rounds -- and this was the first defect found in it.)*
     ///
-    /// Ordered rather than as a set because the walk is deterministic: it enumerates roots and descendants
-    /// in a fixed order, so a REORDERING is itself evidence the tree changed under the capture.
+    /// ⚠ THIS PARAGRAPH USED TO SAY THE OPPOSITE OF THE CODE BELOW, and the contradiction survived
+    /// into the pinned block. It read: "Ordered rather than as a set because the walk is deterministic:
+    /// it enumerates roots and descendants in a fixed order, so a REORDERING is itself evidence the tree
+    /// changed under the capture." That was round 1's rationale, and **round 4 destroyed it** -- the body
+    /// comment below explains why, and the implementation SORTS both lists before comparing, so it is
+    /// order-insensitive in fact. A doc comment that contradicts its own method is worse than no comment:
+    /// the next reader trusts the summary and never reaches the body.
     ///
     /// A window RESIZE between the two walks can also produce a mismatch here. That is correct and not
     /// double-handling: a resize genuinely may have reflowed the content, and the terminal outcome is the
@@ -1250,7 +1255,7 @@ Add the comparison as a private static member:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~BookendWalkTests"`
-Expected: PASS — 5 passed.
+Expected: PASS — **9 passed**. (The plan said 5; MEASURED by counting `[Fact]` in Step 1, which declares NINE tests. Do not "fix" a 9 back down to 5.)
 
 - [ ] **Step 5: Prove the gates are non-vacuous with three logic mutants**
 
@@ -1274,7 +1279,8 @@ Expected: PASS — 5 passed.
 - [ ] **Step 6: Run the whole headless suite**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: PASS, 0 failed, build 0/0.
+Expected: PASS, 0 failed, build 0/0, **total 1030** — 1021 after Task 17 plus this task's 9. State the
+total verbatim: a bare "0 failed" cannot distinguish a suite that grew from one that silently lost tests.
 
 - [ ] **Step 7: Commit**
 
