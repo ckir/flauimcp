@@ -6,7 +6,17 @@ using FlaUI.Mcp.Core.Errors;
 
 namespace FlaUI.Mcp.Core.Perception;
 
-public sealed record CaptureResult(byte[] Png, int X, int Y, int W, int H, double ScaleApplied, int Redactions);
+/// <summary>A captured, masked, encoded image plus the metadata the tool layer projects.
+///
+/// ⚠ POSITIONAL RECORD, constructed positionally at the single site in Encode. APPEND ONLY, NEVER
+/// INSERT: X/Y/W/H are four interchangeable ints, so a field added mid-list rebinds arguments silently
+/// wherever the types line up. CaptureResultShapeTests pins the order for exactly that reason.
+///
+/// CaptureMethod is "printWindow" or "screenScrape". CaptureWarnings is ALWAYS present and is empty in
+/// the normal case -- never null. A diagnostic that appears only on failure teaches consumers to ignore
+/// its absence (AB-9).</summary>
+public sealed record CaptureResult(byte[] Png, int X, int Y, int W, int H, double ScaleApplied, int Redactions,
+                                   string CaptureMethod, IReadOnlyList<CaptureWarning> CaptureWarnings);
 
 /// <summary>Screen-region capture (no occlusion handling — callers focus-first; no UIA element reads).
 /// Captures by absolute screen rectangle so it can run OFF the query STA (spec §8). Paints black
@@ -66,7 +76,9 @@ public static class ScreenCapture
             }
             using var ms = new MemoryStream();
             outBmp.Save(ms, ImageFormat.Png);
-            return new CaptureResult(ms.ToArray(), captureBounds.X, captureBounds.Y, captureBounds.Width, captureBounds.Height, scale, painted);
+            return new CaptureResult(ms.ToArray(), captureBounds.X, captureBounds.Y, captureBounds.Width,
+                                     captureBounds.Height, scale, painted,
+                                     "screenScrape", System.Array.Empty<CaptureWarning>());
         }
     }
 }
