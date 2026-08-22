@@ -229,8 +229,9 @@ In `src/FlaUI.Mcp.Server/Install/ActivationPayload.cs`, replace the whole `Text`
         "Typing, clicking, dragging, or reading a BACKGROUND terminal tab all need a lease.",
     });
 
-    /// <summary>The Claude-Code-specific half: the concrete deferred-tool load call and its fallback.
-    /// Stays in the SessionStart hook and is NOT served over MCP.</summary>
+    /// <summary>The Claude-Code-specific half: the concrete deferred-tool load call, its fallback, AND
+    /// the pointer to the driving-flaui-mcp skill - all three name mechanisms a generic MCP client does
+    /// not have (spec D1). Stays in the SessionStart hook and is NOT served over MCP.</summary>
     public static readonly string Addendum = string.Join("\n", new[]
     {
         // FIRST, deliberately: in the recomposed Text this line lands immediately after the core's
@@ -485,10 +486,21 @@ public class ServerInstructionsWiringTests
     // AddMcpServer block, failing the build on a VALID file; strings-then-comments dies the same way on a
     // `"` inside a comment. Comments-only survives both and still catches a commented-out call.
     //
-    // The residual hole - a string literal containing the whole call shape would satisfy this - is
-    // ACCEPTED, and it is no longer load-bearing: the behavioural test above owns the content guarantee.
-    // (Roslyn IS available here: the test project already references Microsoft.CodeAnalysis.CSharp. It is
-    // not used because a parser would still only prove something about TEXT.)
+    // ⚠ CORRECTION, and it matters: an earlier revision called this sweep "no longer load-bearing"
+    // because the behavioural test owns the content. That was HALF right and wrong where it counted. The
+    // behavioural test proves Apply is CORRECT; it says nothing about whether Program.cs ever CALLS it -
+    // Step 5's mutant demonstrates exactly that, by leaving the behavioural test green while the wiring
+    // is commented out. So this sweep is the ONLY guard on REACHABILITY, and it is fully load-bearing
+    // for that. It is no longer load-bearing for CONTENT. Those are different jobs.
+    //
+    // Because it IS load-bearing, the spoof hole is closed rather than accepted: the pattern below
+    // requires the call to START a line (indentation, then `.AddMcpServer(`), which is the fluent form
+    // real code uses and which a call quoted inside a string literal in a statement cannot produce.
+    // MEASURED against four cases: matches both qualification forms of the real call, rejects a spoof in
+    // an exception message, and still goes red on the commented-out mutant.
+    // (Roslyn IS available here - the test project references Microsoft.CodeAnalysis.CSharp - and is
+    // still not used: a parser would prove more about TEXT, when the behavioural test already proves the
+    // thing that actually matters.)
     private static string ProgramSourceWithoutComments()
     {
         var src = File.ReadAllText(RepoPaths.At("src", "FlaUI.Mcp.Server", "Program.cs"));
@@ -500,7 +512,7 @@ public class ServerInstructionsWiringTests
     [Fact]
     public void Program_hands_the_configuration_seam_to_AddMcpServer()
         => Assert.Matches(
-            @"AddMcpServer\s*\(\s*(FlaUI\.Mcp\.Server\.Install\.)?McpServerConfiguration\.Apply\s*\)",
+            @"(?m)^\s*\.AddMcpServer\(\s*(?:FlaUI\.Mcp\.Server\.Install\.)?McpServerConfiguration\.Apply\s*\)",
             ProgramSourceWithoutComments());
 
     /// This one has to satisfy TWO opposing constraints, and an earlier revision failed each in turn:
@@ -1141,11 +1153,22 @@ from an accidental extra deletion. The arithmetic, from counts measured at `f4ba
 |---|---|
 | Deleted (`Deploy_*` / `Install_*` / `Skill_deploy_*` / `Successful_install_*`) | **-10** |
 | Retained in those same files (4 `Remove_*` + 3 `Uninstall_*`) | **0** (unchanged) |
-| Added (Task 1: 5 · **Task 2: 1** · Task 3: 2 · Task 4: 2 theory cases · **Task 6 Step 2c: 0, it extends an existing test**) | **+10** |
-| **Net** | **0** |
+| Added (Task 1: 5 · Task 2: 1 · **Task 3: 3** · Task 4: 2 theory cases · Task 6 Step 2c: 0, it extends an existing test · Task 4 `Windows` assert: 0, same) | **+11** |
+| **Net** | **+1** |
 
-Record the actual number. If the delta is not **0**, stop: something was deleted or added that this plan
+Record the actual number. If the delta is not **+1**, stop: something was deleted or added that this plan
 did not call for.
+
+⚠ **This arithmetic has already rotted once.** Round 7 added a third test to Task 3 (the behavioural
+one) and this table still said `Task 3: 2` two rounds later. Before trusting it, RECOUNT from the
+plan itself rather than from this row:
+
+```bash
+awk '/^### Task/{t=$0} /\[Fact\]|\[Theory\]/{c[t]++} END{for(k in c) print c[k]"  "k}' \n  docs/superpowers/plans/2026-08-22-activation-via-server-instructions.md | sort
+```
+
+Expected today: Task 1 = 5, Task 2 = 1, Task 3 = 3, Task 4 = 1 (a `[Theory]` yielding **2** cases).
+If those differ from the row above, the row is stale and the row is what is wrong.
 
 - [ ] **Step 3: Desktop gate**
 
@@ -1333,6 +1356,14 @@ Seats were bespoke this round — the standard palette was exhausted after four 
 |---|---|---|---|
 | 25 | agy Adversary of the Reviewer | ⛔ **Round 7 un-fixed fold 20.** Rewriting the tests for the seam dropped the `AddMcpServer` anchor from the NEGATIVE gate, so a string literal holding that assignment breaks the build on valid code again — the exact defect fold 20 existed to close. **A regression introduced by a fold, two rounds after the fold it undid.** | Anchor restored **and** kept permissive: `AddMcpServer[\s\S]{0,300}?...[\w.]*ActivationPayload\.Text`. Both halves are now documented as load-bearing, with the two opposing failure modes named so a future edit cannot drop either. |
 | 26 | agy Platform Auditor (new seat) | `SKILL.md` is **portable text while the binary is not**, so a synced plugin dir carries the activation instructions to macOS/Linux, where the server cannot start and no `desktop_*` tool exists — an agent told to look for itself, and not to ask the user, with no tools. Independently rediscovers the operator's own question. | Proportionate mitigation only: the pin now also asserts the description contains **`Windows`**, so the agent's one platform clue cannot be reworded away. The underlying gap (no platform field in `plugin.json`, no runtime OS guard) is **pre-existing, not introduced here**, and is filed as an anomaly rather than folded in — fixing it means changing the manifest and installer. |
+
+### Round 9 — folded findings
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 27 | Regression Hunter (**found independently by both seats**) | ⛔ **Fold 24 reverted fold 22's arithmetic.** The seam added a THIRD test to Task 3 while the count table still said `Task 3: 2` and `net 0` — and Task 9 Step 2 hard-stops when the delta differs, so the check would have failed a CORRECT run. | Recounted from the document: **net +1**. And made self-checking — the step now carries an `awk` recount and says plainly that if the row and the count disagree, **the row is what is wrong**. |
+| 28 | agy Adversary of the Reviewer | ⛔ **The plan contradicted itself.** Task 3 Step 1 called the sweep *"no longer load-bearing"*; Step 5's own mutant proves the opposite — with the wiring commented out the behavioural test stays GREEN because `Apply` is correct but never called. The sweep is the ONLY guard on reachability, so accepting a spoofable positive gate accepted silent feature death. | Claim corrected (**load-bearing for REACHABILITY, not for CONTENT**) and the hole CLOSED rather than accepted: the pattern now requires the call to START a line, the fluent form real code uses. MEASURED on four cases — both qualification forms match, a spoof inside an exception message does not, and the commented-out mutant still goes red. |
+| 29 | agy Regression Hunter | Fold 8 fixed the Architecture header but skipped the `Addendum` doc comment, which still described it as only the load call and its fallback — contradicting fold 8's own rationale | Doc comment updated to name all three parts |
 
 ⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
 named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
