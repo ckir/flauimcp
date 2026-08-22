@@ -349,17 +349,31 @@ using Xunit;
 /// naive `Contains` would still pass on a commented-out copy.
 public class ServerInstructionsWiringTests
 {
-    /// Strips comments AND string literals. Comments alone are not enough: a stray
-    /// `var x = "ServerInstructions = ActivationPayload.Core";` anywhere in the file would satisfy a
-    /// naive match while the real wiring was deleted from the AddMcpServer call - the gate would pass
-    /// having proved nothing. Verbatim strings are stripped first because their escaping rules differ.
-    private static string ProgramSourceWithoutCommentsOrLiterals()
+    /// Strips COMMENTS ONLY - deliberately, and this is the interesting decision in the file.
+    ///
+    /// An earlier revision also stripped string literals, to stop a stray
+    /// `var x = "...ActivationPayload.Core";` from spoofing the gate. **That cure was measurably worse
+    /// than the disease.** Sequential regex cannot strip comments and strings safely in either order,
+    /// because each sweep corrupts the other's delimiters. All three variants were measured:
+    ///
+    ///   comments-then-strings : a single `"http://localhost/"` anywhere in the file has its closing
+    ///                           quote eaten by the comment sweep; the string sweep then runs away from
+    ///                           the orphaned quote to the next quote in the file, swallowing the
+    ///                           AddMcpServer block. The gate fails on a VALID file.
+    ///   strings-then-comments : a comment containing one `"` (e.g. `// the " character`) starts the
+    ///                           same runaway. Also fails on a valid file.
+    ///   comments-only         : survives BOTH, and still catches the commented-out mutant.
+    ///
+    /// So: comments only. The accepted limit is that a string literal containing the whole anchored call
+    /// shape would satisfy this test. That is contrived, and it is not the threat model - this gate
+    /// exists to catch the wiring being DELETED or COMMENTED OUT, which is what actually happens. A
+    /// correct comment+string strip needs a real parser (Roslyn), which is not worth a dependency for
+    /// one assertion.
+    private static string ProgramSourceWithoutComments()
     {
         var src = File.ReadAllText(RepoPaths.At("src", "FlaUI.Mcp.Server", "Program.cs"));
-        src = Regex.Replace(src, @"/\*.*?\*/", "", RegexOptions.Singleline);      // block comments
-        src = Regex.Replace(src, @"//[^\r\n]*", "", RegexOptions.Multiline);      // line comments
-        src = Regex.Replace(src, "@\"(?:[^\"]|\"\")*\"", "\"\"");                    // verbatim strings
-        src = Regex.Replace(src, "\"(?:\\\\.|[^\"\\\\])*\"", "\"\"");                 // regular strings
+        src = Regex.Replace(src, @"/\*.*?\*/", "", RegexOptions.Singleline);   // block comments
+        src = Regex.Replace(src, @"//[^\r\n]*", "", RegexOptions.Multiline);   // line comments
         return src;
     }
 
@@ -369,7 +383,7 @@ public class ServerInstructionsWiringTests
     [Fact]
     public void Program_configures_the_server_with_the_activation_core()
     {
-        var src = ProgramSourceWithoutCommentsOrLiterals();
+        var src = ProgramSourceWithoutComments();
         Assert.Matches(
             @"AddMcpServer\s*\(\s*\w+\s*=>\s*\w+\.ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Core",
             src);
@@ -379,7 +393,7 @@ public class ServerInstructionsWiringTests
     [Fact]
     public void Program_serves_the_core_and_never_the_whole_payload()
     {
-        var src = ProgramSourceWithoutCommentsOrLiterals();
+        var src = ProgramSourceWithoutComments();
         Assert.DoesNotMatch(@"ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Text", src);
     }
 }
@@ -1056,4 +1070,17 @@ Seven findings folded; one refuted by measurement and deliberately NOT folded.
 | 16 | agy Literal Implementer | `private static SeedAgyInstall` in a shared class cannot be called from the two test classes — CS0122 | `internal static` |
 | 17 | agy Literal Implementer | Task 8's ROADMAP cell replacement spans four lines; a literal newline inside a GFM table cell breaks the table | Collapsed to one line, with the reason stated |
 | — | Resource Vampire | — | **no new findings** (stated plainly, not padded) |
+
+### Round 5 — folded findings (narrowed round: only what a compiler and a passing suite cannot catch)
+
+Seats were bespoke this round — the standard palette was exhausted after four rounds.
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 18 | **Adversary of the Reviewer** | ⛔ **Fold 14 — which this same reviewer proposed one round earlier — was BROKEN.** Stripping comments before strings lets one `"http://localhost/"` orphan a quote; the string sweep then runs away and swallows the `AddMcpServer` block. **The gate would fail on a perfectly valid file.** | **MEASURED all three orderings.** comments-then-strings: anchor destroyed by a URL. strings-then-comments: anchor destroyed by a `"` inside a comment. **comments-only: survives both AND still catches the commented-out mutant.** So fold 14's string-stripping is REVERTED; the `AddMcpServer` anchoring from the same fold is KEPT. agy proposed Roslyn — rejected as a dependency for one assertion. The accepted limit is documented in the test. |
+| — | Fold Auditor | — | **no new findings** |
+
+⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
+named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
+should always seat an adversary of the reviewer.
 `Frontmatter(string)` is defined in Task 4 Step 1 beside the existing `Read(string)` it calls.
