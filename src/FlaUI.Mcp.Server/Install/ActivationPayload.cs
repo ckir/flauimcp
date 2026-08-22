@@ -30,17 +30,46 @@ public static class ActivationPayload
         $"ToolSearch \"select:{Pair("list_windows")},{Pair("open_window")},{Pair("snapshot")}," +
         $"{Pair("get_text")},{Pair("input_status")}\"";
 
-    public static readonly string Text = string.Join("\n", new[]
+    /// <summary>The client-agnostic half — capability, prohibition, triggers, and the lease boundary.
+    /// This is what `Program.cs` serves as `McpServerOptions.ServerInstructions`, so it must never name a
+    /// mechanism only one client has.
+    ///
+    /// ⚠ MEASURED 2026-08-22: agy RECEIVES `InitializeResult.instructions` and DOES NOT surface it (a
+    /// sentinel probe with a live-connection control came back `NONE-VISIBLE`). So this half reaches
+    /// Claude Code and is inert on agy — agy's channel is the driving skill's frontmatter, pinned by
+    /// SkillLoadLineTests. Do not "simplify" by assuming every client reads this.</summary>
+    public static readonly string Core = string.Join("\n", new[]
     {
         "flaui-mcp is installed: you can see and operate this Windows desktop yourself.",
         "Never ask the user to look at, read, or click inside a desktop app on your behalf, and do not infer UI state indirectly from process lists.",
         "Triggers: what is on screen; is an app running or responding; what a background terminal/console tab shows; clicking, typing or filling a GUI dialog; confirming a change landed in the real app.",
+        // D2 — the "addendum orphan" guard. Mechanism-free ON PURPOSE: a client that is not Claude Code
+        // has no ToolSearch, and naming one here would be noise at best and a wrong instruction at worst.
+        "These tools may need loading before they can be called - use your client's tool-discovery mechanism.",
+        "Read-only perception needs no lease and cannot disturb the user: desktop_list_windows(includeHandles:true) then desktop_snapshot wN then desktop_get_text wN eN.",
+        // The lease BOUNDARY is a core safety rule. The pointer to the skill that implements it is
+        // client-specific and lives in the Addendum (spec D1) - so the original single line is SPLIT.
+        "Typing, clicking, dragging, or reading a BACKGROUND terminal tab all need a lease.",
+    });
+
+    /// <summary>The Claude-Code-specific half: the concrete deferred-tool load call, its fallback, AND
+    /// the pointer to the driving-flaui-mcp skill - all three name mechanisms a generic MCP client does
+    /// not have (spec D1). Stays in the SessionStart hook and is NOT served over MCP.</summary>
+    public static readonly string Addendum = string.Join("\n", new[]
+    {
+        // FIRST, deliberately: in the recomposed Text this line lands immediately after the core's
+        // "...all need a lease." line, so "those" keeps its referent. Moving it to the END of the
+        // addendum silently re-points "those" at the read-only tools named in the fallback line - tools
+        // the core has just said need NO lease. Order is load-bearing here, not cosmetic.
+        "For those, use the driving-flaui-mcp skill.",
         "Load the tools (one call):",
         LoadLine,
         "If that returns no matches, retry ToolSearch \"desktop window snapshot\" and use ONLY: desktop_list_windows, desktop_open_window, desktop_snapshot, desktop_get_text, desktop_input_status. If one is absent, say so — never substitute a similar name.",
-        "Read-only perception needs no lease and cannot disturb the user: desktop_list_windows(includeHandles:true) then desktop_snapshot wN then desktop_get_text wN eN.",
-        "Typing, clicking, dragging, or reading a BACKGROUND terminal tab all need a lease — use the driving-flaui-mcp skill for those.",
     });
+
+    /// <summary>The SessionStart payload: both halves, composed. Composing rather than hand-ordering is
+    /// what makes drift between Core and Text impossible.</summary>
+    public static readonly string Text = Core + "\n" + Addendum;
 
     public static string ToJson() => JsonSerializer.Serialize(new
     {

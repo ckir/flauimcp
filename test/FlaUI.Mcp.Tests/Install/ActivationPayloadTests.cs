@@ -77,4 +77,73 @@ public class ActivationPayloadTests
         Assert.Equal("SessionStart",
             doc.RootElement.GetProperty("hookSpecificOutput").GetProperty("hookEventName").GetString());
     }
+
+    /// The CORE is what a non-Claude client receives over `InitializeResult.instructions`. It must carry
+    /// the behavioural rules and must NOT carry Claude Code's ToolSearch incantation, which means nothing
+    /// to another client.
+    [Fact]
+    public void Core_carries_the_behavioural_rules_and_no_client_specific_mechanism()
+    {
+        Assert.Contains("Never ask the user", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.Contains("you can see and operate this Windows desktop yourself", ActivationPayload.Core,
+            StringComparison.Ordinal);
+        Assert.Contains("Triggers:", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.Contains("need a lease", ActivationPayload.Core, StringComparison.Ordinal);
+
+        // Spec S6 names BOTH halves and says why: "assert it does NOT contain ToolSearch or
+        // driving-flaui-mcp. This is the test that would have caught D1 being skipped." Omitting the
+        // second half is exactly how the skill pointer leaks into a generic client's instructions.
+        Assert.DoesNotContain("ToolSearch", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.DoesNotContain("driving-flaui-mcp", ActivationPayload.Core, StringComparison.Ordinal);
+    }
+
+    /// D2, the "addendum orphan" guard. If the Claude Code hook fails, an agent gets the CORE and never
+    /// the ADDENDUM. Without a client-agnostic loading sentence it would be told it can drive the desktop,
+    /// try a deferred tool, fail, and have no recovery instruction — worse than today's silence.
+    [Fact]
+    public void Core_tells_the_agent_tools_may_need_loading_without_naming_one_clients_mechanism()
+    {
+        Assert.Contains("may need loading", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.DoesNotContain("ToolSearch", ActivationPayload.Core, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Addendum_carries_the_claude_code_load_block()
+    {
+        Assert.Contains("ToolSearch \"select:", ActivationPayload.Addendum, StringComparison.Ordinal);
+        Assert.Contains("Load the tools (one call):", ActivationPayload.Addendum, StringComparison.Ordinal);
+        // D1: the skill pointer is client-specific and belongs HERE, not in the core.
+        Assert.Contains("driving-flaui-mcp", ActivationPayload.Addendum, StringComparison.Ordinal);
+    }
+
+    /// Text is COMPOSED from the two halves, so they cannot drift apart.
+    [Fact]
+    public void Text_is_exactly_core_then_addendum()
+        => Assert.Equal(ActivationPayload.Core + "\n" + ActivationPayload.Addendum, ActivationPayload.Text);
+
+    /// The split REORDERS the payload (the load block moves to the end) but must not LOSE anything.
+    ///
+    /// ⚠ ONE original line is deliberately NOT asserted verbatim: the lease line carried BOTH a core
+    /// concern (the lease boundary) and an addendum one (the skill pointer), so D1 forces it to be SPLIT
+    /// across the two halves. Its two halves are asserted separately below. Every other line survives
+    /// byte-for-byte.
+    [Fact]
+    public void The_split_preserves_every_original_payload_line()
+    {
+        var original = new[]
+        {
+            "flaui-mcp is installed: you can see and operate this Windows desktop yourself.",
+            "Never ask the user to look at, read, or click inside a desktop app on your behalf, and do not infer UI state indirectly from process lists.",
+            "Triggers: what is on screen; is an app running or responding; what a background terminal/console tab shows; clicking, typing or filling a GUI dialog; confirming a change landed in the real app.",
+            "Load the tools (one call):",
+            "If that returns no matches, retry ToolSearch \"desktop window snapshot\" and use ONLY: desktop_list_windows, desktop_open_window, desktop_snapshot, desktop_get_text, desktop_input_status. If one is absent, say so — never substitute a similar name.",
+            "Read-only perception needs no lease and cannot disturb the user: desktop_list_windows(includeHandles:true) then desktop_snapshot wN then desktop_get_text wN eN.",
+        };
+        foreach (var line in original)
+            Assert.Contains(line, ActivationPayload.Text, StringComparison.Ordinal);
+
+        // The split lease line: both halves must still be there, on their respective sides.
+        Assert.Contains("all need a lease", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.Contains("driving-flaui-mcp skill", ActivationPayload.Addendum, StringComparison.Ordinal);
+    }
 }
