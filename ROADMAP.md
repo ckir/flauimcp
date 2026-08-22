@@ -722,3 +722,22 @@ single-shot path, which is its own small design.
 Found by the AGY-AFTER panel over the item-8 plan, round 12, Leak Hunter. ⚠ The same finding also claimed
 the WINDOW-scope `printWindow` path leaks this way; that half was **refuted by trace** — the bookend
 catches it.
+
+### 20. `Uninstall_removes_both_and_preserves_other_permissions` is a SECOND flaky test on the headless gate
+
+OBSERVED 2026-08-21 during item 8 execution: this installer-permissions test failed once inside a full
+headless run, then passed 3/3 in isolation, and the full suite was green (1021/1021) both before and after
+the observation. The run that caught it had an unrelated capture-coordinator mutant applied, which cannot
+plausibly reach the installer permissions path — so the mutant is not the cause, it is just what was
+running at the time.
+
+That makes it a sibling of item 16 (the `PopupRootCoverage` ARRANGE flake) rather than a product defect:
+two independent tests now produce false failures on a gate a release is judged on. Root cause unpinned in
+both cases; the shared suspicion is order- or fixture-dependence under a full-suite run that does not
+reproduce in isolation.
+
+Worth fixing for the same reason as item 16 — not because the product is wrong, but because a gate that
+cries wolf gets overridden. Fix direction: run the installer-permissions suite repeatedly under a full-suite
+ordering to reproduce, rather than relaxing the assertion.
+
+Filed from a captured anomaly at triage, 2026-08-22.
