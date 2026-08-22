@@ -287,11 +287,26 @@ public sealed class WindowCaptureCoordinator
                     // which is correct for a RESIZE -- there the failure is a geometry mismatch and the
                     // masks may be perfectly fine. It is WRONG here.
                     //
-                    // A bookend mismatch is DIRECT EVIDENCE that the mask set moved under the capture.
-                    // Falling back would scrape the window and paint those same rects -- rects we have
-                    // just PROVEN are stale -- producing an under-redacted image. That is the failure
-                    // class SP4 exists to close, and the argument is the identical one that makes window
-                    // scope refuse rather than scrape.
+                    // ⛔⛔ THE REASON WRITTEN HERE WAS FALSE, AND THE REFUSAL IS RETAINED ON A DIFFERENT
+                    // ONE. It read: "Falling back would scrape the window and paint those same rects --
+                    // rects we have just PROVEN are stale -- producing an under-redacted image."
+                    //
+                    // `ScrapeAsync` does NOT paint those rects. Round 6 changed it to take a FRESH
+                    // full-desktop mask walk at capture time (`var desk = await _desktopMasks();`), which
+                    // is the whole reason the RESIZE path was allowed to stop refusing. So the stated
+                    // justification was destroyed by that fold and the guard kept standing on it.
+                    // *(AGY-CAPSTONE round 1, finding 2.)*
+                    //
+                    // THE HONEST ARGUMENT FOR STILL REFUSING, stated so it can be argued with: a fallback
+                    // repeats the same walk-then-shutter cycle this window has JUST BEEN MEASURED to lose.
+                    // The bookend fired because the mask set moved between two walks bracketing one
+                    // capture; a scrape is another walk and another capture, on a window still moving.
+                    // Fresh rects are not the same as rects that are still correct when the shutter opens.
+                    //
+                    // ⚠ AND THE COST IS REAL, so this is a trade rather than an obvious call: a window
+                    // that animates continuously AND holds a redacted element gets a total outage here,
+                    // where the resize path would have degraded to a scrape. **Open for the operator** —
+                    // the decision is retained as shipped, not re-decided by this review.
                     //
                     // Note this needs no mask-set test: the bookend only runs when M1 is non-empty.
                     throw new ToolException(ToolErrorCode.RedactionUnmaskable,

@@ -1244,8 +1244,16 @@ public sealed class PerceptionManager
     /// non-denied window.
     ///
     /// A window that fails to resolve is SKIPPED rather than fatal: one unreadable window must not fail the
-    /// whole capture. That is not a hole — ScreenshotTools already REFUSES a full-desktop capture outright
-    /// when any denylisted credential window is visible, so this path only ever runs when none is.
+    /// whole capture.
+    ///
+    /// ⚠⚠ THIS COMMENT USED TO CLAIM AN INVARIANT THE CODE DOES NOT MAINTAIN. It read: "That is not a hole
+    /// — ScreenshotTools already REFUSES a full-desktop capture outright when any denylisted credential
+    /// window is visible, so this path only ever runs when none is." The refusal runs BEFORE this walk,
+    /// and this walk is the slowest thing on that path — MEASURED ~2900ms on a 10-window desktop — so a
+    /// credential window appearing after the refusal and before the shutter is SKIPPED here (contributing
+    /// no masks) and photographed in the clear. The premise was true of the instant the refusal ran and
+    /// false of every instant after it. ScreenshotTools now re-checks the denylist AFTER the capture and
+    /// discards the image, which is what actually closes it. *(AGY-CAPSTONE round 1.)*
     ///
     /// ⚠ The skip is NOT unconditional: a RedactionUnmaskable refusal is rethrown. Skipping a window we
     /// cannot BIND is right; skipping one we can see and cannot MASK would photograph it in the clear.</summary>

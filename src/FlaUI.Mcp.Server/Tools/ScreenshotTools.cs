@@ -59,6 +59,30 @@ public sealed class ScreenshotTools
                 result = await Task.Run(() => ScreenCapture.CaptureRectangle(
                     vbounds, desk.Rects, maxWidth, CaptureScope.FullDesktop,
                     System.Array.Empty<CaptureWarning>()));
+
+                // ⚠⚠ THE DENYLIST IS CHECKED AGAIN, AFTER THE PIXELS ARE TAKEN, and this path needed it
+                // MORE than the one that already had it. `WindowCaptureCoordinator.ScrapeAsync` gained
+                // this second check in AGY-AFTER round 9; the full-desktop path here kept only the
+                // pre-check, so the identical race stayed open on the branch that photographs the WHOLE
+                // virtual screen. *(AGY-CAPSTONE round 1.)*
+                //
+                // The gap is the mask walk above, and it is not small: MEASURED at ~2900ms on a
+                // 10-window desktop (Task 25 Step 4b), against the "tens to hundreds of milliseconds"
+                // the coordinator's copy of this comment assumes. A credential window that appears in
+                // that gap contributes NO masks -- `AllMaskRectsAsync` SKIPS denylisted windows rather
+                // than masking them (`PerceptionManager.cs`, "IsDenied(w.ProcessName)) continue") -- so
+                // nothing is painted over it and the full desktop is returned with it in the clear.
+                //
+                // Re-checking cannot un-take the pixels; it stops them being RETURNED, which is the part
+                // that matters. Same residual as the coordinator's: a window that appears AND disappears
+                // entirely between the two checks evades both, which is not the exploit -- an attacker
+                // wants it visible while the shutter is open, and a window visible then is still visible
+                // microseconds later here.
+                if (await _perception.DenylistedWindowsVisibleAsync())
+                    throw new ToolException(ToolErrorCode.TargetDenied,
+                        "A credential/denylisted window became visible while the full-desktop capture " +
+                        "was being taken, so the image has been discarded.",
+                        "dismiss the credential window, then retry");
             }
             else
             {

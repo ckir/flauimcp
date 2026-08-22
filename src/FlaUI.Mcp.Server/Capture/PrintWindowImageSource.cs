@@ -71,7 +71,9 @@ public sealed class PrintWindowImageSource : IWindowImageSource
                 "restore or resize the window, then retry");
 
         Bitmap? result = null;
-        ToolException? failure = null;
+        // ⚠⚠ Exception, NOT ToolException. See the catch below — narrowing this type is what made a
+        // GDI+ fault lethal to the whole process.
+        Exception? failure = null;
         // ⚠ THE ABANDONED THREAD MUST DISPOSE ITS OWN BITMAP. If the hung target eventually processes
         // WM_PRINT, the abandoned thread unblocks, finishes Render(), and allocates a managed Bitmap
         // wrapping GDI+ resources -- for a caller that returned long ago and will never dispose it. Those
@@ -97,8 +99,29 @@ public sealed class PrintWindowImageSource : IWindowImageSource
         var t = new Thread(() =>
         {
             Bitmap? produced = null;
+            // ⛔⛔ CATCH EVERYTHING, ON THIS THREAD, OR A GDI+ FAULT KILLS THE SERVER. This read
+            // `catch (ToolException ex)`, and an escaping exception from a background thread delegate
+            // TERMINATES the .NET process — there is no outer handler to reach.
+            //
+            // `Render`'s raw GDI calls genuinely do not throw (they return null handles, which is why
+            // every one is checked), and that is what the summary above says. But the last two lines of
+            // `Render` are **GDI+**, not GDI: `Image.FromHbitmap` throws `ExternalException` on failure
+            // and `new Bitmap(shared)` throws `OutOfMemoryException` — GDI+ reports many allocation
+            // failures that way — for a window large enough that its bitmap will not fit. Neither is a
+            // `ToolException`, so both escaped.
+            //
+            // Worse, the failure would have looked like a TIMEOUT: the thread dies, `Join` returns true
+            // because the thread finished, `failure` is null, `result` is null, and the caller reports a
+            // timed-out acquisition — while the process is already tearing down underneath it.
+            //
+            // ⚠ THIS DELIBERATELY CATCHES `OutOfMemoryException`, against the repo idiom
+            // (`catch (Exception ex) when (ex is not OutOfMemoryException ...)`, e.g. CaptureAuditSignal).
+            // That idiom is right when the alternative is swallowing a real OOM; here the alternative is
+            // KILLING THE PROCESS. A GDI+ OOM for one oversized bitmap is a local, recoverable condition,
+            // and surfacing it as a refusal on the caller's thread is strictly better than dying.
+            // *(AGY-CAPSTONE round 1, finding 3.)*
             try { produced = Render(hwnd, size); }
-            catch (ToolException ex) { failure = ex; }
+            catch (Exception ex) { failure = ex; }
             lock (handoff)
             {
                 // The caller already gave up: nobody will ever dispose this, so dispose it here.
@@ -129,7 +152,19 @@ public sealed class PrintWindowImageSource : IWindowImageSource
         }
         // Thread.Join establishes happens-before, so `result` and `failure` are visible here without
         // further synchronisation.
-        if (failure is not null) throw failure;
+        // A ToolException already carries a code and a recourse, so it is rethrown unchanged. Anything
+        // else is wrapped rather than rethrown raw: the tool layer's contract is a code plus a recourse,
+        // and `ToolException` has no inner-exception constructor, so the original type and message are
+        // folded into the text where an operator can still read them.
+        if (failure is ToolException toolFailure) throw toolFailure;
+        if (failure is not null)
+            throw new ToolException(ToolErrorCode.CaptureUnavailable,
+                // ⚠ `GetType()`, not `GetType().Name`. RedactionSurfaceInventoryTests forbids a bare
+                // `.Name` read outside its listed egress members - it cannot tell a TYPE name from a UIA
+                // element's Name, and a sweep that guards redaction is right to be conservative. Do not
+                // "tidy" this back; weakening the sweep to fit one message is the wrong trade.
+                $"The capture failed inside the rendering thread ({failure.GetType()}: {failure.Message}).",
+                "retry; if it repeats, capture a specific element rather than the whole window");
         return result;
     }
 
