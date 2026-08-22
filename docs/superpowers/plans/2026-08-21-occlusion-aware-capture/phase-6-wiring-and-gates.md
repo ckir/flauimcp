@@ -1167,6 +1167,16 @@ public class RefusalSurfaceSweepTests
         "CaptureUnavailable",     // null GDI handle, desktop not renderable, unwired denylist guard
     };
 
+    /// <summary>Remove block and line comments so prose that names an error code cannot be mistaken for
+    /// a throw, and a commented-out throw cannot be mistaken for a live one.</summary>
+    private static string StripComments(string source)
+    {
+        var noBlocks = Regex.Replace(source, @"/\*.*?\*/", string.Empty, RegexOptions.Singleline);
+        return string.Join("\n", noBlocks
+            .Split('\n')
+            .Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+    }
+
     [Fact]
     public void The_capture_path_throws_only_documented_error_codes()
     {
@@ -1182,7 +1192,15 @@ public class RefusalSurfaceSweepTests
         foreach (var f in files)
         {
             Assert.True(File.Exists(f), $"{f} does not exist - the sweep is pointing at the wrong path");
-            foreach (Match m in Regex.Matches(File.ReadAllText(f), @"ToolErrorCode\.(\w+)"))
+            // ⚠⚠ COMMENTS ARE STRIPPED FIRST, AND THIS IS NOT OPTIONAL. Reading the raw source counts every
+            // `ToolErrorCode.X` that appears in a COMMENT as a code the path throws -- and these three
+            // files are unusually comment-dense, with prose that names error codes to explain guards.
+            // The failure runs both ways: a commented-out `throw` still reads as live, and a code named
+            // only in prose becomes a phantom refusal. **This repo has now shipped a comment-blind sweep
+            // FIVE times** (item 12's property sweep, this plan's metadata sweep, its warning-code
+            // reachability gate, the tool-description tripwire, and this one). Step 0b's second mutant is
+            // what keeps it honest.
+            foreach (Match m in Regex.Matches(StripComments(File.ReadAllText(f)), @"ToolErrorCode\.(\w+)"))
                 thrown.Add(m.Groups[1].Value);
         }
 
@@ -1197,8 +1215,19 @@ public class RefusalSurfaceSweepTests
 
 - [ ] **Step 0b: Prove the sweep is non-vacuous with a logic mutant**
 
-Temporarily add `throw new ToolException(ToolErrorCode.NotImplemented, "x", "y");` inside `WindowCaptureCoordinator`.
-Expected: `The_capture_path_throws_only_documented_error_codes` FAILS naming `NotImplemented`. **Revert.**
+**TWO mutants, and the second is the one that has mattered five times in this repo.**
+
+1. Temporarily add `throw new ToolException(ToolErrorCode.NotImplemented, "x", "y");` inside
+   `WindowCaptureCoordinator`.
+   Expected: `The_capture_path_throws_only_documented_error_codes` FAILS naming `NotImplemented`.
+
+2. Do the same, but as a **COMMENT**: `// throw new ToolException(ToolErrorCode.NotImplemented, ...)`.
+   Expected: **it still PASSES.** ⚠ Note the polarity is the INVERSE of Step 0d's comment mutant, and
+   that is deliberate — this sweep asks "what does the path throw?", so a commented-out throw must NOT
+   count. If this mutant turns the sweep RED, `StripComments` is not working and the sweep is reading
+   prose as code.
+
+**Revert both.**
 
 ⚠ **This sweep does NOT strip comments, and unlike the others that is the SAFE direction — but check it.**
 It collects codes *thrown* and asserts they are all documented, so a `ToolErrorCode.X` appearing in a
