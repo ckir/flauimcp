@@ -40,7 +40,9 @@ written.
 | Fact | Where |
 |---|---|
 | `.AddMcpServer()` takes no options today | `src/FlaUI.Mcp.Server/Program.cs:214` |
-| Payload prose is **973 chars** against a **1100** budget → **127 headroom**; **8** lines of **15** | measured from `ActivationPayload.Text` |
+| Payload prose was **973 chars** of **1100** before the split; **after** the corrected split it is **1074 / 1100** (26 headroom) and **10 / 15** lines | measured from `ActivationPayload.Text` |
+| The three "dead" test files hold **7 tests covering LIVE paths**: 4 `Remove_*` + 3 `Uninstall_*` | `grep -n "public void "` on each |
+| Surviving tests ARRANGE via the doomed methods (`d.Deploy()`, `w.Install(...)`) | `ClaudeSkillDeployerTests.cs:98`, `AgyConfigWriterTests.cs:62`, `AgySkillDeployTests.cs:65,81` |
 | `ClaudeSkillDeployer.Deploy()` called only from tests | `grep -rn "\.Deploy()" src/ test/` |
 | `ClaudeSkillDeployer.Remove()` is LIVE | `src/FlaUI.Mcp.Server/Install/CliRouter.cs:319` |
 | `ClaudeSkillDeployer.SkillRoot` is LIVE | `src/FlaUI.Mcp.Server/Install/InstallStatus.cs:36` |
@@ -64,9 +66,9 @@ written.
 | `test/FlaUI.Mcp.Tests/Install/SkillLoadLineTests.cs` | Modify | Adds the behavioral-core pin over both skill copies |
 | `src/FlaUI.Mcp.Server/Install/ClaudeSkillDeployer.cs` | Modify | `Remove()` + `SkillRoot` only; `Deploy()` gone |
 | `src/FlaUI.Mcp.Server/Install/AgyConfigWriter.cs` | Modify | `Uninstall()` only; both `Install()` overloads + `DeploySkill()` gone |
-| `test/FlaUI.Mcp.Tests/Install/ClaudeSkillDeployerTests.cs` | **Delete** | — |
-| `test/FlaUI.Mcp.Tests/Install/AgyConfigWriterTests.cs` | **Delete** | — |
-| `test/FlaUI.Mcp.Tests/Install/AgySkillDeployTests.cs` | **Delete** | — |
+| `test/FlaUI.Mcp.Tests/Install/ClaudeSkillDeployerTests.cs` | **Prune** (→9 to 4) | Keeps the four `Remove_*` tests — `Remove()` is LIVE |
+| `test/FlaUI.Mcp.Tests/Install/AgyConfigWriterTests.cs` | **Prune** (3→1) | Keeps `Uninstall_removes_both_and_preserves_other_permissions` |
+| `test/FlaUI.Mcp.Tests/Install/AgySkillDeployTests.cs` | **Prune** (5→2) | Keeps the two `Uninstall_*` tests |
 | `test/FlaUI.Mcp.Tests/Install/InstallStatusTests.cs` | Modify (`:19-22`) | Builds its fixture directly instead of via deleted APIs |
 | `test/FlaUI.Mcp.Tests/Install/InstallStatusClaudeTests.cs` | Modify (`:48`) | Same |
 | `ROADMAP.md` | Modify | Item 15 closed |
@@ -80,6 +82,14 @@ written.
 **Files:**
 - Modify: `src/FlaUI.Mcp.Server/Install/ActivationPayload.cs:33-45`
 - Test: `test/FlaUI.Mcp.Tests/Install/ActivationPayloadTests.cs`
+
+**On the duplication this creates — already decided, in the spec.** After Task 2 a Claude Code user
+receives the core twice: once via `ServerInstructions` at connect, once inside `Text` from the SessionStart
+hook (`PluginArtifactWriter.cs:170` wires that hook to `"{exePath}" activation-payload`). Spec **D3**
+accepts this deliberately, for a reason worth repeating here: *"The hook fires on `startup`, `clear` and
+`compact`. `InitializeResult.Instructions` is delivered once, at connection. A `/clear` or a compaction
+resets context and does not re-run initialize."* Shrinking the hook to the addendum would lose the
+prohibition and the triggers at the first `/clear`. **Do not "optimise" the duplication away.**
 
 ⚠ **A deliberate, stated behaviour change.** Recomposing `Text` as `Core + Addendum` moves the three-line
 load block from positions 4-6 to positions 7-9. Nothing is added or removed from the payload — only
@@ -103,7 +113,12 @@ Add to `test/FlaUI.Mcp.Tests/Install/ActivationPayloadTests.cs`:
             StringComparison.Ordinal);
         Assert.Contains("Triggers:", ActivationPayload.Core, StringComparison.Ordinal);
         Assert.Contains("need a lease", ActivationPayload.Core, StringComparison.Ordinal);
+
+        // Spec S6 names BOTH halves and says why: "assert it does NOT contain ToolSearch or
+        // driving-flaui-mcp. This is the test that would have caught D1 being skipped." Omitting the
+        // second half is exactly how the skill pointer leaks into a generic client's instructions.
         Assert.DoesNotContain("ToolSearch", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.DoesNotContain("driving-flaui-mcp", ActivationPayload.Core, StringComparison.Ordinal);
     }
 
     /// D2, the "addendum orphan" guard. If the Claude Code hook fails, an agent gets the CORE and never
@@ -121,6 +136,8 @@ Add to `test/FlaUI.Mcp.Tests/Install/ActivationPayloadTests.cs`:
     {
         Assert.Contains("ToolSearch \"select:", ActivationPayload.Addendum, StringComparison.Ordinal);
         Assert.Contains("Load the tools (one call):", ActivationPayload.Addendum, StringComparison.Ordinal);
+        // D1: the skill pointer is client-specific and belongs HERE, not in the core.
+        Assert.Contains("driving-flaui-mcp", ActivationPayload.Addendum, StringComparison.Ordinal);
     }
 
     /// Text is COMPOSED from the two halves, so they cannot drift apart.
@@ -129,7 +146,11 @@ Add to `test/FlaUI.Mcp.Tests/Install/ActivationPayloadTests.cs`:
         => Assert.Equal(ActivationPayload.Core + "\n" + ActivationPayload.Addendum, ActivationPayload.Text);
 
     /// The split REORDERS the payload (the load block moves to the end) but must not LOSE anything.
-    /// Every line the payload carried before this change must still be present verbatim.
+    ///
+    /// ⚠ ONE original line is deliberately NOT asserted verbatim: the lease line carried BOTH a core
+    /// concern (the lease boundary) and an addendum one (the skill pointer), so D1 forces it to be SPLIT
+    /// across the two halves. Its two halves are asserted separately below. Every other line survives
+    /// byte-for-byte.
     [Fact]
     public void The_split_preserves_every_original_payload_line()
     {
@@ -141,10 +162,13 @@ Add to `test/FlaUI.Mcp.Tests/Install/ActivationPayloadTests.cs`:
             "Load the tools (one call):",
             "If that returns no matches, retry ToolSearch \"desktop window snapshot\" and use ONLY: desktop_list_windows, desktop_open_window, desktop_snapshot, desktop_get_text, desktop_input_status. If one is absent, say so — never substitute a similar name.",
             "Read-only perception needs no lease and cannot disturb the user: desktop_list_windows(includeHandles:true) then desktop_snapshot wN then desktop_get_text wN eN.",
-            "Typing, clicking, dragging, or reading a BACKGROUND terminal tab all need a lease — use the driving-flaui-mcp skill for those.",
         };
         foreach (var line in original)
             Assert.Contains(line, ActivationPayload.Text, StringComparison.Ordinal);
+
+        // The split lease line: both halves must still be there, on their respective sides.
+        Assert.Contains("all need a lease", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.Contains("driving-flaui-mcp skill", ActivationPayload.Addendum, StringComparison.Ordinal);
     }
 ```
 
@@ -177,7 +201,9 @@ In `src/FlaUI.Mcp.Server/Install/ActivationPayload.cs`, replace the whole `Text`
         // has no ToolSearch, and naming one here would be noise at best and a wrong instruction at worst.
         "These tools may need loading before they can be called - use your client's tool-discovery mechanism.",
         "Read-only perception needs no lease and cannot disturb the user: desktop_list_windows(includeHandles:true) then desktop_snapshot wN then desktop_get_text wN eN.",
-        "Typing, clicking, dragging, or reading a BACKGROUND terminal tab all need a lease — use the driving-flaui-mcp skill for those.",
+        // The lease BOUNDARY is a core safety rule. The pointer to the skill that implements it is
+        // client-specific and lives in the Addendum (spec D1) - so the original single line is SPLIT.
+        "Typing, clicking, dragging, or reading a BACKGROUND terminal tab all need a lease.",
     });
 
     /// <summary>The Claude-Code-specific half: the concrete deferred-tool load call and its fallback.
@@ -187,6 +213,8 @@ In `src/FlaUI.Mcp.Server/Install/ActivationPayload.cs`, replace the whole `Text`
         "Load the tools (one call):",
         LoadLine,
         "If that returns no matches, retry ToolSearch \"desktop window snapshot\" and use ONLY: desktop_list_windows, desktop_open_window, desktop_snapshot, desktop_get_text, desktop_input_status. If one is absent, say so — never substitute a similar name.",
+        // The other half of the split lease line (spec D1: the skill pointer is client-specific).
+        "For those, use the driving-flaui-mcp skill.",
     });
 
     /// <summary>The SessionStart payload: both halves, composed. Composing rather than hand-ordering is
@@ -201,9 +229,10 @@ declaration (`:29-32`), or `Text` initialises from a null `LoadLine` at runtime 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ActivationPayloadTests"`
-Expected: PASS, all tests. In particular `Prose_stays_within_the_injected_text_budget` must still pass —
-the D2 sentence is 101 chars against 127 headroom, landing prose at **1074 / 1100** and lines at
-**9 / 15**.
+Expected: PASS, all tests. In particular `Prose_stays_within_the_injected_text_budget` must still pass.
+**Measured against the corrected split** (D2 sentence added, lease line split in two): prose lands at
+**1074 / 1100** — 26 chars of headroom — and **10 / 15** lines. Verified separately that the resulting
+core contains neither `ToolSearch` nor `driving-flaui-mcp`, so both spec-S6 assertions hold.
 
 - [ ] **Step 5: Prove the new gate is not vacuous (LOGIC mutant)**
 
@@ -349,7 +378,20 @@ comment stripping is broken — fix the sweep, not the test's expectation.
 
 Revert by rewriting the block in place, re-run, confirm PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the SECOND assertion too — it is weaker than it looks**
+
+⚠ `Program_serves_the_core_and_never_the_whole_payload` is a `DoesNotMatch`, so **it also passes when the
+wiring line is deleted entirely.** It guards against one specific wrong value, not against absence — the
+first assertion is what guards absence. Prove it catches the value it exists to catch:
+
+In `Program.cs`, change `ActivationPayload.Core` to `ActivationPayload.Text` in the wiring line.
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ServerInstructionsWiringTests"`
+Expected: `Program_serves_the_core_and_never_the_whole_payload` **RAN and FAILED**.
+
+Revert to `.Core` by rewriting in place, re-run, confirm PASS.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add test/FlaUI.Mcp.Tests/Install/ServerInstructionsWiringTests.cs
@@ -502,21 +544,15 @@ Replace these three lines (`:19-22`):
 with:
 
 ```csharp
-        WriteSeedPlugin(Path.Combine(plugins, "flaui-mcp"), ThisVersion());
+        WriteSeedPlugin(Path.Combine(plugins, "flaui-mcp"), "9.9.9");
         WriteLegacyClaudeSkill(claude);   // both present so nothing reads "NOT deployed"
 ```
 
-Add this helper beside the two above, so the assertion on the reported version stays honest:
-
-```csharp
-    /// The version InstallStatus will read back. Derived from the same assembly the old fixture used,
-    /// trimmed to 3-part semver exactly as the installer did.
-    private static string ThisVersion()
-    {
-        var av = typeof(InstallStatus).Assembly.GetName().Version;
-        return av is null ? "0.0.0" : $"{av.Major}.{av.Minor}.{av.Build}";
-    }
-```
+⚠ **No version helper is needed, despite the test's name.**
+`Reports_a_deployed_seed_with_its_version` asserts only `Contains("deployed")`,
+`DoesNotContain("NOT deployed")` and the path (`InstallStatusTests.cs:29-31`) — **nothing reads the
+version back**. A literal keeps the fixture independent of assembly versioning, so
+`WriteSeedPlugin(..., "9.9.9")` above is deliberate and sufficient.
 
 - [ ] **Step 3: Replace the fixture call in `InstallStatusClaudeTests`**
 
@@ -572,11 +608,54 @@ rg -n "SkillResource" src/FlaUI.Mcp.Server/Install/ClaudeSkillDeployer.cs
 If the only remaining match is its own declaration, delete it. If anything else reads it, leave it and say
 so in the commit message.
 
-- [ ] **Step 2: Delete the test file**
+- [ ] **Step 2: PRUNE the test file — do NOT delete it**
+
+⛔ **`ClaudeSkillDeployerTests.cs` tests BOTH halves of the class, and `Remove()` is LIVE production code
+(`CliRouter.cs:319`).** Deleting the file would silently strip coverage from a shipped uninstall path.
+Delete only the five tests that exercise the removed `Deploy()`:
+
+- `Deploy_writes_the_manifest_and_the_skill`
+- `The_manifest_is_claude_shaped_and_carries_the_assembly_version`
+- `The_deployed_skill_is_the_embedded_seed`
+- `Deploy_is_idempotent_and_overwrites_a_stale_skill`
+- `Deploy_failure_returns_a_warning_and_never_throws`
+
+**KEEP these four**, which cover the live `Remove()`:
+
+- `Remove_deletes_the_skill_tree`
+- `Remove_on_a_machine_that_never_had_it_is_a_silent_no_op`
+- `Remove_survives_an_undeletable_tree_and_says_so`
+- `Remove_leaves_other_skills_alone`
+
+- [ ] **Step 2b: Rework the survivors' ARRANGE, which currently calls the deleted method**
+
+`Remove_deletes_the_skill_tree` arranges with `d.Deploy()` (`:98`), and other `Remove_*` tests do the same.
+Add this helper to the class and replace every remaining `Deploy()` call with it:
+
+```csharp
+    /// Writes exactly the tree Deploy() used to write, so the Remove_* tests keep a real target after
+    /// Deploy() is gone. Deliberately NOT a re-implementation of Deploy(): these tests assert what
+    /// Remove() DELETES, so the arrange only has to put files where Remove() looks.
+    private static void SeedSkillTree(string claudeConfigDir)
+    {
+        var root = new ClaudeSkillDeployer(claudeConfigDir).SkillRoot;
+        var skillDir = Path.Combine(root, "skills", "driving-flaui-mcp");
+        Directory.CreateDirectory(skillDir);
+        Directory.CreateDirectory(Path.Combine(root, ".claude-plugin"));
+        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), "---\nname: driving-flaui-mcp\n---\n");
+        File.WriteAllText(Path.Combine(root, ".claude-plugin", "plugin.json"),
+            "{\n  \"name\": \"flaui-mcp\",\n  \"version\": \"9.9.9\"\n}\n");
+    }
+```
+
+Find every call site to replace:
 
 ```bash
-git rm test/FlaUI.Mcp.Tests/Install/ClaudeSkillDeployerTests.cs
+rg -n "\.Deploy\(\)" test/FlaUI.Mcp.Tests/Install/ClaudeSkillDeployerTests.cs
 ```
+
+Expected after the rework: **no matches**. Each was an arrange call of the form `d.Deploy();` and becomes
+`SeedSkillTree(cfg);` — note the helper takes the CONFIG DIR, not the deployer.
 
 - [ ] **Step 3: Build and confirm nothing else referenced it**
 
@@ -628,11 +707,68 @@ was this file's only user — the class itself stays, since `CliRouter` and `Gen
 `Uninstall()` calls `Detail(skillWarning)` at `:168`. Do not delete it. Its `skillWarning is null` branch
 still matters, because `RemoveSkill()` still returns a warning.
 
-- [ ] **Step 3: Delete the two test files**
+- [ ] **Step 3: PRUNE the two test files — do NOT delete them**
+
+⛔ **Both files test `Uninstall()`, which is LIVE (`CliRouter.cs:298`).** One of the survivors is
+`Uninstall_removes_both_and_preserves_other_permissions` — already tracked as **ROADMAP item 20** for
+flakiness, so deleting it would also erase a filed defect's only reproducer.
+
+From `AgyConfigWriterTests.cs` delete **only**:
+
+- `Install_writes_both_mcpServers_and_permission_allow`
+- `Install_does_not_duplicate_the_permission_on_rerun`
+
+**KEEP** `Uninstall_removes_both_and_preserves_other_permissions`.
+
+From `AgySkillDeployTests.cs` delete **only**:
+
+- `Install_deploys_agy_driving_skill_plugin`
+- `Skill_deploy_failure_warns_but_still_registers_the_server`
+- `Successful_install_reports_the_skill_directory`
+
+**KEEP** `Uninstall_removes_the_agy_plugin_folder` and
+`Uninstall_survives_an_undeletable_skill_dir_and_says_so`.
+
+- [ ] **Step 3b: Rework the three survivors' ARRANGE**
+
+All three arrange with `w.Install(@"C:\...")` (`AgyConfigWriterTests.cs:62`, `AgySkillDeployTests.cs:65`
+and `:81`). Add this helper to **each** of the two files and replace every remaining `Install(` call:
+
+```csharp
+    /// Writes exactly what Uninstall() looks for: the mcpServers entry, the permission token, and the
+    /// plugin dir with a file in it. Replaces the old `w.Install(...)` arrange now that Install is gone.
+    private static void SeedAgyInstall(string serversPath, string permsPath, string pluginsDir)
+    {
+        File.WriteAllText(serversPath,
+            "{ \"mcpServers\": { \"flaui-mcp\": { \"command\": \"C:\\\\x\\\\flaui-mcp.exe\" } } }");
+
+        var perms = JsoncFile.Load(permsPath);
+        var permissions = perms["permissions"] as JsonObject;
+        if (permissions is null) { permissions = new JsonObject(); perms["permissions"] = permissions; }
+        var allow = permissions["allow"] as JsonArray;
+        if (allow is null) { allow = new JsonArray(); permissions["allow"] = allow; }
+        allow.Add("mcp(flaui-mcp/*)");
+        JsoncFile.Save(permsPath, perms);
+
+        var skillDir = Path.Combine(pluginsDir, "flaui-mcp", "skills", "driving-flaui-mcp");
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), "---\nname: driving-flaui-mcp\n---\n");
+    }
+```
+
+⚠ **`SeedAgyInstall` OVERWRITES the servers file.** `Uninstall_removes_both_and_preserves_other_permissions`
+seeds `perms` with `command(git status)` BEFORE the arrange (`:57`) and asserts it survives — so this
+helper deliberately MERGES into the permissions file rather than overwriting it. Preserve that ordering:
+write the pre-existing permission first, then call the helper. If you overwrite `perms`, the test still
+passes for the wrong reason, because the token it checks for would never have existed.
+
+Find every call site to replace:
 
 ```bash
-git rm test/FlaUI.Mcp.Tests/Install/AgyConfigWriterTests.cs test/FlaUI.Mcp.Tests/Install/AgySkillDeployTests.cs
+rg -n "\.Install\(" test/FlaUI.Mcp.Tests/Install/AgyConfigWriterTests.cs test/FlaUI.Mcp.Tests/Install/AgySkillDeployTests.cs
 ```
+
+Expected after the rework: **no matches**.
 
 - [ ] **Step 4: Build, then run the full headless gate**
 
@@ -692,8 +828,20 @@ re-report warnings for up-to-date projects (this is ROADMAP item 12).
 - [ ] **Step 2: Headless gate**
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"`
-Expected: all pass, `0 skipped`. Baseline before this branch was 1050 passing; this branch **removes**
-three test files and **adds** roughly nine tests, so expect a lower total. Record the exact number.
+Expected: all pass, `0 skipped`.
+
+**Use a falsifiable count, not a vibe.** "Expect a lower total" cannot distinguish the intended pruning
+from an accidental extra deletion. The arithmetic, from counts measured at `f4bac46`:
+
+| | Tests |
+|---|---|
+| Deleted (`Deploy_*` / `Install_*` / `Skill_deploy_*` / `Successful_install_*`) | **-10** |
+| Retained in those same files (4 `Remove_*` + 3 `Uninstall_*`) | **0** (unchanged) |
+| Added (Task 1: 5 · Task 3: 2 · Task 4: 2 theory cases) | **+9** |
+| **Net** | **-1** |
+
+Record the actual number. If the delta is not **-1**, stop: something was deleted or added that this plan
+did not call for.
 
 - [ ] **Step 3: Desktop gate**
 
@@ -713,8 +861,21 @@ Expected: 1 passing.
 
 This is the only check that proves the feature end to end, and no automated test can do it.
 
-1. Reconnect the MCP client (`/mcp` in Claude Code).
-2. In a **new** session, confirm an `MCP Server Instructions` section now lists `flaui-mcp` and carries
+⛔⛔ **A `/mcp` reconnect alone CANNOT observe this change, and skipping this warning would make a
+working feature look broken.** The generated `.mcp.json` sets `command = exePath`
+(`PluginArtifactWriter.cs:50`) and the SessionStart hook runs `"{exePath}" activation-payload`
+(`:170`) — **both point at the INSTALLED binary**, not at your build output. Reconnecting relaunches the
+old exe, which has none of this branch's changes.
+
+1. Build the branch: `dotnet build FlaUI.Mcp.slnx -c Release --no-incremental`
+2. **Install the built binary** so the client actually runs it.
+   ⚠ **This mutates real client state.** `FLAUI_MCP_*` env overrides do **not** sandbox the agy half:
+   `AgyPluginRegistrar.Register()` shells out to the real `agy` CLI, which ignores them — this is
+   **ROADMAP 22**, and it has already cost one manual restore. Prefer `--agent claude` to keep the blast
+   radius on the client you are actually verifying, and snapshot `agy mcp list` first if you use
+   `--agent all`.
+3. Reconnect the MCP client (`/mcp` in Claude Code).
+4. In a **new** session, confirm an `MCP Server Instructions` section now lists `flaui-mcp` and carries
    the CORE text.
 
 ⚠ Expect it to be **absent on agy** — that is the measured behaviour, not a bug in this change. Do not
@@ -754,5 +915,23 @@ variant per the standing rule.
 
 **Type consistency.** `ActivationPayload.Core` / `.Addendum` / `.Text` are `public static readonly string`
 throughout Tasks 1-3. `WriteSeedPlugin(string, string)`, `WriteLegacyClaudeSkill(string)` and
-`ThisVersion()` are defined once in Task 5 Step 1 and used with matching arity in Steps 2-3.
+are defined once in Task 5 Step 1 and used with matching arity in Steps 2-3. `SeedSkillTree(string)`
+(Task 6 Step 2b) takes the CONFIG DIR and derives `SkillRoot` itself; `SeedAgyInstall(string, string,
+string)` (Task 7 Step 3b) takes servers/perms/plugins in that order, matching the existing
+`TempPaths()` tuple those tests already destructure.
+
+## Round 1 panel — folded findings
+
+Seven findings folded; one refuted by measurement and deliberately NOT folded.
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 1 | agy Axiom Breaker | Plan put the `driving-flaui-mcp` pointer in the CORE, violating spec D1, and wrote the spec-mandated guard with the `driving-flaui-mcp` half missing | Lease line SPLIT across Core/Addendum; both `DoesNotContain` assertions added |
+| 2 | agy Cascade Analyst | Tasks 6/7 deleted whole test files that also cover the LIVE `Remove()` / `Uninstall()` paths — 7 tests, one of them ROADMAP 20's only reproducer | Changed to PRUNE + arrange rework, with the survivors enumerated by name |
+| 3 | Blindspot Auditor | Task 9 Step 4 could not observe the feature: both channels run the INSTALLED exe | Build + install steps added, with the ROADMAP 22 warning |
+| 4 | Mechanism Gamer | The second wiring assertion is a `DoesNotMatch` that passes when the feature is absent, and had no mutant | Its own mutant added (Task 3 Step 5) |
+| 5 | Cascade Analyst | "Expect a lower total" is unfalsifiable | Replaced with a measured net of **-1** and a stop condition |
+| 6 | Literal Implementer | `ThisVersion()` was dead weight — nothing asserts the version | Dropped for a literal |
+| 7 | Axiom Breaker | The core/hook duplication was unstated | Cited spec D3, which already accepted it — for a better reason than the plan had (`/clear` does not re-run initialize) |
+| — | Activation Auditor | Suspected the frontmatter regex breaks on a UTF-8 BOM | **REFUTED by measurement** — file starts `2d 2d 2d`. Not folded. |
 `Frontmatter(string)` is defined in Task 4 Step 1 beside the existing `Read(string)` it calls.
