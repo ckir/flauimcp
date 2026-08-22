@@ -63,8 +63,21 @@ public class ServerInstructionsWiringTests
     ///                 the defect silently;
     ///   too LOOSE  -> with string literals no longer stripped, an exception message or log line holding
     ///                 that assignment breaks the build on perfectly valid code.
-    /// So: ANCHORED on the AddMcpServer call (a stray literal must contain the call too), within a bounded
-    /// window, AND permissive about qualification (`[\w.]*`). Do not drop either half.
+    /// So: ANCHORED on the AddMcpServer call, within a bounded window, AND permissive about
+    /// qualification (`[\w.]*`). Do not drop either half.
+    ///
+    /// ⚠ CORRECTION - an earlier version of this comment claimed the anchor means "a stray literal must
+    /// contain the call too". That is FALSE, and worth stating plainly so nobody relies on it: the engine
+    /// matches the REAL AddMcpServer call, then `[\s\S]{0,300}?` happily crosses a quote, so a log or
+    /// exception message containing this assignment within ~300 chars of the call WILL trip this gate and
+    /// break the build on valid code.
+    ///
+    /// That false positive is ACCEPTED, deliberately, and the obvious fix is rejected. Narrowing the gap
+    /// to `[^"]{0,300}?` removes the false positive but was MEASURED to fail OPEN on a real defect: given
+    /// `.AddMcpServer(o => { o.ServerName = "flaui-mcp"; o.ServerInstructions = ActivationPayload.Text; })`
+    /// the current pattern fires and the `[^"]` variant does not, because the quoted server name sits
+    /// between the anchor and the assignment. A negative gate that fails open ships the defect silently;
+    /// this one fails LOUD, at build time, where it is diagnosed in seconds. Loud beats silent here.
     [Fact]
     public void Program_never_configures_instructions_inline()
         => Assert.DoesNotMatch(

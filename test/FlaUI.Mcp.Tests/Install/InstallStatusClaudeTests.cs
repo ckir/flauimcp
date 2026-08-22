@@ -56,6 +56,30 @@ public class InstallStatusClaudeTests
         Assert.Contains("NOT deployed", notRegistered);
     }
 
+    /// AGY-CAPSTONE round 3. The residue note used to key on `skills/driving-flaui-mcp/SKILL.md`, which
+    /// asks the wrong question: `ClaudeSkillDeployer.Remove()` deletes the root RECURSIVELY with no
+    /// ordering guarantee, so a partial failure can take SKILL.md and still leave
+    /// `.claude-plugin/plugin.json` — residue that keeps registering a plugin named `flaui-mcp` while the
+    /// note went SILENT because the one leaf it watched was gone.
+    ///
+    /// This is the shape that fixture writes: root present, plugin.json present, NO SKILL.md.
+    [Fact]
+    public void A_partially_deleted_legacy_dir_is_still_reported_even_without_its_SKILL_md()
+    {
+        var claude = Temp();
+        var legacyRoot = Path.Combine(claude, "skills", "flaui-mcp");
+        Directory.CreateDirectory(Path.Combine(legacyRoot, ".claude-plugin"));
+        File.WriteAllText(Path.Combine(legacyRoot, ".claude-plugin", "plugin.json"),
+            "{\n  \"name\": \"flaui-mcp\"\n}\n");
+        Assert.False(File.Exists(Path.Combine(legacyRoot, "skills", "driving-flaui-mcp", "SKILL.md")),
+            "fixture must NOT create SKILL.md - that is the whole point of this case");
+
+        var text = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.Active);
+
+        Assert.Contains("retired skill-directory layout still exists", text);
+        Assert.Contains(legacyRoot, text);
+    }
+
     [Fact]
     public void Reports_when_the_claude_cli_is_not_on_path()
     {

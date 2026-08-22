@@ -145,8 +145,13 @@ public static class InstallStatus
     /// </summary>
     private static string DescribeClaudeSkill(string skillRoot, ClaudePluginStatus claudePluginStatus)
     {
-        var legacySkill = Path.Combine(skillRoot, "skills", "driving-flaui-mcp", "SKILL.md");
-        var legacyNote = File.Exists(legacySkill)
+        // ⚠ Keys on the DIRECTORY, not on a leaf file, and that is the whole point. This used to test
+        // `skills/driving-flaui-mcp/SKILL.md`, which asks the wrong question: `Remove()` deletes
+        // `skillRoot` RECURSIVELY with no ordering guarantee, so a partial failure can delete SKILL.md
+        // and still leave `.claude-plugin/plugin.json` behind — residue that keeps registering a plugin
+        // named `flaui-mcp`, while this note went SILENT because the leaf it watched was gone.
+        // `Directory.Exists(skillRoot)` is exactly the question that matters: did the cleanup finish?
+        var legacyNote = Directory.Exists(skillRoot)
             // ⚠ THE WORDING HERE HAS BEEN WRONG IN BOTH DIRECTIONS. Keep it modal.
             //
             // It first said "no longer read; safe to delete" — FALSE and reassuring in exactly the wrong
@@ -163,8 +168,9 @@ public static class InstallStatus
             // NOT load, which makes any unconditional "it is active" claim false too.
             //
             // So: assert the RISK and the ACTION, never a load state we cannot know here. "delete it"
-            // is the correct instruction in every one of those states.
-            ? $" (a retired copy from the old skill-directory model still sits at {skillRoot} — Claude can auto-load it as a duplicate driving skill; delete it)"
+            // is the correct instruction in every one of those states — including the one where only
+            // `.claude-plugin/plugin.json` survived, which is residue this note now also catches.
+            ? $" (the retired skill-directory layout still exists at {skillRoot} — install-time cleanup did not finish; it can collide with the plugin-shipped skill, so delete it)"
             : "";
 
         return claudePluginStatus switch
