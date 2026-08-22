@@ -233,11 +233,14 @@ In `src/FlaUI.Mcp.Server/Install/ActivationPayload.cs`, replace the whole `Text`
     /// Stays in the SessionStart hook and is NOT served over MCP.</summary>
     public static readonly string Addendum = string.Join("\n", new[]
     {
+        // FIRST, deliberately: in the recomposed Text this line lands immediately after the core's
+        // "...all need a lease." line, so "those" keeps its referent. Moving it to the END of the
+        // addendum silently re-points "those" at the read-only tools named in the fallback line - tools
+        // the core has just said need NO lease. Order is load-bearing here, not cosmetic.
+        "For those, use the driving-flaui-mcp skill.",
         "Load the tools (one call):",
         LoadLine,
         "If that returns no matches, retry ToolSearch \"desktop window snapshot\" and use ONLY: desktop_list_windows, desktop_open_window, desktop_snapshot, desktop_get_text, desktop_input_status. If one is absent, say so — never substitute a similar name.",
-        // The other half of the split lease line (spec D1: the skill pointer is client-specific).
-        "For those, use the driving-flaui-mcp skill.",
     });
 
     /// <summary>The SessionStart payload: both halves, composed. Composing rather than hand-ordering is
@@ -346,26 +349,37 @@ using Xunit;
 /// naive `Contains` would still pass on a commented-out copy.
 public class ServerInstructionsWiringTests
 {
-    private static string ProgramSourceWithoutComments()
+    /// Strips comments AND string literals. Comments alone are not enough: a stray
+    /// `var x = "ServerInstructions = ActivationPayload.Core";` anywhere in the file would satisfy a
+    /// naive match while the real wiring was deleted from the AddMcpServer call - the gate would pass
+    /// having proved nothing. Verbatim strings are stripped first because their escaping rules differ.
+    private static string ProgramSourceWithoutCommentsOrLiterals()
     {
         var src = File.ReadAllText(RepoPaths.At("src", "FlaUI.Mcp.Server", "Program.cs"));
-        src = Regex.Replace(src, @"/\*.*?\*/", "", RegexOptions.Singleline);   // block comments
-        src = Regex.Replace(src, @"//[^\r\n]*", "", RegexOptions.Multiline);   // line comments
+        src = Regex.Replace(src, @"/\*.*?\*/", "", RegexOptions.Singleline);      // block comments
+        src = Regex.Replace(src, @"//[^\r\n]*", "", RegexOptions.Multiline);      // line comments
+        src = Regex.Replace(src, "@\"(?:[^\"]|\"\")*\"", "\"\"");                    // verbatim strings
+        src = Regex.Replace(src, "\"(?:\\\\.|[^\"\\\\])*\"", "\"\"");                 // regular strings
         return src;
     }
 
+    /// Anchored on the AddMcpServer CALL, not on a bare assignment anywhere in the file. Anchoring is
+    /// the second half of the anti-spoof guard: the assignment must appear inside the configuration
+    /// lambda that actually reaches the server.
     [Fact]
     public void Program_configures_the_server_with_the_activation_core()
     {
-        var src = ProgramSourceWithoutComments();
-        Assert.Matches(@"ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Core", src);
+        var src = ProgramSourceWithoutCommentsOrLiterals();
+        Assert.Matches(
+            @"AddMcpServer\s*\(\s*\w+\s*=>\s*\w+\.ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Core",
+            src);
     }
 
     /// Serving Text would push Claude Code's ToolSearch load line at clients that have no ToolSearch.
     [Fact]
     public void Program_serves_the_core_and_never_the_whole_payload()
     {
-        var src = ProgramSourceWithoutComments();
+        var src = ProgramSourceWithoutCommentsOrLiterals();
         Assert.DoesNotMatch(@"ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Text", src);
     }
 }
@@ -809,7 +823,10 @@ test classes:
 ```csharp
     /// Writes exactly what Uninstall() looks for: the mcpServers entry, the permission token, and the
     /// plugin dir with a file in it. Replaces the old `w.Install(...)` arrange now that Install is gone.
-    private static void SeedAgyInstall(string serversPath, string permsPath, string pluginsDir)
+    ///
+    /// ⚠ INTERNAL, not private: it is called from AgyConfigWriterTests and AgySkillDeployTests, and a
+    /// `private` member here fails to compile at those call sites with CS0122.
+    internal static void SeedAgyInstall(string serversPath, string permsPath, string pluginsDir)
     {
         File.WriteAllText(serversPath,
             "{ \"mcpServers\": { \"flaui-mcp\": { \"command\": \"C:\\\\x\\\\flaui-mcp.exe\" } } }");
@@ -865,14 +882,14 @@ git commit -m "refactor(install): delete dead AgyConfigWriter.Install()/DeploySk
 
 - [ ] **Step 1: Update the row**
 
-Find the row beginning `| 15 | ` and replace its status cell, keeping the existing description intact,
-so the record reads:
+Find the row beginning `| 15 | ` and replace its status cell, keeping the existing description intact.
+
+⛔ **The replacement must be ONE LINE.** This is a GitHub-flavoured-Markdown table row; a literal newline
+inside a cell terminates the row and breaks the table for every entry below it. Wrap nothing, hard-break
+nothing:
 
 ```
-✅ shipped — both dead paths deleted on the activation branch: `ClaudeSkillDeployer.Deploy()` and
-`AgyConfigWriter.Install()` (x2) with `DeploySkill()`, plus `ClaudeSkillDeployerTests`,
-`AgyConfigWriterTests` and `AgySkillDeployTests`. `Remove()`, `SkillRoot` and `Uninstall()` are LIVE and
-survived. Two `InstallStatus` tests that used the deleted APIs as fixtures now write the files directly.
+✅ shipped — both dead paths deleted on the activation branch (`ClaudeSkillDeployer.Deploy()`, both `AgyConfigWriter.Install()` overloads, `DeploySkill()`) along with the tests that covered only them. `Remove()`, `SkillRoot` and `Uninstall()` are LIVE and survived, so their tests were PRUNED rather than deleted; two `InstallStatus` tests that used the deleted APIs as fixtures now write the files directly.
 ```
 
 - [ ] **Step 2: Verify no sibling item was filed by mistake**
@@ -1029,4 +1046,14 @@ Seven findings folded; one refuted by measurement and deliberately NOT folded.
 | # | Seat | Finding | Fold |
 |---|---|---|---|
 | 13 | Literal Implementer | ⛔ **The plan deleted `AgyConfigWriter` members BY LINE RANGE, and two ranges spanned LIVE code.** `DeploySkill()` ends at `:60` but the plan said `:36-80`, covering `RemoveSkill()` at `:68`; Install-overload-2 was cited `:105-127`, covering `Detail()` at `:127`. Both are called by the live `Uninstall()`. | Signature-matched deletion + a MUST-SURVIVE table + a verification grep. Task 6 got the same treatment though its range was correct. **The end-lines were the one class of citation I inferred instead of verifying.** |
+
+### Round 4 — folded findings
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 14 | agy Boundary Smuggler | The structural sweep strips comments but **not string literals**, so a stray `var x = "ServerInstructions = ActivationPayload.Core";` satisfies the gate while the real wiring is deleted | Strip verbatim + regular string literals, **and** anchor the match on the `AddMcpServer(...)` call itself |
+| 15 | agy Axiom Breaker | ⛔ **The split broke a pronoun's referent.** In recomposed `Text`, *"For those…"* landed after the fallback line, so *"those"* pointed at the read-only tools the core had just said need **no** lease — a flat contradiction | ⚠ **agy's proposed fix (reword the sentence) was WRONG — measured, it lands prose at 1132/1100 and breaks the asserted budget.** Fixed by REORDERING the addendum so the pointer leads it and sits adjacent to its lease line again: **1074/1100, zero cost.** |
+| 16 | agy Literal Implementer | `private static SeedAgyInstall` in a shared class cannot be called from the two test classes — CS0122 | `internal static` |
+| 17 | agy Literal Implementer | Task 8's ROADMAP cell replacement spans four lines; a literal newline inside a GFM table cell breaks the table | Collapsed to one line, with the reason stated |
+| — | Resource Vampire | — | **no new findings** (stated plainly, not padded) |
 `Frontmatter(string)` is defined in Task 4 Step 1 beside the existing `Read(string)` it calls.
