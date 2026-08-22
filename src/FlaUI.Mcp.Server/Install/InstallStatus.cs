@@ -35,6 +35,7 @@ public static class InstallStatus
         sb.AppendLine("Driving skill (Claude Code):");
         sb.AppendLine("  " + DescribeClaudeSkill(new ClaudeSkillDeployer(claudeConfigDir).SkillRoot, claudePluginStatus));
         sb.AppendLine("  Activation hook: " + DescribeActivationHook(PluginIds.StagingDir(exePath)));
+        sb.AppendLine("  Server instructions: " + DescribeServerInstructions());
         sb.AppendLine();
 
         var collisions = DescribeCollisions(stateDir);
@@ -102,6 +103,18 @@ public static class InstallStatus
             ? "wired (SessionStart -> flaui-mcp " + ActivationPayload.Verb + ") — Claude Code loads hooks only at client startup"
             : "staged but NOT wired — no SessionStart entry invokes the verb; reinstall to regenerate";
     }
+
+    /// <summary>Whether THIS binary advertises the activation core over the MCP handshake. Reported
+    /// because `status` runs the INSTALLED exe: it is the only way to tell a binary that carries this
+    /// feature from an older one, without connecting a client and reading its context.
+    ///
+    /// ⚠ Deliberately says "advertised", not "delivered". A client may drop the field silently and the
+    /// server cannot tell (spec D5) — agy is MEASURED to do exactly that. Do not reword this into a
+    /// claim that the agent received anything.</summary>
+    public static string DescribeServerInstructions()
+        => string.IsNullOrEmpty(ActivationPayload.Core)
+            ? "NOT advertised — this binary predates the change, or the core is empty"
+            : $"advertised at connect ({ActivationPayload.Core.Length} chars) — a client may still drop it";
 
     /// Normalizes the two shapes a hooks.json `SessionStart` key can legitimately take — an array of
     /// entries, or a single entry object — into one sequence. Kept in step with
