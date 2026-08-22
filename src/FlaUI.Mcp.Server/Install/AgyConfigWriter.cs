@@ -14,7 +14,6 @@ public sealed class AgyConfigWriter
 {
     private const string Permission = "mcp(flaui-mcp/*)";
     private const string PluginName = "flaui-mcp";
-    private const string SkillResource = "FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md";
     private readonly string _serversPath;
     private readonly string _permsPath;
     private readonly string _pluginsDir;
@@ -27,37 +26,6 @@ public sealed class AgyConfigWriter
     }
 
     private string PluginRoot => System.IO.Path.Combine(_pluginsDir, PluginName);
-
-    /// <summary>
-    /// Drop the static seed driving skill into agy's plugin dir (agy has no hooks → skill only).
-    /// Never throws: the skill is a bonus alongside the registration, so a failure here degrades to a
-    /// warning rather than denying the user a working server. Returns null on success, else the reason.
-    /// </summary>
-    private string? DeploySkill()
-    {
-        try
-        {
-            var skillDir = System.IO.Path.Combine(PluginRoot, "skills", "driving-flaui-mcp");
-            System.IO.Directory.CreateDirectory(skillDir);
-
-            var av = typeof(AgyConfigWriter).Assembly.GetName().Version;   // 4-part; trim to 3-part semver
-            var version = av is null ? "0.0.0" : $"{av.Major}.{av.Minor}.{av.Build}";
-            var pluginJson =
-                "{\n  \"name\": \"flaui-mcp\",\n  \"version\": \"" + version + "\",\n" +
-                "  \"description\": \"Driving skill (static seed) for the flaui-mcp desktop-automation MCP server.\"\n}\n";
-            System.IO.File.WriteAllText(System.IO.Path.Combine(PluginRoot, "plugin.json"), pluginJson);
-
-            using var res = typeof(AgyConfigWriter).Assembly.GetManifestResourceStream(SkillResource)
-                ?? throw new System.InvalidOperationException($"embedded seed skill '{SkillResource}' missing");
-            using var outFile = System.IO.File.Create(System.IO.Path.Combine(skillDir, "SKILL.md"));
-            res.CopyTo(outFile);
-            return null;
-        }
-        catch (System.Exception e)
-        {
-            return $"seed driving skill not deployed to {PluginRoot}: {e.Message}";
-        }
-    }
 
     /// <summary>
     /// Remove the deployed seed. Recursive is safe here: PluginRoot is our own namespace and holds
@@ -79,73 +47,12 @@ public sealed class AgyConfigWriter
         }
     }
 
-    public AgentResult Install(string exePath, IReadOnlyList<string>? args = null)
-    {
-        // Edit 1: mcpServers (servers file).
-        var sObj = JsoncFile.Load(_serversPath);
-        var servers = sObj["mcpServers"] as JsonObject;
-        if (servers is null) { servers = new JsonObject(); sObj["mcpServers"] = servers; }
-        var existing = servers[McpServerEntry.ServerName] as JsonObject;
-        var desired = McpServerEntry.ForExe(exePath, args).ToJsonNode();
-        bool serversChanged = existing is null || existing.ToJsonString() != desired.ToJsonString();
-        if (serversChanged) { servers[McpServerEntry.ServerName] = desired; JsoncFile.Save(_serversPath, sObj); }
-
-        bool hasPerm = EnsurePermission();
-
-        var change = (serversChanged || !hasPerm)
-            ? (existing is null ? AgentChange.Created : AgentChange.Updated)
-            : AgentChange.Unchanged;
-        var skillWarning = DeploySkill();
-        return new AgentResult("agy", change, Detail(skillWarning), skillWarning);
-    }
-
-    /// <summary>Non-destructive variant (spec §4.4 ops fold): merges `addArgs`/`removeArgs` into the args
-    /// ALREADY registered for this server, preserving other flag groups (e.g. overlay coexisting with
-    /// autosound) instead of replacing the whole `args` array.</summary>
-    public AgentResult Install(string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs)
-    {
-        var sObj = JsoncFile.Load(_serversPath);
-        var servers = sObj["mcpServers"] as JsonObject;
-        if (servers is null) { servers = new JsonObject(); sObj["mcpServers"] = servers; }
-        var existing = servers[McpServerEntry.ServerName] as JsonObject;
-        var merged = ConfigArgsMerge.Apply(ReadArgs(existing), addArgs, removeArgs);
-        var desired = McpServerEntry.ForExe(exePath, merged).ToJsonNode();
-        bool serversChanged = existing is null || existing.ToJsonString() != desired.ToJsonString();
-        if (serversChanged) { servers[McpServerEntry.ServerName] = desired; JsoncFile.Save(_serversPath, sObj); }
-
-        bool hasPerm = EnsurePermission();
-
-        var change = (serversChanged || !hasPerm)
-            ? (existing is null ? AgentChange.Created : AgentChange.Updated)
-            : AgentChange.Unchanged;
-        var skillWarning = DeploySkill();
-        return new AgentResult("agy", change, Detail(skillWarning), skillWarning);
-    }
-
     /// <summary>Everything this writer touched — including the skill dir, which the detail line used to
     /// omit entirely, so the seed skill's whole existence was invisible in the install output.</summary>
     private string Detail(string? skillWarning) =>
         skillWarning is null
             ? $"{_serversPath}; {_permsPath}; {PluginRoot}"
             : $"{_serversPath}; {_permsPath}";
-
-    /// <summary>Read the currently-registered `args` array off an existing server entry (empty if absent).</summary>
-    private static string[] ReadArgs(JsonObject? entry) =>
-        entry?["args"] is JsonArray arr ? arr.Select(a => (string?)a ?? "").ToArray() : System.Array.Empty<string>();
-
-    /// <summary>Edit 2: permissions.allow (permissions file — reload separately in case it is the same file
-    /// as the servers file). Returns whether the permission was ALREADY present before this call.</summary>
-    private bool EnsurePermission()
-    {
-        var pObj = JsoncFile.Load(_permsPath);
-        var permissions = pObj["permissions"] as JsonObject;
-        if (permissions is null) { permissions = new JsonObject(); pObj["permissions"] = permissions; }
-        var allow = permissions["allow"] as JsonArray;
-        if (allow is null) { allow = new JsonArray(); permissions["allow"] = allow; }
-        bool hasPerm = allow.Any(n => (string?)n == Permission);
-        if (!hasPerm) { allow.Add(Permission); JsoncFile.Save(_permsPath, pObj); }
-        return hasPerm;
-    }
 
     public AgentResult Uninstall()
     {
