@@ -9,8 +9,9 @@ pin the skill description that is agy's only activation channel, and delete the 
 work exposed.
 
 **Architecture:** `ActivationPayload.Text` splits into a client-agnostic `Core` (served as
-`McpServerOptions.ServerInstructions`) and a Claude-Code-specific `Addendum` (the `ToolSearch` load block,
-which stays in the SessionStart hook). `Text` is recomposed as `Core + Addendum`, so there is one source
+`McpServerOptions.ServerInstructions`) and a Claude-Code-specific `Addendum` — the `ToolSearch` load block
+**and the `driving-flaui-mcp` skill pointer**, both of which name mechanisms a generic MCP client does not
+have (spec D1). The addendum stays in the SessionStart hook. `Text` is recomposed as `Core + Addendum`, so there is one source
 of truth and no drift. Because agy was **measured** to receive `InitializeResult.instructions` and drop
 it, the skill frontmatter is agy's only channel and gets its own pinning test. The dead
 `ClaudeSkillDeployer.Deploy()` and `AgyConfigWriter.Install()` paths are removed, closing ROADMAP 15.
@@ -31,6 +32,28 @@ it, the skill frontmatter is agy's only channel and gets its own pinning test. T
   **commented-out variant**, not a deletion, because this repo has shipped a comment-blind sweep three
   times.
 - Commit after every task.
+
+## The measurement this plan's value rests on — and how to re-check it
+
+Part A is **inert on agy** and Part B exists **only** because of one measured result: agy receives
+`InitializeResult.instructions` and does not surface it. That is an observation about a live tool, not a
+law, and tools update themselves.
+
+**Deliberately NOT pinned to a version.** House policy is to assume latest and react when something
+breaks, so this plan records provenance and a re-run recipe rather than a version constraint. Observed
+**2026-08-22** against the then-current agy (`agy --version` reported `1.1.18` at the time — recorded as
+provenance, *not* as a supported-version claim).
+
+**If agy ever does surface server instructions, nothing here breaks** — Part A simply starts helping a
+second client, and Part B's pin becomes belt-and-braces rather than the only guard. So this is a
+"re-check when curious", not a gate on execution. To re-run it: stand up a throwaway stdio MCP server that
+puts an unguessable sentinel in its `initialize` result's `instructions` field **and logs every JSON-RPC
+method it receives**; register it with `agy mcp add`, ask a fresh `agy -p` session to quote any
+connection-time server guidance, then `agy mcp remove` it. The log is the control that distinguishes
+"dropped" from "never connected" — without it a negative result proves nothing.
+
+⚠ The harness used for the original measurement lived in a session scratchpad and is **disposable** — do
+not go looking for it; the recipe above is the durable artifact.
 
 ## Verified facts this plan rests on
 
@@ -732,7 +755,15 @@ From `AgySkillDeployTests.cs` delete **only**:
 - [ ] **Step 3b: Rework the three survivors' ARRANGE**
 
 All three arrange with `w.Install(@"C:\...")` (`AgyConfigWriterTests.cs:62`, `AgySkillDeployTests.cs:65`
-and `:81`). Add this helper to **each** of the two files and replace every remaining `Install(` call:
+and `:81`).
+
+⚠ **Put this helper in ONE shared file, not a copy in each test class.** Two copies of a fixture that must
+stay in sync is the same drift shape this plan rejects for `Core`/`Text` two parts earlier — it would be
+inconsistent to argue single-source-of-truth for the payload and then paste a helper twice. The repo
+already has the precedent: `test/FlaUI.Mcp.Tests/Install/RepoPaths.cs` is a shared, non-test helper class
+in this exact directory. Create `test/FlaUI.Mcp.Tests/Install/AgyFixtures.cs` beside it holding a single
+`internal static class AgyFixtures` with this method, and call `AgyFixtures.SeedAgyInstall(...)` from both
+test classes:
 
 ```csharp
     /// Writes exactly what Uninstall() looks for: the mcpServers entry, the permission token, and the
