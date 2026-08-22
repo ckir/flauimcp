@@ -74,11 +74,21 @@ public class FallbackCostMeasurement : IClassFixture<TestAppFixture>
 
         Assert.Equal("screenScrape", outcome.Result.CaptureMethod);
 
+        // THE BOOKEND'S COST (Task 25 Step 5). The bookend walk repeats the TARGET-window geometry
+        // walk once per successful capture that found masks -- not the desktop walk above. An EMPTY
+        // mask set skips it entirely, which is what keeps the common case free
+        // (pinned by An_empty_mask_set_performs_no_second_walk).
+        await perception.ResolveWindowCaptureGeometryAsync(handle, null);   // warm
+        sw.Restart();
+        await perception.ResolveWindowCaptureGeometryAsync(handle, null);
+        var targetWalkMs = sw.Elapsed.TotalMilliseconds;
+
         var budget = CaptureRetryOptions.Default.TimeoutMs;
         Assert.Fail(
             $"MEASUREMENT (not a failure) | visibleWindows={visible} | " +
             $"AllMaskRectsAsync={walkMs:F0}ms | 2xDenylistedWindowsVisibleAsync={denyMs:F0}ms | " +
             $"fallbackExcludingTimeoutWait={fallbackMs:F0}ms | " +
-            $"oneTimeoutWait={budget}ms | endToEnd~={fallbackMs + budget:F0}ms");
+            $"oneTimeoutWait={budget}ms | endToEnd~={fallbackMs + budget:F0}ms | " +
+            $"bookendExtraWalk={targetWalkMs:F0}ms");
     }
 }

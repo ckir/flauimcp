@@ -728,3 +728,73 @@ timeout wait plus the walk, not `MaxAttempts × TimeoutMs` plus the walk.
 which is the leak it exists to close — the honest options are "pay it" or "refuse". **OPERATOR
 DISPOSITION REQUIRED:** whether the tool description must warn about the cost, and whether the fallback
 should be gated behind an opt-in on very busy desktops.
+
+## The BOOKEND walk — cost, and the static-window case (ratification item 5, Task 18)
+
+§2.5's bookend re-walks the TARGET WINDOW's geometry after a successful capture and compares the mask
+set to the one used, so a window that reflowed at a constant outer size cannot land stale masks on the
+returned pixels. It is **not** the full-desktop walk the fallback pays.
+
+| | measured |
+|---|---|
+| extra target-window walk per bookended capture | **808 ms** (10-window desktop) |
+| when the mask set is EMPTY | **skipped entirely** — no second walk |
+
+⚠ **THE BOOKEND IS NOT FREE, and the empty-mask short circuit is what keeps the common case free.** Every
+successful capture of a window that HAS redacted elements pays roughly an extra 0.8 s. A window with no
+masks pays nothing, and that is pinned by `An_empty_mask_set_performs_no_second_walk` — deleting the
+short circuit turns it red at 2 walks. Same lower-bound caveat as the fallback figure above: the walk
+grows with the tree, and this desktop had 10 windows.
+
+**Behaviour, pinned by `BookendWalkTests` (9 tests):** a stable mask set performs the second walk and
+succeeds; a mask that MOVED under the capture triggers a retry; a **pure window MOVE does not trip it**
+(the comparison is window-RELATIVE, not absolute); a bookend walk that THROWS becomes the defined refusal
+rather than a passthrough; a continuously-moving mask set refuses on BOTH window and element scope and
+never scrapes; and **a static window never trips the bookend at all** — the static-window case this
+ratification asked to be recorded.
+
+⚠ **WHAT IT DOES NOT COVER, restated because it is easy to over-read:** the bookend closes the RELAYOUT
+leak only. Risk 3's stale composition reveals a value IN PLACE, leaving the element's rectangle
+mathematically identical, so `M1 == M2` and the walk passes a genuinely stale capture.
+
+## The OCR path's yardstick regression (ratification item 5, Tasks 10 and 12)
+
+Task 12 gave `ResolveWindowCaptureGeometryAsync` a `clipToVirtualScreen` parameter defaulting to **false**.
+The OCR path (`ResolveTextCaptureGeometryAsync`, reached from `FindTextTools`) takes that default, so for
+a **partially off-screen window** it no longer clips its mask yardstick to the virtual screen.
+
+**MEASURED:** `grep -rn --include=*.cs "ResolveTextCaptureGeometryAsync" test/` returns nothing, and no
+test asserts anything about the yardstick. **The whole headless suite stayed green across the behaviour
+change** (987 → 989, and both new tests were the call-site sweep itself) — which is the point worth
+recording: a behavioural change to a shipped path passed every gate the repo had.
+
+⚠ **The direction of the error is mask-PRESERVING, which is why it was accepted rather than fixed here.**
+An unclipped yardstick keeps MORE masks, so being wrong over-masks rather than leaks.
+`Exactly_one_production_call_site_clips_the_yardstick` pins that exactly one caller opts into clipping,
+which catches a NEW caller inheriting the wrong yardstick but says nothing about this one's behaviour.
+
+**Tracked as coverage debt A4** (`docs/coverage-debt.md`). It needs a live UIA walk against a window
+positioned partly off-screen, so there is no headless route to it.
+
+## Gate deviations at completion (Task 25, operator decisions)
+
+**The Desktop suite finished 159 passed / 0 failed / 4 SKIPPED.** Step 3 asks for 0 skipped; this records
+why it is not met and that the deviation was accepted deliberately.
+
+The four are `InputToolsTests.Type_writes_text_into_the_focused_textbox`,
+`InputToolsTests.PasteText_writes_text_into_the_focused_textbox_and_restores_clipboard`,
+`InputToolsTests.Click_at_a_window_point_returns_no_error` and
+`PresenceDesktopTests.Real_idle_source_reports_active_right_after_input`. Each is gated by
+`Skip.If(InputLocked(), "no active input lease - grant one on a console with `flaui-mcp unlock`")`. They
+fire **real** `SendInput`, so the lease is deliberate operator consent, not a configuration oversight.
+
+**None of the four is an item-8 test.** The six occlusion tests
+(`PrintWindowImageSourceTests` 2, `GdiHandleLeakTests` 2, `OccludedCaptureTests` 2) all PASSED inside the
+159. **OPERATOR DECISION, 2026-08-22:** accept the 4 skips for this branch and record the reason, rather
+than granting an input lease to re-run.
+
+**The fallback cost warning WAS added to the tool description** (the other disposition from Step 4b). The
+description went 1711 -> **1731** against its 1750 ceiling, with no change to that ceiling: room was made
+by trimming a redundant clause from the clickability sentence, tightening the `captureWarnings` sentence,
+and correcting **"Chromium-family" to "Chromium"** — which was an over-claim, since Electron is itself
+Chromium-family and MEASURED as NOT suspending.
