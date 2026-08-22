@@ -592,11 +592,17 @@ Revert by rewriting the block in place, re-run, confirm PASS.
 
 Comment stripping is no longer what makes Step 5 fail, but it is still load-bearing: without it, a
 COMMENTED-OUT inline assignment would trip the negative gate and fail the build on code that is correct.
-Prove it. In `Program.cs`, add this line inside the `builder.Services` chain region, commented out:
+Prove it. In `Program.cs`, add this line **immediately after the `.AddMcpServer(…)` line**, commented out:
 
 ```csharp
     // options.ServerInstructions = FlaUI.Mcp.Server.Install.ActivationPayload.Text;
 ```
+
+⚠ **Placement is load-bearing, not cosmetic.** The negative gate scans a **300-character window after
+`AddMcpServer`** (`[\s\S]{0,300}?`). Put this line further away and the pattern cannot reach it, so the
+second half of this step would PASS with the stripping deleted — a **false green** telling you the
+stripping works when nothing tested it. Directly beneath the `.AddMcpServer(…)` line is well inside the
+window.
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ServerInstructionsWiringTests"`
 Expected: **PASS** — the stripping removes the commented line before matching, so
@@ -1421,6 +1427,19 @@ mechanism needs checking.
 `. **Discovered because the peer breached review-only to test it** — its stray file contained the mangled form, faithfully copied from the plan. | Rewritten as one line, verified by EXTRACTING it from the plan and executing it verbatim: four rows, as documented. |
 | 34 | agy Regression Hunter | Fold 28's line anchor made Step 5's mutant stop proving comment-stripping: `// .AddMcpServer(…)` fails the anchored pattern because of the `//` itself, with or without stripping. The stated expectation was false. | Expectation corrected, **and a new Step 5b added** that proves stripping where it still earns its keep — on the NEGATIVE gate, where an un-stripped commented-out assignment would fail the build on correct code. |
 | — | agy Adversary of the Reviewer | — | **no new findings** — the first clean seat of the review. |
+
+### Round 11 — GREEN
+
+Both agy seats returned **no new findings**, and the tree was clean (the review-only breach did not recur
+once the `.clavity/scratch/` clause was restored to the payload). My own Regression Hunter pass over folds
+30-34 found one thing above the floor, folded below; a re-run of the recount command — extracted from this
+document and executed verbatim — produced the four documented rows.
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 35 | Regression Hunter (own) | Fold 34's Step 5b said to place the commented mutant line "inside the `builder.Services` chain region", but the negative gate only scans **300 characters after `AddMcpServer`**. Placed outside that window the step would PASS with stripping deleted — a **false green** on a mutant proof, which is worse than no proof. | Placement pinned to *immediately after the `.AddMcpServer(…)` line*, with the window and the false-green failure mode stated. |
+| — | agy Regression Hunter | — | **no new findings** |
+| — | agy Adversary of the Reviewer | — | **no new findings** (clean two rounds running) |
 
 ⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
 named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
