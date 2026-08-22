@@ -574,8 +574,12 @@ builder.Services
 ```
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ServerInstructionsWiringTests"`
-Expected: `Program_hands_the_configuration_seam_to_AddMcpServer` **RAN and FAILED**. If it PASSES, the
-comment stripping is broken — fix the sweep, not the test's expectation.
+Expected: `Program_hands_the_configuration_seam_to_AddMcpServer` **RAN and FAILED**.
+
+⚠ **This mutant no longer proves the comment stripping works, and an earlier revision wrongly said it
+did.** Once the pattern was anchored to line start, a line reading `// .AddMcpServer(…)` fails to match
+because of the `//` prefix itself — with or without stripping. The mutant proves the gate notices the
+wiring is gone; it says nothing about the sweep's comment handling. Step 5b is what proves that.
 
 ⚠ Note what this mutant demonstrates about the split of duties: with the wiring commented out, the
 BEHAVIOURAL test still passes, because `Apply` is still correct — it is simply never called. That is
@@ -583,6 +587,25 @@ exactly why both tests exist. The behavioural one owns *what* is configured; the
 *that it is reached*. Neither alone is sufficient, and no single regex could do both.
 
 Revert by rewriting the block in place, re-run, confirm PASS.
+
+- [ ] **Step 5b: Prove the comment stripping itself — on the NEGATIVE gate, where it still earns its keep**
+
+Comment stripping is no longer what makes Step 5 fail, but it is still load-bearing: without it, a
+COMMENTED-OUT inline assignment would trip the negative gate and fail the build on code that is correct.
+Prove it. In `Program.cs`, add this line inside the `builder.Services` chain region, commented out:
+
+```csharp
+    // options.ServerInstructions = FlaUI.Mcp.Server.Install.ActivationPayload.Text;
+```
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ServerInstructionsWiringTests"`
+Expected: **PASS** — the stripping removes the commented line before matching, so
+`Program_never_configures_instructions_inline` stays green on a comment.
+
+Now temporarily delete the two `Regex.Replace` comment-stripping lines from
+`ProgramSourceWithoutComments()` and re-run.
+Expected: `Program_never_configures_instructions_inline` **RAN and FAILED** — that is the stripping doing
+its job. Restore both lines and the commented test line by rewriting in place, re-run, confirm PASS.
 
 - [ ] **Step 6: The negative assertion has no mutant, deliberately — record why**
 
@@ -1133,7 +1156,7 @@ git commit -m "docs(roadmap): close item 15 - both dead installer paths deleted"
 
 ---
 
-## Task 9: Full gates
+### Task 9: Full gates
 
 - [ ] **Step 1: Clean build**
 
@@ -1164,11 +1187,29 @@ one) and this table still said `Task 3: 2` two rounds later. Before trusting it,
 plan itself rather than from this row:
 
 ```bash
-awk '/^### Task/{t=$0} /\[Fact\]|\[Theory\]/{c[t]++} END{for(k in c) print c[k]"  "k}' \n  docs/superpowers/plans/2026-08-22-activation-via-server-instructions.md | sort
+awk '/^#{3} Task/{t=$0} /^[[:space:]]*\[(Fact|Theory)\]/{c[t]++} END{for(k in c) print c[k]"  "k}' docs/superpowers/plans/2026-08-22-activation-via-server-instructions.md | sort
 ```
 
-Expected today: Task 1 = 5, Task 2 = 1, Task 3 = 3, Task 4 = 1 (a `[Theory]` yielding **2** cases).
-If those differ from the row above, the row is stale and the row is what is wrong.
+Expected today — **four** rows: Task 1 = 5, Task 2 = 1, Task 3 = 3, Task 4 = 1.
+
+⚠ **That is TEN attribute declarations, which is ELEVEN runtime test cases.** Task 4's is a `[Theory]`
+over `BothCopies()` and xUnit runs it twice. **`awk` cannot count runtime cases and never will** — so the
+two numbers are SUPPOSED to differ by one, and `dotnet test` reporting 11 against awk's 10 is CORRECT, not
+a discrepancy. Do not "reconcile" them.
+
+⚠ **Three things in that one-liner are load-bearing. A natural-looking version gets each of them wrong,
+and this exact command has already been broken by all three:**
+- **`^[[:space:]]*\[(Fact|Theory)\]`** — anchored to line start, because C# attributes sit alone on an
+  indented line. Unanchored, the command counts **its own documentation**: the sentence above mentions
+  `[Theory]` in prose and an unanchored pattern scores it as a test. (Measured: it did, and the resulting
+  phantom made a docs-only task appear to contain a test.)
+- **`^#{3} Task`** — every task heading in this plan is `###`. One of them was `##` for a while, and the
+  counter silently attributed that task's tests to the previous task.
+- **No line continuation.** An earlier revision wrapped this command across two lines and the escape was
+  mangled into a literal `\n`, so the command did not run at all. It is one line on purpose; leave it.
+
+**If the rows disagree with the table, recount by hand before believing either.** The table has been stale
+once and this command has been wrong three times — neither is automatically the authority.
 
 - [ ] **Step 3: Desktop gate**
 
@@ -1364,6 +1405,22 @@ Seats were bespoke this round — the standard palette was exhausted after four 
 | 27 | Regression Hunter (**found independently by both seats**) | ⛔ **Fold 24 reverted fold 22's arithmetic.** The seam added a THIRD test to Task 3 while the count table still said `Task 3: 2` and `net 0` — and Task 9 Step 2 hard-stops when the delta differs, so the check would have failed a CORRECT run. | Recounted from the document: **net +1**. And made self-checking — the step now carries an `awk` recount and says plainly that if the row and the count disagree, **the row is what is wrong**. |
 | 28 | agy Adversary of the Reviewer | ⛔ **The plan contradicted itself.** Task 3 Step 1 called the sweep *"no longer load-bearing"*; Step 5's own mutant proves the opposite — with the wiring commented out the behavioural test stays GREEN because `Apply` is correct but never called. The sweep is the ONLY guard on reachability, so accepting a spoofable positive gate accepted silent feature death. | Claim corrected (**load-bearing for REACHABILITY, not for CONTENT**) and the hole CLOSED rather than accepted: the pattern now requires the call to START a line, the fluent form real code uses. MEASURED on four cases — both qualification forms match, a spoof inside an exception message does not, and the commented-out mutant still goes red. |
 | 29 | agy Regression Hunter | Fold 8 fixed the Architecture header but skipped the `Addendum` doc comment, which still described it as only the load call and its fallback — contradicting fold 8's own rationale | Doc comment updated to name all three parts |
+
+### Round 10 — folded findings
+
+⚠ **Fold 27 — the fold that existed to make the count TRUSTWORTHY — was itself broken FOUR ways.** Three
+found here, one by the peer. It is the sharpest illustration in this review of why a self-checking
+mechanism needs checking.
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 30 | agy Regression Hunter | The recount counts attribute DECLARATIONS (10); `dotnet test` reports runtime CASES (11), because Task 4's `[Theory]` runs twice. Fold 27 told the operator *"the row is what is wrong"*, which would push them to "fix" the table to 10 and then hard-stop when the run reports 11. | Both numbers now stated as **supposed to differ by one**, with "awk cannot count runtime cases and never will". The absolute instruction is softened to *recount by hand; neither is automatically the authority*. |
+| 31 | Regression Hunter (own) | The recount pattern was unanchored, so it **counted its own documentation** — the prose sentence mentioning `[Theory]` scored as a test, making the docs-only Task 8 appear to contain one. | Anchored to `^[[:space:]]*\[(Fact\|Theory)\]`. |
+| 32 | Regression Hunter (own) | Task 9's heading was `##` while every other task used `###`, so the counter silently attributed Task 9's content to Task 8. | Heading levelled to `###`; the command documents why it matches only `###`. |
+| 33 | Regression Hunter (own) | ⛔ **The command did not run at all.** A heredoc mangled its line continuation into a literal `
+`. **Discovered because the peer breached review-only to test it** — its stray file contained the mangled form, faithfully copied from the plan. | Rewritten as one line, verified by EXTRACTING it from the plan and executing it verbatim: four rows, as documented. |
+| 34 | agy Regression Hunter | Fold 28's line anchor made Step 5's mutant stop proving comment-stripping: `// .AddMcpServer(…)` fails the anchored pattern because of the `//` itself, with or without stripping. The stated expectation was false. | Expectation corrected, **and a new Step 5b added** that proves stripping where it still earns its keep — on the NEGATIVE gate, where an un-stripped commented-out assignment would fail the build on correct code. |
+| — | agy Adversary of the Reviewer | — | **no new findings** — the first clean seat of the review. |
 
 ⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
 named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
