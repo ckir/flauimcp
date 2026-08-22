@@ -797,7 +797,24 @@ git commit -m "docs(capture): tool description and class doc - five edits, incl.
 
 ### Task 23: The GDI handle gate (risk 4)
 
-**The acceptance criterion is checkable, not an instruction to be careful:** GDI handle count and user-object count for the process must return to their starting values after a run of repeated captures, including runs that hit **every path that exits AFTER the bitmap is allocated at canonical step 6b** — a null GDI handle during acquisition, a timeout, and an empty crop.
+**The acceptance criterion is checkable, not an instruction to be careful:** GDI handle count and user-object count for the process must return to their starting values after a run of repeated captures that **RETURN** — the success path and the post-allocation refusals.
+
+⛔ **THE CRITERION USED TO SAY "a timeout" AND THAT IS FACTUALLY UNACHIEVABLE. Do not write that test, and do not "fix" the code to make it pass.** It read: *"...including runs that hit every path that exits AFTER the bitmap is allocated at canonical step 6b — a null GDI handle during acquisition, a timeout, and an empty crop."*
+
+**MEASURED in Phase 0** (`…-measurements.md:117-120`, the `AbandonProbe` run): a timed-out acquisition leaks **exactly 3 GDI objects per outstanding abandoned call**, and they stack — `GDI 0 -> 3 -> 6 -> 9` across three abandoned calls — because a blocked Win32 call **cannot be cancelled**. They are released only when the target's message loop resumes, or within 130 ms of the target process exiting. Neither event is under this server's control.
+
+That is the accepted design, not a defect: `PrintWindowImageSource` CONTAINS the cost (a dedicated thread, and the per-HWND breaker so N captures of a hung window cost ONE leak instead of N) and **reclaims nothing**. It is filed as **ROADMAP 17**. A test asserting flat handles after a timeout would have to fail — and the only way to "make it pass" is to try to reclaim what a blocked call holds, which is impossible in-process and is the entire reason ROADMAP 17 exists.
+
+**The four exits after step 6b, and their honest coverage:**
+
+| exit | covered? | why |
+|---|---|---|
+| success (bitmap returned and disposed) | ✅ Step 1 test 1 | 30 iterations, flat |
+| empty crop refusal | ✅ Step 1 test 2 | 20 iterations, flat |
+| null GDI handle mid-allocation | ⚠ structural only | every handle is checked and released in `Render`'s `finally`, but forcing a null handle on real GDI means exhausting the process's handle table — not something a test can stage without destabilising the run |
+| acquisition timeout | ⛔ **cannot be flat** | leaks 3 GDI per outstanding call by design; see above |
+
+**The degenerate, minimized and window-scope-resize refusals are NOT in that list and cannot be.** They all exit at canonical steps 2, 5 or 6 — before step 6b allocates anything — so there is no handle for them to leak. Do not write handle-leak tests for guards that hold no handles.
 
 **The degenerate, minimized and window-scope-resize refusals are NOT in that list and cannot be.** They all exit at canonical steps 2, 5 or 6 — before step 6b allocates anything — so there is no handle for them to leak. Do not write handle-leak tests for guards that hold no handles.
 
@@ -900,12 +917,16 @@ Expected: PASS — 2 passed.
 
 - [ ] **Step 3: Record the measurement**
 
-Append a `## Risk 4 — GDI handle counts` section to the measurements doc with the before/after numbers for both tests and an explicit list of which exit paths were covered and which were excluded, with the reason (they exit before allocation).
+Append a `## Risk 4 — GDI handle counts` section to the measurements doc with the before/after numbers for both tests, **and the four-row coverage table from this task's header verbatim** — including the two rows that are NOT covered and why.
+
+⚠ **Record the timeout row as a MEASURED non-goal, not as an untested gap.** Phase 0 already measured it (3 GDI per outstanding abandoned call, `GDI 0 -> 3 -> 6 -> 9`, released on target resume or within 130 ms of target exit). Writing it down as "not covered" without that context invites a future reader to close the "gap" by attempting an in-process reclaim that cannot work. Point at ROADMAP 17.
 
 - [ ] **Step 4: Prove the gate is non-vacuous with a logic mutant**
 
 In `PrintWindowImageSource.Render`, delete `if (hbm != IntPtr.Zero) DeleteObject(hbm);` from the `finally`.
-Expected: `Repeated_successful_captures_leave_handle_counts_flat` FAILS with a growth of ~30. **Revert.**
+Expected: `Repeated_successful_captures_leave_handle_counts_flat` FAILS with a growth of ~30 — the test does 3 warm-up plus 30 measured acquisitions, each then leaking its bitmap. **Revert.**
+
+⚠ `hbm` is still read by `Image.FromHbitmap(hbm)`, so removing only the release leaves the assembly building and the guarded test actually RUNS. That is the bar: a mutant that breaks the build proves nothing, because the test never executes.
 
 - [ ] **Step 5: Commit**
 
