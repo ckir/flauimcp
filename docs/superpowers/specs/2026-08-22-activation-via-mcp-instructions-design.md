@@ -29,7 +29,21 @@ MEASURED:
    nothing, so it asks the human what is on screen — the exact behaviour the payload forbids.
 2. **Any non-Claude-Code client, permanently.** `hooks.json` is a Claude Code plugin format. This project
    also installs for agy. Those clients connect to the same server, receive the same fifty tools, and
-   never run the hook. For them the activation decision **never propagates at all**.
+   never run the hook.
+
+   ⚠ **Corrected by measurement 2026-08-22 — this bullet originally said the decision "never propagates
+   at all" for those clients, and that was wrong in BOTH directions.** By design it does propagate: for agy
+   the installer deploys a seed skill (`AgyConfigWriter.DeploySkill()`, *"agy has no hooks → skill only"*),
+   and that skill's own `description:` carries the framing verbatim — *"Look and act yourself with the
+   installed flaui-mcp desktop_* tools rather than asking the user to observe or operate their desktop for
+   you."* So a second channel exists.
+
+   But it is **best-effort, and on this machine it is ABSENT.** `DeploySkill()` is documented never to
+   throw — it *"degrades to a warning rather than denying the user a working server"*. MEASURED: agy's
+   plugin dir `~/.gemini/config/plugins` holds ten plugins and **no `flaui-mcp`**, while `agy mcp list`
+   shows the `flaui-mcp` server registered. **A registered server with no skill and no hook is an agent
+   holding fifty tools with zero framing** — the exact end state this spec exists to prevent, arrived at
+   through a channel the spec did not know about.
 3. **Silent hook failure.** A moved exe, a broken path, a disabled hook: no guidance, no error, no
    fallback.
 
@@ -226,19 +240,54 @@ question 2: connect a non-Claude client and look.
   *(This measurement also refutes the AGY-FIRST consult's objection that instructions would tax every
   subagent's context — they never reach a subagent, so that cost does not exist. And it corrects an
   operator hypothesis that subagents have no MCP access at all: they do, demonstrably.)*
-- **Whether agy surfaces `InitializeResult.Instructions` is UNVERIFIED.** It is protocol-standard and
-  Claude Code plainly honours it, but this spec should not claim agy behaviour nobody has measured.
-  **Worth measuring before implementation**, because agy is the concrete non-Claude client this plugin
-  installs for, and it is the case that motivates the whole change.
+- ⛔⛔ **MEASURED 2026-08-22: agy RECEIVES `InitializeResult.instructions` AND DOES NOT SURFACE IT.**
+  This was the spec's motivating client, and the result **removes agy from the set of clients this change
+  helps**. Method, so it can be re-run:
+  1. A throwaway stdio MCP server advertised an unguessable sentinel
+     (`ZQ7X-INSTR-SENTINEL-9F4KD2`) in its `instructions` field, and logged every JSON-RPC method it
+     received. Registered with `agy mcp add`, removed with `agy mcp remove` afterwards.
+  2. **CONTROL — the connection was live.** The server's log recorded `initialize`,
+     `notifications/initialized` and `tools/list`. Without this control a negative result would be
+     indistinguishable from the server never having started.
+  3. A fresh `agy -p` session, asked to quote any connection-time server guidance it could see, replied
+     exactly `NONE-VISIBLE`. The sentinel appeared **zero** times.
+  4. Independently, agy's client binary (`resources/bin/language_server.exe`) **does** carry the Go
+     deserialisation tag `json:"instructions,omitempty"` beside the rest of the MCP result types
+     (`ResourceTemplates`, `OutputSchema`, `Experimental`, `mcp.Params`, `jsonrpc2`). **It parses the
+     field and drops it.** Parsing is not surfacing.
+
+  **Consequence for this spec, stated plainly rather than buried:** `ServerInstructions` is a **no-op on
+  agy**. The change is still worth making — see below — but its justification narrows from *"reaches
+  every client"* to *"adds a second, independent channel on Claude Code, and is inert on agy."* The agy
+  gap needs the seed-skill channel repaired instead, which is different work.
+
+- ⚠ **A peer's self-report of its own environment is not evidence.** Asked which MCP servers it was
+  connected to, agy named four; `agy mcp list` showed **two of those four disabled**. Its list came from
+  configuration, not from live connections. This is why step 2 above exists.
 - Not changing the hook's trigger matcher, the installer's restart advice, or the tool descriptions.
 - Not attempting to make hooks register without a client restart; that is the client's behaviour.
 
 ---
 
-## 8. Open for the operator
+## 8. Operator decisions — ANSWERED 2026-08-22
 
-1. **Approve D1** (split) over the smaller verbatim option, accepting a little structure for
-   client-correctness?
-2. **Measure agy first?** Confirming agy actually surfaces server instructions would validate the
-   premise before any code is written. Cheap, and it is the motivating client.
-3. **Scope:** ship as its own small branch, or fold into the next release batch alongside item 4?
+1. **D1 APPROVED.** Split into a client-agnostic CORE plus a Claude Code ADDENDUM, accepting a little
+   structure for client-correctness. The CORE must carry its own client-agnostic loading sentence (D2).
+2. **MEASURE agy FIRST — DONE, and the result is in §7.** agy receives the field and does not surface it.
+   The measurement was worth its cost precisely because it came back negative: it would otherwise have
+   shipped as an unexamined claim that this change helps agy.
+3. **SCOPE: its own branch, then v1.0.0 is stamped.** ROADMAP items 4 and 10 are **deferred out of
+   v1.0.0** — `ROADMAP.md:308` heads their section *"fold in when adjacent — Not scheduled on their own
+   … None block anything"*, and the release bar they might have gated is already met. Neither is adjacent
+   to open work.
+
+### What the measurement leaves open
+
+The value proposition shrank. Before writing code, the operator should confirm this is still worth
+building on the narrowed case:
+
+- **It still fixes two of the three failure modes in §2, on Claude Code** — the install-to-relaunch
+  window and silent hook failure — because Claude Code demonstrably surfaces server instructions.
+- **It is inert on agy**, the client that motivated it.
+- **The agy hole is now better addressed by repairing the seed-skill deployment**, which is separate work
+  and should be filed as its own item rather than folded in here.
