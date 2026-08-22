@@ -643,3 +643,49 @@ range recorded above, confirming the fast path is the one taken.
 - the fallback path (non-32bpp bitmaps) is exercised by `A_non_32bpp_uniform_bitmap_is_detected_through_the_fallback`
   and `A_non_32bpp_bitmap_with_content_is_not_uniform_through_the_fallback` — without them the format
   guard's else-branch would be dead code that still ships.
+
+## Risk 4 — GDI handle counts (Task 23)
+
+`test/FlaUI.Mcp.Tests/Capture/GdiHandleLeakTests.cs`, Desktop category, run on a physical console against
+the WPF TestApp. `GetGuiResources(GetCurrentProcess(), 0|1)` before and after, with a `GC.Collect()` /
+`WaitForPendingFinalizers()` / `GC.Collect()` between so a finalizable handle cannot masquerade as flat.
+
+| test | iterations | result |
+|---|---|---|
+| `Repeated_successful_captures_leave_handle_counts_flat` | 3 warm-up + 30 measured | **FLAT** |
+| `An_empty_crop_refusal_leaves_handle_counts_flat` | 3 warm-up + 20 measured | **FLAT** |
+
+**NON-VACUITY, MEASURED.** Deleting `if (hbm != IntPtr.Zero) DeleteObject(hbm);` from
+`PrintWindowImageSource.Render`'s `finally` turns **both** red, each by exactly its iteration count:
+`GDI objects grew 29 -> 59` (+30) and `GDI objects grew 6 -> 26` (+20). The assembly still builds, because
+`hbm` is read by `Image.FromHbitmap(hbm)` — so the guarded tests actually RUN rather than being skipped by
+a broken build.
+
+⚠ **THE EMPTY-CROP TEST NEEDED A WARM-UP AND FAILED WITHOUT ONE — `GDI objects grew 0 -> 3`.** That was
+NOT a leak. Three is a ONE-TIME cost: GDI+ initialises on first use, and the baseline was being taken at
+`0` before anything in the process had touched it. Two independent facts settle it — a per-iteration leak
+across 20 iterations would show ~60, not 3, and the success test (which already warmed up, with the
+comment *"the first call allocates caches that are not a leak"*) was flat across 30. Confirmed by
+experiment: adding the same 3-iteration warm-up makes it flat, and the mutant above still turns it red,
+so the warm-up did not hide anything.
+
+### Coverage — the four exits after canonical step 6b, honestly
+
+| exit | covered? | why |
+|---|---|---|
+| success (bitmap returned and disposed) | ✅ tested | 30 iterations, flat |
+| empty crop refusal | ✅ tested | 20 iterations, flat |
+| null GDI handle mid-allocation | ⚠ structural only | every handle is checked and released in `Render`'s `finally`, but forcing a null handle on real GDI means exhausting the process's handle table — not stageable without destabilising the run |
+| acquisition timeout | ⛔ **MEASURED NON-GOAL** | leaks 3 GDI per OUTSTANDING abandoned call by design |
+
+⛔ **THE TIMEOUT ROW IS A MEASURED NON-GOAL, NOT AN UNTESTED GAP, and the distinction matters.** Risk 2b
+above measured it directly: `GDI 0 -> 3 -> 6 -> 9` across three abandoned calls, released only when the
+target's message loop resumes or within **130 ms** of the target process exiting — neither under this
+server's control. A blocked Win32 call cannot be cancelled, so `PrintWindowImageSource` CONTAINS the cost
+(a dedicated thread; the per-HWND breaker makes N captures of a hung window cost ONE leak instead of N)
+and reclaims nothing. **ROADMAP 17** is the out-of-process worker that would actually reclaim.
+
+Task 23's acceptance criterion originally demanded flat handles after "a timeout" as well. That would
+have required a test that must fail, and the only way to make it pass is an in-process reclaim of what a
+blocked call holds — which is impossible, and is the whole reason ROADMAP 17 exists. Corrected in the
+plan before execution.

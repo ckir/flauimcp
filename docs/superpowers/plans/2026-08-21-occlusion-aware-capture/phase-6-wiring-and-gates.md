@@ -824,6 +824,17 @@ That is the accepted design, not a defect: `PrintWindowImageSource` CONTAINS the
 
 - [ ] **Step 1: Write the Desktop-category test**
 
+⛔ **THE PINNED BLOCK IS MISSING `using System.Runtime.InteropServices;`** — it declares a
+`[DllImport]` and does not import the namespace, so it is two `CS0246`s as written. Add it.
+(Same defect class as Task 19 Step 1, which was missing `using FlaUI.Mcp.Core.Errors;`.)
+
+⚠⚠ **AND THE EMPTY-CROP TEST NEEDS THE SAME 3-ITERATION WARM-UP THE SUCCESS TEST ALREADY HAS.** As
+pinned, only the first test warms up — with the comment *"the first call allocates caches that are not a
+leak"* — while the second takes its baseline at `0` before GDI+ has been touched. MEASURED: it fails
+`GDI objects grew 0 -> 3`. That 3 is the one-time GDI+ initialisation, NOT a leak: a per-iteration
+leak across 20 iterations would show ~60, and the warmed-up success test is flat across 30. Adding the
+warm-up makes it flat, and the Step 4 mutant still turns it red (+20), so the warm-up hides nothing.
+
 ```csharp
 using System;
 using System.Diagnostics;
