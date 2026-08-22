@@ -84,4 +84,41 @@ public class EncodeContractTests
         using var outBmp = new Bitmap(ms);
         Assert.Equal(Color.Black.ToArgb(), outBmp.GetPixel(25, 25).ToArgb());
     }
+
+    // ⛔⛔ A DOWNSCALED MASK MUST NOT UNDER-COVER. The rect was scaled with an independent
+    // Math.Round on the ORIGIN and on the EXTENT, which lets the painted rect start inside the element's
+    // left edge or stop short of its right edge - leaving a sliver of a redacted field in the clear.
+    //
+    // MEASURED over 11,700 (scale, x, width) combinations at scales 0.5-0.9: 75.6% under-covered, by up
+    // to a full pixel. Deriving both operands from floor(left) and ceil(right) makes it impossible:
+    // 0 of 14,040 under-cover, at a cost of up to 1.8px of harmless OVER-masking.
+    // *(AGY-CAPSTONE round 2, finding 3.)*
+    //
+    // ⚠ The assertion is on the FAR EDGE, because that is the pixel the old arithmetic dropped. Asserting
+    // only the middle of the mask passes either way - which is why this defect survived the existing
+    // mask tests above.
+    [Fact]
+    public void A_downscaled_mask_still_covers_its_own_far_edge()
+    {
+        // 400 wide, clamped to 200 => scale 0.5, chosen so the mask edges land on half-pixels.
+        var absolute = new Rectangle(0, 0, 400, 100);
+        using var src = new Bitmap(400, 100);
+        using (var g = Graphics.FromImage(src))
+        using (var white = new SolidBrush(Color.White))
+            g.FillRectangle(white, 0, 0, 400, 100);
+
+        // x=11,w=5 -> [11,16) scaled is [5.5, 8.0): the mask must cover output columns 5,6,7.
+        var mask = new Rectangle(11, 20, 5, 21);
+        var r = ScreenCapture.Encode(src, absolute, absolute, new[] { mask }, maxWidth: 200,
+                                     "screenScrape", System.Array.Empty<CaptureWarning>());
+
+        using var outBmp = (Bitmap)Image.FromStream(new System.IO.MemoryStream(r.Png));
+        Assert.Equal(200, outBmp.Width);
+
+        // Every output column the element touches must be black, INCLUDING the last one.
+        for (int x = 5; x <= 7; x++)
+            Assert.Equal(Color.Black.ToArgb(), outBmp.GetPixel(x, 12).ToArgb());
+        for (int y = 10; y <= 20; y++)
+            Assert.Equal(Color.Black.ToArgb(), outBmp.GetPixel(6, y).ToArgb());
+    }
 }

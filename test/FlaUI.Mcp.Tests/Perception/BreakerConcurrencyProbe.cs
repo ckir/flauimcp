@@ -71,13 +71,23 @@ public class BreakerConcurrencyProbe
         }
 
         var inflight = Volatile.Read(ref acquireCalls);
-        await Task.WhenAll(tasks);
-        gate.Set();
 
-        // MEASURED 5 of 5. Asserted as > 1 rather than == 5 so a scheduling wobble cannot make this
-        // flaky: the defect is that MORE THAN ONE acquisition starts, not the exact count.
-        Assert.True(inflight > 1,
-            $"only {inflight} acquisition(s) started - if this is now 1 the concurrent guard has been " +
-            "FIXED, and this test should be updated to assert the new bound rather than deleted");
+        // ⚠ RELEASE FIRST, THEN AWAIT. This read `await Task.WhenAll(tasks); gate.Set();` -- and since
+        // every request is blocked INSIDE the gate, WhenAll could not complete until the gate's own 5000ms
+        // timeout expired, making `gate.Set()` dead code and the test a flat 5 seconds. MEASURED at
+        // exactly 5s before this change. *(AGY-CAPSTONE round 2, finding 4.)*
+        gate.Set();
+        await Task.WhenAll(tasks);
+
+        // MEASURED 5 of 5 - every overlapping request starts its own acquisition.
+        //
+        // ⚠ ASSERTED AS >= 4, NOT > 1, AND THE DIFFERENCE MATTERS. `> 1` was too weak to do the job this
+        // test exists for: a partial fix that bounded the count to 2 or 3 would still satisfy it, so the
+        // fix would land silently and this test would keep asserting a defect that no longer had that
+        // shape. >= 4 says "essentially unbounded" while still tolerating a scheduling wobble.
+        // *(AGY-CAPSTONE round 2, finding 4.)*
+        Assert.True(inflight >= 4,
+            $"only {inflight} of 5 overlapping requests started their own acquisition - if the concurrent " +
+            "guard has been FIXED, update this test to assert the new bound rather than deleting it");
     }
 }

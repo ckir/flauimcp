@@ -61,11 +61,18 @@ public sealed class FindTextTools
             if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
             // ⚠ BOOKEND, HALF 1 of 2 — FAIL FAST. If the window has ALREADY changed since the walk,
             // there is no point paying for the capture. This half is cheap and catches the common case.
-            if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
-                                                new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+            // ⛔ POSITION TOO, NOT JUST SIZE, AND THIS PATH IS WHY. It compared Size only, and that is
+            // correct for the SCREENSHOT path -- PrintWindow renders the window's own handle, so a pure
+            // MOVE cannot affect it, and the screenshot bookend deliberately tolerates one. **This path
+            // SCRAPES ABSOLUTE SCREEN COORDINATES.** A window that moves without resizing passes a
+            // size-only check, and the scrape then photographs the rectangle the window USED to occupy --
+            // whatever application is there now -- paints the target's masks over it, and OCRs the result
+            // into the response. The guard was inherited from a path it fits and is insufficient here.
+            // *(AGY-CAPSTONE round 2, finding 2.)*
+            if (ScreenCapture.WindowRectChanged(geo.NativeWindowHandle, geo.WindowBounds))
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
-                    "The window changed size between reading its redacted regions and capturing it, so " +
-                    "those regions can no longer be located.",
+                    "The window moved or changed size between reading its redacted regions and capturing " +
+                    "it, so those regions can no longer be located.",
                     "wait for the window to settle, then retry");
 
             // ⚠ OcrRegion, not Window. This path SCRAPES and always has; it is neither a whole desktop
@@ -85,11 +92,10 @@ public sealed class FindTextTools
             // ⚠ A DISTINCT MESSAGE from half 1, deliberately. Both recourses are "wait and retry", but
             // "changed DURING" and "changed BEFORE" are different diagnoses and this design's standing
             // rule is that no two distinct causes share one message.
-            if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
-                                                new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+            if (ScreenCapture.WindowRectChanged(geo.NativeWindowHandle, geo.WindowBounds))
                 throw new ToolException(ToolErrorCode.ElementNotActionable,
-                    "The window changed size while it was being captured, so the redacted regions in this " +
-                    "image can no longer be trusted to cover what they were computed for.",
+                    "The window moved or changed size while it was being captured, so the redacted " +
+                    "regions in this image can no longer be trusted to cover what they were computed for.",
                     "wait for the window to settle, then retry");
 
             var matches = await _finder.FindAsync(query, cap.Png, mode, all,
@@ -141,10 +147,9 @@ public sealed class FindTextTools
                 if (geo.Denied || geo.Minimized) return false;
                 // ⚠ BOOKEND, HALF 1 of 2 — FAIL FAST. If the window has ALREADY changed since the walk,
                 // there is no point paying for the capture. This half is cheap and catches the common case.
-                if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
-                                                    new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                if (ScreenCapture.WindowRectChanged(geo.NativeWindowHandle, geo.WindowBounds))
                     throw new ToolException(ToolErrorCode.ElementNotActionable,
-                        "The window changed size between reading its redacted regions and capturing it, so " +
+                        "The window moved or changed size between reading its redacted regions and capturing it, so " +
                         "those regions can no longer be located.",
                         "wait for the window to settle, then retry");
 
@@ -162,10 +167,9 @@ public sealed class FindTextTools
                 // ⚠ A DISTINCT MESSAGE from half 1, deliberately. Both recourses are "wait and retry", but
                 // "changed DURING" and "changed BEFORE" are different diagnoses and this design's standing
                 // rule is that no two distinct causes share one message.
-                if (ScreenCapture.WindowSizeChanged(geo.NativeWindowHandle,
-                                                    new System.Drawing.Size(geo.WindowWidth, geo.WindowHeight)))
+                if (ScreenCapture.WindowRectChanged(geo.NativeWindowHandle, geo.WindowBounds))
                     throw new ToolException(ToolErrorCode.ElementNotActionable,
-                        "The window changed size while it was being captured, so the redacted regions in this " +
+                        "The window moved or changed size while it was being captured, so the redacted regions in this " +
                         "image can no longer be trusted to cover what they were computed for.",
                         "wait for the window to settle, then retry");
 

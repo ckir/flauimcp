@@ -13,6 +13,12 @@ public sealed record TextCaptureGeometry(
     System.Drawing.Rectangle CaptureBounds, System.Collections.Generic.IReadOnlyList<System.Drawing.Rectangle> MaskRects,
     int WindowLeft, int WindowTop, int WindowWidth, int WindowHeight, System.IntPtr NativeWindowHandle)
 {
+    /// <summary>The full window physical rect as ONE rectangle. The four ints above are kept because
+    /// CoordinateMapping takes them separately; this exists so the OCR bookend can compare POSITION as
+    /// well as size in a single comparison. *(AGY-CAPSTONE round 2, finding 2.)*</summary>
+    public System.Drawing.Rectangle WindowBounds =>
+        new(WindowLeft, WindowTop, WindowWidth, WindowHeight);
+
     /// <summary>Given the FULL window physical rect and an optional [xPct,yPct,wPct,hPct] region (fractions in
     /// (0,1]), returns the absolute capture rect. Null region -> the full window rect. Throws
     /// ToolException(InvalidArguments) on a malformed region (wrong length, any fraction &lt;0 or &gt;1, zero-area

@@ -32,7 +32,7 @@ public class OcrBookendTests
     // IntPtr.Zero is never a live window, so GetWindowRect fails and the probe returns null.
     [Fact]
     public void A_destroyed_or_invalid_window_reports_changed()
-        => Assert.True(ScreenCapture.WindowSizeChanged(IntPtr.Zero, new Size(800, 600)));
+        => Assert.True(ScreenCapture.WindowRectChanged(IntPtr.Zero, new Rectangle(0, 0, 800, 600)));
 
     // ⚠ THE ONLY GUARD ON THE WIRING. The bookend itself cannot be exercised headlessly -- reaching it
     // needs a live UIA walk and a real screen grab -- so this pins that BOTH halves exist at BOTH sites.
@@ -44,7 +44,13 @@ public class OcrBookendTests
             Path.Combine(RepoRoot(), "src", "FlaUI.Mcp.Server", "Tools", "FindTextTools.cs")));
 
         // two capture sites x two halves
-        Assert.Equal(4, Regex.Matches(text, @"ScreenCapture\.WindowSizeChanged\s*\(").Count);
+        //
+        // ⚠ `WindowRectChanged`, not `WindowSizeChanged`. It compared SIZE only, which is right for the
+        // SCREENSHOT path (PrintWindow renders the window's own handle, so a pure move cannot affect it)
+        // and insufficient here, because this path SCRAPES ABSOLUTE SCREEN COORDINATES: a window that
+        // moves without resizing passed the old check and the scrape then photographed the rectangle the
+        // window used to occupy. *(AGY-CAPSTONE round 2, finding 2.)*
+        Assert.Equal(4, Regex.Matches(text, @"ScreenCapture\.WindowRectChanged\s*\(").Count);
     }
 
     // The two halves diagnose DIFFERENT things and must stay distinguishable to an agent reading the

@@ -163,9 +163,28 @@ public static class ScreenCapture
             {
                 if (!r.IntersectsWith(absolute)) continue; // off-crop field — don't count/paint
                 var clip = Rectangle.Intersect(r, absolute);  // clip to the captured region
+                // ⛔⛔ FLOOR THE ORIGIN, CEIL THE FAR EDGE -- never Round both independently. This read
+                // `Round(x*scale)` for the origin and `Round(width*scale)` for the extent, and rounding
+                // the two independently UNDER-COVERS: the painted rect can start inside the element's
+                // left edge, or stop short of its right edge, leaving a sliver of a redacted field in
+                // the clear.
+                //
+                // MEASURED over 11,700 (scale, x, width) combinations at scales 0.5-0.9: **75.6% of
+                // cases under-covered**, by up to a full pixel. Example from that sweep: scale 0.5,
+                // x=1, width=1 -- the element occupies [0.5, 1.0] after scaling, and Round gives
+                // origin 0 with extent 0, painting nothing at all.
+                //
+                // Deriving both operands from floor(left) and ceil(right) makes under-coverage
+                // impossible: MEASURED 0 of 14,040 cases under-cover, at a cost of up to 1.8px of
+                // OVER-masking. That is the direction this codebase already chooses everywhere else --
+                // over-masking is a cosmetic thickening, under-masking is a leak.
+                // *(AGY-CAPSTONE round 2, finding 3.)*
+                int relLeft = (int)System.Math.Floor((clip.X - absolute.X) * scale);
+                int relTop = (int)System.Math.Floor((clip.Y - absolute.Y) * scale);
                 var rel = new Rectangle(
-                    (int)System.Math.Round((clip.X - absolute.X) * scale), (int)System.Math.Round((clip.Y - absolute.Y) * scale),
-                    (int)System.Math.Round(clip.Width * scale), (int)System.Math.Round(clip.Height * scale));
+                    relLeft, relTop,
+                    (int)System.Math.Ceiling((clip.X - absolute.X + clip.Width) * scale) - relLeft,
+                    (int)System.Math.Ceiling((clip.Y - absolute.Y + clip.Height) * scale) - relTop);
                 if (rel.Width <= 0 || rel.Height <= 0) continue;
                 g.FillRectangle(black, rel); painted++;
             }
@@ -314,10 +333,10 @@ public static class ScreenCapture
     /// <summary>TRUE when the window's CURRENT size differs from <paramref name="asWalked"/>. Used by the
     /// OCR path, which has no W1/W2 pair of its own. A destroyed window reports changed: it is not safe
     /// to photograph either.</summary>
-    public static bool WindowSizeChanged(IntPtr hwnd, Size asWalked)
+    public static bool WindowRectChanged(IntPtr hwnd, Rectangle asWalked)
     {
         var now = DefaultW2Probe(hwnd);
-        return now is null || now.Value.Size != asWalked;
+        return now is null || now.Value != asWalked;
     }
 
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
