@@ -105,16 +105,22 @@ public static class InstallStatus
     }
 
     /// <summary>Whether THIS binary advertises the activation core over the MCP handshake. Reported
-    /// because `status` runs the INSTALLED exe: it is the only way to tell a binary that carries this
-    /// feature from an older one, without connecting a client and reading its context.
+    /// because `status` runs the INSTALLED exe, which is not necessarily the one you just built.
+    ///
+    /// ⚠ THE DISCRIMINATOR IS THE PRESENCE OF THE LINE, NOT ITS TEXT. An older binary does not report
+    /// "NOT advertised" — it has no such line at all, because it does not contain this method. An earlier
+    /// version of this returned exactly that string when `Core` was empty, described as meaning "this
+    /// binary predates the change", which is impossible twice over: `Core` is a compile-time-constant
+    /// join of six non-empty literals and can never be empty, and a binary that predated the change could
+    /// never have executed the branch. That was dead code asserting a self-contradiction, so it is gone.
+    /// Do NOT reintroduce an "absent" branch here to "handle old binaries"; absence of the line IS the
+    /// signal, and it is the operator manual that must say so.
     ///
     /// ⚠ Deliberately says "advertised", not "delivered". A client may drop the field silently and the
     /// server cannot tell (spec D5) — agy is MEASURED to do exactly that. Do not reword this into a
     /// claim that the agent received anything.</summary>
     public static string DescribeServerInstructions()
-        => string.IsNullOrEmpty(ActivationPayload.Core)
-            ? "NOT advertised — this binary predates the change, or the core is empty"
-            : $"advertised at connect ({ActivationPayload.Core.Length} chars) — a client may still drop it";
+        => $"advertised at connect ({ActivationPayload.Core.Length} chars) — a client may still drop it";
 
     /// Normalizes the two shapes a hooks.json `SessionStart` key can legitimately take — an array of
     /// entries, or a single entry object — into one sequence. Kept in step with
@@ -141,7 +147,12 @@ public static class InstallStatus
     {
         var legacySkill = Path.Combine(skillRoot, "skills", "driving-flaui-mcp", "SKILL.md");
         var legacyNote = File.Exists(legacySkill)
-            ? $" (a retired copy from the old skill-directory model also sits at {skillRoot} — no longer read; safe to delete)"
+            // ⚠ This used to say "no longer read; safe to delete". That was FALSE and dangerously
+            // reassuring: this class's own doc records that Claude Code AUTO-LOADS that layout as
+            // `flaui-mcp@skills-dir` at user scope, so a surviving copy is a SECOND active driving skill
+            // beside the plugin-shipped one, not inert residue. It is only ever present when the
+            // install-time cleanup failed, which is exactly when the operator needs to be told to act.
+            ? $" (a retired copy from the old skill-directory model still sits at {skillRoot} — Claude auto-loads it as a SECOND copy of the driving skill; delete it)"
             : "";
 
         return claudePluginStatus switch
