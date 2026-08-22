@@ -45,7 +45,9 @@ public class InstallStatusClaudeTests
     public void A_leftover_legacy_skill_dir_does_not_override_the_plugin_signal()
     {
         var claude = Temp();
-        new ClaudeSkillDeployer(claude).Deploy();
+        var legacyDir = Path.Combine(claude, "skills", "flaui-mcp", "skills", "driving-flaui-mcp");
+        Directory.CreateDirectory(legacyDir);
+        File.WriteAllText(Path.Combine(legacyDir, "SKILL.md"), "---\nname: driving-flaui-mcp\n---\n");
 
         var active = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.Active);
         Assert.Contains("deployed as plugin (flaui-mcp@flaui-mcp-marketplace)", active);
