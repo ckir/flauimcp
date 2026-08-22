@@ -305,11 +305,39 @@ with:
 builder.Services
     // The install-time approval decision travels over the MCP handshake, not only in the Claude Code
     // SessionStart hook. The hook is absent between install and client relaunch, and absent silently if
-    // it fails; `initialize` happens on every connect. Serving the CORE (never Text) keeps Claude Code's
-    // ToolSearch incantation out of clients that have no such mechanism.
-    .AddMcpServer(options => options.ServerInstructions = FlaUI.Mcp.Server.Install.ActivationPayload.Core)
+    // it fails; `initialize` happens on every connect.
+    //
+    // Routed through a NAMED METHOD rather than an inline lambda ON PURPOSE: a method group can be called
+    // directly by a test, so WHAT gets configured is proven by a real assertion instead of by grepping
+    // this file. See McpServerConfiguration.
+    .AddMcpServer(FlaUI.Mcp.Server.Install.McpServerConfiguration.Apply)
     .WithStdioServerTransport()
     .WithToolsFromAssembly();
+```
+
+- [ ] **Step 1b: Create the seam**
+
+Create `src/FlaUI.Mcp.Server/Install/McpServerConfiguration.cs`:
+
+```csharp
+using ModelContextProtocol.Server;
+
+namespace FlaUI.Mcp.Server.Install;
+
+/// <summary>The single place the activation core is attached to the MCP server.
+///
+/// This exists as a NAMED METHOD, not an inline lambda in Program.cs, for one reason: a test can call it
+/// against a real McpServerOptions and assert what it sets. Program.cs is top-level statements that build
+/// and immediately run a stdio host, so a test cannot otherwise observe this configuration - the earlier
+/// alternative was grepping Program.cs, and a source sweep can be satisfied by a string literal while the
+/// real wiring is gone.</summary>
+public static class McpServerConfiguration
+{
+    /// <summary>Serve the CORE, never Text: Text carries Claude Code's ToolSearch incantation and the
+    /// driving-flaui-mcp pointer, which mean nothing to a client that has neither (spec D1).</summary>
+    public static void Apply(McpServerOptions options)
+        => options.ServerInstructions = ActivationPayload.Core;
+}
 ```
 
 - [ ] **Step 2: Build**
@@ -333,6 +361,12 @@ In `src/FlaUI.Mcp.Server/Install/InstallStatus.cs`, immediately after the existi
 ```csharp
         sb.AppendLine("  Server instructions: " + DescribeServerInstructions());
 ```
+
+⚠ **The wording must never contain the literal `NOT deployed`.** A sibling test in the same suite,
+`Reports_a_deployed_seed_with_its_version`, asserts `DoesNotContain("NOT deployed", s)` over the WHOLE
+`Describe(...)` output. The absent form below says *"NOT advertised"* on purpose. Reword it to
+*"NOT deployed…"* and you fail a test about the agy seed skill, which has nothing to do with this line —
+a confusing red that costs a debugging session.
 
 and add this method beside `DescribeActivationHook` (`:56`):
 
@@ -407,37 +441,54 @@ must strip comments — this repo has shipped a comment-blind sweep three times.
 
 - [ ] **Step 1: Write the failing test**
 
+⛔ **Two assertions, and only ONE of them is a source sweep.** An earlier revision put the whole
+guarantee in a regex over `Program.cs`, and two rounds of review showed that cannot work: strip string
+literals and a `"http://…"` destroys the match; do not strip them and a helpful exception message quoting
+the required call **satisfies** the match while the real wiring is gone. A source sweep cannot tell code
+from a string without a parser, and even with one it would still be testing TEXT.
+
+The seam from Task 1b removes the need. `McpServerConfiguration.Apply` is a method a test can simply CALL,
+so WHAT gets configured is proven behaviourally. The sweep shrinks to one narrow job: proving `Program.cs`
+still hands that method to `AddMcpServer`.
+
+Create `test/FlaUI.Mcp.Tests/Install/ServerInstructionsWiringTests.cs`:
+
 ```csharp
 using System.IO;
 using System.Text.RegularExpressions;
+using FlaUI.Mcp.Server.Install;
+using ModelContextProtocol.Server;
 using Xunit;
 
-/// STRUCTURAL guard, not behavioural. It asserts the wiring LINE exists in Program.cs, because the
-/// server is a stdio host that a headless test cannot start and interrogate. It is deliberately
-/// comment-stripped: commenting the line out is the cheapest way to silently un-ship this feature, and a
-/// naive `Contains` would still pass on a commented-out copy.
 public class ServerInstructionsWiringTests
 {
-    /// Strips COMMENTS ONLY - deliberately, and this is the interesting decision in the file.
-    ///
-    /// An earlier revision also stripped string literals, to stop a stray
-    /// `var x = "...ActivationPayload.Core";` from spoofing the gate. **That cure was measurably worse
-    /// than the disease.** Sequential regex cannot strip comments and strings safely in either order,
-    /// because each sweep corrupts the other's delimiters. All three variants were measured:
-    ///
-    ///   comments-then-strings : a single `"http://localhost/"` anywhere in the file has its closing
-    ///                           quote eaten by the comment sweep; the string sweep then runs away from
-    ///                           the orphaned quote to the next quote in the file, swallowing the
-    ///                           AddMcpServer block. The gate fails on a VALID file.
-    ///   strings-then-comments : a comment containing one `"` (e.g. `// the " character`) starts the
-    ///                           same runaway. Also fails on a valid file.
-    ///   comments-only         : survives BOTH, and still catches the commented-out mutant.
-    ///
-    /// So: comments only. The accepted limit is that a string literal containing the whole anchored call
-    /// shape would satisfy this test. That is contrived, and it is not the threat model - this gate
-    /// exists to catch the wiring being DELETED or COMMENTED OUT, which is what actually happens. A
-    /// correct comment+string strip needs a real parser (Roslyn), which is not worth a dependency for
-    /// one assertion.
+    // ---- BEHAVIOURAL: what the configuration actually does. No regex, no DI, no source text.
+    [Fact]
+    public void Apply_serves_the_core_and_never_the_whole_payload()
+    {
+        var options = new McpServerOptions();
+
+        McpServerConfiguration.Apply(options);
+
+        Assert.Equal(ActivationPayload.Core, options.ServerInstructions);
+        Assert.NotEqual(ActivationPayload.Text, options.ServerInstructions);
+        // The core must stay client-agnostic even here, so a future edit cannot smuggle the Claude Code
+        // incantation onto every connecting client (spec D1).
+        Assert.DoesNotContain("ToolSearch", options.ServerInstructions!, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("driving-flaui-mcp", options.ServerInstructions!, System.StringComparison.Ordinal);
+    }
+
+    // ---- STRUCTURAL: only that Program.cs still hands the seam to AddMcpServer.
+    //
+    // Strips COMMENTS ONLY. Stripping string literals too was measured to be WORSE: comments-then-strings
+    // lets one "http://localhost/" orphan a quote and the string sweep then runs away and swallows the
+    // AddMcpServer block, failing the build on a VALID file; strings-then-comments dies the same way on a
+    // `"` inside a comment. Comments-only survives both and still catches a commented-out call.
+    //
+    // The residual hole - a string literal containing the whole call shape would satisfy this - is
+    // ACCEPTED, and it is no longer load-bearing: the behavioural test above owns the content guarantee.
+    // (Roslyn IS available here: the test project already references Microsoft.CodeAnalysis.CSharp. It is
+    // not used because a parser would still only prove something about TEXT.)
     private static string ProgramSourceWithoutComments()
     {
         var src = File.ReadAllText(RepoPaths.At("src", "FlaUI.Mcp.Server", "Program.cs"));
@@ -446,33 +497,20 @@ public class ServerInstructionsWiringTests
         return src;
     }
 
-    /// Anchored on the AddMcpServer CALL, not on a bare assignment anywhere in the file. Anchoring is
-    /// the second half of the anti-spoof guard: the assignment must appear inside the configuration
-    /// lambda that actually reaches the server.
     [Fact]
-    public void Program_configures_the_server_with_the_activation_core()
-    {
-        var src = ProgramSourceWithoutComments();
-        Assert.Matches(
-            @"AddMcpServer\s*\(\s*\w+\s*=>\s*\w+\.ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Core",
-            src);
-    }
+    public void Program_hands_the_configuration_seam_to_AddMcpServer()
+        => Assert.Matches(
+            @"AddMcpServer\s*\(\s*(FlaUI\.Mcp\.Server\.Install\.)?McpServerConfiguration\.Apply\s*\)",
+            ProgramSourceWithoutComments());
 
-    /// Serving Text would push Claude Code's ToolSearch load line at clients that have no ToolSearch.
+    /// A negative gate fails UNSAFE - if its pattern is too rigid it passes while the defect ships. So it
+    /// deliberately matches ANY qualification of the symbol (`[\w.]*`), not just the two spellings this
+    /// file happens to use today.
     [Fact]
-    public void Program_serves_the_core_and_never_the_whole_payload()
-    {
-        var src = ProgramSourceWithoutComments();
-
-        // ANCHORED the same way as the positive assertion, and for a reason discovered late: once string
-        // literals stopped being stripped (see the helper's comment), a bare `ServerInstructions = ...Text`
-        // pattern would also match that text sitting inside a perfectly valid log or exception MESSAGE,
-        // failing the build on correct code. Anchoring on the AddMcpServer call means only real wiring can
-        // trip it - a string literal would have to contain the entire call shape.
-        Assert.DoesNotMatch(
-            @"AddMcpServer\s*\(\s*\w+\s*=>\s*\w+\.ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Text",
-            src);
-    }
+    public void Program_never_configures_instructions_inline()
+        => Assert.DoesNotMatch(
+            @"ServerInstructions\s*=\s*[\w.]*ActivationPayload\.Text",
+            ProgramSourceWithoutComments());
 }
 ```
 
@@ -488,42 +526,66 @@ inventing one.
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ServerInstructionsWiringTests"`
 Expected: PASS (Task 2 already added the line).
 
-- [ ] **Step 4: Prove it is not vacuous — the COMMENTED-OUT mutant**
+- [ ] **Step 4: Prove the BEHAVIOURAL test is not vacuous (the mutant that matters most)**
 
-This is the mutant that matters. In `Program.cs`, comment out the wiring line and restore the bare call:
+This is now a real logic mutant, not a regex trick. In
+`src/FlaUI.Mcp.Server/Install/McpServerConfiguration.cs`, change `Apply` to serve the whole payload:
+
+```csharp
+    public static void Apply(McpServerOptions options)
+        => options.ServerInstructions = ActivationPayload.Text;
+```
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ServerInstructionsWiringTests"`
+Expected: `Apply_serves_the_core_and_never_the_whole_payload` **RAN and FAILED** — on the `Assert.Equal`,
+and on the `DoesNotContain("ToolSearch")` too, because `Text` carries the load line. Confirm that NAMED
+test went red, not merely that the run was non-zero.
+
+Revert to `ActivationPayload.Core` by rewriting the line in place — never by restoring a `.bak`, which
+preserves the backup's mtime, makes MSBuild skip the rebuild, and leaves the MUTANT assembly running.
+Re-run and confirm PASS.
+
+- [ ] **Step 5: Prove the STRUCTURAL sweep is not vacuous (the COMMENTED-OUT mutant)**
+
+In `Program.cs`, comment out the wiring and restore the bare call:
 
 ```csharp
 builder.Services
-    // .AddMcpServer(options => options.ServerInstructions = FlaUI.Mcp.Server.Install.ActivationPayload.Core)
+    // .AddMcpServer(FlaUI.Mcp.Server.Install.McpServerConfiguration.Apply)
     .AddMcpServer()
     .WithStdioServerTransport()
     .WithToolsFromAssembly();
 ```
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ServerInstructionsWiringTests"`
-Expected: `Program_configures_the_server_with_the_activation_core` **RAN and FAILED**. If it passes, the
+Expected: `Program_hands_the_configuration_seam_to_AddMcpServer` **RAN and FAILED**. If it PASSES, the
 comment stripping is broken — fix the sweep, not the test's expectation.
+
+⚠ Note what this mutant demonstrates about the split of duties: with the wiring commented out, the
+BEHAVIOURAL test still passes, because `Apply` is still correct — it is simply never called. That is
+exactly why both tests exist. The behavioural one owns *what* is configured; the structural one owns
+*that it is reached*. Neither alone is sufficient, and no single regex could do both.
 
 Revert by rewriting the block in place, re-run, confirm PASS.
 
-- [ ] **Step 5: Prove the SECOND assertion too — it is weaker than it looks**
+- [ ] **Step 6: The negative assertion has no mutant, deliberately — record why**
 
-⚠ `Program_serves_the_core_and_never_the_whole_payload` is a `DoesNotMatch`, so **it also passes when the
-wiring line is deleted entirely.** It guards against one specific wrong value, not against absence — the
-first assertion is what guards absence. Prove it catches the value it exists to catch:
+`Program_never_configures_instructions_inline` is a `DoesNotMatch`, so it passes both when the code is
+correct AND when the wiring is absent entirely. It cannot be made to fail by a mutant that represents a
+realistic defect, because the defect it guards — someone bypassing the seam to assign `Text` inline in
+`Program.cs` — is now a shape the seam makes unnatural to write.
 
-In `Program.cs`, change `ActivationPayload.Core` to `ActivationPayload.Text` in the wiring line.
+**Keep it anyway, and do not invent a mutant to satisfy the ritual.** It is a cheap tripwire against a
+future refactor that inlines the configuration again, and its pattern deliberately matches ANY
+qualification (`[\w.]*`) because a negative gate fails UNSAFE: too rigid and it silently passes while the
+defect ships. Record it here as an accepted non-mutated guard rather than leaving a reader to wonder why
+the mutant list skips it.
 
-Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~ServerInstructionsWiringTests"`
-Expected: `Program_serves_the_core_and_never_the_whole_payload` **RAN and FAILED**.
-
-Revert to `.Core` by rewriting in place, re-run, confirm PASS.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add test/FlaUI.Mcp.Tests/Install/ServerInstructionsWiringTests.cs
-git commit -m "test(activation): pin the ServerInstructions wiring with a comment-stripped sweep"
+git add src/FlaUI.Mcp.Server/Install/McpServerConfiguration.cs test/FlaUI.Mcp.Tests/Install/ServerInstructionsWiringTests.cs
+git commit -m "test(activation): prove the served instructions behaviourally, not by grepping Program.cs"
 ```
 
 ---
@@ -1235,6 +1297,9 @@ Seats were bespoke this round — the standard palette was exhausted after four 
 | # | Seat | Finding | Fold |
 |---|---|---|---|
 | 22 | **Post-Merge Simulator** (own) | The plan ADDS an activation channel and leaves `flaui-mcp status` blind to it — `InstallStatus.cs:37` reports only the old hook. Three months on, a user asking *"does my installed binary advertise instructions?"* cannot answer it without connecting a client, which is exactly the installed-exe≠built-exe trap Task 9 Step 4 already documents. | New Task 2 Steps 3-4: a `Server instructions:` line in `status` plus a POLICY LOCK test following the existing activation-hook precedent (`InstallStatusActivationTests.cs:64`). Wording pinned to say **advertised**, never *delivered* — D5 says a client dropping it is undetectable. Test arithmetic updated: net **0**, not -1. |
+| 23 | agy Adversary of the Reviewer | Fold 20's anchored NEGATIVE gate is too rigid: `Install.ActivationPayload.Text` (partial qualification) evades it, and **a negative gate fails UNSAFE** — it passes while the defect ships | Pattern widened to match ANY qualification (`[\w.]*`), with the fail-unsafe reasoning recorded beside it |
+| 24 | agy Post-Merge Simulator | ⛔ **Since fold 18 stopped stripping string literals, the POSITIVE gate can be satisfied by a string literal** — and the realistic case is a helpful exception message quoting the required call. With no runtime observation of the core, that sweep was the ONLY safeguard. | ⛔ **Design change, not a patch.** The wiring now goes through a NAMED SEAM (`McpServerConfiguration.Apply`, Task 1b) that a test CALLS: content is proven **behaviourally** against a real `McpServerOptions`, no regex involved. The sweep shrinks to "does `Program.cs` hand over the seam". The two mutants now prove different things, and Step 5 demonstrates the split: with the wiring commented out the behavioural test still PASSES, because `Apply` is correct but unreached. |
+| — | — | **Correction I owe:** the plan claimed Roslyn was "not worth a dependency for one assertion" | **That reason was wrong** — `Microsoft.CodeAnalysis.CSharp` 4.14.0 is ALREADY referenced by the test project. The real reason to prefer the seam is that a parser would still only prove something about TEXT. Corrected in the test's comment. |
 
 ⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
 named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
