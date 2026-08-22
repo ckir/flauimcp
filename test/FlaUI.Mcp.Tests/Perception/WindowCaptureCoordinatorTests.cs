@@ -96,6 +96,13 @@ public class WindowCaptureCoordinatorTests
         var r = await c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0);
         Assert.Equal("screenScrape", r.Result.CaptureMethod);
         Assert.Contains(r.Result.CaptureWarnings, w => w.Code == "scrapeFallbackTargetChanging");
+
+        // ⚠ THE NAME SAYS "fresh masks" AND NOTHING USED TO CHECK IT. `Make` injects a `desktopMasks`
+        // delegate returning an EMPTY set while the walk's geometry carries one mask, so the painted
+        // count distinguishes them: 0 means the fresh desktop set was used, 1 means the stale target set
+        // was. Without this, swapping `desk.Rects` for `geo.MaskRects` left both this test and its
+        // element-scope twin green. *(AGY-TEST-AUDIT, gap 1 residual.)*
+        Assert.Equal(0, r.Result.Redactions);
     }
 
     // Element scope on exhaustion DOES fall back -- its failure is a geometry mismatch on an image that

@@ -141,5 +141,18 @@ public class CaptureRectangleCallSiteTests
             "mislabel every capture of the other kind");
         Assert.True(Regex.IsMatch(code, @"_coordinator\.CaptureAsync\([^;]*\bscope\b"),
             "the scope is computed but no longer reaches the coordinator");
+
+        // ⛔⛔ AND IT MUST BE ASSIGNED EXACTLY ONCE. The two assertions above can BOTH be satisfied while
+        // the decision is dead: leave the ternary exactly where it is and overwrite the variable on the
+        // next line (`scope = CaptureScope.Window;`). The ternary text still matches, `scope` still
+        // reaches the coordinator, and every element capture is silently processed as a window capture.
+        //
+        // MEASURED: that mutant left the ENTIRE headless suite green at 1050/1050. My own non-vacuity
+        // mutant had DELETED the ternary, which this regex does catch - so the guard was proven against
+        // the wrong mutation. *(AGY-TEST-AUDIT, gap 2 - the peer's mutant was better than mine.)*
+        var assignments = Regex.Matches(code, @"\bscope\s*=(?!=)").Count;
+        Assert.True(assignments == 1,
+            $"expected `scope` to be assigned exactly once in ScreenshotTools (found {assignments}) - a " +
+            "second assignment can shadow the @ref decision while leaving every other check green");
     }
 }
