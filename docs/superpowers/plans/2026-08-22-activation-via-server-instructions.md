@@ -618,9 +618,18 @@ git commit -m "test(install): build InstallStatus fixtures directly instead of v
 
 - [ ] **Step 1: Delete the method and its now-unused member**
 
-Delete the entire `Deploy()` method — the `/// <summary>Returns null on success…` comment at `:28`
-through the closing brace at `:58`. Then delete the `SkillResource` constant, which `Deploy()` was its
-only reader.
+Delete the entire `Deploy()` method, matched by its signature `public string? Deploy()`, together with its
+`/// <summary>Returns null on success…` doc comment. Then delete the `SkillResource` constant, which
+`Deploy()` was the only reader of.
+
+⚠ **Delete by member, not by line range** — see the warning in Task 7 Step 1 for why. **`Remove()` and
+`SkillRoot` must survive** (`CliRouter.cs:319` and `InstallStatus.cs:36`). Verify:
+
+```bash
+rg -n "public string\? Remove\(\)|public string SkillRoot" src/FlaUI.Mcp.Server/Install/ClaudeSkillDeployer.cs
+```
+
+Expected: both still present.
 
 Verify before deleting the constant:
 
@@ -706,14 +715,37 @@ git commit -m "refactor(install): delete dead ClaudeSkillDeployer.Deploy() and i
 
 - [ ] **Step 1: Delete these members, in this order**
 
-Delete each of the following complete members from `src/FlaUI.Mcp.Server/Install/AgyConfigWriter.cs`:
+⛔⛔ **DELETE BY MEMBER, NEVER BY LINE RANGE.** An earlier draft of this plan cited ranges, and two of
+them were wrong in a way that would have silently deleted LIVE code: `DeploySkill()` ends at `:60` but the
+draft said `:36-80`, which spans `RemoveSkill()`'s declaration at `:68`; and it said Install-overload-2 was
+`:105-127`, which spans `Detail()`'s declaration at `:127`. **`RemoveSkill()` and `Detail()` are both
+called by the live `Uninstall()`.** Ranges in a plan go stale the moment anything above them moves — match
+on the signature, delete the whole member including its doc comment, and verify afterwards.
 
-1. `public AgentResult Install(string exePath, IReadOnlyList<string>? args = null)` — `:82-101`
-2. `public AgentResult Install(string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs)` — `:105-127`, together with its `/// <summary>Non-destructive variant…` comment
-3. `private string? DeploySkill()` — `:36-80`, together with its `/// <summary>Drop the static seed…` comment
+Delete each of these complete members from `src/FlaUI.Mcp.Server/Install/AgyConfigWriter.cs`, each together
+with its own `///` doc comment:
+
+1. `public AgentResult Install(string exePath, IReadOnlyList<string>? args = null)`
+2. `public AgentResult Install(string exePath, IReadOnlyList<string> addArgs, IReadOnlyList<string> removeArgs)`
+3. `private string? DeploySkill()`
 4. `private bool EnsurePermission()` — read only by the two `Install` overloads
 5. `private static string[] ReadArgs(JsonObject? entry)` — read only by `Install` overload 2
 6. `private const string SkillResource = …` — read only by `DeploySkill()`
+
+⚠ **These members MUST SURVIVE. Check each one is still present after you delete:**
+
+| Member | Why it survives |
+|---|---|
+| `public AgentResult Uninstall()` | called at `CliRouter.cs:298` |
+| `private string? RemoveSkill()` | called by `Uninstall()` |
+| `private string Detail(string? skillWarning)` | called by `Uninstall()` |
+| `PluginRoot`, `Permission`, `_serversPath`, `_permsPath`, `_pluginsDir` | read by the three above |
+
+```bash
+rg -n "Uninstall\(\)|RemoveSkill\(\)|Detail\(|PluginRoot" src/FlaUI.Mcp.Server/Install/AgyConfigWriter.cs
+```
+
+Expected: all four still present. If any is missing, you deleted too much — restore and redo by signature.
 
 C# does **not** error on an unreachable private method, so the compiler will not find 4-6 for you. Verify
 each before deleting:
