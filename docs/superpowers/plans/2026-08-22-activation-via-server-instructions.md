@@ -726,6 +726,48 @@ rg -n "\.Deploy\(\)" test/FlaUI.Mcp.Tests/Install/ClaudeSkillDeployerTests.cs
 Expected after the rework: **no matches**. Each was an arrange call of the form `d.Deploy();` and becomes
 `SeedSkillTree(cfg);` — note the helper takes the CONFIG DIR, not the deployer.
 
+- [ ] **Step 2c: REPLACE the one guarantee this deletion destroys**
+
+⛔ **`The_deployed_skill_is_the_embedded_seed` is the ONLY test anywhere that checks the CONTENT of a
+shipped `SKILL.md`.** Measured: a repo-wide grep for any other test reading a deployed/staged `SKILL.md`
+and comparing it to source returns **nothing**. Deleting it leaves this hole:
+
+- `SkillLoadLineTests` pins the **repo copies** — it never looks at what the installer actually emits.
+- `CliRouterPluginRegistrationTests` pins that the staged `SKILL.md` **exists** — not what is in it.
+
+So a botched embed — wrong resource name, a truncated extract, a zero-byte file — would ship an empty
+skill, every test would stay green, and **agy's only activation channel would be silently gone.** That is
+precisely the channel Part B exists to protect, so Part C must not quietly widen the hole.
+
+Add this assertion to the existing `Install_generates_staging_artifacts_and_writes_no_agent_config_file`
+test in `test/FlaUI.Mcp.Tests/Install/CliRouterPluginRegistrationTests.cs`, immediately after the existing
+`Assert.True(File.Exists(Path.Combine(staging, "skills", "driving-flaui-mcp", "SKILL.md")));`:
+
+```csharp
+        // Existence is not enough. This is the ONLY check that what the installer EMITS matches the
+        // source of truth. The shipped skill's frontmatter is agy's only activation channel (agy drops
+        // ServerInstructions - measured), so a truncated or empty extract silently removes it while
+        // SkillLoadLineTests, which reads the REPO copies, stays green.
+        Assert.Equal(
+            File.ReadAllText(RepoPaths.At(".claude", "skills", "driving-flaui-mcp", "SKILL.md")),
+            File.ReadAllText(Path.Combine(staging, "skills", "driving-flaui-mcp", "SKILL.md")));
+```
+
+⚠ Compare against `.claude/skills/...` specifically — that is the copy the csproj embeds
+(`FlaUI.Mcp.Server.csproj:13-15`), so it is the true source. Comparing against `plugins/...` would test a
+twin rather than the build input.
+
+- [ ] **Step 2d: Prove THAT gate is not vacuous either**
+
+Temporarily change the embedded-resource logical name in `src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj`
+from `FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md` to
+`FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md.bak`.
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~CliRouterPluginRegistrationTests"`
+Expected: the test **RAN and FAILED** — either on the new content assertion or on the extract throwing.
+Either is a valid red; what matters is that a broken embed can no longer pass. Revert the csproj by
+rewriting the line in place, re-run, confirm PASS.
+
 - [ ] **Step 3: Build and confirm nothing else referenced it**
 
 Run: `dotnet build FlaUI.Mcp.slnx -c Release`
@@ -1079,6 +1121,12 @@ Seats were bespoke this round — the standard palette was exhausted after four 
 |---|---|---|---|
 | 18 | **Adversary of the Reviewer** | ⛔ **Fold 14 — which this same reviewer proposed one round earlier — was BROKEN.** Stripping comments before strings lets one `"http://localhost/"` orphan a quote; the string sweep then runs away and swallows the `AddMcpServer` block. **The gate would fail on a perfectly valid file.** | **MEASURED all three orderings.** comments-then-strings: anchor destroyed by a URL. strings-then-comments: anchor destroyed by a `"` inside a comment. **comments-only: survives both AND still catches the commented-out mutant.** So fold 14's string-stripping is REVERTED; the `AddMcpServer` anchoring from the same fold is KEPT. agy proposed Roslyn — rejected as a dependency for one assertion. The accepted limit is documented in the test. |
 | — | Fold Auditor | — | **no new findings** |
+
+### Round 6 — folded findings
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 19 | **Adversary of the Reviewer** (own) | ⛔ **Fold 2's prune list drops `The_deployed_skill_is_the_embedded_seed`, which MEASURED is the only test anywhere checking the CONTENT of a shipped `SKILL.md`.** `SkillLoadLineTests` reads the REPO copies; `CliRouterPluginRegistrationTests` checks only that the staged file EXISTS. A truncated or empty extract would ship a skill with no frontmatter, every test would pass, and **agy's only activation channel would vanish silently** — defeating Part B via Part C. | New Task 6 Steps 2c/2d: assert the staged `SKILL.md` is byte-equal to the csproj's embedded source (`.claude/skills/...`), plus a mutant that breaks the embed and proves the gate red. |
 
 ⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
 named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
