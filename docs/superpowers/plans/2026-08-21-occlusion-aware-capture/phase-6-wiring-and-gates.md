@@ -950,6 +950,8 @@ git commit -m "test(capture): GDI handle gate - flat across success and the post
 
 **Files:**
 - Test: `test/FlaUI.Mcp.Tests/Capture/OccludedCaptureTests.cs`
+- Create: `test/FlaUI.Mcp.Tests/Capture/OccluderWindow.cs` — **this line was missing** while Step 2
+  creates the file.
 
 - [ ] **Step 1: Write the test**
 
@@ -992,11 +994,31 @@ public class OccludedCaptureTests : IClassFixture<TestAppFixture>
         using var occluder = OccluderWindow.Show(rect);
         await Task.Delay(400);   // let DWM compose the occluder
 
-        // A SCRAPE of the same rect now photographs the occluder -- this asserts the defect exists, so
-        // the PrintWindow assertion below is not passing for some unrelated reason.
+        // ⛔⛔ THE POSITIVE CONTROL, AND IT USED TO BE VACUOUS -- IN THE ONE TEST THAT PROVES THIS
+        // FEATURE WORKS. It read:
+        //
+        //     var scraped = ScreenCapture.CaptureRectangle(...);
+        //     Assert.True(scraped.Png.Length > 0);
+        //
+        // under a comment claiming it "asserts the defect exists, so the PrintWindow assertion below is
+        // not passing for some unrelated reason". `Png.Length > 0` is true of ANY successful capture.
+        //
+        // So if the occluder never actually covered the window -- it failed to show, landed on the wrong
+        // monitor, DWM had not composed it within the delay, or it was created with styles that do not
+        // paint -- then the scrape photographs the TARGET, this assertion passes, the PrintWindow capture
+        // matches the control trivially, and the whole test goes GREEN having proven nothing about
+        // occlusion at all. The guard against a false pass could not detect the one thing it existed to
+        // detect.
+        //
+        // The real control is that the scrape must DIFFER from the control capture. That is what proves
+        // there is something on top of the window for PrintWindow to see through.
         var scraped = ScreenCapture.CaptureRectangle(rect, Array.Empty<Rectangle>(), 0,
             CaptureScope.Window, Array.Empty<CaptureWarning>());
         Assert.True(scraped.Png.Length > 0);
+        using var scrapedBmp = (Bitmap)Image.FromStream(new System.IO.MemoryStream(scraped.Png));
+        Assert.False(SimilarEnough(control!, scrapedBmp),
+            "the SCRAPE still looks like the unoccluded window, so the occluder never covered it - " +
+            "this test would have passed without exercising occlusion at all");
 
         // THE ASSERTION. PrintWindow still returns the target's own content.
         using var occludedCapture = src.Acquire(hwnd, new Size(rect.Width, rect.Height), 5000);
@@ -1025,7 +1047,25 @@ public class OccludedCaptureTests : IClassFixture<TestAppFixture>
 
 - [ ] **Step 2: Write the occluder helper**
 
-Create `test/FlaUI.Mcp.Tests/Capture/OccluderWindow.cs`: a `System.Windows.Forms.Form` on its own STA thread, `FormBorderStyle.None`, `TopMost = true`, `ShowInTaskbar = false`, `BackColor = Color.Magenta`, positioned and sized to the given rect, `IDisposable` closing it. **Model it on `GdiActionOverlay`'s STA-thread-plus-pump structure** (`src/FlaUI.Mcp.Server/Overlay/GdiActionOverlay.cs`) rather than inventing one — read that file first.
+⛔ **DO NOT USE `System.Windows.Forms`. This step used to specify a `Form`, and that contradicts the
+model it points at in the same sentence.** MEASURED: **no project in this repo sets
+`<UseWindowsForms>`** — not the test project, not the server — so a `Form` does not compile without
+adding an entire UI framework to the build for one test helper. And `GdiActionOverlay`, the file this
+step tells you to model, is **raw Win32**: `RegisterClassEx` + `CreateWindowEx` on an STA thread with a
+message pump.
+
+Create `test/FlaUI.Mcp.Tests/Capture/OccluderWindow.cs` as a raw-Win32 top-most window on its own STA
+thread, sized and positioned to the given rect, painting an opaque solid colour, `IDisposable` closing it
+by posting `WM_QUIT` to its thread. **Model it on `GdiActionOverlay`'s STA-thread-plus-pump and teardown
+structure** (`src/FlaUI.Mcp.Server/Overlay/GdiActionOverlay.cs`) — read that file first.
+
+⚠⚠ **MODEL THE THREADING, NOT THE EXTENDED STYLES.** `GdiActionOverlay` is a click-through HUD and is
+created `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`, then calls
+`SetLayeredWindowAttributes(hwnd, 0x000000, 0, LWA_COLORKEY)` so black is transparent. An OCCLUDER wants
+the opposite of most of that: it must PAINT and COVER. Copying the layered/colour-key setup risks a
+window that does not occlude — which, with the corrected positive control above, now FAILS the test
+loudly instead of passing it silently. Keep `WS_EX_TOPMOST` and `WS_EX_TOOLWINDOW`; drop
+`WS_EX_LAYERED`, `WS_EX_TRANSPARENT` and the colour key.
 
 - [ ] **Step 3: Run it**
 
