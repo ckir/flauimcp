@@ -503,13 +503,17 @@ public class ServerInstructionsWiringTests
             @"AddMcpServer\s*\(\s*(FlaUI\.Mcp\.Server\.Install\.)?McpServerConfiguration\.Apply\s*\)",
             ProgramSourceWithoutComments());
 
-    /// A negative gate fails UNSAFE - if its pattern is too rigid it passes while the defect ships. So it
-    /// deliberately matches ANY qualification of the symbol (`[\w.]*`), not just the two spellings this
-    /// file happens to use today.
+    /// This one has to satisfy TWO opposing constraints, and an earlier revision failed each in turn:
+    ///   too RIGID  -> `Install.ActivationPayload.Text` slips past, and a negative gate failing open ships
+    ///                 the defect silently;
+    ///   too LOOSE  -> with string literals no longer stripped, an exception message or log line holding
+    ///                 that assignment breaks the build on perfectly valid code.
+    /// So: ANCHORED on the AddMcpServer call (a stray literal must contain the call too), within a bounded
+    /// window, AND permissive about qualification (`[\w.]*`). Do not drop either half.
     [Fact]
     public void Program_never_configures_instructions_inline()
         => Assert.DoesNotMatch(
-            @"ServerInstructions\s*=\s*[\w.]*ActivationPayload\.Text",
+            @"AddMcpServer[\s\S]{0,300}?ServerInstructions\s*=\s*[\w.]*ActivationPayload\.Text",
             ProgramSourceWithoutComments());
 }
 ```
@@ -638,8 +642,24 @@ Add to `test/FlaUI.Mcp.Tests/Install/SkillLoadLineTests.cs`:
             StringComparison.Ordinal);
         Assert.Contains("what is on the Windows screen", fm, StringComparison.Ordinal);
         Assert.Contains("under a lease", fm, StringComparison.Ordinal);
+
+        // PLATFORM QUALIFIER - cheap, and it matters off-Windows. Unlike ActivationPayload.Core, which is
+        // compiled into a Windows-only binary and therefore cannot reach another OS, this file is portable
+        // markdown: a synced plugin directory carries it to macOS or Linux, where the server cannot start
+        // and the desktop_* tools never appear. Pinning the word keeps the agent's only clue from being
+        // reworded away. It does NOT make that situation good - see the note under this test.
+        Assert.Contains("Windows", fm, StringComparison.Ordinal);
     }
 ```
+
+⚠ **What this pin deliberately does NOT fix.** `SKILL.md` is portable text; the binary is not. A synced
+`~/.claude/plugins` or `~/.gemini/config/plugins` directory carries this skill to macOS or Linux, where the
+MCP server cannot start, no `desktop_*` tool exists, and the description still tells the agent to look for
+itself and not to ask the user. **That is a pre-existing product gap, not one this branch introduces** —
+the description already said this before the pin. It is filed as an anomaly (no platform field in
+`plugin.json`, no runtime OS guard) rather than folded in here, because fixing it means changing the
+plugin manifest and the installer, which is a different change from this one. Pinning the word `Windows`
+is the proportionate mitigation available inside this task.
 
 - [ ] **Step 2: Run to verify it passes against the current wording**
 
@@ -1202,15 +1222,21 @@ ToolSearch.
 addendum-orphan guard) → Task 1 Steps 1 and 3. §D3b (delivered at connect) → recorded in the Task 2
 comment and the Task 9 Step 4 reconnect instruction. §D4 (budget) → Task 1 Step 4, with the measured
 1074/1100 figure. §D5 (a client dropping the field is undetectable) → Task 9 Step 4's warning, and it is
-why Part B exists at all. §5 "the server advertises the core" → Task 3, implemented as the structural
-sweep the spec explicitly permits when a headless test cannot reach the value. §7's measured agy result →
+why Part B exists at all. §5 "the server advertises the core" → Task 3 — and note this **exceeds** what the
+spec settled for. The spec permitted a structural sweep *"if that cannot be reached from a headless
+test"*; two panel rounds proved a sweep cannot work here at all (strip string literals and a URL breaks
+it; do not strip them and an exception message satisfies it), which forced finding a way to reach the
+value. The seam is that way, so the sweep is now a narrow secondary guard rather than the guarantee. §7's measured agy result →
 Part B in full.
 
 **Known gaps, stated rather than hidden.**
 
-1. **Task 3 is structural, not behavioural.** It proves the wiring line is present, not that a client
-   received the text. Task 9 Step 4 is the behavioural check and it is manual. This is the spec's own
-   accepted limit (D5), not an oversight.
+1. **Nothing automated observes that a CLIENT received the instructions.** ⚠ Narrower than it used to be:
+   an earlier revision of this plan had NO behavioural coverage at all, only a regex over `Program.cs`.
+   Round 7 replaced that with a real test against a live `McpServerOptions`, so *what gets configured* is
+   now proven. What remains unobservable is the step after it — whether the client surfaces the field —
+   and that is unobservable **from the server by construction** (spec D5), not a gap this plan could
+   close. Task 9 Step 4 is the manual check, and agy is MEASURED to fail it silently.
 2. **`InstallStatus` reports the agy seed from `AgyPluginsDir`** (`InstallStatus.cs:30`), while the modern
    install registers through the agy CLI, which chooses its own directory. They agree today only because
    both default to `~/.gemini/config/plugins` — an agreement nothing enforces. **Out of scope here**;
@@ -1300,6 +1326,13 @@ Seats were bespoke this round — the standard palette was exhausted after four 
 | 23 | agy Adversary of the Reviewer | Fold 20's anchored NEGATIVE gate is too rigid: `Install.ActivationPayload.Text` (partial qualification) evades it, and **a negative gate fails UNSAFE** — it passes while the defect ships | Pattern widened to match ANY qualification (`[\w.]*`), with the fail-unsafe reasoning recorded beside it |
 | 24 | agy Post-Merge Simulator | ⛔ **Since fold 18 stopped stripping string literals, the POSITIVE gate can be satisfied by a string literal** — and the realistic case is a helpful exception message quoting the required call. With no runtime observation of the core, that sweep was the ONLY safeguard. | ⛔ **Design change, not a patch.** The wiring now goes through a NAMED SEAM (`McpServerConfiguration.Apply`, Task 1b) that a test CALLS: content is proven **behaviourally** against a real `McpServerOptions`, no regex involved. The sweep shrinks to "does `Program.cs` hand over the seam". The two mutants now prove different things, and Step 5 demonstrates the split: with the wiring commented out the behavioural test still PASSES, because `Apply` is correct but unreached. |
 | — | — | **Correction I owe:** the plan claimed Roslyn was "not worth a dependency for one assertion" | **That reason was wrong** — `Microsoft.CodeAnalysis.CSharp` 4.14.0 is ALREADY referenced by the test project. The real reason to prefer the seam is that a parser would still only prove something about TEXT. Corrected in the test's comment. |
+
+### Round 8 — folded findings
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 25 | agy Adversary of the Reviewer | ⛔ **Round 7 un-fixed fold 20.** Rewriting the tests for the seam dropped the `AddMcpServer` anchor from the NEGATIVE gate, so a string literal holding that assignment breaks the build on valid code again — the exact defect fold 20 existed to close. **A regression introduced by a fold, two rounds after the fold it undid.** | Anchor restored **and** kept permissive: `AddMcpServer[\s\S]{0,300}?...[\w.]*ActivationPayload\.Text`. Both halves are now documented as load-bearing, with the two opposing failure modes named so a future edit cannot drop either. |
+| 26 | agy Platform Auditor (new seat) | `SKILL.md` is **portable text while the binary is not**, so a synced plugin dir carries the activation instructions to macOS/Linux, where the server cannot start and no `desktop_*` tool exists — an agent told to look for itself, and not to ask the user, with no tools. Independently rediscovers the operator's own question. | Proportionate mitigation only: the pin now also asserts the description contains **`Windows`**, so the agent's one platform clue cannot be reworded away. The underlying gap (no platform field in `plugin.json`, no runtime OS guard) is **pre-existing, not introduced here**, and is filed as an anomaly rather than folded in — fixing it means changing the manifest and installer. |
 
 ⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
 named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
