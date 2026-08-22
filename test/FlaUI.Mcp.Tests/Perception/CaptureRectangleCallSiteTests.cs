@@ -1,0 +1,158 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Xunit;
+
+namespace FlaUI.Mcp.Tests.Perception;
+
+public class CaptureRectangleCallSiteTests
+{
+    private const string Needle = "ScreenCapture.CaptureRectangle(";
+
+    private static string RepoRoot()
+    {
+        var d = new DirectoryInfo(Directory.GetCurrentDirectory());
+        while (d is not null && !File.Exists(Path.Combine(d.FullName, "FlaUI.Mcp.slnx"))) d = d.Parent;
+        Assert.NotNull(d);
+        return d!.FullName;
+    }
+
+    /// <summary>Blank out comment lines while PRESERVING the line count, so the line numbers this sweep
+    /// reports still match the real file.
+    ///
+    /// ⚠ A source sweep that does not do this is defeated by typing two slashes, and this repo has now
+    /// shipped or nearly shipped that defect FOUR times. `///` starts with `//` so one prefix test covers
+    /// both; `*` covers the interior of a block comment.</summary>
+    private static string BlankComments(string source)
+        => string.Join("\n", source.Split('\n').Select(l =>
+        {
+            var t = l.TrimStart();
+            return t.StartsWith("//", StringComparison.Ordinal) || t.StartsWith("*", StringComparison.Ordinal)
+                ? string.Empty : l;
+        }));
+
+    /// <summary>Every call to the scrape seam, with its FULL argument list — read by balancing
+    /// parentheses across however many physical lines the call happens to span.
+    ///
+    /// ⚠ THIS USED TO BE A PER-LINE CHECK, and that was a booby trap. The sweep required
+    /// `ScreenCapture.CaptureRectangle(` and `CaptureScope.X` to sit on the SAME physical line, so the
+    /// four call sites had to be collapsed to ~200-character lines to satisfy it. Anyone re-wrapping
+    /// them — a formatter, a reviewer, an editor's line-length rule — would have turned this guard red
+    /// with the message "calls CaptureRectangle without naming a CaptureScope" about a call that names
+    /// one perfectly well. A guard whose failure message lies about the cause is worse than no guard.
+    /// Reading the balanced argument list makes the sweep independent of formatting.</summary>
+    private static List<(string File, int Line, string Args)> CallSites(string root)
+    {
+        var sites = new List<(string, int, string)>();
+        foreach (var f in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories))
+        {
+            var text = BlankComments(File.ReadAllText(f).Replace("\r\n", "\n"));
+            for (int i = text.IndexOf(Needle, StringComparison.Ordinal); i >= 0;
+                     i = text.IndexOf(Needle, i + 1, StringComparison.Ordinal))
+            {
+                int open = i + Needle.Length - 1;          // the '(' itself
+                int depth = 0, j = open;
+                for (; j < text.Length; j++)
+                {
+                    if (text[j] == '(') depth++;
+                    else if (text[j] == ')' && --depth == 0) break;
+                }
+                int line = text.Take(i).Count(c => c == '\n') + 1;
+                sites.Add((f, line, text.Substring(open, Math.Min(j, text.Length - 1) - open + 1)));
+            }
+        }
+        return sites;
+    }
+
+    // Every production call site must name its scope EXPLICITLY. There is no safe default: the scope
+    // decides which detector runs, and a caller that inherits one silently gets the wrong answer. The
+    // OCR path (FindTextTools) is the caller this sweep exists for -- it was invisible to the spec until
+    // it was measured, and it is the one most likely to be forgotten again.
+    //
+    // ⚠ FOUR CALL SITES, and the DECLARATION is not among them: it reads
+    // `public static CaptureResult CaptureRectangle(` with no `ScreenCapture.` prefix, so the needle
+    // never matches it. An earlier version asserted "1 declaration + 3 call sites" and would have failed
+    // 4 != 3 even with every call site correctly updated.
+    //
+    // ⚠⚠ THE FIFTH IS A FORWARDER, AND IT CANNOT NAME A LITERAL SCOPE. `WindowCaptureCoordinator`'s
+    // constructor defaults its injectable `_scrape` to `ScreenCapture.CaptureRectangle`, and that default
+    // must be an explicit LAMBDA rather than a method group: `CaptureRectangle` carries an optional sixth
+    // parameter (the `IScreenImageSource?` test seam), so its natural type is the six-argument delegate
+    // and `??` against the five-argument field is a `CS0019`. The lambda receives the scope as a
+    // PARAMETER and passes it straight through, so no `CaptureScope.Something` literal appears -- and the
+    // original assertion below, which demanded that literal at every site, went red on it.
+    //
+    // Relaxing the rule for that site would gut the sweep, so it is pinned by SHAPE instead: the
+    // forwarder must forward, verbatim. Hardcoding a scope there (`..., CaptureScope.Window, warn`) turns
+    // this test red exactly as it should, because that is the silent-default defect the sweep exists to
+    // catch -- it would make every coordinator fallback claim window scope regardless of what was asked.
+    [Fact]
+    public void Every_production_CaptureRectangle_call_names_its_scope()
+    {
+        var calls = CallSites(RepoRoot());
+        // ⚠ FIVE UNTIL TASK 20, FOUR AFTER IT, and the one that vanished is the point. `ScreenshotTools`
+        // used to scrape for window/element scope; Task 20 routed that branch through
+        // `WindowCaptureCoordinator`, which renders the window itself and only reaches a scrape through
+        // the forwarder below. Removing a direct scrape of a NAMED WINDOW is the entire feature, so this
+        // number going DOWN is the change landing, not a test decaying.
+        Assert.Equal(4, calls.Count);
+
+        var forwarders = calls.Where(c =>
+            Path.GetFileName(c.File) == "WindowCaptureCoordinator.cs").ToList();
+        var literal = calls.Except(forwarders).ToList();
+
+        // The coordinator holds exactly ONE such site, and it forwards its scope parameter untouched.
+        var fwd = Assert.Single(forwarders);
+        Assert.Equal("(r, masks, w, sc, warn)", fwd.Args);
+
+        Assert.Equal(3, literal.Count);
+        foreach (var c in literal)
+            Assert.True(Regex.IsMatch(c.Args, @"CaptureScope\.\w+"),
+                $"{Path.GetFileName(c.File)}:{c.Line} calls CaptureRectangle without naming a CaptureScope");
+    }
+
+    // ⚠⚠ THE GUARD MOVED WITH THE CODE IT GUARDS — it did not become unnecessary.
+    //
+    // This used to assert that `ScreenshotTools`' window/element **`CaptureRectangle`** call chose its
+    // scope from `@ref` rather than hardcoding one. Task 20 deleted that call site: the branch now goes
+    // through `WindowCaptureCoordinator`. The old test died with
+    // `InvalidOperationException: Sequence contains no matching element` — a test whose subject no
+    // longer exists, which is exactly the shape that gets "fixed" by deletion and silently drops a guard.
+    //
+    // The DISCRIMINATION still exists and still matters, one layer up: `ScreenshotTools` computes the
+    // scope and hands it to the coordinator. Collapsing that ternary to a constant would tell every
+    // element capture it was a window capture (or the reverse), which changes which detector runs and
+    // which warnings the agent sees. So the guard is retargeted at the surviving decision rather than
+    // retired with the call site it used to sit on.
+    //
+    // Still structural, and deliberately narrow: MEASURED at Task 20, nothing headless reaches this line
+    // — `ScreenshotTools` needs a live UIA walk and a real screen — so there is no behavioural route to
+    // it from this suite.
+    [Fact]
+    public void The_window_element_branch_still_derives_its_scope_from_ref()
+    {
+        var src = File.ReadAllText(Path.Combine(RepoRoot(), "src", "FlaUI.Mcp.Server", "Tools", "ScreenshotTools.cs"));
+        var code = string.Join("\n", src.Split('\n').Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+
+        Assert.True(Regex.IsMatch(code, @"CaptureScope\.Window\s*:\s*CaptureScope\.Element"),
+            "the window/element branch no longer picks its scope from @ref - a constant there would " +
+            "mislabel every capture of the other kind");
+        Assert.True(Regex.IsMatch(code, @"_coordinator\.CaptureAsync\([^;]*\bscope\b"),
+            "the scope is computed but no longer reaches the coordinator");
+
+        // ⛔⛔ AND IT MUST BE ASSIGNED EXACTLY ONCE. The two assertions above can BOTH be satisfied while
+        // the decision is dead: leave the ternary exactly where it is and overwrite the variable on the
+        // next line (`scope = CaptureScope.Window;`). The ternary text still matches, `scope` still
+        // reaches the coordinator, and every element capture is silently processed as a window capture.
+        //
+        // MEASURED: that mutant left the ENTIRE headless suite green at 1050/1050. My own non-vacuity
+        // mutant had DELETED the ternary, which this regex does catch - so the guard was proven against
+        // the wrong mutation. *(AGY-TEST-AUDIT, gap 2 - the peer's mutant was better than mine.)*
+        var assignments = Regex.Matches(code, @"\bscope\s*=(?!=)").Count;
+        Assert.True(assignments == 1,
+            $"expected `scope` to be assigned exactly once in ScreenshotTools (found {assignments}) - a " +
+            "second assignment can shadow the @ref decision while leaving every other check green");
+    }
+}

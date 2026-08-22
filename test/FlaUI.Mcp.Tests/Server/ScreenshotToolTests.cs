@@ -20,7 +20,7 @@ public class ScreenshotToolTests : IClassFixture<TestAppFixture>
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
-        var tools = new ScreenshotTools(perception);
+        var tools = ScreenshotToolsFactory.For(perception);
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
         var result = await tools.DesktopScreenshot(handle.Id);
         Assert.False(result.IsError);
@@ -34,7 +34,7 @@ public class ScreenshotToolTests : IClassFixture<TestAppFixture>
         using var dispatcher = new AutomationDispatcher();
         using var mgr = new WindowManager(dispatcher);
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
-        var tools = new ScreenshotTools(perception);
+        var tools = ScreenshotToolsFactory.For(perception);
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
         var result = await tools.DesktopScreenshot(handle.Id, output: "file");
         Assert.True(result.IsError);

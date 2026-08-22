@@ -8,7 +8,7 @@ namespace FlaUI.Mcp.Server;
 /// v0.10.1: Overlay/OverlayMs drive the opt-in intent overlay (off by default → zero cost).
 /// New params carry defaults so existing `new ServerOptions(ReadOnly:…, AllowElevation:…)` call
 /// sites (tests) compile unchanged.</summary>
-public sealed record ServerOptions(bool ReadOnly, bool AllowElevation, bool Overlay = false, int OverlayMs = 500, bool Autosound = false, bool Presence = false, int NearbySecs = 60, int AwaySecs = 300, string? RedactionRules = null)
+public sealed record ServerOptions(bool ReadOnly, bool AllowElevation, bool Overlay = false, int OverlayMs = 500, bool Autosound = false, bool Presence = false, int NearbySecs = 60, int AwaySecs = 300, string? RedactionRules = null, bool CaptureAuditSignal = false)
 {
     public static ServerOptions FromArgs(string[] args) =>
         new(ReadOnly: args.Contains("--read-only-mode"),
@@ -19,7 +19,8 @@ public sealed record ServerOptions(bool ReadOnly, bool AllowElevation, bool Over
             Presence: args.Contains("--presence"),
             NearbySecs: ParseIntArg(args, "--nearby-secs=", 60),
             AwaySecs: ParseIntArg(args, "--away-secs=", 300),
-            RedactionRules: OptionValue(args, "--redaction-rules"));
+            RedactionRules: OptionValue(args, "--redaction-rules"),
+            CaptureAuditSignal: args.Contains("--capture-audit-signal"));
 
     // "--overlay-ms=N": clamp to >= 0 (a negative would throw in Task.Delay; garbage -> default-then-clamp).
     // Absent -> 500 (the record default), preserved here so FromArgs stays the single source of the value.

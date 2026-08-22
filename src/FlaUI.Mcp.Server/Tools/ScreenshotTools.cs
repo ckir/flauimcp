@@ -12,9 +12,19 @@ namespace FlaUI.Mcp.Server.Tools;
 public sealed class ScreenshotTools
 {
     private readonly PerceptionManager _perception;
-    public ScreenshotTools(PerceptionManager perception) => _perception = perception;
+    private readonly FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator _coordinator;
+    private readonly FlaUI.Mcp.Server.Capture.CaptureAuditSignal _auditSignal;
 
-    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses}. Redacted elements (OS password fields, or an operator rule) are masked at capture time, full-desktop included (window/element scope covers popups; full-desktop is refused if a denylisted credential window is visible — capture a specific window instead). If a redacted element cannot report usable bounds its mask is taken from an ancestor: maskEscalations counts those ELEMENTS (not levels climbed) and escalated lists their {automationId,controlType} so you can tell which control has a broken provider. If no ancestor is usable either, the capture is REFUSED with RedactionUnmaskable rather than returning an all-black image - retry once the UI settles, or capture a different window. NOTE redactions counts rects PAINTED, so when several elements escalate to the SAME ancestor it exceeds the number of distinct black regions you can see; compare it against maskEscalations rather than reading it as a control count. unmaskedProcesses (full-desktop only) lists processes whose windows contributed NO masks - unbindable, usually elevated, or closed mid-capture; NON-EMPTY means the image is NOT fully redacted. output must be 'inline' (file→NotImplemented). Focus the window first (no occlusion handling). Minimized→ElementNotActionable. Width is clamped to 1920.")]
+    public ScreenshotTools(PerceptionManager perception,
+                           FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator coordinator,
+                           FlaUI.Mcp.Server.Capture.CaptureAuditSignal auditSignal)
+    {
+        _perception = perception;
+        _coordinator = coordinator;
+        _auditSignal = auditSignal;
+    }
+
+    [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses,captureMethod,captureWarnings}. captureMethod: 'printWindow' = the window's OWN pixels (occlusion irrelevant); 'screenScrape' = the screen (overlaps are IN the image). Window/element falls back to screenScrape if the target is unresponsive or moving, so CHECK it, never assume it; a fallback re-walks the WHOLE desktop for masks and costs SECONDS. Full-desktop is always screenScrape. printWindow pixels are NOT clickable (the window may be occluded or off-screen): act via desktop_snapshot + desktop_click ref. An occluded Chromium window can suspend rendering: printWindow then returns its last painted frame, possibly very old; re-capturing will not wake it - desktop_focus_window first if freshness matters. Redacted elements (OS password fields or an operator rule) are masked at capture time, full-desktop included. If a redacted element cannot report usable bounds its mask comes from an ancestor: maskEscalations counts those ELEMENTS (not levels climbed); escalated lists their {automationId,controlType}, naming the control with a broken provider. If no ancestor works either, the capture is REFUSED with RedactionUnmaskable rather than returning an all-black image - retry once the UI settles. unmaskedProcesses lists processes whose windows contributed NO masks; on a screenScrape fallback it, maskEscalations and escalated cover the WHOLE DESKTOP and may name processes with no pixels here - empty still means fully redacted. captureWarnings is ALWAYS present (empty when fine); entries are {code,recourse}.")]
     public Task<CallToolResult> DesktopScreenshot(
         [Description("Window handle, e.g. w1. Omit (and omit ref) for the full virtual desktop.")] string? window = null,
         [Description("Element ref to capture (requires window).")] string? @ref = null,
@@ -46,16 +56,59 @@ public sealed class ScreenshotTools
                 var desk = await _perception.AllMaskRectsAsync();
                 escalations = desk.Escalations;
                 unmaskedProcesses = desk.UnmaskedProcesses;
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(vbounds, desk.Rects, maxWidth));
+                result = await Task.Run(() => ScreenCapture.CaptureRectangle(
+                    vbounds, desk.Rects, maxWidth, CaptureScope.FullDesktop,
+                    System.Array.Empty<CaptureWarning>()));
+
+                // ⚠⚠ THE DENYLIST IS CHECKED AGAIN, AFTER THE PIXELS ARE TAKEN, and this path needed it
+                // MORE than the one that already had it. `WindowCaptureCoordinator.ScrapeAsync` gained
+                // this second check in AGY-AFTER round 9; the full-desktop path here kept only the
+                // pre-check, so the identical race stayed open on the branch that photographs the WHOLE
+                // virtual screen. *(AGY-CAPSTONE round 1.)*
+                //
+                // The gap is the mask walk above, and it is not small: MEASURED at ~2900ms on a
+                // 10-window desktop (Task 25 Step 4b), against the "tens to hundreds of milliseconds"
+                // the coordinator's copy of this comment assumes. A credential window that appears in
+                // that gap contributes NO masks -- `AllMaskRectsAsync` SKIPS denylisted windows rather
+                // than masking them (`PerceptionManager.cs`, "IsDenied(w.ProcessName)) continue") -- so
+                // nothing is painted over it and the full desktop is returned with it in the clear.
+                //
+                // Re-checking cannot un-take the pixels; it stops them being RETURNED, which is the part
+                // that matters. Same residual as the coordinator's: a window that appears AND disappears
+                // entirely between the two checks evades both, which is not the exploit -- an attacker
+                // wants it visible while the shutter is open, and a window visible then is still visible
+                // microseconds later here.
+                if (await _perception.DenylistedWindowsVisibleAsync())
+                    throw new ToolException(ToolErrorCode.TargetDenied,
+                        "A credential/denylisted window became visible while the full-desktop capture " +
+                        "was being taken, so the image has been discarded.",
+                        "dismiss the credential window, then retry");
             }
             else
             {
-                var geo = await _perception.ResolveWindowCaptureGeometryAsync(new WindowHandle(window!), @ref);
-                if (geo.Denied) throw new ToolException(ToolErrorCode.TargetDenied, $"Capturing windows owned by '{geo.DeniedProcess}' is blocked.", "capture a non-sensitive window");
-                if (geo.Minimized) throw new ToolException(ToolErrorCode.ElementNotActionable, "Window is minimized; restore it first.", "desktop_window_transform restore, then retry");
-                escalations = geo.Escalations;
-                unmaskedProcesses = System.Array.Empty<string>();
-                result = await Task.Run(() => ScreenCapture.CaptureRectangle(geo.Bounds, geo.MaskRects, maxWidth));
+                // The coordinator owns the walk, the retry loop, the bookend validation walk and the
+                // scrape fallbacks (canonical steps 1-9). The geometry-time refusals it raises are the
+                // SAME ones this method used to raise inline at :54 and :55.
+                var scope = string.IsNullOrEmpty(@ref) ? CaptureScope.Window : CaptureScope.Element;
+                var outcome = await _coordinator.CaptureAsync(new WindowHandle(window!), @ref, scope, maxWidth);
+                result = outcome.Result;
+                // ⚠ From the OUTCOME, not the geometry. On a fallback scrape the masks come from the
+                // DESKTOP walk, so the target walk's escalations would describe a different mask set from
+                // the one painted. *(Driver's solo pass, round 7.)*
+                escalations = outcome.Escalations;
+                // ⚠ NOT hardcoded empty. On the PrintWindow path this IS empty and that is the truth --
+                // the image contains one window and its own mask set covered it. On a FALLBACK SCRAPE the
+                // image contains whatever overlapped the target, and the coordinator's desktop mask walk
+                // is what fills this in. Hardcoding empty there told the agent "everything needing masking
+                // was masked" while background windows sat unmasked in the pixels.
+                // *(AGY-AFTER panel over this plan, round 6, Guard-Consistency Auditor.)*
+                unmaskedProcesses = outcome.UnmaskedProcesses;
+
+                // §2.6, canonical step 10. AFTER the result is final, never before: a signal raised
+                // earlier can appear in the captured pixels on the scrape path.
+                _auditSignal.SignalIfOcclusionBypassed(new WindowHandle(window!),
+                                                       outcome.Geometry.NativeWindowHandle,
+                                                       result.CaptureMethod);
             }
             var dpi = DpiHelper.ScaleForPoint(result.X, result.Y);
             // A1: maskEscalations counts ELEMENTS whose own rect was unusable and whose mask therefore came
@@ -80,7 +133,16 @@ public sealed class ScreenshotTools
                 // above. A NON-EMPTY list means this image is NOT fully redacted: those processes' windows
                 // are in the pixels and their redactions are not. Full-desktop only; a named window that
                 // cannot be resolved throws instead of degrading.
-                unmaskedProcesses
+                unmaskedProcesses,
+                // Which backend produced these pixels. The two scopes now use different mechanisms and a
+                // caller comparing images needs to know which it holds. camelCase, matching every other
+                // field here.
+                captureMethod = result.CaptureMethod,
+                // ALWAYS present, EMPTY in the normal case — the unmaskedProcesses idiom, for the same
+                // AB-9 reason: a diagnostic that appears only on failure teaches consumers to ignore its
+                // absence. Entries are {code, recourse} objects: `code` is what you branch on, `recourse`
+                // is what to do instead.
+                captureWarnings = result.CaptureWarnings.Select(w => new { code = w.Code, recourse = w.Recourse }),
             });
         });
 

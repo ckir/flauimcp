@@ -647,3 +647,78 @@ injection cure. These are stable, documented behaviors — reference, not backlo
 - The v1 line was drawn to reach a **working, resilient server fast**, then add reactive/perception
   superpowers once the core was proven. With v1 feature-complete, the emphasis shifts to
   *provable correctness* (Track A) before new surface (Track B).
+
+### 17. A hung-window `PrintWindow` capture leaks for as long as the target lives — the containments bound the multiplier, nothing reclaims
+
+`PrintWindow` sends `WM_PRINT` synchronously to the target, so a target whose message loop is blocked
+blocks the call, and a blocked Win32 call cannot be cancelled. Item 8 ships two CONTAINMENTS — a dedicated
+background thread so the leak is a thread rather than a CLR threadpool slot, and a per-HWND circuit
+breaker so N captures of a hung window cost one leak rather than N. **Neither reclaims anything in
+process:** the blocked call keeps its thread, its HDC, its GDI bitmap and its managed bitmap for as long
+as the **target** process stays alive and wedged.
+
+MEASURED in Phase 0: three abandoned calls took GDI from 0 to 9 with no ceiling, and everything was
+released on either exit — the target's message loop resuming, or the target process being killed
+(within **130 ms**, GDI back to `0`). Treat it as unbounded anyway: neither event is under this server's
+control. The heading of this item previously said "leaks permanently", which the same measurement
+refuted.
+
+⚠ **AND THE BREAKER BOUNDS THE MULTIPLIER, NOT THE TOTAL — the cross-window sum is UNBOUNDED.** It is
+keyed **per-HWND**, so it makes N captures of one hung window cost one leak instead of N. Across **M
+distinct** hung windows the server still pays M concurrent leaks, and a per-HWND breaker is blind to
+that sum. In a server built to run for weeks, that is the accumulation nothing contains. *(AGY-AFTER
+panel, round 1, Cascade Analyst — confirmed against the plan's own text, not a hypothetical. The panel
+also asserted "20 hung windows = ~660 MB"; that figure was never measured by anyone and is deliberately
+NOT repeated here — the structural finding stands without it.)*
+
+The fix that DOES reclaim is running the acquisition in a sacrificial out-of-process worker terminated on
+timeout, letting the OS take the handles back. It costs IPC, bitmap serialization across a process
+boundary, child-process lifetime management, and a second DPI-aware CLR process that must be on the right
+desktop and session. Deliberately not built in item 8 — see that spec's ratification item 3, where the
+operator accepted the containments and staged this.
+
+Build it if the containments prove insufficient in practice.
+
+### 18. The OCR path scrapes without the denylist guard — same hole item 8 closed on its own fallbacks
+
+`desktop_find_text` and `desktop_wait_for_text` capture via `ScreenCapture.CaptureRectangle`
+(`FindTextTools.cs:62`, `:110`) with a mask set walked for the TARGET WINDOW ONLY. If a denylisted
+credential window overlaps the target, its pixels land in the scrape completely unmasked — **and this path
+then OCRs them, returning the text in the response.** `ScreenshotTools.cs:38` refuses a full-desktop
+capture outright when any denylisted window is visible; that guard sits inside the full-desktop branch and
+has never covered this path.
+
+**Pre-existing** — item 8 did not create it. Item 8 closed the identical hole on its OWN new fallback
+paths (`WindowCaptureCoordinator.ScrapeAsync`), which is what made the omission here visible.
+
+**Deliberately not fixed in item 8**, for a stated cost reason rather than scope discipline:
+`desktop_wait_for_text` re-resolves geometry on every poll at a 750ms cadence, so adding a
+`DenylistedWindowsVisibleAsync()` call — a full window enumeration — to that path would run it several
+times a second for the whole wait. Closing this needs a cheaper predicate (a cached denylist snapshot with
+a short TTL, or a check hoisted out of the poll loop), which is its own small design.
+
+Found by the AGY-AFTER panel over the item-8 plan, round 5, Guard-Consistency Auditor.
+
+### 19. The OCR path has no bookend walk, so a mask can be stale in CONTENT rather than position
+
+`desktop_find_text` / `desktop_wait_for_text` take mask rects from a UIA walk and pixels from
+`CaptureRectangle` afterwards. Item 8 gave that path two cheap guards — a degenerate-window refusal and a
+`WindowSizeChanged` resize check — but both look at the WINDOW. They do not detect a redact-worthy
+ELEMENT whose own rectangle changed while the window's did not: an auto-sizing control that grew, or an
+element that reflowed within a constant window size. The mask is then correctly positioned for the old
+extent and too small for the new one, and **this path OCRs what it captures**, so the newly-exposed text
+is returned as a string.
+
+**The screenshot path does not have this gap.** §2.5's bookend validation walk re-walks after the capture
+and compares the mask set as `(X, Y, W, H)` normalised to the window origin, so a grown or moved element
+rect trips it and forces a retry. The OCR path has no equivalent.
+
+**Deliberately not fixed in item 8, for a stated cost reason rather than scope discipline:** the bookend is
+a second full geometry walk, and `desktop_wait_for_text` re-resolves geometry on every poll at a 750ms
+cadence. Adding a walk per poll would roughly double the cost of the polling loop. Closing this needs
+either a cheaper element-level freshness check or a bookend applied only to `desktop_find_text`'s
+single-shot path, which is its own small design.
+
+Found by the AGY-AFTER panel over the item-8 plan, round 12, Leak Hunter. ⚠ The same finding also claimed
+the WINDOW-scope `printWindow` path leaks this way; that half was **refuted by trace** — the bookend
+catches it.

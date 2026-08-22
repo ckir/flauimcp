@@ -64,7 +64,7 @@ public class RedactionOracleTests : IClassFixture<TestAppFixture>
         using var mgr = new WindowManager(dispatcher);
         await mgr.OpenByPidAsync(_app.Process.Id); // ensure the TestApp window is bound and on screen
 
-        var result = await new ScreenshotTools(Perception(mgr)).DesktopScreenshot();
+        var result = await ScreenshotToolsFactory.For(Perception(mgr)).DesktopScreenshot();
 
         Assert.False(result.IsError);
         var meta = result.Content.OfType<TextContentBlock>().Single().Text;
@@ -141,7 +141,7 @@ public class RedactionOracleTests : IClassFixture<TestAppFixture>
         using var mgr = new WindowManager(dispatcher);
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
 
-        var result = await new ScreenshotTools(Perception(mgr)).DesktopScreenshot(window: handle.Id);
+        var result = await ScreenshotToolsFactory.For(Perception(mgr)).DesktopScreenshot(window: handle.Id);
 
         Assert.False(result.IsError);
         var meta = result.Content.OfType<TextContentBlock>().Single().Text;
