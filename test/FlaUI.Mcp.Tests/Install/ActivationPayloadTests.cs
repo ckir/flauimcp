@@ -143,7 +143,14 @@ public class ActivationPayloadTests
             Assert.Contains(line, ActivationPayload.Text, StringComparison.Ordinal);
 
         // The split lease line: both halves must still be there, on their respective sides.
-        Assert.Contains("all need a lease", ActivationPayload.Core, StringComparison.Ordinal);
+        // ⚠ Pins the CORRECTED claim, not merely the words "need a lease". The original sentence said
+        // the tab read "all need a lease", which is measurably FALSE (GuardWrite tests only
+        // options.ReadOnly; InputGuard is not on that call path). A loosened assertion would have left
+        // the corrected wording pinned by nothing, so both halves are asserted: the true lease boundary,
+        // and the disturbance warning that stops the correction reading as "the tab read is free".
+        Assert.Contains("Typing, clicking and dragging need a lease", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.Contains("reading a BACKGROUND terminal tab does not", ActivationPayload.Core, StringComparison.Ordinal);
+        Assert.Contains("but switches tabs", ActivationPayload.Core, StringComparison.Ordinal);
         Assert.Contains("driving-flaui-mcp skill", ActivationPayload.Addendum, StringComparison.Ordinal);
     }
 }

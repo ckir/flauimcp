@@ -49,7 +49,20 @@ public static class ActivationPayload
         "Read-only perception needs no lease and cannot disturb the user: desktop_list_windows(includeHandles:true) then desktop_snapshot wN then desktop_get_text wN eN.",
         // The lease BOUNDARY is a core safety rule. The pointer to the skill that implements it is
         // client-specific and lives in the Addendum (spec D1) - so the original single line is SPLIT.
-        "Typing, clicking, dragging, or reading a BACKGROUND terminal tab all need a lease.",
+        //
+        // ⚠ MEASURED 2026-08-22, and this wording is a CORRECTION - do not "restore" the older, tidier
+        // sentence that grouped the tab read in with the leased actions. Reading a background terminal
+        // tab does NOT need a lease: ToolResponse.GuardWrite (ToolResponse.cs:60-68) tests
+        // options.ReadOnly and nothing else, and InputGuard - which raises InputNotLeased - is absent
+        // from the whole ContentTools.DesktopReadTerminalTab -> PerceptionManager.ReadTerminalTabAsync
+        // path, whose pattern actions are lease-exempt by design (spec S3.1). Verified live: the read
+        // succeeded while desktop_input_status reported leaseStatus=locked, secondsRemaining=0.
+        // The overstatement was not harmless - it twice caused a driver to decline reading a background
+        // tab whose contents it needed. But the tab read DOES select the tab, so it is not free either,
+        // and the preceding line has just promised that lease-free perception "cannot disturb the user".
+        // Hence: state the true lease boundary AND keep the disturbance warning. Both halves are load-
+        // bearing, and every wording that keeps them measured 1101/1100 except this one (1098/1100).
+        "Typing, clicking and dragging need a lease; reading a BACKGROUND terminal tab does not, but switches tabs.",
     });
 
     /// <summary>The Claude-Code-specific half: the concrete deferred-tool load call, its fallback, AND
@@ -58,7 +71,8 @@ public static class ActivationPayload
     public static readonly string Addendum = string.Join("\n", new[]
     {
         // FIRST, deliberately: in the recomposed Text this line lands immediately after the core's
-        // "...all need a lease." line, so "those" keeps its referent. Moving it to the END of the
+        // "...but switches tabs." line, so "those" keeps its referent - it points at the four
+        // user-disturbing operations that line names, all of which the skill covers. Moving it to the END of the
         // addendum silently re-points "those" at the read-only tools named in the fallback line - tools
         // the core has just said need NO lease. Order is load-bearing here, not cosmetic.
         "For those, use the driving-flaui-mcp skill.",
