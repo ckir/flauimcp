@@ -613,7 +613,15 @@ public sealed class WindowCaptureCoordinator
 /// cancelled, so nothing in-process can take them back. MEASURED (Phase 0): they are released when the
 /// target's message loop resumes, and within 130ms of the target process exiting. Treat that as
 /// unbounded, because neither event is under this server's control. What this bounds is the
-/// MULTIPLIER: N captures of a hung window cost ONE leak instead of N. Operator ratification of
+/// MULTIPLIER — for SERIALIZED captures: once the first has timed out, `Trip()` has run and every later
+/// capture of that window is diverted, so N sequential captures cost ONE leak instead of N.
+///
+/// ⛔ CONCURRENT captures that arrive INSIDE the first timeout budget are NOT bounded, and this summary
+/// used to say "N captures" without that qualifier. MEASURED (AGY-CAPSTONE round 1): five overlapping
+/// requests staggered 20ms apart inside a 200ms budget produced FIVE acquisitions, not one. No timeout
+/// has been recorded yet at that point, so `IsTripped` is false, and `AnotherAcquisitionIsStuck` cannot
+/// help — see its own summary below. The exposure is therefore bounded by how many requests arrive
+/// within one timeout budget, not by this class. Operator ratification of
 /// 2026-08-21 accepted that trade explicitly; the out-of-process worker that would actually reclaim is
 /// filed as ROADMAP debt.</summary>
 public sealed class CaptureCircuitBreaker
@@ -647,7 +655,25 @@ public sealed class CaptureCircuitBreaker
     /// ⚠ It deliberately does NOT divert merely because another acquisition is in flight. Two agents
     /// capturing the same HEALTHY window concurrently is ordinary, and those calls finish in milliseconds;
     /// diverting them to a scrape would reintroduce occlusion for a window that was working fine. Only an
-    /// acquisition that has already exceeded the whole timeout budget is evidence of a hang.</summary>
+    /// acquisition that has already exceeded the whole timeout budget is evidence of a hang.
+    ///
+    /// ⛔⛔ UNDER THE PRODUCTION CLOCK THIS PREDICATE IS VERY NEARLY DEAD, AND THE COMMENT ABOVE USED TO
+    /// IMPLY OTHERWISE. It can only return true if a caller observes an in-flight acquisition that has
+    /// ALREADY outlived the budget — but an acquisition ENDS at the budget: `Acquire` does
+    /// `Join(timeoutMs)`, and the coordinator's `finally` calls `EndAcquisition` the moment that returns.
+    /// So the entry is removed at almost exactly the instant it becomes "stuck", leaving a window of
+    /// microseconds in which this can fire. By the time it closes, `Trip()` has run and `IsTripped`
+    /// covers the window anyway.
+    ///
+    /// MEASURED (AGY-CAPSTONE round 1): five requests for one hung window, staggered 20ms apart inside a
+    /// 200ms budget, produced **five** acquisitions — five blocked threads, five HDCs, five bitmaps. The
+    /// guard prevented none of them. See `BreakerConcurrencyProbe`. The shipped test that appears to
+    /// prove the opposite passes only under an INJECTED clock advanced while the acquisition is still
+    /// blocked, which is a state the real clock cannot produce.
+    ///
+    /// Fixing it properly means a different mechanism (a per-HWND gate, or diverting on a suspicion
+    /// threshold well below the budget), which changes shipped behaviour and is an operator call. It is
+    /// left as-is and described honestly rather than quietly relied upon.</summary>
     public bool AnotherAcquisitionIsStuck(IntPtr hwnd, TimeSpan budget)
         => _inFlight.TryGetValue(hwnd, out var started) && _clock() - started > budget;
 
