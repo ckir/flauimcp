@@ -173,4 +173,38 @@ public class SkillLoadLineTests
         var desc = Frontmatter(rel).Split('\n').First(l => l.StartsWith("description:", StringComparison.Ordinal));
         Assert.True(desc.Length <= 600, $"{rel}: description is {desc.Length} chars (budget 600)");
     }
+
+    /// ⚠ THE LOAD-BEARING TEST FOR agy. MEASURED 2026-08-22: agy receives `InitializeResult.instructions`
+    /// and does NOT surface it, so ActivationPayload.Core never reaches it. This description is agy's
+    /// ONLY activation channel. Rewording it freely is how the channel disappears silently.
+    ///
+    /// It pins the BEHAVIOURAL CORE, not one sentence: the anti-delegation rule, the trigger conditions
+    /// that make a skill-matching client fire at all, and the lease boundary. Pinning only the
+    /// prohibition would leave the other two unguarded on the one client that has nothing else.
+    ///
+    /// The sibling frontmatter tests above are NOT this guard: they check topic cues, a process token and
+    /// a length budget - every one of which a rewrite that deletes the anti-delegation rule would still
+    /// satisfy. Measured before writing this: `rg "rather than asking the user" src/ test/` matched only
+    /// compiled .dll artifacts that embed the skill as a resource, never a source assertion.
+    ///
+    /// If you are changing the wording deliberately, change this test in the same commit and say why.
+    [Theory]
+    [MemberData(nameof(BothCopies))]
+    public void The_description_carries_the_activation_behavioural_core(string rel)
+    {
+        var fm = Frontmatter(rel);
+
+        Assert.Contains("rather than asking the user to observe or operate their desktop for you", fm,
+            StringComparison.Ordinal);
+        Assert.Contains("what is on the Windows screen", fm, StringComparison.Ordinal);
+        Assert.Contains("under a lease", fm, StringComparison.Ordinal);
+
+        // PLATFORM QUALIFIER - cheap, and it matters off-Windows. Unlike ActivationPayload.Core, which is
+        // compiled into a Windows-only binary and therefore cannot reach another OS, this file is portable
+        // markdown: a synced plugin directory carries it to macOS or Linux, where the server cannot start
+        // and the desktop_* tools never appear. Pinning the word keeps the agent's only clue from being
+        // reworded away. It does NOT make that situation good - it is filed as a tracked anomaly, because
+        // fixing it means changing the plugin manifest and the installer, a different change from this.
+        Assert.Contains("Windows", fm, StringComparison.Ordinal);
+    }
 }
