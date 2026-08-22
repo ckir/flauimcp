@@ -741,3 +741,48 @@ cries wolf gets overridden. Fix direction: run the installer-permissions suite r
 ordering to reproduce, rather than relaxing the assertion.
 
 Filed from a captured anomaly at triage, 2026-08-22.
+
+### 21. `uninstall --agent agy` destroys a same-named MCP registration the plugin never created
+
+MEASURED 2026-08-22. The user had `flaui-mcp` registered in agy's `mcp_config.json` with
+`"disabled": true` — a deliberate configuration, made through `agy mcp add`/`disable`, entirely separate
+from the plugin. Running `agy plugin uninstall flaui-mcp` **deleted that entry.** It was restored from a
+backup taken minutes earlier; without the backup the user's deliberate choice was simply gone.
+
+The path is reachable from the product: `CliRouter.cs:301` calls `AgyPluginRegistrar.Unregister()` on the
+`uninstall --agent agy` branch, and that is what invokes agy's plugin uninstall. agy matches by NAME, not
+by provenance, so any MCP entry sharing the plugin's name is collateral — whether or not the plugin
+created it.
+
+⚠ **This is the same defect shape as the release-tooling destroyer recorded above in item 12's neighbour
+entry** — an idempotency/uninstall sweep running a package manager's uninstall with a BARE plugin name,
+which matched a copy the user owned. Both subsystems were individually correct; the damage lived in the
+name collision. That one cost a user's disabled plugin. This is its agy twin, and it is unfixed.
+
+Fix direction: before unregistering, record whether the MCP entry pre-existed our install (the installer
+already keeps a state dir for exactly this kind of restore marker), and restore it afterwards — or scope
+the uninstall so it cannot reach an entry we did not write.
+
+### 22. `FLAUI_MCP_AGY_PLUGINS_DIR` does not isolate a real agy install, though its name says it does
+
+MEASURED 2026-08-22. An `install --agent agy` run with `FLAUI_MCP_AGY_PLUGINS_DIR` pointed at an empty
+scratch directory left that directory **empty** and created `~/.gemini/config/plugins/flaui-mcp` in the
+user's real profile.
+
+The variable is not doing what its name implies. `ResolvePaths` (`CliRouter.cs:263`) still resolves it, but
+on the modern path it only feeds the two LEGACY migration sweeps — `AgyConfigWriter.Uninstall()` and
+`RemoveStrayAgyPluginMcpJson`. Where the plugin actually lands is decided by
+`AgyPluginRegistrar.Register(stagingDir)` (`:300`), which shells out to the real `agy` CLI; agy copies the
+staged directory into its own plugins dir and ignores our variable entirely.
+
+The unit tests are not exposed, because they stub the invoker (`FLAUI_MCP_FAKE_AGY_PRESENT`) and never
+reach the real CLI. The exposure is a human or agent running the shipped binary and believing the
+`FLAUI_MCP_*` family sandboxes it — the sibling comment on `FLAUI_MCP_DATA_DIR` says that family exists
+"so tests never touch the real `~/.flaui-mcp`", which reads as a general isolation guarantee it no longer
+provides here.
+
+Found while trying to measure `DeploySkill()` in a sandbox for the activation-instructions spec; the
+"sandboxed" run mutated the real agy profile and had to be reverted by hand.
+
+Fix direction: either honour the variable on the modern path (stage and register into it) or rename/retire
+it and make the install refuse to run against a real agy when an isolation variable is set.

@@ -38,12 +38,18 @@ MEASURED:
    installed flaui-mcp desktop_* tools rather than asking the user to observe or operate their desktop for
    you."* So a second channel exists.
 
-   But it is **best-effort, and on this machine it is ABSENT.** `DeploySkill()` is documented never to
-   throw — it *"degrades to a warning rather than denying the user a working server"*. MEASURED: agy's
-   plugin dir `~/.gemini/config/plugins` holds ten plugins and **no `flaui-mcp`**, while `agy mcp list`
-   shows the `flaui-mcp` server registered. **A registered server with no skill and no hook is an agent
-   holding fifty tools with zero framing** — the exact end state this spec exists to prevent, arrived at
-   through a channel the spec did not know about.
+   But it is **best-effort**, and it is worth knowing what that looks like. MEASURED: agy's plugin dir
+   `~/.gemini/config/plugins` held nine plugins and **no `flaui-mcp`**, while `agy mcp list` showed the
+   `flaui-mcp` server registered but **disabled**. ✅ **The operator has confirmed that state is
+   DELIBERATE** — they turned flaui-mcp off for agy on purpose — so it is not a live defect on this
+   machine and must not be filed as one.
+
+   It still matters for the case this spec is about, which is a NEW user who installs and does not turn
+   anything off. `DeploySkill()` is documented never to throw — it *"degrades to a warning rather than
+   denying the user a working server"* — so if seeding fails there, the result is a registered server
+   with no skill and no hook: **an agent holding fifty tools with zero framing**, reached silently. That
+   is the end state this spec exists to prevent, arrived at through a channel the spec did not know
+   about, and hardening it is in scope alongside the wiring.
 3. **Silent hook failure.** A moved exe, a broken path, a disabled hook: no guidance, no error, no
    fallback.
 
