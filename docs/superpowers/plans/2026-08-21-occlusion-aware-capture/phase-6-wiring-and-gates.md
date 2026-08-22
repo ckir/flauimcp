@@ -1010,8 +1010,13 @@ public class OccludedCaptureTests : IClassFixture<TestAppFixture>
         // occlusion at all. The guard against a false pass could not detect the one thing it existed to
         // detect.
         //
-        // The real control is that the scrape must DIFFER from the control capture. That is what proves
-        // there is something on top of the window for PrintWindow to see through.
+        // ⚠⚠ AND THE OBVIOUS FIX -- compare the scrape to the PrintWindow `control` -- IS ALSO INERT.
+        // MEASURED with the occluder shrunk to 1x1 so it covers nothing: the test still passed, because
+        // a PrintWindow render and a screen scrape of the same window at the same size agree on
+        // **0.000** of the sampled pixels. Different backends; the comparison can never fail.
+        //
+        // Compare LIKE WITH LIKE: take a scrape BEFORE the occluder and one AFTER, and require them to
+        // differ. Same backend, so the only thing that can have changed is the occluder.
         var scraped = ScreenCapture.CaptureRectangle(rect, Array.Empty<Rectangle>(), 0,
             CaptureScope.Window, Array.Empty<CaptureWarning>());
         Assert.True(scraped.Png.Length > 0);
