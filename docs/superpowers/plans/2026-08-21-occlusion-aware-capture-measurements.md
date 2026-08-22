@@ -689,3 +689,42 @@ Task 23's acceptance criterion originally demanded flat handles after "a timeout
 have required a test that must fail, and the only way to make it pass is an in-process reclaim of what a
 blocked call holds — which is impossible, and is the whole reason ROADMAP 17 exists. Corrected in the
 plan before execution.
+
+## The FALLBACK's end-to-end cost (Task 25 Step 4b)
+
+The fallback path grew expensive across panel rounds 6-9 — it now performs a full-desktop redaction walk
+(`AllMaskRectsAsync`, a UIA descendant walk per visible window) plus two denylist enumerations, on a
+request that has already spent its retry budget — and nobody had timed it. Measured by
+`test/FlaUI.Mcp.Tests/Capture/FallbackCostMeasurement.cs`.
+
+| | measured |
+|---|---|
+| visible windows during the run | **10** |
+| `AllMaskRectsAsync` alone | **2864 ms** |
+| 2 × `DenylistedWindowsVisibleAsync` | **6 ms** |
+| fallback, excluding the timeout wait | **3559 ms** |
+| one timeout wait (`CaptureRetryOptions.Default.TimeoutMs`) | 1500 ms |
+| **end to end** | **~5059 ms** |
+
+**The desktop walk IS the cost: 2864 of 3559 ms, and the denylist checks are noise at 6 ms.** The
+remaining ~700 ms is the geometry walk plus the scrape and encode.
+
+⚠ **THIS IS A LOWER BOUND, NOT A TYPICAL FIGURE.** The plan asked for "a dozen or more visible windows, at
+least one Chromium-family"; the run had **10** and the browser mix was not controlled. `AllMaskRectsAsync`
+walks every visible window's descendants, so the number grows with the desktop. Do not quote ~5 s as a
+ceiling.
+
+⚠ **METHOD DEVIATION, DISCLOSED.** The plan says to force the timeout with the Task 1 `HangProbe` fixture.
+This staged it with a source that reports a timeout immediately instead. What is being measured — the
+desktop walk the fallback performs — is identical either way, and a really-hung window would leak a
+blocked thread plus 3 GDI objects for the lifetime of the hung process (risk 2b above). The timeout wait
+it skips is a known constant and is added back in the table rather than paid.
+
+⚠ **NOTE THE TIMEOUT PATH DOES NOT RETRY.** `CaptureAsync`'s `TimedOut` arm trips the breaker and falls
+back immediately; the 3-attempt budget applies to the RESIZE path. So a hung-window fallback is one
+timeout wait plus the walk, not `MaxAttempts × TimeoutMs` plus the walk.
+
+**NO PASS/FAIL THRESHOLD, DELIBERATELY.** The walk cannot be bounded without scraping a PARTIAL mask set,
+which is the leak it exists to close — the honest options are "pay it" or "refuse". **OPERATOR
+DISPOSITION REQUIRED:** whether the tool description must warn about the cost, and whether the fallback
+should be gated behind an opt-in on very busy desktops.
