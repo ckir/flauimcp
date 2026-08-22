@@ -130,12 +130,25 @@ public class CaptureCircuitBreakerTests
         Assert.Equal(1, src.Calls);   // still short-circuited; it refused rather than scraping
     }
 
-    // ⚠⚠ THE BREAKER MUST BOUND CONCURRENT CAPTURES, NOT ONLY SERIALIZED ONES. Trip() runs AFTER a
-    // timeout elapses, so overlapping requests for the same hung window would all read IsTripped as
-    // false, all call Acquire, all block, and all leak -- N threads and N bitmaps for one window,
-    // defeating the containment this class exists to provide.
+    // ⛔⛔ THIS TEST IS SEQUENTIAL, NOT CONCURRENT, AND ITS NAME SAID OTHERWISE. It was called
+    // `Overlapping_captures_of_one_hung_window_cost_ONE_acquisition_not_N`, under a comment claiming it
+    // proved the breaker "must bound CONCURRENT captures, not only SERIALIZED ones".
+    //
+    // The requests below do not overlap. `CaptureAsync` has no true async yield before `source.Acquire`
+    // -- `_walk` returns an already-completed `Task.FromResult` and `CaptureWindow` is synchronous -- so
+    // `var first = c.CaptureAsync(...)` BLOCKS this thread inside the fake's `gate.Wait(5000)` and does
+    // not return until it finishes. `second` and `third` therefore run strictly AFTER `first` completed,
+    // and they divert because `Trip()` has already run and `IsTripped` is true.
+    //
+    // MEASURED: making `AnotherAcquisitionIsStuck` return a constant `false` leaves ALL SEVEN tests in
+    // this file green. Nothing here exercises the concurrent guard at all.
+    // *(AGY-CAPSTONE round 3, finding 1.)*
+    //
+    // What it DOES prove, which is worth keeping: SEQUENTIAL captures of a window that has already timed
+    // out are bounded to one acquisition. For the concurrent reality see `BreakerConcurrencyProbe`, which
+    // measures five overlapping requests producing FIVE acquisitions under the production clock.
     [Fact]
-    public async Task Overlapping_captures_of_one_hung_window_cost_ONE_acquisition_not_N()
+    public async Task Sequential_captures_after_a_timeout_cost_ONE_acquisition_not_N()
     {
         var W = new Rectangle(0, 0, 400, 300);
         // Blocks until released, so all three requests genuinely overlap.
