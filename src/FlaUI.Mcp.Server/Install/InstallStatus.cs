@@ -147,12 +147,24 @@ public static class InstallStatus
     {
         var legacySkill = Path.Combine(skillRoot, "skills", "driving-flaui-mcp", "SKILL.md");
         var legacyNote = File.Exists(legacySkill)
-            // ⚠ This used to say "no longer read; safe to delete". That was FALSE and dangerously
-            // reassuring: this class's own doc records that Claude Code AUTO-LOADS that layout as
-            // `flaui-mcp@skills-dir` at user scope, so a surviving copy is a SECOND active driving skill
-            // beside the plugin-shipped one, not inert residue. It is only ever present when the
-            // install-time cleanup failed, which is exactly when the operator needs to be told to act.
-            ? $" (a retired copy from the old skill-directory model still sits at {skillRoot} — Claude auto-loads it as a SECOND copy of the driving skill; delete it)"
+            // ⚠ THE WORDING HERE HAS BEEN WRONG IN BOTH DIRECTIONS. Keep it modal.
+            //
+            // It first said "no longer read; safe to delete" — FALSE and reassuring in exactly the wrong
+            // direction: this class's own doc records that Claude Code auto-loads that layout as
+            // `flaui-mcp@skills-dir` at user scope, and the note only ever appears when install-time
+            // cleanup FAILED, which is precisely when the operator must act.
+            //
+            // The correction then over-swung to "auto-loads it as a SECOND copy", which is wrong in two
+            // reachable states: this note is appended to ALL FOUR status branches below, so it fires
+            // alongside "NOT deployed — plugin not registered" (where a survivor is the ONLY copy, not a
+            // second one) and alongside CliNotFound (where we just admitted we could not check). And
+            // `Remove()` deletes recursively with no ordering guarantee, so a partial failure can drop
+            // `.claude-plugin/plugin.json` while a locked SKILL.md survives — leaving a tree Claude will
+            // NOT load, which makes any unconditional "it is active" claim false too.
+            //
+            // So: assert the RISK and the ACTION, never a load state we cannot know here. "delete it"
+            // is the correct instruction in every one of those states.
+            ? $" (a retired copy from the old skill-directory model still sits at {skillRoot} — Claude can auto-load it as a duplicate driving skill; delete it)"
             : "";
 
         return claudePluginStatus switch
