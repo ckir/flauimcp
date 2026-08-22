@@ -62,6 +62,14 @@ public class CliRouterPluginRegistrationTests : IDisposable
         Assert.True(File.Exists(Path.Combine(staging, ".claude-plugin", "marketplace.json")));
         Assert.True(File.Exists(Path.Combine(staging, "skills", "driving-flaui-mcp", "SKILL.md")));
 
+        // Existence is not enough. This is the ONLY check that what the installer EMITS matches the
+        // source of truth. The shipped skill's frontmatter is agy's only activation channel (agy drops
+        // ServerInstructions - measured), so a truncated or empty extract silently removes it while
+        // SkillLoadLineTests, which reads the REPO copies, stays green.
+        Assert.Equal(
+            File.ReadAllText(RepoPaths.At(".claude", "skills", "driving-flaui-mcp", "SKILL.md")),
+            File.ReadAllText(Path.Combine(staging, "skills", "driving-flaui-mcp", "SKILL.md")));
+
         // NO hand-written AGY config: the rework registers agy/claude via their CLIs, not a config file.
         // The GENERIC writer is deliberately left unchanged (it has no CLI to register with — its written
         // mcpServers snippet IS the mechanism), and --config collapses GenericPath onto this same path, so

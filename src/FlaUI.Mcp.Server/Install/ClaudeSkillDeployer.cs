@@ -17,44 +17,12 @@ namespace FlaUI.Mcp.Server.Install;
 public sealed class ClaudeSkillDeployer
 {
     private const string PluginName = "flaui-mcp";
-    private const string SkillResource = "FlaUI.Mcp.Server.seed.driving-flaui-mcp.SKILL.md";
     private readonly string _claudeConfigDir;
 
     public ClaudeSkillDeployer(string claudeConfigDir) => _claudeConfigDir = claudeConfigDir;
 
     /// <summary>`<claude-config>/skills/flaui-mcp` — the plugin root we own end to end.</summary>
     public string SkillRoot => Path.Combine(_claudeConfigDir, "skills", PluginName);
-
-    /// <summary>Returns null on success, else the reason (reported as a Warning, never thrown).</summary>
-    public string? Deploy()
-    {
-        try
-        {
-            var skillDir = Path.Combine(SkillRoot, "skills", "driving-flaui-mcp");
-            Directory.CreateDirectory(skillDir);
-            Directory.CreateDirectory(Path.Combine(SkillRoot, ".claude-plugin"));
-
-            var av = typeof(ClaudeSkillDeployer).Assembly.GetName().Version;   // 4-part; trim to 3-part semver
-            var version = av is null ? "0.0.0" : $"{av.Major}.{av.Minor}.{av.Build}";
-            var pluginJson =
-                "{\n  \"name\": \"flaui-mcp\",\n" +
-                "  \"displayName\": \"FlaUI.Mcp\",\n" +
-                "  \"version\": \"" + version + "\",\n" +
-                "  \"description\": \"Driving skill for the flaui-mcp desktop-automation MCP server.\"\n}\n";
-            // Measured: a working manifest needs no `skills` array — they auto-discover from skills/.
-            File.WriteAllText(Path.Combine(SkillRoot, ".claude-plugin", "plugin.json"), pluginJson);
-
-            using var res = typeof(ClaudeSkillDeployer).Assembly.GetManifestResourceStream(SkillResource)
-                ?? throw new InvalidOperationException($"embedded seed skill '{SkillResource}' missing");
-            using var outFile = File.Create(Path.Combine(skillDir, "SKILL.md"));
-            res.CopyTo(outFile);
-            return null;
-        }
-        catch (Exception e)
-        {
-            return $"driving skill not deployed to {SkillRoot}: {e.Message}";
-        }
-    }
 
     /// <summary>
     /// Remove the deployed skill. The skill is a PRODUCT ARTIFACT, not user data — a version-locked
