@@ -317,11 +317,80 @@ builder.Services
 Run: `dotnet build FlaUI.Mcp.slnx -c Release`
 Expected: `0 Warning(s)` and `0 Error(s)`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Make the new channel VISIBLE in `flaui-mcp status`**
+
+⛔ **Without this, the change is undiagnosable in the field.** `InstallStatus.Describe` reports the OLD
+channel — `"  Activation hook: "` at `InstallStatus.cs:37` — and would report nothing about the new one.
+That matters for one specific, already-documented reason: **`status` runs the INSTALLED binary**, and Task
+9 Step 4 exists because installed-exe-is-not-built-exe is a real trap here. A user asking *"does the
+flaui-mcp I actually have advertise instructions?"* has no way to answer it without connecting a client.
+This line answers it, because the value is a compile-time constant of whichever binary is running: an
+older installed exe prints the absent form.
+
+In `src/FlaUI.Mcp.Server/Install/InstallStatus.cs`, immediately after the existing activation-hook line
+(`:37`), add:
+
+```csharp
+        sb.AppendLine("  Server instructions: " + DescribeServerInstructions());
+```
+
+and add this method beside `DescribeActivationHook` (`:56`):
+
+```csharp
+    /// <summary>Whether THIS binary advertises the activation core over the MCP handshake. Reported
+    /// because `status` runs the INSTALLED exe: it is the only way to tell a binary that carries this
+    /// feature from an older one, without connecting a client and reading its context.
+    ///
+    /// ⚠ Deliberately says "advertised", not "delivered". A client may drop the field silently and the
+    /// server cannot tell (spec D5) — agy is MEASURED to do exactly that. Do not reword this into a
+    /// claim that the agent received anything.</summary>
+    public static string DescribeServerInstructions()
+        => string.IsNullOrEmpty(ActivationPayload.Core)
+            ? "NOT advertised — this binary predates the change, or the core is empty"
+            : $"advertised at connect ({ActivationPayload.Core.Length} chars) — a client may still drop it";
+```
+
+- [ ] **Step 4: Pin the new line, following the existing policy-lock precedent**
+
+`test/FlaUI.Mcp.Tests/Install/InstallStatusActivationTests.cs` already pins the activation-hook line with
+an `Assert.Equal` it calls a POLICY LOCK (`:64`). Add the sibling there:
+
+```csharp
+    /// POLICY LOCK, matching the activation-hook lock above. The wording is the contract: it must say
+    /// ADVERTISED and must not claim delivery, because a client dropping the field is undetectable from
+    /// the server (spec D5).
+    [Fact]
+    public void Status_reports_the_server_instructions_channel_without_claiming_delivery()
+    {
+        var line = InstallStatus.DescribeServerInstructions();
+
+        Assert.StartsWith("advertised at connect (", line, StringComparison.Ordinal);
+        Assert.Contains(ActivationPayload.Core.Length.ToString(), line, StringComparison.Ordinal);
+        Assert.Contains("may still drop it", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("delivered", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("received", line, StringComparison.OrdinalIgnoreCase);
+    }
+```
+
+⚠ Adding a line to `Describe` is safe: every other assertion over its output is `Contains`-based, and the
+one `Assert.Equal` in that file pins the **activation-hook line only**, not the whole report. Confirm:
 
 ```bash
-git add src/FlaUI.Mcp.Server/Program.cs
-git commit -m "feat(activation): serve the activation core as MCP ServerInstructions"
+rg -n "Assert.Equal" test/FlaUI.Mcp.Tests/Install/InstallStatus*.cs
+```
+
+Expected: no assertion comparing the full `Describe(...)` string.
+
+- [ ] **Step 5: Run both suites**
+
+Run: `dotnet test FlaUI.Mcp.slnx --filter "FullyQualifiedName~InstallStatus"`
+Expected: PASS, including the pre-existing activation-hook policy lock.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/FlaUI.Mcp.Server/Program.cs src/FlaUI.Mcp.Server/Install/InstallStatus.cs test/FlaUI.Mcp.Tests/Install/InstallStatusActivationTests.cs
+git commit -m "feat(activation): serve the activation core as MCP ServerInstructions, and report it in status"
 ```
 
 ### Task 3: Pin the wiring so it cannot be silently dropped
@@ -990,10 +1059,10 @@ from an accidental extra deletion. The arithmetic, from counts measured at `f4ba
 |---|---|
 | Deleted (`Deploy_*` / `Install_*` / `Skill_deploy_*` / `Successful_install_*`) | **-10** |
 | Retained in those same files (4 `Remove_*` + 3 `Uninstall_*`) | **0** (unchanged) |
-| Added (Task 1: 5 · Task 3: 2 · Task 4: 2 theory cases) | **+9** |
-| **Net** | **-1** |
+| Added (Task 1: 5 · **Task 2: 1** · Task 3: 2 · Task 4: 2 theory cases · **Task 6 Step 2c: 0, it extends an existing test**) | **+10** |
+| **Net** | **0** |
 
-Record the actual number. If the delta is not **-1**, stop: something was deleted or added that this plan
+Record the actual number. If the delta is not **0**, stop: something was deleted or added that this plan
 did not call for.
 
 - [ ] **Step 3: Desktop gate**
@@ -1160,6 +1229,12 @@ Seats were bespoke this round — the standard palette was exhausted after four 
 | 19 | **Adversary of the Reviewer** (own) | ⛔ **Fold 2's prune list drops `The_deployed_skill_is_the_embedded_seed`, which MEASURED is the only test anywhere checking the CONTENT of a shipped `SKILL.md`.** `SkillLoadLineTests` reads the REPO copies; `CliRouterPluginRegistrationTests` checks only that the staged file EXISTS. A truncated or empty extract would ship a skill with no frontmatter, every test would pass, and **agy's only activation channel would vanish silently** — defeating Part B via Part C. | New Task 6 Steps 2c/2d: assert the staged `SKILL.md` is byte-equal to the csproj's embedded source (`.claude/skills/...`), plus a mutant that breaks the embed and proves the gate red. |
 | 20 | agy Adversary of the Reviewer | Fold 18 (comments-only) leaves string literals visible to the **negative** `DoesNotMatch` gate, so a valid log or exception message containing `ServerInstructions = ActivationPayload.Text` would fail the build on correct code — trading one false positive for another | Real, and cheap to close without Roslyn: **anchor the negative assertion on the `AddMcpServer` call too**, exactly as the positive one already is. A stray literal now has to contain the whole call shape to trip it. |
 | 21 | agy Executor Simulator | Task 9 Step 4 says "install the built binary" and never gives the command — the plan's own no-placeholders rule forbids that | Exact command added, **plus a trap the finding did not mention**: a stale short-TFM sibling sits at `bin/Release/net10.0-windows/win-x64/`, so the plan now names the full-TFM path, cites the csproj line it derives from, and adds a timestamp check |
+
+### Round 7 — folded findings
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 22 | **Post-Merge Simulator** (own) | The plan ADDS an activation channel and leaves `flaui-mcp status` blind to it — `InstallStatus.cs:37` reports only the old hook. Three months on, a user asking *"does my installed binary advertise instructions?"* cannot answer it without connecting a client, which is exactly the installed-exe≠built-exe trap Task 9 Step 4 already documents. | New Task 2 Steps 3-4: a `Server instructions:` line in `status` plus a POLICY LOCK test following the existing activation-hook precedent (`InstallStatusActivationTests.cs:64`). Wording pinned to say **advertised**, never *delivered* — D5 says a client dropping it is undetectable. Test arithmetic updated: net **0**, not -1. |
 
 ⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
 named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
