@@ -394,7 +394,15 @@ public class ServerInstructionsWiringTests
     public void Program_serves_the_core_and_never_the_whole_payload()
     {
         var src = ProgramSourceWithoutComments();
-        Assert.DoesNotMatch(@"ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Text", src);
+
+        // ANCHORED the same way as the positive assertion, and for a reason discovered late: once string
+        // literals stopped being stripped (see the helper's comment), a bare `ServerInstructions = ...Text`
+        // pattern would also match that text sitting inside a perfectly valid log or exception MESSAGE,
+        // failing the build on correct code. Anchoring on the AddMcpServer call means only real wiring can
+        // trip it - a string literal would have to contain the entire call shape.
+        Assert.DoesNotMatch(
+            @"AddMcpServer\s*\(\s*\w+\s*=>\s*\w+\.ServerInstructions\s*=\s*(FlaUI\.Mcp\.Server\.Install\.)?ActivationPayload\.Text",
+            src);
     }
 }
 ```
@@ -1017,13 +1025,36 @@ working feature look broken.** The generated `.mcp.json` sets `command = exePath
 (`:170`) — **both point at the INSTALLED binary**, not at your build output. Reconnecting relaunches the
 old exe, which has none of this branch's changes.
 
-1. Build the branch: `dotnet build FlaUI.Mcp.slnx -c Release --no-incremental`
-2. **Install the built binary** so the client actually runs it.
-   ⚠ **This mutates real client state.** `FLAUI_MCP_*` env overrides do **not** sandbox the agy half:
-   `AgyPluginRegistrar.Register()` shells out to the real `agy` CLI, which ignores them — this is
-   **ROADMAP 22**, and it has already cost one manual restore. Prefer `--agent claude` to keep the blast
-   radius on the client you are actually verifying, and snapshot `agy mcp list` first if you use
-   `--agent all`.
+1. Build the branch:
+
+```bash
+dotnet build FlaUI.Mcp.slnx -c Release --no-incremental
+```
+
+2. **Install the built binary** so the client actually runs it. The exact command:
+
+```bash
+src/FlaUI.Mcp.Server/bin/Release/net10.0-windows10.0.19041.0/win-x64/flaui-mcp.exe install --agent claude
+```
+
+⚠ **Use that exact path.** A STALE short-TFM sibling exists at
+`bin/Release/net10.0-windows/win-x64/flaui-mcp.exe` — installing it would register a binary that is not
+what you just built, and the acceptance check would then "fail" against the wrong exe. The
+`net10.0-windows10.0.19041.0` folder is the one matching `<TargetFramework>` in
+`src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj:42`. Verify before installing:
+
+```bash
+ls -l src/FlaUI.Mcp.Server/bin/Release/net10.0-windows10.0.19041.0/win-x64/flaui-mcp.exe
+```
+
+Expected: a timestamp from the build you just ran, not an older one.
+
+⚠ **`--agent claude` is deliberate, not incidental.** `FLAUI_MCP_*` env overrides do **not** sandbox the
+agy half: `AgyPluginRegistrar.Register()` shells out to the real `agy` CLI and ignores them — this is
+**ROADMAP 22**, and it has already cost one manual restore of a user's config. Scoping to `claude` keeps
+the blast radius on the client you are actually verifying. If you use `--agent all` anyway, snapshot
+`agy mcp list` and `~/.gemini/config/mcp_config.json` first, because `uninstall --agent agy` is known to
+delete a same-named MCP registration it never created (**ROADMAP 21**).
 3. Reconnect the MCP client (`/mcp` in Claude Code).
 4. In a **new** session, confirm an `MCP Server Instructions` section now lists `flaui-mcp` and carries
    the CORE text.
@@ -1127,6 +1158,8 @@ Seats were bespoke this round — the standard palette was exhausted after four 
 | # | Seat | Finding | Fold |
 |---|---|---|---|
 | 19 | **Adversary of the Reviewer** (own) | ⛔ **Fold 2's prune list drops `The_deployed_skill_is_the_embedded_seed`, which MEASURED is the only test anywhere checking the CONTENT of a shipped `SKILL.md`.** `SkillLoadLineTests` reads the REPO copies; `CliRouterPluginRegistrationTests` checks only that the staged file EXISTS. A truncated or empty extract would ship a skill with no frontmatter, every test would pass, and **agy's only activation channel would vanish silently** — defeating Part B via Part C. | New Task 6 Steps 2c/2d: assert the staged `SKILL.md` is byte-equal to the csproj's embedded source (`.claude/skills/...`), plus a mutant that breaks the embed and proves the gate red. |
+| 20 | agy Adversary of the Reviewer | Fold 18 (comments-only) leaves string literals visible to the **negative** `DoesNotMatch` gate, so a valid log or exception message containing `ServerInstructions = ActivationPayload.Text` would fail the build on correct code — trading one false positive for another | Real, and cheap to close without Roslyn: **anchor the negative assertion on the `AddMcpServer` call too**, exactly as the positive one already is. A stray literal now has to contain the whole call shape to trip it. |
+| 21 | agy Executor Simulator | Task 9 Step 4 says "install the built binary" and never gives the command — the plan's own no-placeholders rule forbids that | Exact command added, **plus a trap the finding did not mention**: a stale short-TFM sibling sits at `bin/Release/net10.0-windows/win-x64/`, so the plan now names the full-TFM path, cites the csproj line it derives from, and adds a timestamp check |
 
 ⚠ **The lesson worth more than the fix:** the seat asked to name *"the fold most likely to be wrong"*
 named **its own**, and it was right. No mechanical seat had found it across four rounds. A long panel
