@@ -494,13 +494,22 @@ copy** and passed for the repo twin — which also demonstrates the theory cover
 independently.
 
 Revert by rewriting the description line in place, re-run, confirm PASS. Then verify the twins are
-byte-identical again:
+byte-identical again.
+
+⛔ **Do NOT use `wc -c` for this.** It measures LENGTH, not identity: a same-length typo made while
+retyping the description — a swapped character, a substituted letter — corrupts the file and passes a
+byte-count check silently. That is precisely the mutation this step just made and reverted by hand, so it
+is the realistic failure, not a contrived one. Compare the bytes:
 
 ```bash
-wc -c .claude/skills/driving-flaui-mcp/SKILL.md plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md publish/plugin/skills/driving-flaui-mcp/SKILL.md
+cmp .claude/skills/driving-flaui-mcp/SKILL.md plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md \
+  && cmp .claude/skills/driving-flaui-mcp/SKILL.md publish/plugin/skills/driving-flaui-mcp/SKILL.md \
+  && echo "all three identical"
 ```
 
-Expected: `36946` for all three.
+Expected: `all three identical`, with no `differ` line. `cmp` is silent and returns 0 on a match. If a
+twin differs, fix it by copying the build input over it (`cp`) rather than retyping — retyping is how they
+drifted in the first place.
 
 - [ ] **Step 4: Commit**
 
@@ -910,8 +919,13 @@ did not call for.
 
 ⚠ **Main thread, quiet machine, physical console.** Do not co-run a subagent — measured, it produced four
 spurious failures and a 40% longer run. `SendInput` does not deliver over RDP (check `qwinsta`, not
-`$env:SESSIONNAME`), and `0 skipped` needs a user-granted lease. Budget ~12 minutes; background it against
-a 600s cap.
+`$env:SESSIONNAME`), and `0 skipped` needs a user-granted lease.
+
+⚠ **RUN IT IN THE BACKGROUND, and do NOT set a timeout on it.** This suite takes **~12 minutes (~720s)**,
+which is longer than the **600s maximum** a foreground shell call accepts — so a foreground run, or a
+backgrounded one given an explicit 600s timeout, is **killed before it finishes** and reports an
+infrastructure timeout that looks like a gate failure. Backgrounding is what removes the cap; it is not a
+cap of its own. Read the earlier sentence that way if it seems to say otherwise.
 
 Run: `dotnet test FlaUI.Mcp.slnx --filter "Category=Desktop&Category!=KnownDefect&Category!=Measurement&FullyQualifiedName!~PopupGrafting"`
 Expected: all pass. Item 16 and item 20 are known flakes here — if one fails, re-run it in isolation
@@ -997,4 +1011,22 @@ Seven findings folded; one refuted by measurement and deliberately NOT folded.
 | 6 | Literal Implementer | `ThisVersion()` was dead weight — nothing asserts the version | Dropped for a literal |
 | 7 | Axiom Breaker | The core/hook duplication was unstated | Cited spec D3, which already accepted it — for a better reason than the plan had (`/clear` does not re-run initialize) |
 | — | Activation Auditor | Suspected the frontmatter regex breaks on a UTF-8 BOM | **REFUTED by measurement** — file starts `2d 2d 2d`. Not folded. |
+
+### Round 2 — folded findings
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 8 | Axiom Breaker | Architecture header still called the Addendum "the `ToolSearch` load block" — stale the instant round 1 moved the skill pointer into it | Rewritten. **A fold spawns its own edges.** |
+| 9 | State Corruptor | Plan pasted `SeedAgyInstall` into BOTH agy test files — the same drift shape it rejects for `Core`/`Text` | Single shared `AgyFixtures.cs`, following the `RepoPaths.cs` precedent |
+| 10 | Dependency Cynic | The plan's central premise is a measured agy behaviour with no provenance and no re-run recipe | Provenance + recipe added. **Deliberately NOT version-pinned** — house policy is assume-latest and react when something breaks |
+| 11 | agy Axiom Breaker | "Budget ~12 minutes; background it against a 600s cap" reads as a guaranteed timeout | Partially valid: backgrounding REMOVES the 600s foreground cap, so there is no built-in failure — but the wording invites exactly that error. Reworded explicitly. |
+| 12 | agy Dependency Cynic | `wc -c` verifies LENGTH, not identity — a same-length typo passes silently | Replaced with `cmp`. Correct finding; I should have caught it. |
+| — | State Corruptor | Suspected `JsoncFile.Load` throws on a missing file, breaking the new helper | **REFUTED by measurement** — returns an empty object at `:19`. I tested my own suggested fix. |
+| — | Dependency Cynic | Suspected the MCP package version could drift | **REFUTED** — pinned at exactly `1.4.0` in the csproj |
+
+### Round 3 — folded findings
+
+| # | Seat | Finding | Fold |
+|---|---|---|---|
+| 13 | Literal Implementer | ⛔ **The plan deleted `AgyConfigWriter` members BY LINE RANGE, and two ranges spanned LIVE code.** `DeploySkill()` ends at `:60` but the plan said `:36-80`, covering `RemoveSkill()` at `:68`; Install-overload-2 was cited `:105-127`, covering `Detail()` at `:127`. Both are called by the live `Uninstall()`. | Signature-matched deletion + a MUST-SURVIVE table + a verification grep. Task 6 got the same treatment though its range was correct. **The end-lines were the one class of citation I inferred instead of verifying.** |
 `Frontmatter(string)` is defined in Task 4 Step 1 beside the existing `Read(string)` it calls.
