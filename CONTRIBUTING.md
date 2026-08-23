@@ -16,6 +16,11 @@ This guide gets you from clone to a mergeable PR.
 - **Windows 10/11** with an interactive desktop (the UIA tests drive real windows).
 - Build: `dotnet build -c Release` — this is the strict gate CI runs (no new warnings).
 - Fast path: `pwsh -File DevelopersCockpit.ps1` — an interactive repo-root menu for build/test/scaffold/gate/release-preview/push/health-check.
+- Non-interactive twin: `just` ([casey/just](https://github.com/casey/just)) — `just` lists the recipes,
+  `just gate` is what to run before committing, `just release` cuts a release. Each recipe runs the *same*
+  command string the cockpit runs for that action, so the two routes cannot disagree about this
+  repository. The cockpit's prompting and owner-gated actions (Desktop suite, push, health check) are
+  deliberately absent from the justfile rather than reimplemented without their gates.
 
 ## Running tests (the honest loop)
 
