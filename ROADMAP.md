@@ -325,13 +325,13 @@ stamped** — v1.0.0 ships with no known defects.
 | 1 | `wait-for-cull-disagrees-with-find` (filed defect) | SP1 | ✅ fixed — backlog file deleted in `7802736` |
 | 2 | `launch-starves-on-ambient-single-instance` (filed defect) | SP1 | ✅ fixed — backlog file deleted in `5892ddc` |
 | 3 | `wait_for_stable` scope-by-ref | SP2 | ✅ shipped + MEASURED (see the item-3 entry below) |
-| 4 | snapshot/diff value-change detection | SP4 | ⬜ not started |
+| 4 | snapshot/diff value-change detection | SP4 | ⬜ not started — **DEFERRED out of v1.0.0** by the operator (2026-08-22): hardening, not a defect |
 | 5 | terminal tab ordinal discovery | SP2 | ✅ shipped as the new `desktop_list_terminal_tabs` |
 | 6 | JSON-shape tripwires | SP0 | ✅ merged (`015f23c`) |
 | 7 | redact descriptor `Name` for `IsPassword` | SP2 | ✅ RETIRED as invalid; the real guarantee is now pinned |
-| 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ⬜ not started |
+| 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ✅ shipped — merged `ca70770` (`--no-ff`) on 2026-08-22. `desktop_screenshot`'s window and element scopes render the target's OWN pixels via `PrintWindow` instead of photographing a screen rectangle; full-desktop and the OCR path still scrape, deliberately. ⚠ Its capstone was **operator-stopped at round 3, NOT green** — never cite it as capstone-green. Filed debt: items **17**, **18**, **19** |
 | 9 | per-field redaction | SP3 | ✅ shipped — merged `ef17ed9` (`--no-ff`) |
-| 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower |
+| 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower. **DEFERRED out of v1.0.0** by the operator (2026-08-22): hardening, not a defect |
 | 11 | redaction completeness (A1 pixel-mask fail-open · A5 focused-window title · A2 stats rename · A6 token constant) | SP4 | ✅ shipped — merged `079aebd` (`--no-ff`). Capstone GREEN after 7 rounds; test audit complete. 16 accepted boundaries ledgered in `docs/coverage-debt.md` |
 | 12 | the repo's 0-warning gate does not enforce itself | — | ✅ shipped — release-tooling subproject. `dotnet build FlaUI.Mcp.slnx -c Release` is INCREMENTAL and does not re-report warnings for up-to-date projects. MEASURED during SP4: it printed `0 Warning(s)` on a tree where `--no-incremental` printed `2 Warning(s)`. Fixed by a new root `Directory.Build.props` setting `TreatWarningsAsErrors` (`54b1dc5`), which fixes it MECHANICALLY rather than by discipline — MSBuild never marks a FAILED project up to date, so an error re-reports on every build. MUTANT PROVEN: an unused local (CS0219) turns `Build succeeded` into `Build FAILED`. `BuildPropertySweepTests` (`f43d546`) forbids any `.csproj` or nested props file from overriding it — nested props MEASURABLY win over the root, so a csproj-only sweep would be trivially bypassable |
 | 13 | bare `catch` blocks swallow CRITICAL failures repo-wide | — | ⬜ not started — MEASURED at SP4 capstone round 4: **108** bare catches across 20+ files in `src/` can swallow `OutOfMemoryException`. SP4 filtered every catch on its own pixel path and both `ToolResponse` boundaries; the rest are untouched. Repo-wide refactor across input, watch, session and geometry code. Ledgered as AB-12 |
