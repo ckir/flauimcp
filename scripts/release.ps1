@@ -638,7 +638,15 @@ try {
     if (-not $gate.Passed) { throw "Gate failed — fix the failing check(s) above before releasing." }
 
     $diffText = (git -C $RepoRoot log @rangeArgs -p 2>$null | Out-String)
-    $diffStatText = (git -C $RepoRoot log @rangeArgs --stat 2>$null | Out-String)
+    # `git log --stat` repeats a whole file list ONCE PER COMMIT. Over the 403-commit range for v1.0.0
+    # that measured 779,976 chars (~222,850 tokens) and was 94.2% of a prompt that exceeded the model's
+    # 200,000-token limit -- the release simply could not be cut. `git diff --stat` over the same range is
+    # a single cumulative block: 13,978 chars, a 56x reduction, and it is the better artifact for a
+    # changelog anyway ("221 files changed, 45,113 insertions") rather than 403 repetitions of per-commit
+    # noise. The per-commit form survives only where there is no previous tag to diff from -- a first
+    # release, which is necessarily small.
+    $statArgs = if ($lastTagFound) { @('diff', '--stat', "$($lastTag.Trim())..HEAD") } else { @('log', '--stat') }
+    $diffStatText = (git -C $RepoRoot @statArgs 2>$null | Out-String)
     $exemplar = Get-TopChangelogSection -ChangelogPath (Join-Path $RepoRoot 'CHANGELOG.md') -Count 2
     $prompt = Get-ChangelogPrompt -Version $next.Version -CommitMessages $commitMessages -DiffText $diffText -DiffStatText $diffStatText -StyleExemplar $exemplar
 

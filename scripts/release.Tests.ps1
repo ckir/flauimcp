@@ -337,6 +337,65 @@ Describe 'Get-ChangelogPrompt' {
     }
 }
 
+
+Describe 'Changelog prompt budget' {
+    # MEASURED cutting v1.0.0: the prompt reached 827,829 chars / ~236,500 tokens against a 200,000 limit
+    # and `claude -p` refused outright, so the release could not be cut at all. 94.2% of it was the diff
+    # stat -- because the caller passed `git log --stat`, which repeats a whole file list once per commit,
+    # 403 times. The commit list was 3.8% and was never the problem.
+    BeforeEach {
+        $script:Commits  = @('feat(release): add release script', 'fix(server): correct a leak')
+        $script:Exemplar = "## [0.16.1] - 2026-07-18`n`n### Fixed`n- Something."
+        $script:BigDiff  = 'x' * 200000   # forces the stat path
+    }
+
+    It 'bounds the stat section instead of pasting an unbounded one' {
+        $hugeStat = 'S' * 400000
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+            -DiffText $script:BigDiff -DiffStatText $hugeStat -StyleExemplar $script:Exemplar
+        $p.Length | Should -BeLessThan 100000 -Because 'an unbounded stat is what made the release uncuttable'
+    }
+
+    It 'says so when it truncates, rather than silently shortening the evidence' {
+        # A drafter that is not told it received a partial file list will write as though it saw
+        # everything. The notice is the difference between a bounded input and a misleading one.
+        $hugeStat = 'S' * 400000
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+            -DiffText $script:BigDiff -DiffStatText $hugeStat -StyleExemplar $script:Exemplar
+        $p | Should -Match 'truncated'
+    }
+
+    It 'does not announce a truncation that did not happen' {
+        # The inverse gate. A notice that is always present is not a signal, and it would tell the drafter
+        # its evidence was cut when it was complete.
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+            -DiffText $script:BigDiff -DiffStatText 'a short and complete stat' -StyleExemplar $script:Exemplar
+        $p | Should -Match 'Diff stat'
+        $p | Should -Not -Match 'truncated'
+    }
+
+    It 'keeps the whole stat when it fits' {
+        $stat = 'file.cs | 3 +--'
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+            -DiffText $script:BigDiff -DiffStatText $stat -StyleExemplar $script:Exemplar
+        $p | Should -Match ([regex]::Escape($stat))
+    }
+
+    It 'builds the degraded stat from a CUMULATIVE diff, not a per-commit log' {
+        # The library cap above is a backstop, not the fix. `git log --stat` over a large range is
+        # quadratic-ish in output -- one file list per commit -- while `git diff --stat` over the same
+        # range is a single block. MEASURED on v0.20.0..HEAD: 779,976 chars versus 13,978, a 56x
+        # reduction, and the cumulative form is also the better answer for a changelog.
+        #
+        # Matched as adjacent TOKENS, not as the literal string 'diff --stat': Get-CodeWithoutComments joins
+        # tokens with single spaces, so an argument array @('diff', '--stat', ...) renders as
+        # "@ ( 'diff' , '--stat' , ..." and a literal-substring assertion can never match it. Measured --
+        # this test failed against a correct implementation until the pattern matched the real shape.
+        $code = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $code | Should -Match "'diff'\s*,\s*'--stat'"
+        $code | Should -Not -Match 'log @rangeArgs --stat' -Because 'the per-commit stat is what blew the budget'
+    }
+}
 Describe 'Invoke-Gate' {
     BeforeEach {
         $script:GateSandbox = Join-Path ([IO.Path]::GetTempPath()) ("gatebox_" + [guid]::NewGuid())

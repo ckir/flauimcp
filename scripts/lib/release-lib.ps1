@@ -322,12 +322,32 @@ function Get-ChangelogPrompt {
         [string]$DiffStatText = '',
         [Parameter(Mandatory)][string]$StyleExemplar,
         [int]$DiffSizeThresholdBytes = 150000,
-        [int]$CommitCountThreshold = 40
+        [int]$CommitCountThreshold = 40,
+        [int]$StatBudgetBytes = 20000
     )
 
     $useStat = ($DiffText.Length -gt $DiffSizeThresholdBytes) -or ($CommitMessages.Count -gt $CommitCountThreshold)
+
+    # The stat was the ONLY unbounded input. Degrading the diff to the stat bounds the diff and nothing
+    # else, and MEASURED cutting v1.0.0 the stat alone reached 779,976 chars (~222,850 tokens) -- 94.2% of
+    # a prompt that busted the model's 200,000-token limit, so `claude -p` refused and the release could
+    # not be cut at all. The caller now sends a cumulative `git diff --stat` rather than a per-commit
+    # `git log --stat`, which is the real fix; this cap is the backstop for a release large enough that
+    # even the cumulative form does not fit.
+    #
+    # It TELLS the drafter it was cut. A model handed a silently-shortened file list writes as though it
+    # saw everything, and a changelog that implies exhaustive coverage it never had is worse than one that
+    # says it is partial.
+    $statText = $DiffStatText
+    if ($statText.Length -gt $StatBudgetBytes) {
+        $omitted = $statText.Length - $StatBudgetBytes
+        $statText = $statText.Substring(0, $StatBudgetBytes) +
+            "`n`n[stat truncated: $omitted of $($DiffStatText.Length) characters omitted to stay inside the model's context. " +
+            "The file list above is PARTIAL — summarise what it shows and do not imply it is the complete set of changes.]"
+    }
+
     $diffSection = if ($useStat) {
-        "Diff stat (full patch omitted — release is large):`n$DiffStatText"
+        "Diff stat (full patch omitted — release is large):`n$statText"
     } else {
         "Full diff:`n$DiffText"
     }
