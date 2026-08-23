@@ -14,7 +14,7 @@ public sealed class ClipboardTools
     public Task<string> DesktopClipboardGet()
         => ToolResponse.Guard(async () => ToolResponse.Ok(new { text = await ClipboardAccess.GetTextAsync() }));
 
-    [McpServerTool(Destructive = true), Description("Write text to the system clipboard (CF_UNICODETEXT). Useful to stage text the user (or a later Phase-4 paste) can insert. Blocked in --read-only-mode. ClipboardUnavailable if the clipboard is locked.")]
+    [McpServerTool(Destructive = true), Description("Write text to the system clipboard (CF_UNICODETEXT). Useful to stage text the user (or a later Phase-4 paste) can insert. Blocked in --read-only-mode. ClipboardUnavailable if the clipboard is locked. NO input lease required.")]
     public Task<string> DesktopClipboardSet(
         [Description("The text to place on the clipboard.")] string text)
         => ToolResponse.GuardWrite(_options, async () =>

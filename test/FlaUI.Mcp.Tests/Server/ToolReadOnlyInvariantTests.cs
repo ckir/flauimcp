@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -75,6 +76,41 @@ public class ToolReadOnlyInvariantTests
                 $"{type.Name}.{method.Name} is marked Destructive but did NOT block in --read-only-mode. " +
                 $"Route it through ToolResponse.GuardWrite(_options, ...). Got: {result}");
         }
+    }
+
+    [Fact]
+    public void Every_destructive_tool_STATES_its_read_only_and_lease_posture()
+    {
+        // The enforcement invariant above proves the gate RUNS. This one proves the caller can KNOW it
+        // without running into it, which is a different property and the one that was missing.
+        //
+        // Measured 2026-08-23: a subagent receives the 50 tool NAMES and neither activation channel -
+        // no MCP server instructions, no SessionStart hook output - so a tool's own description is the
+        // only place it can carry its own rules. Nine tools, the entire UIA-pattern family in
+        // InteractionTools, stated NEITHER posture while their sibling InputTools stated both on every
+        // tool. The familiar shape: a convention held on one path and dropped on the adjacent one.
+        //
+        // "lease" catches either posture, because both are real and a caller needs to know which:
+        // the SendInput tools say "Requires an active input lease", the UIA-pattern tools say
+        // "NO input lease required" (GuardWrite tests only options.ReadOnly, and InteractionTools
+        // references InputGuard zero times).
+        var offenders = Tools()
+            .Where(t => t.IsDestructive)
+            .Select(t => (t.Type, t.Method,
+                          Desc: t.Method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? ""))
+            .Select(x => (x.Type, x.Method, x.Desc, Missing: string.Join(" and ", new[]
+            {
+                x.Desc.Contains("--read-only-mode", StringComparison.OrdinalIgnoreCase) ? null : "--read-only-mode",
+                x.Desc.Contains("lease", StringComparison.OrdinalIgnoreCase) ? null : "its input-lease posture",
+            }.Where(s => s is not null))))
+            .Where(x => x.Missing.Length > 0)
+            .Select(x => $"{x.Type.Name}.{x.Method.Name} does not state {x.Missing}")
+            .ToList();
+
+        Assert.True(offenders.Count == 0,
+            "Every Destructive tool's description must state that it is blocked in --read-only-mode and " +
+            "whether it needs an input lease — a subagent gets the tool with no other framing:\n" +
+            string.Join("\n", offenders));
     }
 
     // Construct a tool with a ReadOnly ServerOptions and null for every other dependency. GuardWrite

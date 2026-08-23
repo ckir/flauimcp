@@ -455,7 +455,7 @@ public sealed class InputTools
                 : ToolResponse.Ok(new { ok = true, pathUsed = "synthetic", resolvedElement = resolved });
         });
 
-    [McpServerTool(Destructive = true), Description("Synthetic mouse click at a window-relative point. xPct/yPct in [0,1] relative to the target window's bounding rect (the same fractional space desktop_screenshot/desktop_get_bounds publish). The point is hit-tested + deny-listed in the immediate pre-send instant; an unidentifiable point is refused (TargetDenied). button=left|right|middle, count=1|2. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Synthetic mouse click at a window-relative point. xPct/yPct in [0,1] relative to the target window's bounding rect (the same fractional space desktop_screenshot/desktop_get_bounds publish). The point is hit-tested + deny-listed in the immediate pre-send instant; an unidentifiable point is refused (TargetDenied). button=left|right|middle, count=1|2. Blocked in --read-only-mode. Requires an active input lease (`flaui-mcp unlock`).")]
     public Task<string> DesktopClickAt(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("X fraction 0..1 of the window width.")] double xPct,
@@ -473,7 +473,7 @@ public sealed class InputTools
             return ToolResponse.Ok(new { ok = true, pathUsed = "coordinate" });
         });
 
-    [McpServerTool(Destructive = true), Description("Synthetic mouse drag between two window-relative points (§5 pct space). BOTH endpoints are hit-tested + deny-listed; the END point is re-hit-tested immediately before the mouse-up. button=left|right|middle. endWindow (optional) — resolve the END point's fractions in ANOTHER window's [0,1] space for a cross-window drag; omit for a same-window drag. Each endpoint's fractions are [0,1] within its own window. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Synthetic mouse drag between two window-relative points (§5 pct space). BOTH endpoints are hit-tested + deny-listed; the END point is re-hit-tested immediately before the mouse-up. button=left|right|middle. endWindow (optional) — resolve the END point's fractions in ANOTHER window's [0,1] space for a cross-window drag; omit for a same-window drag. Each endpoint's fractions are [0,1] within its own window. Blocked in --read-only-mode. Requires an active input lease (`flaui-mcp unlock`).")]
     public Task<string> DesktopDrag(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Start X fraction 0..1.")] double startXPct,
