@@ -30,6 +30,52 @@ BeforeAll {
     ) | ForEach-Object { Join-Path $script:Repo $_ }
 }
 
+function script:Remove-CommentText {
+    <#
+    .SYNOPSIS
+    Blank out comment text so a scan of "code" cannot read prose.
+
+    .DESCRIPTION
+    PowerShell gets the real answer: its own tokenizer knows which spans are comments, so line comments,
+    trailing comments and block comments are all handled in one pass. That is the same technique
+    release.Tests.ps1 uses, and its comments record the trap being defeated three separate times by those
+    three forms.
+
+    (This paragraph deliberately does not spell out the block-comment delimiters. Writing the closing one
+    inside a comment-based help block ENDS the block early -- measured: it turned the rest of this file
+    into a parse error, Pester discovery failed, and the suite reported 137 passed / 0 failed because the
+    three tests in this file had silently removed themselves.)
+
+    YAML has no tokenizer to hand, so it gets a line-level rule: a `#` that starts a line or follows
+    whitespace begins a comment. ACKNOWLEDGED LIMIT -- that is wrong for a `#` inside a quoted scalar, and
+    a version number after such a `#` would be missed. It is the right trade here: a missed version in a
+    quoted YAML string is a far smaller risk than the gate firing on every explanatory comment, which was
+    measured happening.
+
+    Lines are blanked rather than removed so that any line numbers a caller reports stay meaningful.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Extension
+    )
+
+    if ($Extension -in @('.ps1', '.psm1', '.psd1')) {
+        $tokens = $null
+        [void][System.Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$null)
+        $chars = $Text.ToCharArray()
+        foreach ($t in $tokens) {
+            if ($t.Kind -ne 'Comment') { continue }
+            for ($i = $t.Extent.StartOffset; $i -lt $t.Extent.EndOffset -and $i -lt $chars.Count; $i++) {
+                if ($chars[$i] -ne "`n" -and $chars[$i] -ne "`r") { $chars[$i] = ' ' }
+            }
+        }
+        return -join $chars
+    }
+
+    ($Text -split "`r?`n" | ForEach-Object { $_ -replace '(^|\s)#.*$', '$1' }) -join "`n"
+}
+
 Describe 'Pester pin' {
 
     It 'reads a pinned version out of CI' {
@@ -60,8 +106,17 @@ Describe 'Pester pin' {
                 @([regex]::Matches($text, '-RequiredVersion (?<v>\d+\.\d+\.\d+)') |
                     ForEach-Object { $_.Groups['v'].Value })
             } else {
-                # every version-shaped string on a line that mentions Pester
-                @(($text -split "`r?`n") | Where-Object { $_ -match 'Pester' } | ForEach-Object {
+                # every version-shaped string on a line that mentions Pester -- but COMMENTS FIRST.
+                #
+                # Splitting by file EXTENSION fixed the symptom and not the cause. A .ps1 and a .yml are
+                # "code" by extension and both contain COMMENTS, which are prose in exactly the way
+                # Markdown is. MEASURED: adding an ordinary explanatory line of the sort this repo writes
+                # constantly --
+                #     # Historical note: this gate ran Pester 5.8.0 until the 6.1.0 migration.
+                # -- turned this gate RED in both DevelopersCockpit.ps1 and ci.yml. The distinction that
+                # matters is CODE versus COMMENT, not the file's extension.
+                $code = Remove-CommentText -Text $text -Extension ([IO.Path]::GetExtension($file))
+                @(($code -split "`r?`n") | Where-Object { $_ -match 'Pester' } | ForEach-Object {
                     [regex]::Matches($_, '(?<v>\d+\.\d+\.\d+)') | ForEach-Object { $_.Groups['v'].Value }
                 })
             }
