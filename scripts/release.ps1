@@ -18,6 +18,21 @@ from a previous run is resumed only if it still starts with a '### ' heading -- 
 and regenerated, so a stale non-changelog draft cannot be accepted unreviewed. See the plan's
 "Unattended (-Yes) contract" table.
 
+.PARAMETER NoPush
+Do everything except the push: gate, changelog, version bump, commit and tag all happen, but
+'git push --atomic' is skipped. Use when the repository is deliberately held back from origin. The
+resulting local-commit-plus-local-tag is the SAME state a failed push leaves behind, which
+Get-ReleaseReconciliationState already recognises, so a later run detects it. Stamping and publishing
+are separable; this is the switch.
+
+What that later run offers depends on how you invoke it, and the two are not the same prompt:
+  - WITHOUT -NoPush: "[P]ush the existing commit+tag now" -- finishes the release.
+  - WITH -NoPush: "[T]ag the existing release commit locally (no push)" when the tag is missing, so a
+    commit-landed-but-tag-failed stamp is recoverable without breaking the freeze; and if the tag is
+    already there, it says so and exits.
+Detection only fires WHILE HEAD IS STILL THE RELEASE COMMIT: it keys on HEAD's own subject and on tags
+pointing at HEAD, so once you commit past the stamp you must push the tag by hand.
+
 .PARAMETER Version
 Pin the release to this exact X.Y.Z version instead of computing one.
 
@@ -39,6 +54,7 @@ param(
     [Alias('H')][switch]$Help,
     [switch]$WhatIf,
     [Alias('y')][switch]$Yes,
+    [switch]$NoPush,
     [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [ValidateSet('major','minor','patch')][string]$Bump,
     [string]$Model = 'haiku',
@@ -78,7 +94,8 @@ FLOW
      chatter or stderr around it is discarded rather than becoming the changelog.
   5. You review: Accept / Regenerate / Edit / Abort.
   6. Confirm: "Cut release vX.Y.Z?" (skipped under -Yes).
-  7. Commit chore(release), tag vX.Y.Z, 'git push --atomic origin master vX.Y.Z'.
+  7. Commit chore(release), tag vX.Y.Z, 'git push --atomic origin master vX.Y.Z'
+     (-NoPush stops after the tag; re-run while HEAD is still that commit to push it).
 
 FLAGS
   -Help, -H, -?     Print this usage and exit 0. No side effects.
@@ -86,6 +103,8 @@ FLAGS
   -Yes, -y          Unattended: auto-accept the draft and the final confirmation;
                     every other interactive gate hard-fails instead of blocking.
                     Resumes a previous run's draft only if it starts with '### '.
+  -NoPush           Commit and tag locally; skip the push. Re-run WHILE HEAD IS
+                    STILL that commit to push it; after that, push the tag by hand.
   -Version X.Y.Z    Pin the release version (skips commit-driven computation).
   -Bump <level>     Force major/minor/patch from the last tag.
   -Model <name>     claude -p model for the changelog draft (default: haiku).
@@ -395,7 +414,8 @@ function Resolve-HalfFinishedRelease {
         [Parameter(Mandatory)][string]$RepoRoot,
         [Parameter(Mandatory)][pscustomobject]$Reconciliation,
         [switch]$Yes,
-        [switch]$WhatIf
+        [switch]$WhatIf,
+        [switch]$NoPush
     )
 
     $targetVersion = if ($Reconciliation.HeadReleaseVersion) {
@@ -421,7 +441,18 @@ function Resolve-HalfFinishedRelease {
     # ever" (including the -Yes hard-fail's exit 1, which is itself a mutation-adjacent unattended
     # decision), so it must win to preserve the read-only guarantee.
     if ($WhatIf) {
-        Write-Host "[-WhatIf] Half-finished release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land). -WhatIf makes no changes; re-run without -WhatIf to reconcile. (Preview stops here — a real run reconciles and exits before computing a new release.)"
+        # Two corrections, both introduced BY -NoPush existing. (1) This no longer asserts that a push was
+        # attempted and failed: a local commit plus a local-only tag is now the NORMAL, DELIBERATE outcome
+        # of a -NoPush stamp, and claiming a failed push is a history this function cannot know. (2) The
+        # advice is flag-aware: telling a -NoPush operator to "re-run without -WhatIf to reconcile"
+        # promised an interactive push prompt they will not get -- dropping -WhatIf alone lands them in the
+        # -NoPush branch, which offers the local-only options.
+        $whatIfNext = if ($NoPush) {
+            "re-run without -WhatIf to see the local-only options (-NoPush keeps the push off the table; drop -NoPush too if you mean to publish)"
+        } else {
+            "re-run without -WhatIf to reconcile"
+        }
+        Write-Host "[-WhatIf] Half-finished release detected: HEAD looks like an unpushed '$tag' release — the commit and/or tag exist locally and are not on the remote, which is also the normal outcome of a -NoPush stamp. -WhatIf makes no changes; $whatIfNext. (Preview stops here — a real run reconciles and exits before computing a new release.)"
         exit 0
     }
 
@@ -429,25 +460,79 @@ function Resolve-HalfFinishedRelease {
         throw "Half-finished prior release detected for $tag — refusing to auto-mutate git history under -Yes. Re-run without -Yes to reconcile interactively."
     }
 
-    Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land)."
-    $ans = Read-Host "[P]ush the existing commit+tag now / e[X]it and leave as-is?"
-    $choice = if ([string]::IsNullOrWhiteSpace($ans)) { 'X' } else { $ans.Substring(0,1).ToUpperInvariant() }
-    if ($choice -eq 'P') {
-        if (-not $tagExistsLocally) { git -C $RepoRoot tag $tag }
-        git -C $RepoRoot push --atomic origin master $tag
-        if ($LASTEXITCODE -ne 0) { throw "push --atomic failed again (exit $LASTEXITCODE). Local state is unchanged; re-run to retry." }
-        Write-Host "Pushed $tag."
+    # -NoPush governs BOTH push sites in this script, not only Invoke-ReleaseCommit's. Being offered
+    # "[P]ush the existing commit+tag now" on a run that was invoked with -NoPush is precisely the failure
+    # the flag exists to prevent: under a deliberate freeze that is one keystroke from publishing the whole
+    # backlog. What this path still legitimately owes the operator is the LOCAL half of the recovery --
+    # recreating a tag whose release commit already landed (commit succeeded, `git tag` then failed), which
+    # is otherwise unreachable without breaking the freeze by hand.
+    if ($NoPush) {
+        Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release."
+        if ($tagExistsLocally) {
+            # MEASURED: a HAND-MADE vX.Y.Z tag at HEAD sets HalfFinished on an ordinary commit -- the probe
+            # in .clavity/scratch/release-nopush/ tagged a plain 'fix:' commit and got HalfFinished=True with
+            # HeadReleaseVersion=<null>, because orphanTags alone is enough. So "already exists locally" does
+            # NOT mean this script produced it, and the earlier unconditional "re-run without -NoPush to
+            # publish" invited the operator to publish a commit that never saw the gate, the changelog or a
+            # version bump. Only recommend publishing what this pipeline actually stamped.
+            # HeadReleaseVersion, NOT HeadIsUnpushedRelease. The latter is
+            # `releaseMatch.Success -and -not $headOnRemote`, so it answers TWO questions at once and goes
+            # false when a genuine release commit is simply already on the remote. MEASURED
+            # (.clavity/scratch/release-nopush/probe_belowfloor.ps1): stamp with -NoPush, then push master
+            # by hand without the tag -- reconciliation still fires via the orphan tag, the subject IS
+            # 'chore(release): v1.0.0', and HeadIsUnpushedRelease is FALSE. The question here is only
+            # "did this pipeline produce HEAD", which HeadReleaseVersion answers alone.
+            if ($Reconciliation.HeadReleaseVersion) {
+                Write-Host "-NoPush: commit and tag both already exist locally — nothing to complete without pushing. Re-run without -NoPush to publish."
+            }
+            else {
+                Write-Host "-NoPush: $tag exists locally and points at HEAD, but HEAD is NOT a 'chore(release):' commit — this tag did not come from this script. Nothing to complete, and it should not be published as a release."
+            }
+            exit 0
+        }
+        $ans = Read-Host "[T]ag the existing release commit locally (no push) / e[X]it and leave as-is?"
+        $choice = if ([string]::IsNullOrWhiteSpace($ans)) { 'X' } else { $ans.Substring(0,1).ToUpperInvariant() }
+        if ($choice -eq 'T') {
+            git -C $RepoRoot tag $tag
+            if ($LASTEXITCODE -ne 0) { throw "git tag $tag failed (exit $LASTEXITCODE)." }
+            Write-Host "Tagged $tag locally. Nothing was pushed."
+            exit 0
+        }
+        Write-Host "Left as-is."
         exit 0
     }
-    Write-Host "Left as-is. Re-run scripts/release.ps1 when ready to retry the push."
-    exit 0
+    else {
+        Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release — the commit and/or tag exist locally and are not on the remote. That is also the normal outcome of a -NoPush stamp, so it does not necessarily mean a push failed."
+        # The same misclassification reaches THIS prompt, where the answer publishes. A local-only version
+        # tag is sufficient for HalfFinished, so HEAD may be an ordinary commit somebody tagged by hand.
+        # Warn rather than refuse: the operator may legitimately want to push a hand-made tag, but they
+        # should not learn only afterwards that this bypassed the gate, changelog and version bump.
+        # Same correction as above: keyed on HeadIsUnpushedRelease this warning called a genuine, already
+        # pushed release commit "NOT a chore(release): commit" -- a literal falsehood, and exactly the kind
+        # of cried wolf that trains an operator to ignore the one warning that matters.
+        if (-not $Reconciliation.HeadReleaseVersion) {
+            Write-Warning "HEAD is NOT a 'chore(release):' commit — $tag looks hand-made rather than produced by this script. Pushing here publishes master and that tag WITHOUT the gate, changelog or version bump."
+        }
+        $ans = Read-Host "[P]ush the existing commit+tag now / e[X]it and leave as-is?"
+        $choice = if ([string]::IsNullOrWhiteSpace($ans)) { 'X' } else { $ans.Substring(0,1).ToUpperInvariant() }
+        if ($choice -eq 'P') {
+            if (-not $tagExistsLocally) { git -C $RepoRoot tag $tag }
+            git -C $RepoRoot push --atomic origin master $tag
+            if ($LASTEXITCODE -ne 0) { throw "push --atomic failed again (exit $LASTEXITCODE). Local state is unchanged; re-run to retry." }
+            Write-Host "Pushed $tag."
+            exit 0
+        }
+        Write-Host "Left as-is. Re-run scripts/release.ps1 when ready to retry the push."
+        exit 0
+    }
 }
 
 function Invoke-ReleaseCommit {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
-        [Parameter(Mandatory)][string]$Version
+        [Parameter(Mandatory)][string]$Version,
+        [switch]$NoPush
     )
 
     $tag = "v$Version"
@@ -464,17 +549,31 @@ function Invoke-ReleaseCommit {
     git -C $RepoRoot tag $tag
     if ($LASTEXITCODE -ne 0) { throw "git tag $tag failed (exit $LASTEXITCODE)." }
 
-    git -C $RepoRoot push --atomic origin master $tag
-    if ($LASTEXITCODE -ne 0) {
-        throw "git push --atomic origin master $tag FAILED (exit $LASTEXITCODE). Both refs were rejected together (--atomic working as intended) — the local commit + tag are intact. Re-run scripts/release.ps1 to retry; it will detect this half-finished state and offer to re-push."
+    # The push lives INSIDE this else on purpose. An early-return guard would behave identically, but it
+    # leaves 'git push --atomic' as a top-level statement of the function, where nothing structural can
+    # prove it is governed by anything -- and this is the one line in the script that is irreversible.
+    # Here it is lexically unreachable when -NoPush is set, which the suite asserts against the AST.
+    if ($NoPush) {
+        Write-Host "-NoPush: committed and tagged $tag LOCALLY. Nothing was pushed."
+        # This promise is CONDITIONAL and saying so is load-bearing: Get-ReleaseReconciliationState keys on
+        # HEAD's own subject and on tags POINTING AT HEAD, so the moment the operator commits past the
+        # release commit the detection silently stops firing and the tag is never offered again.
+        Write-Host "When you are ready to publish, re-run scripts/release.ps1 WHILE HEAD IS STILL THIS COMMIT — it detects this state and offers to push the existing commit+tag."
+        Write-Host "If you commit past it first, that detection no longer fires (it keys on HEAD's subject and on tags pointing at HEAD); push it by hand: git push --atomic origin master $tag"
     }
+    else {
+        git -C $RepoRoot push --atomic origin master $tag
+        if ($LASTEXITCODE -ne 0) {
+            throw "git push --atomic origin master $tag FAILED (exit $LASTEXITCODE). Both refs were rejected together (--atomic working as intended) — the local commit + tag are intact. Re-run scripts/release.ps1 to retry; it will detect this half-finished state and offer to re-push."
+        }
 
-    $remoteUrl = (git -C $RepoRoot remote get-url origin).Trim()
-    $slug = if ($remoteUrl -match 'github\.com[:/](?<slug>[^/]+/[^/.]+)') { $Matches.slug } else { $null }
-    if ($slug) {
-        Write-Host "Pushed. Watch CI: https://github.com/$slug/actions"
-    } else {
-        Write-Host "Pushed $tag to origin/master."
+        $remoteUrl = (git -C $RepoRoot remote get-url origin).Trim()
+        $slug = if ($remoteUrl -match 'github\.com[:/](?<slug>[^/]+/[^/.]+)') { $Matches.slug } else { $null }
+        if ($slug) {
+            Write-Host "Pushed. Watch CI: https://github.com/$slug/actions"
+        } else {
+            Write-Host "Pushed $tag to origin/master."
+        }
     }
 }
 
@@ -485,7 +584,7 @@ try {
 
     $recon = Get-ReleaseReconciliationState -RepoRoot $RepoRoot
     if ($recon.HalfFinished) {
-        Resolve-HalfFinishedRelease -RepoRoot $RepoRoot -Reconciliation $recon -Yes:$Yes -WhatIf:$WhatIf
+        Resolve-HalfFinishedRelease -RepoRoot $RepoRoot -Reconciliation $recon -Yes:$Yes -WhatIf:$WhatIf -NoPush:$NoPush
     }
 
     $sync = Get-VersionsInSync -RepoRoot $RepoRoot
@@ -558,14 +657,17 @@ try {
     if ($review.Action -eq 'Abort') { exit 0 }
 
     if (-not $Yes) {
-        $ans = Read-Host "Cut release v$($next.Version) — write CHANGELOG, bump versions, commit, tag, and push to origin? [y/N]"
+        # The prompt must describe what will ACTUALLY happen: under -NoPush the old wording promised a
+        # push that is not coming, and an operator approves what the prompt says, not what the flags say.
+        $finalStep = if ($NoPush) { 'commit and tag LOCALLY (no push)' } else { 'commit, tag, and push to origin' }
+        $ans = Read-Host "Cut release v$($next.Version) — write CHANGELOG, bump versions, $finalStep? [y/N]"
         if ($ans -notmatch '^[Yy]') { Write-Host "Aborted — nothing written or committed."; exit 0 }
     }
 
     Add-ChangelogSection -ChangelogPath (Join-Path $RepoRoot 'CHANGELOG.md') -Version $next.Version -Body $review.Body
     Set-ProjectVersion -RepoRoot $RepoRoot -Version $next.Version
 
-    Invoke-ReleaseCommit -RepoRoot $RepoRoot -Version $next.Version
+    Invoke-ReleaseCommit -RepoRoot $RepoRoot -Version $next.Version -NoPush:$NoPush
 
     Remove-Item $draft.DraftPath -Force -ErrorAction SilentlyContinue
 }

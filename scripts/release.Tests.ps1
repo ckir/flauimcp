@@ -984,3 +984,281 @@ Describe 'Changelog fence and Unreleased handling' {
         $top | Should -Not -Match '9\.9\.9'
     }
 }
+
+Describe '-NoPush contract' {
+    # The freeze case: this repo deliberately holds master hundreds of commits ahead of origin, so the
+    # stamp (commit + tag) has to be separable from the publish (push). These pin the switch at the SOURCE
+    # and AST level for the same reason as the 'Headless isolation contract' block above -- release.ps1
+    # executes on load, so the suite cannot dot-source it and call Invoke-ReleaseCommit directly.
+
+    BeforeAll {
+        $script:RelPath = Join-Path $Repo 'scripts/release.ps1'
+        $script:RelAst  = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:RelPath, [ref]$null, [ref]$null)
+    }
+
+    It 'declares -NoPush as a switch parameter' {
+        $p = $script:RelAst.ParamBlock.Parameters |
+            Where-Object { $_.Name.VariablePath.UserPath -eq 'NoPush' }
+        $p | Should -Not -BeNullOrEmpty
+        $p.StaticType.Name | Should -Be 'SwitchParameter'
+    }
+
+    It 'guards EVERY git push --atomic behind $NoPush, and does not merely mention it' {
+        # THE load-bearing assertion. A push that is textually near a $NoPush check but not GOVERNED by one
+        # still publishes, which is the whole failure this switch exists to prevent -- so assert reachability
+        # against the AST, not the text.
+        #
+        # This asserts over EVERY push site in the file rather than one named function. The first version
+        # scoped itself to Invoke-ReleaseCommit and reasoned that the OTHER site (Resolve-HalfFinishedRelease,
+        # reached when a previous release did not land) was the operator explicitly answering [P]ush and so
+        # should stay unguarded. An AGY-CAPSTONE round killed that: on a run invoked WITH -NoPush, the
+        # reconciliation prompt fires BEFORE any of this switch's code and offered to push -- one keystroke
+        # from publishing the entire held-back backlog, from inside the flag meant to prevent exactly that.
+        # A file-wide assertion also means a THIRD push site added later cannot quietly escape the flag.
+        #
+        # FindAll, not Find: Find returns only the FIRST match, so the earlier '$pushes.Count | Should -Be 1'
+        # was vacuous -- it counted a one-element array no matter how many push sites existed.
+        #
+        # GetCommandName() -eq 'git', not a text match on the extent: matching any command whose TEXT
+        # mentions 'push --atomic' returned SIX hits, because the Write-Host that hands the operator the
+        # manual escape and the throw messages that name the failed command are themselves commands
+        # containing that string. Only a real git invocation can push.
+        $pushes = @($script:RelAst.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
+                      $n.GetCommandName() -eq 'git' -and
+                      $n.Extent.Text -match '\bpush\b' -and $n.Extent.Text -match '--atomic' }, $true))
+        $pushes.Count | Should -Be 2 -Because 'Invoke-ReleaseCommit and Resolve-HalfFinishedRelease each push; a new site must be added to this gate deliberately'
+
+        foreach ($push in $pushes) {
+            # Find the enclosing if that mentions $NoPush...
+            $node = $push
+            $guard = $null
+            while ($node -and -not $guard) {
+                if ($node -is [System.Management.Automation.Language.IfStatementAst] -and
+                    (@($node.Clauses) | Where-Object { $_.Item1.Extent.Text -match '\$NoPush' })) { $guard = $node }
+                $node = $node.Parent
+            }
+            $guard | Should -Not -BeNullOrEmpty -Because "the 'git push --atomic' at line $($push.Extent.StartLineNumber) must be governed by a \$NoPush guard"
+
+            # ...and then pin its POLARITY and the push's SIDE of it. Matching only that the condition
+            # MENTIONS $NoPush was catastrophically weak, and an AGY-CAPSTONE round proved it with a
+            # mutation the suite SURVIVED: flipping `if ($NoPush)` to `if (-not $NoPush)` still matches the
+            # regex ('-not $NoPush' contains '$NoPush'), so the safety switch inverted into a PUSH BUTTON
+            # -- -NoPush would publish and a normal run would not -- with all 104 tests green. Measured on
+            # BOTH guards, not just the one that was reported.
+            # Exactly one clause: an elseif chain would leave Clauses[1..] unexamined by the polarity
+            # assertion below, and a MEASURED round-5 mutant proved the sibling test blind to exactly that
+            # (a flawed condition hidden in an elseif survived the whole suite).
+            @($guard.Clauses).Count | Should -Be 1 -Because 'the guard must be a plain if/else, so no elseif condition can escape the polarity check'
+            $guard.Clauses[0].Item1.Extent.Text.Trim() | Should -Be '$NoPush' -Because 'a negated guard inverts the switch while still matching a mention-only assertion'
+            $guard.ElseClause | Should -Not -BeNullOrEmpty -Because 'the push must live in the else branch'
+            $inElse = ($push.Extent.StartOffset -ge $guard.ElseClause.Extent.StartOffset) -and
+                      ($push.Extent.EndOffset   -le $guard.ElseClause.Extent.EndOffset)
+            $inElse | Should -BeTrue -Because "the push at line $($push.Extent.StartLineNumber) must sit in the ELSE of if (\$NoPush), so -NoPush cannot reach it"
+        }
+    }
+
+    It 'terminates the reconciliation with exit, never return' {
+        # MEASURED round-6 mutant that SURVIVED all 106 tests: change an `exit 0` in this function to
+        # `return`. In PowerShell `exit` halts the script while `return` only leaves the function, so
+        # control falls back into the script body, past Assert-Preconditions, and CUTS A NEW RELEASE ON TOP
+        # of the half-finished one. The caller does not test a return value -- it calls the function purely
+        # for effect -- so every terminal path here must exit. The tests had taken the termination
+        # instruction entirely on trust.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
+        $returns = @($fn.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true))
+        $returns.Count | Should -Be 0 -Because 'a return here falls through into the script body and cuts a new release over the half-finished one'
+
+        $exits = @($fn.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true))
+        $exits.Count | Should -BeGreaterThan 0 -Because 'the function terminates the script on every path it handles'
+    }
+
+    It 'never claims a push was attempted, now that -NoPush produces that state deliberately' {
+        # A local commit plus a local-only tag used to mean only one thing: a push that did not land. With
+        # -NoPush it is the NORMAL, INTENDED outcome, so asserting a failed push states history the
+        # function cannot know -- the same defect class this project has folded before.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
+        $fn.Extent.Text | Should -Not -Match "didn't land"
+    }
+
+    It 'keeps the orphaned-tag guard AHEAD of the -NoPush branch' {
+        # MEASURED round-5 mutant that SURVIVED the suite before this test existed: relocate
+        # `if ($tagExistsLocally -and -not $tagPointsAtHead) { throw ... }` below the if/else and it becomes
+        # dead code, because every branch under it exits. The suite asserted the guard EXISTED and took its
+        # ORDER entirely on trust -- and the -NoPush branch DEPENDS on it, or it acts on a tag that does not
+        # point at HEAD.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
+        $orphanGuard = $fn.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses[0].Item1.Extent.Text -match 'tagPointsAtHead' }, $true)
+        $orphanGuard | Should -Not -BeNullOrEmpty
+
+        $noPushIf = $fn.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses[0].Item1.Extent.Text.Trim() -eq '$NoPush' -and
+                      $n.FindAll({
+                          param($c) $c -is [System.Management.Automation.Language.CommandAst] -and
+                                    $c.GetCommandName() -eq 'git' -and
+                                    $c.Extent.Text -match '--atomic' }, $true) }, $true)
+        $orphanGuard.Extent.EndOffset | Should -BeLessThan $noPushIf.Extent.StartOffset -Because 'a guard that runs after every exiting branch is dead code'
+    }
+
+    It 'has exactly one $NoPush guard per function, so none can be nested inside another' {
+        # An if ($NoPush) nested inside the THEN block of another if ($NoPush) satisfies both the polarity
+        # and the extent-containment assertions while making the push unreachable in every state. The
+        # failure direction is safe (nothing publishes) but the release capability would be silently dead.
+        #
+        # Asserted PER FUNCTION, not as a global count. A global count of 2 was measured WRONG: there are
+        # three `if ($NoPush)` sites, and the third is legitimate -- `$finalStep = if ($NoPush) {...}` in the
+        # main flow, which picks the confirmation wording and pushes nothing. A global number would also rot
+        # the moment anyone adds a fourth harmless one, while saying nothing about nesting where it matters.
+        foreach ($name in @('Invoke-ReleaseCommit', 'Resolve-HalfFinishedRelease')) {
+            $fn = $script:RelAst.Find({
+                param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                          $n.Name -eq $name }, $true)
+            $fn | Should -Not -BeNullOrEmpty
+            $guards = @($fn.FindAll({
+                param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                          $n.Clauses[0].Item1.Extent.Text.Trim() -eq '$NoPush' -and
+                          $n.FindAll({
+                              param($c) $c -is [System.Management.Automation.Language.CommandAst] -and
+                                        $c.GetCommandName() -eq 'git' -and
+                                        $c.Extent.Text -match '--atomic' }, $true) }, $true))
+            $guards.Count | Should -Be 1 -Because "$name must have exactly one -NoPush guard GOVERNING A PUSH, so none can be nested inside another"
+        }
+    }
+
+    It 'threads -NoPush into the half-finished-release reconciliation' {
+        # The reconciliation runs BEFORE the new code on any later invocation, and it owns the second push.
+        # Declared-but-unthreaded is the exact shape the capstone caught: the switch defaults to $false
+        # inside the function, so every assertion about the guard passes while the prompt still offers [P]ush.
+        $code = Get-CodeWithoutComments $script:RelPath
+        $code | Should -Match 'Resolve-HalfFinishedRelease[^;]*?-NoPush:\s*\$NoPush'
+    }
+
+    It 'does not recommend publishing a tag this script did not produce' {
+        # AGY-CAPSTONE round 2, measured in .clavity/scratch/release-nopush/: a hand-made vX.Y.Z tag on an
+        # ordinary commit yields HalfFinished=True with HeadReleaseVersion=<null>, so "the tag already
+        # exists" never implied this pipeline made it. Both the -NoPush message and the push prompt must
+        # consult HeadReleaseVersion before treating HEAD as a release.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
+        $fn | Should -Not -BeNullOrEmpty
+
+        # Locate the two sites STRUCTURALLY, one inside each half of the top-level if ($NoPush).
+        #
+        # A count was not enough and a mutant proved it: 'at least 2 ifs testing HeadReleaseVersion' stayed
+        # GREEN after deleting one of them, because $targetVersion's own pre-existing
+        # `if ($Reconciliation.HeadReleaseVersion)` counts toward the total. A gate whose quorum can be met
+        # by code it is not about is only accidentally passing.
+        # Located by "governs a push", not by "mentions $NoPush". Find returns the FIRST match, so an
+        # unrelated message-selecting if ($NoPush) earlier in the function silently redirects this whole
+        # test at the wrong statement -- measured, that is exactly what happened the moment the -WhatIf
+        # advice gained its own if ($NoPush).
+        $noPushIf = $fn.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses[0].Item1.Extent.Text.Trim() -eq '$NoPush' -and
+                      $n.FindAll({
+                          param($c) $c -is [System.Management.Automation.Language.CommandAst] -and
+                                    $c.GetCommandName() -eq 'git' -and
+                                    $c.Extent.Text -match '--atomic' }, $true) }, $true)
+        $noPushIf | Should -Not -BeNullOrEmpty
+
+        # Assert against the if CONDITIONS, not the block text. Extent.Text is RAW SOURCE INCLUDING
+        # COMMENTS, and the comments in both blocks necessarily name HeadIsUnpushedRelease to explain why
+        # it is the wrong predicate -- so a 'Should -Not -Match' over the block text fails on the prose
+        # that documents the fix. A condition extent carries no comments, and it is what actually decides.
+        $condition = {
+            param($block)
+            $hit = $block.Find({
+                param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                          $n.Clauses[0].Item1.Extent.Text -match 'HeadReleaseVersion' }, $true)
+            if ($hit) { $hit.Clauses[0].Item1.Extent.Text } else { $null }
+        }
+
+        $thenCond = & $condition $noPushIf.Clauses[0].Item2
+        $elseCond = & $condition $noPushIf.ElseClause
+
+        $thenCond | Should -Not -BeNullOrEmpty -Because 'the -NoPush message must not recommend publishing a tag this script never produced'
+        $elseCond | Should -Not -BeNullOrEmpty -Because 'the push prompt must warn when HEAD is not a release commit'
+
+        # Neither may regress to HeadIsUnpushedRelease, which conflates "is a release commit" with "is not
+        # yet on the remote": measured, a stamped-then-manually-pushed master leaves the subject matching
+        # while that flag is false, so the message called a genuine release commit a hand-made tag.
+        # ...and the conflated flag must be absent from EVERY condition in both halves, not merely from
+        # the one condition we happened to find first. Otherwise a flawed `if ($Reconciliation.
+        # HeadIsUnpushedRelease)` inserted alongside the correct check runs unnoticed while this test
+        # passes by validating its surviving neighbour.
+        $allConds = {
+            param($block)
+            @($block.FindAll({
+                param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true)) |
+                ForEach-Object { $_.Clauses } | ForEach-Object { $_.Item1.Extent.Text }
+        }
+        foreach ($c in (& $allConds $noPushIf.Clauses[0].Item2)) {
+            $c | Should -Not -Match 'HeadIsUnpushedRelease'
+        }
+        foreach ($c in (& $allConds $noPushIf.ElseClause)) {
+            $c | Should -Not -Match 'HeadIsUnpushedRelease'
+        }
+
+        # The top-level guard's own polarity, pinned here too: this test walks into Clauses[0].Item2 as
+        # "the -NoPush half", which is only true while the condition is positive.
+        $noPushIf.Clauses[0].Item1.Extent.Text.Trim() | Should -Be '$NoPush'
+    }
+
+    It 'states the precondition on the -NoPush resume promise' {
+        # Get-ReleaseReconciliationState keys on HEAD's OWN subject and on tags POINTING AT HEAD, so the
+        # "re-run and it will offer to push" promise silently stops being true the moment the operator
+        # commits past the release commit -- and then the tag is never offered again. Saying so, and giving
+        # the manual escape, is the difference between a stamp and a lost tag.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Invoke-ReleaseCommit' }, $true)
+        $branch = $fn.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses.Item1.Extent.Text -match '\$NoPush' }, $true)
+        $branch | Should -Not -BeNullOrEmpty
+        $branch.Extent.Text | Should -Match 'WHILE HEAD IS STILL THIS COMMIT'
+        $branch.Extent.Text | Should -Match 'git push --atomic origin master' -Because 'the operator needs the manual escape once detection can no longer fire'
+    }
+
+    It 'threads -NoPush from the entry point into Invoke-ReleaseCommit' {
+        # A declared-but-unthreaded switch is the classic "guard that was never CONNECTED": every assertion
+        # above passes while the caller still pushes, because the function parameter defaults to $false.
+        $code = Get-CodeWithoutComments $script:RelPath
+        $code | Should -Match 'Invoke-ReleaseCommit[^\n]*?-NoPush:\s*\$NoPush'
+    }
+
+    It 'does not promise a push in the final confirmation when -NoPush is set' {
+        # The prompt read "...commit, tag, and push to origin?" -- under -NoPush that sentence is false, and a
+        # confirmation that misdescribes what it is about to do is how an operator approves the wrong thing.
+        #
+        # NOTE the shape of these assertions. Get-CodeWithoutComments joins TOKENS with single spaces, so the
+        # returned text contains no newlines at all: a '[^\n]*?' proximity regex degenerates into "both
+        # strings appear somewhere in the file", which would have gone green the moment $NoPush existed
+        # anywhere. So pin the ABSENCE of the unconditional promise, and pin the branch in the AST.
+        $prompt = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
+                      $n.Extent.Text -match 'Read-Host' -and
+                      $n.Extent.Text -match 'Cut release' }, $true)
+        $prompt | Should -Not -BeNullOrEmpty
+        $prompt.Extent.Text | Should -Not -Match 'push to origin' -Because 'the prompt must not hard-code an outcome the flags can change'
+
+        $branch = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses.Item1.Extent.Text -match '\$NoPush' -and
+                      $n.Extent.Text -match 'push' }, $true)
+        $branch | Should -Not -BeNullOrEmpty -Because 'the confirmation wording must branch on $NoPush'
+    }
+}
