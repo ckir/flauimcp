@@ -326,7 +326,7 @@ public sealed class InputTools
             _p.RunOnRefReadAsync(_win, _resolvedRef ?? _ref!, el => VerifyReader.FromElement(el, _p.Classifier, null, readCapability: true), _timeout);
     }
 
-    [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Same lease/deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Requires an active input lease (`flaui-mcp unlock`); same deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
     public Task<string> DesktopKey(
         [Description("Chord, e.g. \"Ctrl+S\" or \"Enter\".")] string chord,
         [Description("Optional element ref to focus first; omit to target the current foreground window. At most one of ref | selector.")] string? @ref = null,
@@ -404,7 +404,7 @@ public sealed class InputTools
         return new ActionTarget(root, 0, r.ProcessName, r.WindowClass);
     }
 
-    [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers=optional array of Ctrl|Alt|Shift|Win held for the duration of the click (e.g. [\"Ctrl\"] for additive-select, [\"Shift\"] for range-select). Re-hit-tests that the point still maps to the target window immediately before sending. Same lease/deny-list/session gates. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers=optional array of Ctrl|Alt|Shift|Win held for the duration of the click (e.g. [\"Ctrl\"] for additive-select, [\"Shift\"] for range-select). Re-hit-tests that the point still maps to the target window immediately before sending. Requires an active input lease (`flaui-mcp unlock`); same deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
     public Task<string> DesktopClick(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Element ref to click, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,

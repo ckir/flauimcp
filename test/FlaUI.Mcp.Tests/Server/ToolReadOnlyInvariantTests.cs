@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Tools;
@@ -90,10 +91,19 @@ public class ToolReadOnlyInvariantTests
         // InteractionTools, stated NEITHER posture while their sibling InputTools stated both on every
         // tool. The familiar shape: a convention held on one path and dropped on the adjacent one.
         //
-        // "lease" catches either posture, because both are real and a caller needs to know which:
-        // the SendInput tools say "Requires an active input lease", the UIA-pattern tools say
-        // "NO input lease required" (GuardWrite tests only options.ReadOnly, and InteractionTools
-        // references InputGuard zero times).
+        // The posture check matches one of the two CANONICAL statements, not the bare word "lease".
+        // AGY-CAPSTONE round 1 caught the difference: an earlier version of this test accepted any
+        // description containing "lease", and desktop_click passed it while ending with a DANGLING
+        // "Same lease/deny-list/session gates." — same as WHAT? desktop_key delegated its posture to
+        // desktop_type. Both satisfied the gate and told a caller nothing, and because schemas are
+        // DEFERRED a subagent routinely loads one tool without its neighbours, so a cross-reference is
+        // not an answer. A gate that accepts a MENTION does not enforce KNOWLEDGE.
+        //
+        // The two postures are both real and a caller needs to know which: the SendInput tools say
+        // "Requires an active input lease", the UIA-pattern tools say "NO input lease required"
+        // (GuardWrite tests only options.ReadOnly, and InteractionTools references InputGuard zero
+        // times). "needs NO input lease" also matches, which is desktop_set_caret's existing wording.
+        const string PostureRx = @"requires an active input lease|no input lease";
         var offenders = Tools()
             .Where(t => t.IsDestructive)
             .Select(t => (t.Type, t.Method,
@@ -101,7 +111,7 @@ public class ToolReadOnlyInvariantTests
             .Select(x => (x.Type, x.Method, x.Desc, Missing: string.Join(" and ", new[]
             {
                 x.Desc.Contains("--read-only-mode", StringComparison.OrdinalIgnoreCase) ? null : "--read-only-mode",
-                x.Desc.Contains("lease", StringComparison.OrdinalIgnoreCase) ? null : "its input-lease posture",
+                Regex.IsMatch(x.Desc, PostureRx, RegexOptions.IgnoreCase) ? null : "its input-lease posture",
             }.Where(s => s is not null))))
             .Where(x => x.Missing.Length > 0)
             .Select(x => $"{x.Type.Name}.{x.Method.Name} does not state {x.Missing}")
