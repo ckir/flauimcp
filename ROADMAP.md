@@ -922,3 +922,58 @@ of them was reading the repository. Re-run any model comparison with tool access
 
 ⚠ UNVERIFIED, and it decides which branch is even available: whether `claude -p` exposes a flag that
 disables file tools while keeping the model. Establish that before choosing.
+
+### 27. The build/test gate cannot run while the repo dogfoods its own server — and killing your own server is not enough
+
+MEASURED 2026-08-23, twice, on two different branches. This is an operational blocker, not a code defect:
+it makes a mandated pre-commit test gate **unsatisfiable in-session**, so the driver silently falls back
+to weaker verification exactly when a skill says not to.
+
+**The mechanism.** A live `flaui-mcp.exe` holds
+`src/FlaUI.Mcp.Server/bin/Release/net10.0-windows10.0.19041.0/win-x64/flaui-mcp.exe` open, so any
+`dotnet test` that rebuilds the Server project dies at **MSB3027 "Exceeded retry count of 10"** before a
+single test runs. Measured on a markdown-only change to an `EmbeddedResource` SKILL.md — the change could
+not possibly have broken a test, and the gate still could not run.
+
+**The part that makes it hard to diagnose, and the reason this is one item and not two.** Disabling the
+plugin in your OWN session does not free the build. The Claude Code background-job daemon keeps
+**pre-warmed spare workers**: the roster showed worker `060a2564` with `source=spare`, `mode=prompt`,
+`restoresTranscript=false` and an **empty** `seed.intent` — no task assigned, nothing in the UI showing it
+exists — and it had already spawned its own `flaui-mcp` (pid 1160) plus `clavity-ls` and `serena`, and
+burned 35 CPU seconds. An idle worker nobody started held 36 locked modules. Renaming the running exe is
+also insufficient: Windows permits the rename, but the loaded .NET assemblies stay locked.
+
+**Why it matters beyond the annoyance:** the honest options today are to kill every server (which kills
+the session's own `desktop_*` tools mid-task) or to defer the gate. Both are bad, and the second is
+invisible in the record.
+
+**Directions, none chosen:**
+
+- Build the Server project to a **per-session output path** so a running instance never occupies the path
+  the next build writes.
+- Make the gate's test filter skip the Server rebuild when the change cannot affect it — narrower, and it
+  re-opens the question of what "cannot affect it" means for an `EmbeddedResource`.
+- Have the gate **detect the lock and say so**, naming every holder including spares, instead of failing
+  as MSB3027. This is the cheapest and fixes the diagnosis problem even if it fixes nothing else.
+
+### 28. `FailedCount == 0` is not proof of green, and every ad-hoc harness here read exactly that
+
+MEASURED 2026-08-23 during the Pester 6 adoption. A Pester test file that fails to **parse** silently
+removes its own tests from the run, and the `PassThru` result still reports `failed=0`.
+
+**The measurement.** Prepending a stray `}` to `scripts/pester-pin.Tests.ps1` — after confirming exactly
+one parse error through the PowerShell parser — took the suite from `total=140` to `total=137` while
+`failed` stayed `0`. Three tests, a whole safety net, gone with no failure reported.
+
+**The shipped gates are fine.** `Run.Exit` returned exit code 1, so CI and the cockpit would both catch
+it. The exposure is entirely in **ad-hoc verification**: every throwaway harness written during that
+branch read `FailedCount`, and each would have called that run green. A driver checking only
+`FailedCount` can delete an entire safety net and watch it report success.
+
+**The fix worth tracking:** assert the **expected total** as well as the failure count, so a vanished file
+is a failure rather than a smaller green. The count has to live somewhere that itself cannot drift —
+which is the same problem `scripts/pester-pin.Tests.ps1` solves for the version pin, and probably the
+same answer.
+
+**The general rule, which outlives this repo:** ask *"did the tests RUN?"* before *"did they pass?"* —
+check the file and test counts, not the failure count.
