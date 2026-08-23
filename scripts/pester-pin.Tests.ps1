@@ -1,7 +1,14 @@
 # scripts/pester-pin.Tests.ps1
 #
-# The repo pins a Pester version in several places, and the pin is load-bearing: this machine also carries
-# a legacy Pester 3.4.0, so an unpinned `Invoke-Pester` picks the wrong one.
+# The repo pins a Pester version in several places, and the pin is load-bearing -- but NOT for the reason
+# this comment used to give. It claimed a legacy Pester 3.4.0 on the machine made an unpinned
+# `Invoke-Pester` "pick the wrong one". MEASURED after 5.8.0 was uninstalled, with 3.4.0 still present:
+# an unpinned `Import-Module Pester` resolves to 6.1.0. Highest version wins; an OLDER module does not
+# shadow a newer one.
+#
+# What the pin actually buys is that the version is CHOSEN rather than inherited: a machine or a CI image
+# with a NEWER Pester than this suite was written against would silently upgrade the runner underneath it,
+# and that is precisely how -EnableExit would have vanished without anyone deciding to move.
 #
 # Adopting 6.1.0 was nearly a silent gate break. MEASURED: Pester 6 REMOVED `-EnableExit`, which both
 # cockpit gates used. On a PASSING suite, `Invoke-Pester -Path scripts/ -EnableExit` under 6.1.0 exits 1
