@@ -817,36 +817,49 @@ the installer refuse a non-Windows target.
 Found during the activation-instructions panel, when the operator asked what happens on a non-Windows
 install. Filed from `.clavity/local-anomalies.md` at triage.
 
-### 24. The changelog drafter cannot cut a large release — the prompt degrades the DIFF but nothing else
+### 24. ~~The changelog drafter cannot cut a large release~~ — FIXED
 
-MEASURED cutting v1.0.0, with 400 commits since `v0.20.0`. `claude -p` refused the draft outright:
-*"the request is ~260,934 tokens (limit 200,000)"*.
+**FIXED.** Kept because the correction below matters: the first version of this item stated the cause
+wrongly, and it was filed that way for about an hour.
 
-`Get-ChangelogPrompt` (`scripts/lib/release-lib.ps1:324-328`) swaps the full patch for `git log --stat`
-once the diff passes 150,000 bytes or the range passes 40 commits. That degradation fired correctly — and
-was nowhere near enough, because **only the diff is bounded**:
+MEASURED cutting v1.0.0, with 403 commits since `v0.20.0`. `claude -p` refused the draft outright:
+*"the request is ~260,934 tokens (limit 200,000)"*, so the release could not be cut at all.
 
-| part of the prompt | chars | ~tokens | bounded? |
+**The prompt was 827,829 chars / ~236,523 tokens. Its actual composition, measured by building the real
+prompt rather than reasoning about it:**
+
+| part | chars | ~tokens | share |
 |---|---|---|---|
-| commit-message list | 599,888 | ~171,000 | **no** |
-| `git log --stat` | 777,038 | ~222,000 | **no** — it IS the degradation |
-| full diff | 5,888,531 | — | yes, degraded away |
+| `git log --stat` | 779,976 | 222,850 | **94.2%** |
+| commit SUBJECT list | 31,401 | 8,972 | 3.8% |
+| style exemplar | 15,381 | 4,395 | 1.9% |
 
-The stat ALONE exceeds the whole context limit here, so the "degraded" prompt is unusable and there is no
-further fallback. The failure is clean — it throws before any file is written — but a release simply
-cannot be cut this way.
+⚠ **CORRECTION.** This item originally blamed an "unbounded commit-message list of ~171,000 tokens". That
+was wrong. `Get-ChangelogPrompt` builds its list as `($_ -split "\n")[0]` — **subject lines only** — so the
+full commit bodies never enter the prompt at all. The ~171,000-token figure measured `%B` output that is
+passed to the function and then discarded by it. The mistake came from reading the caller and inferring the
+callee instead of building the artifact and measuring it. **The stat was 94.2% of the problem and the
+commit list was a rounding error.**
 
-Reachable by construction in this repository: the standing decision holds `master` hundreds of commits
-ahead of `origin`, which is exactly the shape that breaks it.
+**ROOT CAUSE:** the caller passed `git log --stat`, which repeats an entire file list *once per commit* —
+403 times over this range. `git diff --stat` across the same range is one cumulative block.
 
-WORKAROUND USED FOR v1.0.0, and it is a supported one rather than a hack: `Get-OrCreateDraft` resumes a
-pre-staged draft at `%TEMP%\flaui-mcp-release-draft-<version>.md` when it starts with `### `, and the
-code comment names that workflow explicitly — *"pre-stage a draft interactively, then finish the release
-from CI with -Yes"*. Staging a draft skips the LLM call entirely.
+| candidate | chars | ~tokens |
+|---|---|---|
+| `git log --stat` (per-commit ×403) | 779,976 | 222,850 |
+| `git diff --stat` (cumulative) | **13,978** | **3,994** |
 
-A fix needs to bound BOTH remaining inputs — `--shortstat` or a truncated file list, and a subject-only
-commit list (`%s` rather than `%B`) past some threshold — and should say in the prompt that it has done
-so, since the drafter's output quality depends on knowing what it was not shown.
+**THE FIX, in two parts:**
+1. The caller sends the cumulative `git diff --stat <lastTag>..HEAD`, falling back to the per-commit form
+   only when there is no previous tag to diff from (a first release, necessarily small). This is also the
+   better artifact for a changelog — *"221 files changed, 45,113 insertions(+)"* rather than 403
+   repetitions of per-commit noise.
+2. `Get-ChangelogPrompt` gained `-StatBudgetBytes` (default 20,000) as a backstop for a release large
+   enough that even the cumulative stat does not fit — and it **tells the drafter it truncated**, because a
+   model handed a silently-shortened file list writes as though it saw everything.
+
+**MEASURED AFTER, on the same 403-commit range: ~236,523 → ~17,666 tokens, 13.4x smaller, no truncation
+needed.** Five tests, three logic mutants each red at its own assertion.
 
 ### 25. Cutting a release never consumes `## [Unreleased]`
 
