@@ -441,7 +441,18 @@ function Resolve-HalfFinishedRelease {
     # ever" (including the -Yes hard-fail's exit 1, which is itself a mutation-adjacent unattended
     # decision), so it must win to preserve the read-only guarantee.
     if ($WhatIf) {
-        Write-Host "[-WhatIf] Half-finished release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land). -WhatIf makes no changes; re-run without -WhatIf to reconcile. (Preview stops here — a real run reconciles and exits before computing a new release.)"
+        # Two corrections, both introduced BY -NoPush existing. (1) This no longer asserts that a push was
+        # attempted and failed: a local commit plus a local-only tag is now the NORMAL, DELIBERATE outcome
+        # of a -NoPush stamp, and claiming a failed push is a history this function cannot know. (2) The
+        # advice is flag-aware: telling a -NoPush operator to "re-run without -WhatIf to reconcile"
+        # promised an interactive push prompt they will not get -- dropping -WhatIf alone lands them in the
+        # -NoPush branch, which offers the local-only options.
+        $whatIfNext = if ($NoPush) {
+            "re-run without -WhatIf to see the local-only options (-NoPush keeps the push off the table; drop -NoPush too if you mean to publish)"
+        } else {
+            "re-run without -WhatIf to reconcile"
+        }
+        Write-Host "[-WhatIf] Half-finished release detected: HEAD looks like an unpushed '$tag' release — the commit and/or tag exist locally and are not on the remote, which is also the normal outcome of a -NoPush stamp. -WhatIf makes no changes; $whatIfNext. (Preview stops here — a real run reconciles and exits before computing a new release.)"
         exit 0
     }
 
@@ -491,7 +502,7 @@ function Resolve-HalfFinishedRelease {
         exit 0
     }
     else {
-        Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land)."
+        Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release — the commit and/or tag exist locally and are not on the remote. That is also the normal outcome of a -NoPush stamp, so it does not necessarily mean a push failed."
         # The same misclassification reaches THIS prompt, where the answer publishes. A local-only version
         # tag is sufficient for HalfFinished, so HEAD may be an ordinary commit somebody tagged by hand.
         # Warn rather than refuse: the operator may legitimately want to push a hand-made tag, but they

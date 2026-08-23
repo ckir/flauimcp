@@ -1059,6 +1059,35 @@ Describe '-NoPush contract' {
         }
     }
 
+    It 'terminates the reconciliation with exit, never return' {
+        # MEASURED round-6 mutant that SURVIVED all 106 tests: change an `exit 0` in this function to
+        # `return`. In PowerShell `exit` halts the script while `return` only leaves the function, so
+        # control falls back into the script body, past Assert-Preconditions, and CUTS A NEW RELEASE ON TOP
+        # of the half-finished one. The caller does not test a return value -- it calls the function purely
+        # for effect -- so every terminal path here must exit. The tests had taken the termination
+        # instruction entirely on trust.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
+        $returns = @($fn.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true))
+        $returns.Count | Should -Be 0 -Because 'a return here falls through into the script body and cuts a new release over the half-finished one'
+
+        $exits = @($fn.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true))
+        $exits.Count | Should -BeGreaterThan 0 -Because 'the function terminates the script on every path it handles'
+    }
+
+    It 'never claims a push was attempted, now that -NoPush produces that state deliberately' {
+        # A local commit plus a local-only tag used to mean only one thing: a push that did not land. With
+        # -NoPush it is the NORMAL, INTENDED outcome, so asserting a failed push states history the
+        # function cannot know -- the same defect class this project has folded before.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
+        $fn.Extent.Text | Should -Not -Match "didn't land"
+    }
+
     It 'keeps the orphaned-tag guard AHEAD of the -NoPush branch' {
         # MEASURED round-5 mutant that SURVIVED the suite before this test existed: relocate
         # `if ($tagExistsLocally -and -not $tagPointsAtHead) { throw ... }` below the if/else and it becomes
@@ -1075,7 +1104,11 @@ Describe '-NoPush contract' {
 
         $noPushIf = $fn.Find({
             param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
-                      $n.Clauses[0].Item1.Extent.Text -match '\$NoPush' }, $true)
+                      $n.Clauses[0].Item1.Extent.Text.Trim() -eq '$NoPush' -and
+                      $n.FindAll({
+                          param($c) $c -is [System.Management.Automation.Language.CommandAst] -and
+                                    $c.GetCommandName() -eq 'git' -and
+                                    $c.Extent.Text -match '--atomic' }, $true) }, $true)
         $orphanGuard.Extent.EndOffset | Should -BeLessThan $noPushIf.Extent.StartOffset -Because 'a guard that runs after every exiting branch is dead code'
     }
 
@@ -1095,8 +1128,12 @@ Describe '-NoPush contract' {
             $fn | Should -Not -BeNullOrEmpty
             $guards = @($fn.FindAll({
                 param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
-                          $n.Clauses[0].Item1.Extent.Text.Trim() -eq '$NoPush' }, $true))
-            $guards.Count | Should -Be 1 -Because "$name must have exactly one -NoPush guard, so none can be nested inside another"
+                          $n.Clauses[0].Item1.Extent.Text.Trim() -eq '$NoPush' -and
+                          $n.FindAll({
+                              param($c) $c -is [System.Management.Automation.Language.CommandAst] -and
+                                        $c.GetCommandName() -eq 'git' -and
+                                        $c.Extent.Text -match '--atomic' }, $true) }, $true))
+            $guards.Count | Should -Be 1 -Because "$name must have exactly one -NoPush guard GOVERNING A PUSH, so none can be nested inside another"
         }
     }
 
@@ -1112,7 +1149,7 @@ Describe '-NoPush contract' {
         # AGY-CAPSTONE round 2, measured in .clavity/scratch/release-nopush/: a hand-made vX.Y.Z tag on an
         # ordinary commit yields HalfFinished=True with HeadReleaseVersion=<null>, so "the tag already
         # exists" never implied this pipeline made it. Both the -NoPush message and the push prompt must
-        # consult HeadIsUnpushedRelease before treating HEAD as a release.
+        # consult HeadReleaseVersion before treating HEAD as a release.
         $fn = $script:RelAst.Find({
             param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
                       $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
@@ -1124,9 +1161,17 @@ Describe '-NoPush contract' {
         # GREEN after deleting one of them, because $targetVersion's own pre-existing
         # `if ($Reconciliation.HeadReleaseVersion)` counts toward the total. A gate whose quorum can be met
         # by code it is not about is only accidentally passing.
+        # Located by "governs a push", not by "mentions $NoPush". Find returns the FIRST match, so an
+        # unrelated message-selecting if ($NoPush) earlier in the function silently redirects this whole
+        # test at the wrong statement -- measured, that is exactly what happened the moment the -WhatIf
+        # advice gained its own if ($NoPush).
         $noPushIf = $fn.Find({
             param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
-                      $n.Clauses.Item1.Extent.Text -match '\$NoPush' }, $true)
+                      $n.Clauses[0].Item1.Extent.Text.Trim() -eq '$NoPush' -and
+                      $n.FindAll({
+                          param($c) $c -is [System.Management.Automation.Language.CommandAst] -and
+                                    $c.GetCommandName() -eq 'git' -and
+                                    $c.Extent.Text -match '--atomic' }, $true) }, $true)
         $noPushIf | Should -Not -BeNullOrEmpty
 
         # Assert against the if CONDITIONS, not the block text. Extent.Text is RAW SOURCE INCLUDING
