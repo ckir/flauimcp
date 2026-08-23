@@ -53,7 +53,9 @@ public class ${Name}Tests : IClassFixture<TestAppFixture>
     public void ${Name}_does_the_thing()
     {
         // TODO: arrange via _fx, act on the new tool, assert the result.
-        Assert.True(false, "TODO: implement ${Name}_does_the_thing");
+        // Assert.Fail, not Assert.True(false, ...): the latter is xUnit2020, and warnings are errors
+        // here (54b1dc5), so the scaffolded project would not compile.
+        Assert.Fail("TODO: implement ${Name}_does_the_thing");
     }
 }
 "@

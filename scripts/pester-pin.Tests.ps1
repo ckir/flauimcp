@@ -30,10 +30,18 @@ BeforeAll {
         'Import-Module Pester -RequiredVersion (?<v>\d+\.\d+\.\d+)')).Groups['v'].Value
 
     # Every live file that invokes Pester. Plans and the changelog are history and are excluded on purpose.
+    #
+    # `justfile` has no extension, so Remove-CommentText falls through to the line-level `#` rule. That is
+    # correct rather than lucky: `#` is just's comment character too, with the same start-of-line-or-after-
+    # whitespace shape as the YAML rule it shares.
+    #
+    # This list is the gate's blind spot by construction - a file that names the version and is NOT here is
+    # unguarded. Adding a second release route was exactly that risk, which is why the justfile is in it.
     $script:LiveFiles = @(
         '.github/workflows/ci.yml'
         'DevelopersCockpit.ps1'
         'CONTRIBUTING.md'
+        'justfile'
     ) | ForEach-Object { Join-Path $script:Repo $_ }
 }
 
@@ -83,6 +91,49 @@ function script:Remove-CommentText {
     ($Text -split "`r?`n" | ForEach-Object { $_ -replace '(^|\s)#.*$', '$1' }) -join "`n"
 }
 
+function script:Get-PesterVersionsNamed {
+    <#
+    .SYNOPSIS
+    Every Pester version a file PINS. Versions named in COMMENTS are prose and are not pins.
+
+    .DESCRIPTION
+    One implementation, called by the live-file scan and by its own unit tests, because the last time the
+    two were separate the fix drifted off the caller: a round added comment-stripping here and the next
+    round moved it to the sibling scan, leaving a correct stripper that nothing called. The suite stayed
+    green the whole time, because none of the scanned files happened to name another version in a comment.
+
+    The rule differs by file kind:
+
+    CODE (.ps1/.yml/extensionless): EVERY version-shaped string on a line mentioning Pester counts, not
+    only the ones bound to -RequiredVersion -- a version a tool ASSERTS about itself is a pin like any
+    other. Comments are stripped first. Splitting by EXTENSION alone fixed the symptom and not the cause:
+    a .ps1 and a .yml are "code" by extension and both contain comments, which are prose in exactly the
+    way Markdown is. MEASURED: an ordinary explanatory line --
+        # Historical note: this gate ran Pester 5.8.0 until the 6.1.0 migration.
+    -- turned this gate RED in both DevelopersCockpit.ps1 and ci.yml.
+
+    PROSE (.md): only -RequiredVersion counts, and the text is deliberately NOT comment-stripped -- `#`
+    opens a HEADING in Markdown, not a comment, so the code rule would blank every heading in the file.
+    The looser match was measured failing on this repo's own documentation, where a sentence explaining
+    WHY the pin exists named another version and the scan read it as a competing pin.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Extension
+    )
+
+    if ($Extension -eq '.md') {
+        return @([regex]::Matches($Text, '-RequiredVersion (?<v>\d+\.\d+\.\d+)') |
+            ForEach-Object { $_.Groups['v'].Value })
+    }
+
+    $code = Remove-CommentText -Text $Text -Extension $Extension
+    @(($code -split "`r?`n") | Where-Object { $_ -match 'Pester' } | ForEach-Object {
+        [regex]::Matches($_, '(?<v>\d+\.\d+\.\d+)') | ForEach-Object { $_.Groups['v'].Value }
+    })
+}
+
 Describe 'Pester pin' {
 
     It 'reads a pinned version out of CI' {
@@ -106,32 +157,60 @@ Describe 'Pester pin' {
         # own documentation, where a sentence explaining WHY the pin exists named another version and the
         # scan read that as a competing pin. Prose legitimately discusses versions; code does not.
         foreach ($file in $script:LiveFiles) {
-            $text = Get-Content $file -Raw
-            $isProse = [IO.Path]::GetExtension($file) -eq '.md'
-
-            $versions = if ($isProse) {
-                @([regex]::Matches($text, '-RequiredVersion (?<v>\d+\.\d+\.\d+)') |
-                    ForEach-Object { $_.Groups['v'].Value })
-            } else {
-                # every version-shaped string on a line that mentions Pester -- but COMMENTS FIRST.
-                #
-                # Splitting by file EXTENSION fixed the symptom and not the cause. A .ps1 and a .yml are
-                # "code" by extension and both contain COMMENTS, which are prose in exactly the way
-                # Markdown is. MEASURED: adding an ordinary explanatory line of the sort this repo writes
-                # constantly --
-                #     # Historical note: this gate ran Pester 5.8.0 until the 6.1.0 migration.
-                # -- turned this gate RED in both DevelopersCockpit.ps1 and ci.yml. The distinction that
-                # matters is CODE versus COMMENT, not the file's extension.
-                @(($text -split "`r?`n") | Where-Object { $_ -match 'Pester' } | ForEach-Object {
-                    [regex]::Matches($_, '(?<v>\d+\.\d+\.\d+)') | ForEach-Object { $_.Groups['v'].Value }
-                })
-            }
-            $versions = @($versions | Sort-Object -Unique)
+            $versions = @(Get-PesterVersionsNamed -Text (Get-Content $file -Raw) `
+                              -Extension ([IO.Path]::GetExtension($file)) | Sort-Object -Unique)
             $versions | Should -Not -BeNullOrEmpty -Because "$(Split-Path $file -Leaf) should name the Pester version at least once"
 
             foreach ($v in $versions) {
                 $v | Should -Be $script:PinnedVersion -Because "$(Split-Path $file -Leaf) must not drift from CI's pin"
             }
+        }
+    }
+
+    It 'does not read a pin out of a COMMENT: <Kind>' -ForEach @(
+        @{ Kind = 'PowerShell'; Ext = '.ps1'
+           Text = "# Historical note: this gate ran Pester 5.8.0 until the 6.1.0 migration.`nImport-Module Pester -RequiredVersion 6.1.0" }
+        @{ Kind = 'YAML'; Ext = '.yml'
+           Text = "  # was Pester 5.8.0 before the migration`n  run: Import-Module Pester -RequiredVersion 6.1.0" }
+        @{ Kind = 'justfile (no extension)'; Ext = ''
+           Text = "# historically Pester 5.8.0`npester:`n    Import-Module Pester -RequiredVersion 6.1.0; Invoke-Pester" }
+    ) {
+        # A version named in a comment is prose. This has now regressed twice, in opposite directions:
+        # once the stripper was missing, once it was present but wired to the sibling scan instead.
+        $found = @(Get-PesterVersionsNamed -Text $Text -Extension $Ext)
+        $found | Should -Not -Contain '5.8.0' -Because "the 5.8.0 sits in a $Kind comment"
+        $found | Should -Contain '6.1.0'      -Because 'the real pin must still be seen'
+    }
+
+    It 'reads a Markdown heading as prose, not as a pin' {
+        # .md is deliberately NOT comment-stripped: `#` opens a heading, and the code rule would blank
+        # every heading in the file. Only -RequiredVersion counts there, so a heading naming a version
+        # is inert either way.
+        $md = "# Pester 5.8.0 was the old pin`n`nRun ``Import-Module Pester -RequiredVersion 6.1.0``."
+        $found = @(Get-PesterVersionsNamed -Text $md -Extension '.md')
+        $found | Should -Not -Contain '5.8.0'
+        $found | Should -Contain '6.1.0'
+    }
+
+    It 'wires BOTH scans through the comment stripper' {
+        # The WIRING contract, and the only guard that would have caught the regression this test was
+        # written for. The unit tests above prove the stripper is correct; they cannot prove the scans
+        # CALL it. Round 3 added stripping to the version scan, round 4 moved it to the switch scan, and
+        # every test stayed green because no scanned file happened to name another version in a comment.
+        #
+        # So: every place this file reads a live file's raw text must hand it to something that strips
+        # comments. If a third scan is added, it has to opt in the same way.
+        #
+        # The needle is built by concatenation on purpose: written as one literal it would appear in this
+        # test's own source, the scan would match its own line, and the test would fail on itself. It did,
+        # first run.
+        $src = Get-Content $PSCommandPath -Raw
+        $needle = 'Get-Content $file' + ' -Raw'
+        $reads = @(($src -split "`r?`n") | Where-Object { $_ -match [regex]::Escape($needle) })
+        $reads | Should -Not -BeNullOrEmpty -Because 'the scans must still read the live files'
+        foreach ($line in $reads) {
+            $line | Should -Match 'Remove-CommentText|Get-PesterVersionsNamed' `
+                -Because 'a raw read that bypasses the stripper is how a comment becomes a pin'
         }
     }
 

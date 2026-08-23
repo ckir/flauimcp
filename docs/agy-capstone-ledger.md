@@ -99,8 +99,25 @@ the text IS**, differently each round.
 | 3 | **comments**, in the version scan — read as pins, so ordinary prose failed the gate |
 | 4 | **comments, in the SWITCH scan** — the sibling scan, eight lines away, still read raw text |
 
-**Round 4 is the sharpest lesson: fixing one scan and not its sibling IN THE SAME FILE is how the class
-survives a fix.** Both now read through one shared stripper.
+**Round 4 is the sharpest lesson, and it is sharper than it first looked: fixing one scan and not its
+sibling IN THE SAME FILE is how the class survives a fix — and round 4's own fix did exactly that,
+in the opposite direction.**
+
+⚠⚠ **CORRECTION, 2026-08-23, after this row was first written.** The sentence that stood here said
+*"both now read through one shared stripper."* **That was FALSE.** Round 3 (`4a979d7`) added
+comment-stripping to the VERSION scan; round 4 (`0f93bf9`) added it to the SWITCH scan and, in the same
+edit, **took it back off the version scan** — leaving a correct stripper that the version scan no longer
+called. The suite stayed green through all of it, because none of the three scanned files happened to
+name another version in a comment.
+
+It was caught by a mutant, not by reading: adding a fourth scanned file (`justfile`) and planting a
+version in a COMMENT turned the gate red when it should have stayed green. Fixed by extracting one
+`Get-PesterVersionsNamed` that both the live scan and its own unit tests call, plus a **wiring contract**
+— every raw read of a live file must pass through something that strips comments — which is the only
+guard that would have caught this. Proven by a mutant that reproduces the regression exactly.
+
+**The lesson to carry: a fold that MOVES a fix is indistinguishable from one that ADDS it, if the only
+evidence is a green suite.**
 
 **What the adoption itself turned up, and what a naive pin bump would have shipped:** Pester 6 **removed
 `-EnableExit`**. Both cockpit gates used it, and it was **measured** to make a *passing* suite exit 1 —
