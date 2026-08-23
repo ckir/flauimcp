@@ -80,6 +80,7 @@ it three times running.
 access**, not a text completion (`claude -p --safe-mode` read `ROADMAP.md` on request; a prompt of 4,000
 synthetic commit subjects produced a changelog describing the real work). Filed as **ROADMAP 26** — a fork
 for the operator, not a fix. It also invalidated a qwen-versus-claude comparison run earlier the same day.
+| 2026-08-23 | `4c69d52..a3fd8e4` (tool descriptions state their lease posture) | 2 | ROUND 1 GREEN after one fold; **round 2 peer half SKIPPED-UNREACHABLE (quota)** — merged on operator adjudication | fold commit `a3fd8e4`; briefs at `.clavity/seams/lease-posture-capstone.md` and `-r2.md`; mutation probes at `.clavity/scratch/lease-posture/`; skip logged in `.clavity/agy-marks/skipped.log` |
 
 ## 2026-08-23 — adopting Pester 6.1.0 (WAIVED, not GREEN)
 
@@ -132,3 +133,43 @@ closing delimiter made `pester-pin.Tests.ps1` un-parseable. Three tests vanished
 **Rounds 2-4 were run through `qwen -p`, not the usual peer**, and it found real defects the usual peer
 missed. Its verdicts still require measurement before folding — see the reviewer evaluation: recall 2/2 on
 a planted defect, precision 0/2 on the clean one.
+
+## 2026-08-23 — tool descriptions must state their own lease posture
+
+**Not a full green: round 1 was clean after one fold, round 2's peer half never ran** — agy's quota was
+exhausted, which is logged as `SKIPPED-UNREACHABLE` with **no completion marker**, so the gate re-arms.
+The operator adjudicated merge on round 1 plus the second reviewer's round 2. Do not cite this as
+capstone-green.
+
+**The one real finding was one I could not have found by reading my own work.** The invariant I added
+required a description to *contain the word* "lease". `desktop_click` satisfied it while ending with a
+dangling **"Same lease/deny-list/session gates."** — same as what? — and `desktop_key` delegated its
+posture to `desktop_type`. Both passed the gate and told a caller nothing. **A gate that accepts a
+MENTION does not enforce KNOWLEDGE.** It matters more than it looks because tool schemas are DEFERRED: a
+subagent routinely loads one tool without its neighbours, so a cross-reference to another tool's
+description is not an answer. Folded by making both explicit and by tightening the gate to match one of
+two canonical postures, proven with a mutant that restores agy's exact wording.
+
+**The other finding was refuted, and the refutation is worth keeping.** agy read `desktop_set_caret`'s
+*"needs NO input lease"* as a lie, because `CheckTarget` consults the lease for the `shells` capability on
+interlocked sinks. But that description already names the carve-out verbatim — *"interlocked shells need
+the 'shells' lease cap"* — and `CheckTarget` consults no lease at all for a non-interlocked target. **agy
+quoted the clause that resolved the contradiction it was alleging.**
+
+**My own scoping was the weakest instrument in the exercise.** A regex sweep over source found 9 tools
+lacking a posture; the reflected test then found **8 more** that my sweep had structurally excluded,
+because it only flagged tools missing BOTH clauses and every tool that named `--read-only-mode` while
+omitting its lease posture was invisible to it. **A regex over source is not an oracle.** Final split,
+measured: 17 no-lease / 6 lease-requiring, all 23 traced to their code path.
+
+**Proven on the wire, not only by unit test.** With the server restarted, `ToolSearch` on
+`desktop_toggle`, `desktop_click` and `desktop_close_window` returned descriptions carrying the new
+posture verbatim — loading a tool BY NAME now carries its rules with it, with no server instructions
+involved, which is exactly the subagent path this work exists to serve.
+
+**Second-reviewer note (3rd consecutive datapoint).** The second reviewer returned "nothing above the
+floor" both rounds. In round 1 its lens answer contained agy's real finding — *"a description could game
+the gate by including the word 'lease' with the wrong meaning"* — and dismissed it as out of scope. In
+round 2 it reached the correct conclusion through a wrong premise, reporting the split as 15/8 and placing
+`desktop_set_caret` and `desktop_select_text_range` in the "requires a lease" bucket when both claim the
+opposite. **Read its reasoning; never its verdict.**
