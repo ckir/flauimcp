@@ -62,7 +62,12 @@ Describe 'Pester pin' {
         $used = New-Object System.Collections.Generic.HashSet[string]
         foreach ($file in $script:LiveFiles) {
             $text = Get-Content $file -Raw
-            foreach ($m in [regex]::Matches($text, 'Invoke-Pester(?<args>[^\r\n"'']*)')) {
+            # Stop at a STATEMENT separator, never at a quote. The first version excluded quotes from
+            # the capture, so a switch sitting after a QUOTED path was invisible: on
+            # `Invoke-Pester -Path 'scripts/' -EnableExit` the scan saw only " -Path " and reported the
+            # invocation clean. MEASURED both quote styles. A gate that cannot see the argument it exists
+            # to check is worse than no gate, because it reads as coverage.
+            foreach ($m in [regex]::Matches($text, 'Invoke-Pester(?<args>[^\r\n;|]*)')) {
                 foreach ($s in [regex]::Matches($m.Groups['args'].Value, '-(?<sw>[A-Za-z]\w+)')) {
                     [void]$used.Add($s.Groups['sw'].Value)
                 }
