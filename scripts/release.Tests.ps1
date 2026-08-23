@@ -984,3 +984,82 @@ Describe 'Changelog fence and Unreleased handling' {
         $top | Should -Not -Match '9\.9\.9'
     }
 }
+
+Describe '-NoPush contract' {
+    # The freeze case: this repo deliberately holds master hundreds of commits ahead of origin, so the
+    # stamp (commit + tag) has to be separable from the publish (push). These pin the switch at the SOURCE
+    # and AST level for the same reason as the 'Headless isolation contract' block above -- release.ps1
+    # executes on load, so the suite cannot dot-source it and call Invoke-ReleaseCommit directly.
+
+    BeforeAll {
+        $script:RelPath = Join-Path $Repo 'scripts/release.ps1'
+        $script:RelAst  = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:RelPath, [ref]$null, [ref]$null)
+    }
+
+    It 'declares -NoPush as a switch parameter' {
+        $p = $script:RelAst.ParamBlock.Parameters |
+            Where-Object { $_.Name.VariablePath.UserPath -eq 'NoPush' }
+        $p | Should -Not -BeNullOrEmpty
+        $p.StaticType.Name | Should -Be 'SwitchParameter'
+    }
+
+    It 'guards the release push behind $NoPush, and does not merely mention it' {
+        # THE load-bearing assertion. A push that is textually near a $NoPush check but not GOVERNED by one
+        # still publishes, which is the whole failure this switch exists to prevent -- so assert reachability
+        # against the AST, not the text. Scoped to Invoke-ReleaseCommit on purpose: the OTHER push site,
+        # inside Resolve-HalfFinishedRelease, is the operator explicitly answering [P]ush and must NOT be
+        # suppressed by this flag.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Invoke-ReleaseCommit' }, $true)
+        $fn | Should -Not -BeNullOrEmpty
+
+        $pushes = @($fn.Find({
+            param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
+                      $n.Extent.Text -match 'push' -and $n.Extent.Text -match '--atomic' }, $true))
+        $pushes.Count | Should -Be 1
+
+        # Walk up from the push to the function itself; some enclosing if/statement must TEST $NoPush.
+        $node = $pushes[0]
+        $guarded = $false
+        while ($node -and $node -ne $fn) {
+            if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
+                foreach ($clause in $node.Clauses) {
+                    if ($clause.Item1.Extent.Text -match '\$NoPush') { $guarded = $true }
+                }
+            }
+            $node = $node.Parent
+        }
+        $guarded | Should -BeTrue -Because 'git push --atomic must be unreachable when -NoPush is passed'
+    }
+
+    It 'threads -NoPush from the entry point into Invoke-ReleaseCommit' {
+        # A declared-but-unthreaded switch is the classic "guard that was never CONNECTED": every assertion
+        # above passes while the caller still pushes, because the function parameter defaults to $false.
+        $code = Get-CodeWithoutComments $script:RelPath
+        $code | Should -Match 'Invoke-ReleaseCommit[^\n]*?-NoPush:\s*\$NoPush'
+    }
+
+    It 'does not promise a push in the final confirmation when -NoPush is set' {
+        # The prompt read "...commit, tag, and push to origin?" -- under -NoPush that sentence is false, and a
+        # confirmation that misdescribes what it is about to do is how an operator approves the wrong thing.
+        #
+        # NOTE the shape of these assertions. Get-CodeWithoutComments joins TOKENS with single spaces, so the
+        # returned text contains no newlines at all: a '[^\n]*?' proximity regex degenerates into "both
+        # strings appear somewhere in the file", which would have gone green the moment $NoPush existed
+        # anywhere. So pin the ABSENCE of the unconditional promise, and pin the branch in the AST.
+        $prompt = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
+                      $n.Extent.Text -match 'Read-Host' -and
+                      $n.Extent.Text -match 'Cut release' }, $true)
+        $prompt | Should -Not -BeNullOrEmpty
+        $prompt.Extent.Text | Should -Not -Match 'push to origin' -Because 'the prompt must not hard-code an outcome the flags can change'
+
+        $branch = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses.Item1.Extent.Text -match '\$NoPush' -and
+                      $n.Extent.Text -match 'push' }, $true)
+        $branch | Should -Not -BeNullOrEmpty -Because 'the confirmation wording must branch on $NoPush'
+    }
+}

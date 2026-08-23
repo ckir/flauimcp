@@ -18,6 +18,13 @@ from a previous run is resumed only if it still starts with a '### ' heading -- 
 and regenerated, so a stale non-changelog draft cannot be accepted unreviewed. See the plan's
 "Unattended (-Yes) contract" table.
 
+.PARAMETER NoPush
+Do everything except the push: gate, changelog, version bump, commit and tag all happen, but
+'git push --atomic' is skipped. Use when the repository is deliberately held back from origin. The
+resulting local-commit-plus-local-tag is the SAME state a failed push leaves behind, which
+Get-ReleaseReconciliationState already recognises -- so a later run detects it and offers
+"[P]ush the existing commit+tag now". Stamping and publishing are separable; this is the switch.
+
 .PARAMETER Version
 Pin the release to this exact X.Y.Z version instead of computing one.
 
@@ -39,6 +46,7 @@ param(
     [Alias('H')][switch]$Help,
     [switch]$WhatIf,
     [Alias('y')][switch]$Yes,
+    [switch]$NoPush,
     [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [ValidateSet('major','minor','patch')][string]$Bump,
     [string]$Model = 'haiku',
@@ -78,7 +86,8 @@ FLOW
      chatter or stderr around it is discarded rather than becoming the changelog.
   5. You review: Accept / Regenerate / Edit / Abort.
   6. Confirm: "Cut release vX.Y.Z?" (skipped under -Yes).
-  7. Commit chore(release), tag vX.Y.Z, 'git push --atomic origin master vX.Y.Z'.
+  7. Commit chore(release), tag vX.Y.Z, 'git push --atomic origin master vX.Y.Z'
+     (-NoPush stops after the tag; re-run later to push the existing commit+tag).
 
 FLAGS
   -Help, -H, -?     Print this usage and exit 0. No side effects.
@@ -86,6 +95,8 @@ FLAGS
   -Yes, -y          Unattended: auto-accept the draft and the final confirmation;
                     every other interactive gate hard-fails instead of blocking.
                     Resumes a previous run's draft only if it starts with '### '.
+  -NoPush           Commit and tag locally; skip the push. Re-run later to push
+                    the existing commit+tag.
   -Version X.Y.Z    Pin the release version (skips commit-driven computation).
   -Bump <level>     Force major/minor/patch from the last tag.
   -Model <name>     claude -p model for the changelog draft (default: haiku).
@@ -447,7 +458,8 @@ function Invoke-ReleaseCommit {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
-        [Parameter(Mandatory)][string]$Version
+        [Parameter(Mandatory)][string]$Version,
+        [switch]$NoPush
     )
 
     $tag = "v$Version"
@@ -464,17 +476,27 @@ function Invoke-ReleaseCommit {
     git -C $RepoRoot tag $tag
     if ($LASTEXITCODE -ne 0) { throw "git tag $tag failed (exit $LASTEXITCODE)." }
 
-    git -C $RepoRoot push --atomic origin master $tag
-    if ($LASTEXITCODE -ne 0) {
-        throw "git push --atomic origin master $tag FAILED (exit $LASTEXITCODE). Both refs were rejected together (--atomic working as intended) — the local commit + tag are intact. Re-run scripts/release.ps1 to retry; it will detect this half-finished state and offer to re-push."
+    # The push lives INSIDE this else on purpose. An early-return guard would behave identically, but it
+    # leaves 'git push --atomic' as a top-level statement of the function, where nothing structural can
+    # prove it is governed by anything -- and this is the one line in the script that is irreversible.
+    # Here it is lexically unreachable when -NoPush is set, which the suite asserts against the AST.
+    if ($NoPush) {
+        Write-Host "-NoPush: committed and tagged $tag LOCALLY. Nothing was pushed."
+        Write-Host "When you are ready to publish, re-run scripts/release.ps1 — it detects this state and offers to push the existing commit+tag."
     }
+    else {
+        git -C $RepoRoot push --atomic origin master $tag
+        if ($LASTEXITCODE -ne 0) {
+            throw "git push --atomic origin master $tag FAILED (exit $LASTEXITCODE). Both refs were rejected together (--atomic working as intended) — the local commit + tag are intact. Re-run scripts/release.ps1 to retry; it will detect this half-finished state and offer to re-push."
+        }
 
-    $remoteUrl = (git -C $RepoRoot remote get-url origin).Trim()
-    $slug = if ($remoteUrl -match 'github\.com[:/](?<slug>[^/]+/[^/.]+)') { $Matches.slug } else { $null }
-    if ($slug) {
-        Write-Host "Pushed. Watch CI: https://github.com/$slug/actions"
-    } else {
-        Write-Host "Pushed $tag to origin/master."
+        $remoteUrl = (git -C $RepoRoot remote get-url origin).Trim()
+        $slug = if ($remoteUrl -match 'github\.com[:/](?<slug>[^/]+/[^/.]+)') { $Matches.slug } else { $null }
+        if ($slug) {
+            Write-Host "Pushed. Watch CI: https://github.com/$slug/actions"
+        } else {
+            Write-Host "Pushed $tag to origin/master."
+        }
     }
 }
 
@@ -558,14 +580,17 @@ try {
     if ($review.Action -eq 'Abort') { exit 0 }
 
     if (-not $Yes) {
-        $ans = Read-Host "Cut release v$($next.Version) — write CHANGELOG, bump versions, commit, tag, and push to origin? [y/N]"
+        # The prompt must describe what will ACTUALLY happen: under -NoPush the old wording promised a
+        # push that is not coming, and an operator approves what the prompt says, not what the flags say.
+        $finalStep = if ($NoPush) { 'commit and tag LOCALLY (no push)' } else { 'commit, tag, and push to origin' }
+        $ans = Read-Host "Cut release v$($next.Version) — write CHANGELOG, bump versions, $finalStep? [y/N]"
         if ($ans -notmatch '^[Yy]') { Write-Host "Aborted — nothing written or committed."; exit 0 }
     }
 
     Add-ChangelogSection -ChangelogPath (Join-Path $RepoRoot 'CHANGELOG.md') -Version $next.Version -Body $review.Body
     Set-ProjectVersion -RepoRoot $RepoRoot -Version $next.Version
 
-    Invoke-ReleaseCommit -RepoRoot $RepoRoot -Version $next.Version
+    Invoke-ReleaseCommit -RepoRoot $RepoRoot -Version $next.Version -NoPush:$NoPush
 
     Remove-Item $draft.DraftPath -Force -ErrorAction SilentlyContinue
 }
