@@ -1036,7 +1036,7 @@ Describe '-NoPush contract' {
             $guard = $null
             while ($node -and -not $guard) {
                 if ($node -is [System.Management.Automation.Language.IfStatementAst] -and
-                    $node.Clauses[0].Item1.Extent.Text -match '\$NoPush') { $guard = $node }
+                    (@($node.Clauses) | Where-Object { $_.Item1.Extent.Text -match '\$NoPush' })) { $guard = $node }
                 $node = $node.Parent
             }
             $guard | Should -Not -BeNullOrEmpty -Because "the 'git push --atomic' at line $($push.Extent.StartLineNumber) must be governed by a \$NoPush guard"
@@ -1047,11 +1047,56 @@ Describe '-NoPush contract' {
             # regex ('-not $NoPush' contains '$NoPush'), so the safety switch inverted into a PUSH BUTTON
             # -- -NoPush would publish and a normal run would not -- with all 104 tests green. Measured on
             # BOTH guards, not just the one that was reported.
+            # Exactly one clause: an elseif chain would leave Clauses[1..] unexamined by the polarity
+            # assertion below, and a MEASURED round-5 mutant proved the sibling test blind to exactly that
+            # (a flawed condition hidden in an elseif survived the whole suite).
+            @($guard.Clauses).Count | Should -Be 1 -Because 'the guard must be a plain if/else, so no elseif condition can escape the polarity check'
             $guard.Clauses[0].Item1.Extent.Text.Trim() | Should -Be '$NoPush' -Because 'a negated guard inverts the switch while still matching a mention-only assertion'
             $guard.ElseClause | Should -Not -BeNullOrEmpty -Because 'the push must live in the else branch'
             $inElse = ($push.Extent.StartOffset -ge $guard.ElseClause.Extent.StartOffset) -and
                       ($push.Extent.EndOffset   -le $guard.ElseClause.Extent.EndOffset)
             $inElse | Should -BeTrue -Because "the push at line $($push.Extent.StartLineNumber) must sit in the ELSE of if (\$NoPush), so -NoPush cannot reach it"
+        }
+    }
+
+    It 'keeps the orphaned-tag guard AHEAD of the -NoPush branch' {
+        # MEASURED round-5 mutant that SURVIVED the suite before this test existed: relocate
+        # `if ($tagExistsLocally -and -not $tagPointsAtHead) { throw ... }` below the if/else and it becomes
+        # dead code, because every branch under it exits. The suite asserted the guard EXISTED and took its
+        # ORDER entirely on trust -- and the -NoPush branch DEPENDS on it, or it acts on a tag that does not
+        # point at HEAD.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
+        $orphanGuard = $fn.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses[0].Item1.Extent.Text -match 'tagPointsAtHead' }, $true)
+        $orphanGuard | Should -Not -BeNullOrEmpty
+
+        $noPushIf = $fn.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses[0].Item1.Extent.Text -match '\$NoPush' }, $true)
+        $orphanGuard.Extent.EndOffset | Should -BeLessThan $noPushIf.Extent.StartOffset -Because 'a guard that runs after every exiting branch is dead code'
+    }
+
+    It 'has exactly one $NoPush guard per function, so none can be nested inside another' {
+        # An if ($NoPush) nested inside the THEN block of another if ($NoPush) satisfies both the polarity
+        # and the extent-containment assertions while making the push unreachable in every state. The
+        # failure direction is safe (nothing publishes) but the release capability would be silently dead.
+        #
+        # Asserted PER FUNCTION, not as a global count. A global count of 2 was measured WRONG: there are
+        # three `if ($NoPush)` sites, and the third is legitimate -- `$finalStep = if ($NoPush) {...}` in the
+        # main flow, which picks the confirmation wording and pushes nothing. A global number would also rot
+        # the moment anyone adds a fourth harmless one, while saying nothing about nesting where it matters.
+        foreach ($name in @('Invoke-ReleaseCommit', 'Resolve-HalfFinishedRelease')) {
+            $fn = $script:RelAst.Find({
+                param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                          $n.Name -eq $name }, $true)
+            $fn | Should -Not -BeNullOrEmpty
+            $guards = @($fn.FindAll({
+                param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                          $n.Clauses[0].Item1.Extent.Text.Trim() -eq '$NoPush' }, $true))
+            $guards.Count | Should -Be 1 -Because "$name must have exactly one -NoPush guard, so none can be nested inside another"
         }
     }
 
@@ -1113,7 +1158,7 @@ Describe '-NoPush contract' {
             param($block)
             @($block.FindAll({
                 param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true)) |
-                ForEach-Object { $_.Clauses[0].Item1.Extent.Text }
+                ForEach-Object { $_.Clauses } | ForEach-Object { $_.Item1.Extent.Text }
         }
         foreach ($c in (& $allConds $noPushIf.Clauses[0].Item2)) {
             $c | Should -Not -Match 'HeadIsUnpushedRelease'
