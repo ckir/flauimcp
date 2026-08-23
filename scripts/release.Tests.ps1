@@ -1063,10 +1063,40 @@ Describe '-NoPush contract' {
                       $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
         $fn | Should -Not -BeNullOrEmpty
 
-        $checks = @($fn.FindAll({
+        # Locate the two sites STRUCTURALLY, one inside each half of the top-level if ($NoPush).
+        #
+        # A count was not enough and a mutant proved it: 'at least 2 ifs testing HeadReleaseVersion' stayed
+        # GREEN after deleting one of them, because $targetVersion's own pre-existing
+        # `if ($Reconciliation.HeadReleaseVersion)` counts toward the total. A gate whose quorum can be met
+        # by code it is not about is only accidentally passing.
+        $noPushIf = $fn.Find({
             param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
-                      $n.Clauses.Item1.Extent.Text -match 'HeadIsUnpushedRelease' }, $true))
-        $checks.Count | Should -BeGreaterOrEqual 2 -Because 'both the -NoPush message and the push prompt must distinguish a real release commit from a hand-made tag'
+                      $n.Clauses.Item1.Extent.Text -match '\$NoPush' }, $true)
+        $noPushIf | Should -Not -BeNullOrEmpty
+
+        # Assert against the if CONDITIONS, not the block text. Extent.Text is RAW SOURCE INCLUDING
+        # COMMENTS, and the comments in both blocks necessarily name HeadIsUnpushedRelease to explain why
+        # it is the wrong predicate -- so a 'Should -Not -Match' over the block text fails on the prose
+        # that documents the fix. A condition extent carries no comments, and it is what actually decides.
+        $condition = {
+            param($block)
+            $hit = $block.Find({
+                param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                          $n.Clauses[0].Item1.Extent.Text -match 'HeadReleaseVersion' }, $true)
+            if ($hit) { $hit.Clauses[0].Item1.Extent.Text } else { $null }
+        }
+
+        $thenCond = & $condition $noPushIf.Clauses[0].Item2
+        $elseCond = & $condition $noPushIf.ElseClause
+
+        $thenCond | Should -Not -BeNullOrEmpty -Because 'the -NoPush message must not recommend publishing a tag this script never produced'
+        $elseCond | Should -Not -BeNullOrEmpty -Because 'the push prompt must warn when HEAD is not a release commit'
+
+        # Neither may regress to HeadIsUnpushedRelease, which conflates "is a release commit" with "is not
+        # yet on the remote": measured, a stamped-then-manually-pushed master leaves the subject matching
+        # while that flag is false, so the message called a genuine release commit a hand-made tag.
+        $thenCond | Should -Not -Match 'HeadIsUnpushedRelease'
+        $elseCond | Should -Not -Match 'HeadIsUnpushedRelease'
     }
 
     It 'states the precondition on the -NoPush resume promise' {

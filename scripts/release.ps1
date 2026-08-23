@@ -456,7 +456,14 @@ function Resolve-HalfFinishedRelease {
             # NOT mean this script produced it, and the earlier unconditional "re-run without -NoPush to
             # publish" invited the operator to publish a commit that never saw the gate, the changelog or a
             # version bump. Only recommend publishing what this pipeline actually stamped.
-            if ($Reconciliation.HeadIsUnpushedRelease) {
+            # HeadReleaseVersion, NOT HeadIsUnpushedRelease. The latter is
+            # `releaseMatch.Success -and -not $headOnRemote`, so it answers TWO questions at once and goes
+            # false when a genuine release commit is simply already on the remote. MEASURED
+            # (.clavity/scratch/release-nopush/probe_belowfloor.ps1): stamp with -NoPush, then push master
+            # by hand without the tag -- reconciliation still fires via the orphan tag, the subject IS
+            # 'chore(release): v1.0.0', and HeadIsUnpushedRelease is FALSE. The question here is only
+            # "did this pipeline produce HEAD", which HeadReleaseVersion answers alone.
+            if ($Reconciliation.HeadReleaseVersion) {
                 Write-Host "-NoPush: commit and tag both already exist locally — nothing to complete without pushing. Re-run without -NoPush to publish."
             }
             else {
@@ -481,7 +488,10 @@ function Resolve-HalfFinishedRelease {
         # tag is sufficient for HalfFinished, so HEAD may be an ordinary commit somebody tagged by hand.
         # Warn rather than refuse: the operator may legitimately want to push a hand-made tag, but they
         # should not learn only afterwards that this bypassed the gate, changelog and version bump.
-        if (-not $Reconciliation.HeadIsUnpushedRelease) {
+        # Same correction as above: keyed on HeadIsUnpushedRelease this warning called a genuine, already
+        # pushed release commit "NOT a chore(release): commit" -- a literal falsehood, and exactly the kind
+        # of cried wolf that trains an operator to ignore the one warning that matters.
+        if (-not $Reconciliation.HeadReleaseVersion) {
             Write-Warning "HEAD is NOT a 'chore(release):' commit — $tag looks hand-made rather than produced by this script. Pushing here publishes master and that tag WITHOUT the gate, changelog or version bump."
         }
         $ans = Read-Host "[P]ush the existing commit+tag now / e[X]it and leave as-is?"
