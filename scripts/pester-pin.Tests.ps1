@@ -122,8 +122,7 @@ Describe 'Pester pin' {
                 #     # Historical note: this gate ran Pester 5.8.0 until the 6.1.0 migration.
                 # -- turned this gate RED in both DevelopersCockpit.ps1 and ci.yml. The distinction that
                 # matters is CODE versus COMMENT, not the file's extension.
-                $code = Remove-CommentText -Text $text -Extension ([IO.Path]::GetExtension($file))
-                @(($code -split "`r?`n") | Where-Object { $_ -match 'Pester' } | ForEach-Object {
+                @(($text -split "`r?`n") | Where-Object { $_ -match 'Pester' } | ForEach-Object {
                     [regex]::Matches($_, '(?<v>\d+\.\d+\.\d+)') | ForEach-Object { $_.Groups['v'].Value }
                 })
             }
@@ -144,7 +143,13 @@ Describe 'Pester pin' {
 
         $used = New-Object System.Collections.Generic.HashSet[string]
         foreach ($file in $script:LiveFiles) {
-            $text = Get-Content $file -Raw
+            # Comments stripped HERE TOO. The version scan below got this treatment first and this one did
+            # not -- the same defect class, applied to one of the two scans in the same file. MEASURED in
+            # both languages: a comment naming a switch, of a kind anyone would write --
+            #     # note: Invoke-Pester -EnableExit was removed in Pester 6
+            # -- was read as a live switch and failed the gate. Fixing one scan and not its sibling is how
+            # the class survives; the shared helper is the point.
+            $text = Remove-CommentText -Text (Get-Content $file -Raw) -Extension ([IO.Path]::GetExtension($file))
             # Stop at a STATEMENT separator, never at a quote. The first version excluded quotes from
             # the capture, so a switch sitting after a QUOTED path was invisible: on
             # `Invoke-Pester -Path 'scripts/' -EnableExit` the scan saw only " -Path " and reported the
