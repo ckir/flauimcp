@@ -301,6 +301,43 @@ All notable changes to this project are documented here.
     }
 }
 
+Describe 'Limit-TextToBudget' {
+    # Extracted in AGY-CAPSTONE round 5. The same surrogate-safe cut existed TWICE -- for the stat and for
+    # the exemplar -- and only the stat copy was asserted, so inverting IsHighSurrogate to IsLowSurrogate
+    # in the exemplar copy changed real behaviour and survived all 127 tests. Testing the second copy
+    # would have closed that instance; having ONE copy closes the class, because there is no set left to
+    # enumerate. These tests cover both callers because both now call this.
+
+    It 'returns the text unchanged when it fits' {
+        Limit-TextToBudget -Text 'short' -BudgetBytes 100 | Should -Be 'short'
+    }
+
+    It 'cuts to the budget when it does not fit' {
+        (Limit-TextToBudget -Text ('x' * 500) -BudgetBytes 100).Length | Should -Be 100
+    }
+
+    It 'never strands a high surrogate' {
+        # An astral character is two UTF-16 code units, so an odd budget lands mid-pair.
+        $emoji = [char]::ConvertFromUtf32(0x1F600)
+        $out = Limit-TextToBudget -Text ($emoji * 50) -BudgetBytes 11
+        [char]::IsHighSurrogate($out[$out.Length - 1]) | Should -BeFalse
+        $out.Length | Should -Be 10 -Because 'it backs off one unit rather than splitting the pair'
+    }
+
+    It 'handles a zero budget and an empty string without throwing' {
+        { Limit-TextToBudget -Text 'abc' -BudgetBytes 0 } | Should -Not -Throw
+        Limit-TextToBudget -Text 'abc' -BudgetBytes 0 | Should -Be ''
+        Limit-TextToBudget -Text '' -BudgetBytes 10 | Should -Be ''
+    }
+
+    It 'is the ONLY surrogate-handling implementation in the library' {
+        # The de-duplication is the fix; this keeps it de-duplicated. A second copy is how the original
+        # defect existed at all, and a reviewer adding one would otherwise reintroduce the whole class.
+        $code = Get-CodeWithoutComments (Join-Path $Repo 'scripts/lib/release-lib.ps1')
+        ([regex]::Matches($code, 'IsHighSurrogate')).Count | Should -Be 1
+    }
+}
+
 Describe 'Get-ChangelogPrompt' {
     BeforeEach {
         $script:Commits = @('feat(release): add release script', 'fix(server): correct a leak')
@@ -456,6 +493,17 @@ Describe 'Changelog prompt budget' {
             [char]::IsHighSurrogate($statSection[$statSection.TrimEnd().Length - 1]) | Should -BeFalse
         }
 
+        It 'tells the model not to go and fetch what was omitted' {
+            # ROADMAP 26 measured the drafter to be an AGENT WITH FILESYSTEM ACCESS. Telling such a model
+            # "this is a sample and not the complete set" is an invitation to run git log and retrieve the
+            # rest -- blowing the very budget the notice exists to protect. The notice must bound the
+            # model's behaviour, not just describe its input.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $p | Should -Match 'Do not attempt to retrieve the omitted material'
+        }
+
         It 'puts the truncation notice OUTSIDE the untrusted data region' {
             # The notice is an instruction about the data. Appended to the git output it lands inside the
             # very section the prompt tells the model to treat as untrusted and to take no instruction from
@@ -516,9 +564,13 @@ Describe 'Changelog prompt budget' {
             $params = (Get-Command Get-ChangelogPrompt).Parameters
             foreach ($name in @('StatBudgetBytes', 'CommitListBudgetBytes', 'ExemplarBudgetBytes',
                                 'DiffSizeThresholdBytes', 'CommitCountThreshold')) {
-                $ranged = $params[$name].Attributes |
-                    Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] }
+                $ranged = @($params[$name].Attributes |
+                    Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] })
                 $ranged | Should -Not -BeNullOrEmpty -Because "$name is a capacity parameter and a negative value silently hijacks control flow"
+                # Assert what it ENFORCES, not that it exists. A gate auditor caught this one vacuous:
+                # [ValidateRange([int]::MinValue, [int]::MaxValue)] satisfies "an attribute is present"
+                # while permitting exactly the negative values the gate was written to reject.
+                $ranged[0].MinRange | Should -BeGreaterOrEqual 0 -Because "$name must reject negative values, not merely carry an attribute"
             }
         }
 
