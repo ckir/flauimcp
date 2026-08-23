@@ -301,6 +301,43 @@ All notable changes to this project are documented here.
     }
 }
 
+Describe 'Limit-TextToBudget' {
+    # Extracted in AGY-CAPSTONE round 5. The same surrogate-safe cut existed TWICE -- for the stat and for
+    # the exemplar -- and only the stat copy was asserted, so inverting IsHighSurrogate to IsLowSurrogate
+    # in the exemplar copy changed real behaviour and survived all 127 tests. Testing the second copy
+    # would have closed that instance; having ONE copy closes the class, because there is no set left to
+    # enumerate. These tests cover both callers because both now call this.
+
+    It 'returns the text unchanged when it fits' {
+        Limit-TextToBudget -Text 'short' -BudgetBytes 100 | Should -Be 'short'
+    }
+
+    It 'cuts to the budget when it does not fit' {
+        (Limit-TextToBudget -Text ('x' * 500) -BudgetBytes 100).Length | Should -Be 100
+    }
+
+    It 'never strands a high surrogate' {
+        # An astral character is two UTF-16 code units, so an odd budget lands mid-pair.
+        $emoji = [char]::ConvertFromUtf32(0x1F600)
+        $out = Limit-TextToBudget -Text ($emoji * 50) -BudgetBytes 11
+        [char]::IsHighSurrogate($out[$out.Length - 1]) | Should -BeFalse
+        $out.Length | Should -Be 10 -Because 'it backs off one unit rather than splitting the pair'
+    }
+
+    It 'handles a zero budget and an empty string without throwing' {
+        { Limit-TextToBudget -Text 'abc' -BudgetBytes 0 } | Should -Not -Throw
+        Limit-TextToBudget -Text 'abc' -BudgetBytes 0 | Should -Be ''
+        Limit-TextToBudget -Text '' -BudgetBytes 10 | Should -Be ''
+    }
+
+    It 'is the ONLY surrogate-handling implementation in the library' {
+        # The de-duplication is the fix; this keeps it de-duplicated. A second copy is how the original
+        # defect existed at all, and a reviewer adding one would otherwise reintroduce the whole class.
+        $code = Get-CodeWithoutComments (Join-Path $Repo 'scripts/lib/release-lib.ps1')
+        ([regex]::Matches($code, 'IsHighSurrogate')).Count | Should -Be 1
+    }
+}
+
 Describe 'Get-ChangelogPrompt' {
     BeforeEach {
         $script:Commits = @('feat(release): add release script', 'fix(server): correct a leak')
@@ -337,6 +374,256 @@ Describe 'Get-ChangelogPrompt' {
     }
 }
 
+
+Describe 'Changelog prompt budget' {
+    # MEASURED cutting v1.0.0: the prompt reached 827,829 chars / ~236,500 tokens against a 200,000 limit
+    # and `claude -p` refused outright, so the release could not be cut at all. 94.2% of it was the diff
+    # stat -- because the caller passed `git log --stat`, which repeats a whole file list once per commit,
+    # 403 times. The commit list was 3.8% and was never the problem.
+    BeforeEach {
+        $script:Commits  = @('feat(release): add release script', 'fix(server): correct a leak')
+        $script:Exemplar = "## [0.16.1] - 2026-07-18`n`n### Fixed`n- Something."
+        $script:BigDiff  = 'x' * 200000   # forces the stat path
+    }
+
+    It 'bounds the stat section instead of pasting an unbounded one' {
+        $hugeStat = 'S' * 400000
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+            -DiffText $script:BigDiff -DiffStatText $hugeStat -StyleExemplar $script:Exemplar
+        $p.Length | Should -BeLessThan 100000 -Because 'an unbounded stat is what made the release uncuttable'
+    }
+
+    It 'says so when it truncates, rather than silently shortening the evidence' {
+        # A drafter that is not told it received a partial file list will write as though it saw
+        # everything. The notice is the difference between a bounded input and a misleading one.
+        $hugeStat = 'S' * 400000
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+            -DiffText $script:BigDiff -DiffStatText $hugeStat -StyleExemplar $script:Exemplar
+        $p | Should -Match 'truncated'
+    }
+
+    It 'does not announce a truncation that did not happen' {
+        # The inverse gate. A notice that is always present is not a signal, and it would tell the drafter
+        # its evidence was cut when it was complete.
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+            -DiffText $script:BigDiff -DiffStatText 'a short and complete stat' -StyleExemplar $script:Exemplar
+        $p | Should -Match 'Diff stat'
+        $p | Should -Not -Match 'truncated'
+    }
+
+    It 'keeps the whole stat when it fits' {
+        $stat = 'file.cs | 3 +--'
+        $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+            -DiffText $script:BigDiff -DiffStatText $stat -StyleExemplar $script:Exemplar
+        $p | Should -Match ([regex]::Escape($stat))
+    }
+
+    Context 'when it truncates' {
+        # A realistic stat: per-file lines, then the ONE aggregate line git puts last.
+        BeforeEach {
+            $script:FileLines = (1..400 | ForEach-Object { "src/path/to/file$_.cs | $_ +-" }) -join "`n"
+            $script:Summary   = '400 files changed, 12345 insertions(+), 678 deletions(-)'
+            $script:RealStat  = "$script:FileLines`n$script:Summary"
+        }
+
+        It 'preserves the summary line, which git puts LAST' {
+            # THE finding. `git diff --stat` carries its only aggregate on the final line -- measured on the
+            # v1.0.0 range it began at char 13,982 of 14,041 -- so a head-cut amputates precisely the line a
+            # changelog writer most needs and leaves a partial alphabetical file list with no sense of scale.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $p | Should -Match ([regex]::Escape($script:Summary))
+        }
+
+        It 'still delivers the payload it budgeted for' {
+            # Without this, Substring(0, 0) passes every other gate: the prompt shrinks and the notice
+            # fires, so "bounded" and "announced" are both satisfied while the drafter receives NOTHING.
+            # MEASURED -- that exact mutant survived all 113 tests before this assertion existed.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $p | Should -Match ([regex]::Escape('src/path/to/file1.cs'))
+        }
+
+        It 'cuts on whole lines, never mid-filename' {
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $statSection = $p.Substring($p.IndexOf('Diff stat (full patch'))
+            $kept = @($statSection -split "`n" | Where-Object { $_ -match '\|' } | ForEach-Object { $_.Trim() })
+            $original = @($script:FileLines -split "`n" | ForEach-Object { $_.Trim() })
+            foreach ($line in $kept) { $original | Should -Contain $line }
+        }
+
+        It 'says what the truncation MEANS, not merely that one happened' {
+            # Round 1 folded exactly this class for the stat -- assertions that pin a boundary and abandon
+            # the payload -- and the fix reproduced it one layer up. MEASURED: replacing the whole notice
+            # with the bare string "TRUNCATED to fit" SURVIVED all 117 tests, because the gates checked
+            # that a notice EXISTS and is POSITIONED correctly and never that it carries its two
+            # load-bearing claims. Those claims are the whole point: the totals can be trusted, the file
+            # list cannot be read as complete.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $p | Should -Match 'totals are exact'
+            $p | Should -Match 'is a sample'
+        }
+
+        It 'rejects a non-positive budget at binding rather than crashing inside Substring' {
+            # `Should -Throw` ALONE is vacuous here and a mutant proved it: without the ValidateRange
+            # attribute the value still throws, just from inside Substring
+            # ("length ('-5') must be a non-negative value"), so removing the validation left the suite
+            # green. The distinction that matters is WHICH error -- a binding failure naming the parameter
+            # an operator can fix, versus a stack trace about string indexing. So assert the message.
+            { Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes -5 } | Should -Throw -ExpectedMessage '*StatBudgetBytes*'
+        }
+
+        It 'does not leave a dangling surrogate when it hard-cuts' {
+            # The degenerate path: one enormous line with no breaks, so the backstop does a raw cut. Pad
+            # with an astral character so a cut can land mid-pair.
+            $emoji = [char]::ConvertFromUtf32(0x1F600)
+            $degenerate = ($emoji * 5000)
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $degenerate -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 101
+            $statSection = $p.Substring($p.IndexOf('Diff stat (full patch'))
+            [char]::IsHighSurrogate($statSection[$statSection.TrimEnd().Length - 1]) | Should -BeFalse
+        }
+
+        It 'tells the model not to go and fetch what was omitted' {
+            # ROADMAP 26 measured the drafter to be an AGENT WITH FILESYSTEM ACCESS. Telling such a model
+            # "this is a sample and not the complete set" is an invitation to run git log and retrieve the
+            # rest -- blowing the very budget the notice exists to protect. The notice must bound the
+            # model's behaviour, not just describe its input.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $p | Should -Match 'Do not attempt to retrieve the omitted material'
+        }
+
+        It 'puts the truncation notice OUTSIDE the untrusted data region' {
+            # The notice is an instruction about the data. Appended to the git output it lands inside the
+            # very section the prompt tells the model to treat as untrusted and to take no instruction from
+            # -- measured at index 21,090 against an UNTRUSTED DATA warning at 666 -- so it is either
+            # ignored or repeated into the changelog as content. It belongs in the trusted preamble.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $iNotice = $p.IndexOf('TRUNCATED to fit')
+            $iStat   = $p.IndexOf('Diff stat (full patch')
+            $iNotice | Should -BeGreaterThan -1
+            $iNotice | Should -BeLessThan $iStat -Because 'an instruction inside the untrusted payload is one the model is told to ignore'
+        }
+    }
+
+    Context 'the other prompt inputs' {
+        # AGY-CAPSTONE round 3. Bounding the stat bounded ONE of four inputs; the diff already degraded,
+        # but the commit list and the style exemplar had no ceiling at all. MEASURED: a 500,000-char
+        # exemplar produced a 501,047-char prompt -- the same failure the stat cap exists to prevent,
+        # reached through a different door.
+
+        It 'bounds the style exemplar' {
+            $huge = 'E' * 500000
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText 'small' -DiffStatText 'small' -StyleExemplar $huge
+            $p.Length | Should -BeLessThan 100000 -Because 'an unbounded exemplar blows the same limit the stat did'
+        }
+
+        It 'bounds the commit list' {
+            $many = 1..20000 | ForEach-Object { "fix(area): a reasonably long commit subject number $_" }
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $many `
+                -DiffText 'small' -DiffStatText 'small' -StyleExemplar $script:Exemplar
+            $p.Length | Should -BeLessThan 120000 -Because 'an unbounded commit list blows the same limit the stat did'
+        }
+
+        It 'says what the commit-list truncation MEANS' {
+            # Same lesson as the stat notice, which a round-2 mutant proved could be gutted to a bare
+            # phrase while every positional assertion still passed.
+            $many = 1..20000 | ForEach-Object { "fix(area): a reasonably long commit subject number $_" }
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $many `
+                -DiffText 'small' -DiffStatText 'small' -StyleExemplar $script:Exemplar
+            $p | Should -Match 'subjects were omitted'
+            $p | Should -Match 'not the full set'
+        }
+
+        It 'keeps the commit list whole when it fits, and announces nothing' {
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText 'small' -DiffStatText 'small' -StyleExemplar $script:Exemplar
+            $p | Should -Match '- feat\(release\): add release script'
+            $p | Should -Not -Match 'subjects were omitted'
+        }
+
+        It 'validates EVERY capacity parameter, not only the ones this branch added' {
+            # The category is "integer capacity/threshold parameters"; the members are the three budgets
+            # and the two original thresholds. MEASURED before this gate: only the three were validated,
+            # and `-DiffSizeThresholdBytes -5` silently forced the degraded path because a 4-char diff is
+            # `-gt -5`. Enumerate the set, then check every member.
+            $params = (Get-Command Get-ChangelogPrompt).Parameters
+            foreach ($name in @('StatBudgetBytes', 'CommitListBudgetBytes', 'ExemplarBudgetBytes',
+                                'DiffSizeThresholdBytes', 'CommitCountThreshold')) {
+                $ranged = @($params[$name].Attributes |
+                    Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] })
+                $ranged | Should -Not -BeNullOrEmpty -Because "$name is a capacity parameter and a negative value silently hijacks control flow"
+                # Assert what it ENFORCES, not that it exists. A gate auditor caught this one vacuous:
+                # [ValidateRange([int]::MinValue, [int]::MaxValue)] satisfies "an attribute is present"
+                # while permitting exactly the negative values the gate was written to reject.
+                $ranged[0].MinRange | Should -BeGreaterOrEqual 0 -Because "$name must reject negative values, not merely carry an attribute"
+            }
+        }
+
+        It 'names the style exemplar as untrusted, since it comes from the repository too' {
+            # The exemplar is read out of CHANGELOG.md -- repository content, editable by anyone who can
+            # land a commit -- and it sits ABOVE the untrusted-data sections while the warning named only
+            # the commits and the diff. Measured: exemplar at index 985, SECURITY paragraph at 598.
+            #
+            # Scoped to the SECURITY PARAGRAPH, not a fixed window. A 400-character window survived the
+            # mutant that removed "style exemplar" from the warning, because the window ran on far enough
+            # to swallow the "## Style exemplar" SECTION HEADING that follows and matched that instead.
+            # A gate whose evidence can come from outside the thing it is checking is not a gate.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText 'd' -DiffStatText 's' -StyleExemplar 'EXEMPLAR-MARKER'
+            $from = $p.IndexOf('SECURITY:')
+            $end  = $p.IndexOf('never a command.', $from)
+            $end | Should -BeGreaterThan $from -Because 'the security paragraph must still end with its own sentence'
+            $security = $p.Substring($from, $end - $from)
+            $security | Should -Match 'exemplar'
+        }
+
+        It 'accepts a zero stat budget as "omit the stat", and still rejects a negative one' {
+            # ValidateRange(1, ..) forbade 0, but "give me no stat" is a legitimate request; only a
+            # negative value is incoherent.
+            { Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText ('x' * 200000) -DiffStatText 'some stat' -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 0 } | Should -Not -Throw
+            { Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText ('x' * 200000) -DiffStatText 'some stat' -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes -1 } | Should -Throw -ExpectedMessage '*StatBudgetBytes*'
+        }
+    }
+
+    It 'builds the degraded stat from a CUMULATIVE diff, not a per-commit log' {
+        # The library cap above is a backstop, not the fix. `git log --stat` over a large range is
+        # quadratic-ish in output -- one file list per commit -- while `git diff --stat` over the same
+        # range is a single block. MEASURED on v0.20.0..HEAD: 779,976 chars versus 13,978, a 56x
+        # reduction, and the cumulative form is also the better answer for a changelog.
+        #
+        # Matched as adjacent TOKENS, not as the literal string 'diff --stat': Get-CodeWithoutComments joins
+        # tokens with single spaces, so an argument array @('diff', '--stat', ...) renders as
+        # "@ ( 'diff' , '--stat' , ..." and a literal-substring assertion can never match it. Measured --
+        # this test failed against a correct implementation until the pattern matched the real shape.
+        $code = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
+        $code | Should -Match "'diff'\s*,\s*'--stat'"
+        # The caller's exemplar DEPTH is unasserted anywhere else, and a mutant proved it: changing
+        # `-Count 2` to `-Count 0` survives the whole suite while silently depriving the drafter of the
+        # repository's voice (Get-TopChangelogSection returns 23 chars at -Count 0; it does not throw).
+        # Every library test passes its own exemplar string, so only a source contract can see this.
+        $code | Should -Match 'Get-TopChangelogSection[^;]*-Count 2'
+        $code | Should -Not -Match 'log @rangeArgs --stat' -Because 'the per-commit stat is what blew the budget'
+    }
+}
 Describe 'Invoke-Gate' {
     BeforeEach {
         $script:GateSandbox = Join-Path ([IO.Path]::GetTempPath()) ("gatebox_" + [guid]::NewGuid())

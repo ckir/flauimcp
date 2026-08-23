@@ -817,36 +817,49 @@ the installer refuse a non-Windows target.
 Found during the activation-instructions panel, when the operator asked what happens on a non-Windows
 install. Filed from `.clavity/local-anomalies.md` at triage.
 
-### 24. The changelog drafter cannot cut a large release — the prompt degrades the DIFF but nothing else
+### 24. ~~The changelog drafter cannot cut a large release~~ — FIXED
 
-MEASURED cutting v1.0.0, with 400 commits since `v0.20.0`. `claude -p` refused the draft outright:
-*"the request is ~260,934 tokens (limit 200,000)"*.
+**FIXED.** Kept because the correction below matters: the first version of this item stated the cause
+wrongly, and it was filed that way for about an hour.
 
-`Get-ChangelogPrompt` (`scripts/lib/release-lib.ps1:324-328`) swaps the full patch for `git log --stat`
-once the diff passes 150,000 bytes or the range passes 40 commits. That degradation fired correctly — and
-was nowhere near enough, because **only the diff is bounded**:
+MEASURED cutting v1.0.0, with 403 commits since `v0.20.0`. `claude -p` refused the draft outright:
+*"the request is ~260,934 tokens (limit 200,000)"*, so the release could not be cut at all.
 
-| part of the prompt | chars | ~tokens | bounded? |
+**The prompt was 827,829 chars / ~236,523 tokens. Its actual composition, measured by building the real
+prompt rather than reasoning about it:**
+
+| part | chars | ~tokens | share |
 |---|---|---|---|
-| commit-message list | 599,888 | ~171,000 | **no** |
-| `git log --stat` | 777,038 | ~222,000 | **no** — it IS the degradation |
-| full diff | 5,888,531 | — | yes, degraded away |
+| `git log --stat` | 779,976 | 222,850 | **94.2%** |
+| commit SUBJECT list | 31,401 | 8,972 | 3.8% |
+| style exemplar | 15,381 | 4,395 | 1.9% |
 
-The stat ALONE exceeds the whole context limit here, so the "degraded" prompt is unusable and there is no
-further fallback. The failure is clean — it throws before any file is written — but a release simply
-cannot be cut this way.
+⚠ **CORRECTION.** This item originally blamed an "unbounded commit-message list of ~171,000 tokens". That
+was wrong. `Get-ChangelogPrompt` builds its list as `($_ -split "\n")[0]` — **subject lines only** — so the
+full commit bodies never enter the prompt at all. The ~171,000-token figure measured `%B` output that is
+passed to the function and then discarded by it. The mistake came from reading the caller and inferring the
+callee instead of building the artifact and measuring it. **The stat was 94.2% of the problem and the
+commit list was a rounding error.**
 
-Reachable by construction in this repository: the standing decision holds `master` hundreds of commits
-ahead of `origin`, which is exactly the shape that breaks it.
+**ROOT CAUSE:** the caller passed `git log --stat`, which repeats an entire file list *once per commit* —
+403 times over this range. `git diff --stat` across the same range is one cumulative block.
 
-WORKAROUND USED FOR v1.0.0, and it is a supported one rather than a hack: `Get-OrCreateDraft` resumes a
-pre-staged draft at `%TEMP%\flaui-mcp-release-draft-<version>.md` when it starts with `### `, and the
-code comment names that workflow explicitly — *"pre-stage a draft interactively, then finish the release
-from CI with -Yes"*. Staging a draft skips the LLM call entirely.
+| candidate | chars | ~tokens |
+|---|---|---|
+| `git log --stat` (per-commit ×403) | 779,976 | 222,850 |
+| `git diff --stat` (cumulative) | **13,978** | **3,994** |
 
-A fix needs to bound BOTH remaining inputs — `--shortstat` or a truncated file list, and a subject-only
-commit list (`%s` rather than `%B`) past some threshold — and should say in the prompt that it has done
-so, since the drafter's output quality depends on knowing what it was not shown.
+**THE FIX, in two parts:**
+1. The caller sends the cumulative `git diff --stat <lastTag>..HEAD`, falling back to the per-commit form
+   only when there is no previous tag to diff from (a first release, necessarily small). This is also the
+   better artifact for a changelog — *"221 files changed, 45,113 insertions(+)"* rather than 403
+   repetitions of per-commit noise.
+2. `Get-ChangelogPrompt` gained `-StatBudgetBytes` (default 20,000) as a backstop for a release large
+   enough that even the cumulative stat does not fit — and it **tells the drafter it truncated**, because a
+   model handed a silently-shortened file list writes as though it saw everything.
+
+**MEASURED AFTER, on the same 403-commit range: ~236,523 → ~17,666 tokens, 13.4x smaller, no truncation
+needed.** Five tests, three logic mutants each red at its own assertion.
 
 ### 25. Cutting a release never consumes `## [Unreleased]`
 
@@ -867,3 +880,45 @@ written), rather than being ignored by both halves.
 Note the interaction with the drafter: if `[Unreleased]` were promoted, item 24 would matter far less for
 a repository that keeps its notes current — the body would already exist and the LLM call would be a
 top-up rather than the whole job.
+
+### 26. The changelog drafter is an AGENT WITH FILESYSTEM ACCESS, not a text completion
+
+MEASURED 2026-08-23 while designing a probe for something else entirely, and it reframes what
+`Get-ChangelogPrompt` is for.
+
+**The direct test.** `claude -p --safe-mode --model haiku`, the exact invocation `release.ps1` uses, was
+asked to read `ROADMAP.md` and echo its first line. It replied:
+
+    FILESYSTEM: # FlaUI.Mcp Roadmap
+
+**The accidental discovery that prompted it.** A probe fed the drafter a prompt whose commit list was
+4,000 synthetic subjects (`fix(ui): adjust button colour ... iteration N`), a 11-character diff and a
+one-line stat — 1,787 characters in total. The changelog it returned described **the real release-tooling
+work**, including the figures `~236,523` and `~17,666`. Verified: the strings `236,523`, `17,666`,
+`ValidateRange`, `surrogate` and `diff --stat` appear **nowhere in that prompt**. It read the repository.
+
+**What this means, and none of it is hypothetical:**
+
+- **The prompt is not the drafter's only input.** Every design decision in `Get-ChangelogPrompt` assumes
+  the model sees what we send it and nothing else. It does not.
+- **The output is not reproducible from the prompt.** Two runs against the same range can differ because
+  the WORKING TREE differed, not because the model did.
+- **The `UNTRUSTED DATA` framing is weaker than it reads.** The prompt carefully labels the commit list
+  and diff as untrusted and tells the model to take no instruction from them — while the model can open
+  those same files directly, outside that frame.
+- **`--safe-mode` does not close this.** It disables customizations (CLAUDE.md, hooks, skills, extensions,
+  MCP servers). It does not disable file tools; the probe above ran under it.
+
+**It also invalidates a comparison.** A qwen-versus-claude trial on the identical prompt showed claude
+producing an accurate draft and qwen fabricating one. That was not a like-for-like test of judgement: one
+of them was reading the repository. Re-run any model comparison with tool access equalised.
+
+**NOT A DEFECT WITH AN OBVIOUS FIX — it is a fork the operator should decide:**
+- **Lean in:** accept that the drafter is an agent, and prompt it to read the range itself. The prompt
+  budget work (ROADMAP 24) then matters much less, and the honest job of the prompt becomes instruction
+  and voice rather than evidence.
+- **Constrain:** run the draft with tools disabled, so the prompt genuinely is the whole input and the
+  output is reproducible. Establish first whether the CLI can do that — UNVERIFIED.
+
+⚠ UNVERIFIED, and it decides which branch is even available: whether `claude -p` exposes a flag that
+disables file tools while keeping the model. Establish that before choosing.
