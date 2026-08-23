@@ -31,6 +31,55 @@ Describe 'release-lib.ps1 harness' {
     }
 }
 
+Describe 'Step-SemVer' {
+    # Step-SemVer had no direct test: it was reached only through Get-NextVersion, which never feeds it
+    # anything malformed, so its guard was unreached. Measured by removing the throw entirely - the whole
+    # suite stayed green at 140/140. These call it directly.
+    #
+    # The message assertion is not decoration. `Should -Throw` alone is the vacuous shape this repo has
+    # hit five times: with the guard removed the function still throws, from `[int]$Matches.maj` on a
+    # stale $Matches, so a bare -Throw passes while the guard is gone.
+
+    It 'rejects a value that is not X.Y.Z, and names it' {
+        { Step-SemVer -Version '1.2' -Component 'patch' } |
+            Should -Throw -ExpectedMessage "*not a valid X.Y.Z semver: '1.2'*"
+    }
+
+    It 'rejects every near-miss shape' -ForEach @(
+        @{ Bad = '1.2' }        # too few components
+        @{ Bad = '1.2.3.4' }    # too many
+        @{ Bad = 'v1.2.3' }     # tag form, not a version
+        @{ Bad = '1.2.3-rc1' }  # prerelease suffix
+        @{ Bad = '1.2.x' }      # non-numeric component
+        @{ Bad = ' 1.2.3' }     # leading whitespace
+        @{ Bad = '1.2.3 ' }     # trailing whitespace - the $ anchor is what catches this
+        # '' is deliberately absent: a Mandatory [string] is rejected by the parameter binder before the
+        # guard runs, so asserting the guard's message there would pin the binder, not Step-SemVer.
+    ) {
+        { Step-SemVer -Version $Bad -Component 'patch' } |
+            Should -Throw -ExpectedMessage "*not a valid X.Y.Z semver*"
+    }
+
+    It 'bumps <Component> of <Version> to <Expected>' -ForEach @(
+        @{ Version = '1.2.3'; Component = 'major'; Expected = '2.0.0' }
+        @{ Version = '1.2.3'; Component = 'minor'; Expected = '1.3.0' }
+        @{ Version = '1.2.3'; Component = 'patch'; Expected = '1.2.4' }
+        @{ Version = '0.0.0'; Component = 'patch'; Expected = '0.0.1' }
+        # Numeric, not lexical: 9 -> 10, never 9 -> 91 or a truncated 1.1.0.
+        @{ Version = '1.9.9'; Component = 'minor'; Expected = '1.10.0' }
+        @{ Version = '0.0.9'; Component = 'patch'; Expected = '0.0.10' }
+        @{ Version = '9.9.9'; Component = 'major'; Expected = '10.0.0' }
+    ) {
+        Step-SemVer -Version $Version -Component $Component | Should -Be $Expected
+    }
+
+    It 'rejects a component outside major/minor/patch' {
+        # The ValidateSet is the contract; a typo'd caller must fail loudly rather than fall through
+        # the switch and return the version unchanged.
+        { Step-SemVer -Version '1.2.3' -Component 'build' } | Should -Throw
+    }
+}
+
 Describe 'Get-NextVersion' {
     It 'bumps minor on a feat commit' {
         $r = Get-NextVersion -CurrentVersion '0.16.2' -CommitMessages @('feat(release): add release automation script')
