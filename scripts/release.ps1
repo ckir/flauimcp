@@ -406,7 +406,8 @@ function Resolve-HalfFinishedRelease {
         [Parameter(Mandatory)][string]$RepoRoot,
         [Parameter(Mandatory)][pscustomobject]$Reconciliation,
         [switch]$Yes,
-        [switch]$WhatIf
+        [switch]$WhatIf,
+        [switch]$NoPush
     )
 
     $targetVersion = if ($Reconciliation.HeadReleaseVersion) {
@@ -440,18 +441,43 @@ function Resolve-HalfFinishedRelease {
         throw "Half-finished prior release detected for $tag — refusing to auto-mutate git history under -Yes. Re-run without -Yes to reconcile interactively."
     }
 
-    Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land)."
-    $ans = Read-Host "[P]ush the existing commit+tag now / e[X]it and leave as-is?"
-    $choice = if ([string]::IsNullOrWhiteSpace($ans)) { 'X' } else { $ans.Substring(0,1).ToUpperInvariant() }
-    if ($choice -eq 'P') {
-        if (-not $tagExistsLocally) { git -C $RepoRoot tag $tag }
-        git -C $RepoRoot push --atomic origin master $tag
-        if ($LASTEXITCODE -ne 0) { throw "push --atomic failed again (exit $LASTEXITCODE). Local state is unchanged; re-run to retry." }
-        Write-Host "Pushed $tag."
+    # -NoPush governs BOTH push sites in this script, not only Invoke-ReleaseCommit's. Being offered
+    # "[P]ush the existing commit+tag now" on a run that was invoked with -NoPush is precisely the failure
+    # the flag exists to prevent: under a deliberate freeze that is one keystroke from publishing the whole
+    # backlog. What this path still legitimately owes the operator is the LOCAL half of the recovery --
+    # recreating a tag whose release commit already landed (commit succeeded, `git tag` then failed), which
+    # is otherwise unreachable without breaking the freeze by hand.
+    if ($NoPush) {
+        Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release."
+        if ($tagExistsLocally) {
+            Write-Host "-NoPush: commit and tag both already exist locally — nothing to complete without pushing. Re-run without -NoPush to publish."
+            exit 0
+        }
+        $ans = Read-Host "[T]ag the existing release commit locally (no push) / e[X]it and leave as-is?"
+        $choice = if ([string]::IsNullOrWhiteSpace($ans)) { 'X' } else { $ans.Substring(0,1).ToUpperInvariant() }
+        if ($choice -eq 'T') {
+            git -C $RepoRoot tag $tag
+            if ($LASTEXITCODE -ne 0) { throw "git tag $tag failed (exit $LASTEXITCODE)." }
+            Write-Host "Tagged $tag locally. Nothing was pushed."
+            exit 0
+        }
+        Write-Host "Left as-is."
         exit 0
     }
-    Write-Host "Left as-is. Re-run scripts/release.ps1 when ready to retry the push."
-    exit 0
+    else {
+        Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land)."
+        $ans = Read-Host "[P]ush the existing commit+tag now / e[X]it and leave as-is?"
+        $choice = if ([string]::IsNullOrWhiteSpace($ans)) { 'X' } else { $ans.Substring(0,1).ToUpperInvariant() }
+        if ($choice -eq 'P') {
+            if (-not $tagExistsLocally) { git -C $RepoRoot tag $tag }
+            git -C $RepoRoot push --atomic origin master $tag
+            if ($LASTEXITCODE -ne 0) { throw "push --atomic failed again (exit $LASTEXITCODE). Local state is unchanged; re-run to retry." }
+            Write-Host "Pushed $tag."
+            exit 0
+        }
+        Write-Host "Left as-is. Re-run scripts/release.ps1 when ready to retry the push."
+        exit 0
+    }
 }
 
 function Invoke-ReleaseCommit {
@@ -482,7 +508,11 @@ function Invoke-ReleaseCommit {
     # Here it is lexically unreachable when -NoPush is set, which the suite asserts against the AST.
     if ($NoPush) {
         Write-Host "-NoPush: committed and tagged $tag LOCALLY. Nothing was pushed."
-        Write-Host "When you are ready to publish, re-run scripts/release.ps1 — it detects this state and offers to push the existing commit+tag."
+        # This promise is CONDITIONAL and saying so is load-bearing: Get-ReleaseReconciliationState keys on
+        # HEAD's own subject and on tags POINTING AT HEAD, so the moment the operator commits past the
+        # release commit the detection silently stops firing and the tag is never offered again.
+        Write-Host "When you are ready to publish, re-run scripts/release.ps1 WHILE HEAD IS STILL THIS COMMIT — it detects this state and offers to push the existing commit+tag."
+        Write-Host "If you commit past it first, that detection no longer fires (it keys on HEAD's subject and on tags pointing at HEAD); push it by hand: git push --atomic origin master $tag"
     }
     else {
         git -C $RepoRoot push --atomic origin master $tag
@@ -507,7 +537,7 @@ try {
 
     $recon = Get-ReleaseReconciliationState -RepoRoot $RepoRoot
     if ($recon.HalfFinished) {
-        Resolve-HalfFinishedRelease -RepoRoot $RepoRoot -Reconciliation $recon -Yes:$Yes -WhatIf:$WhatIf
+        Resolve-HalfFinishedRelease -RepoRoot $RepoRoot -Reconciliation $recon -Yes:$Yes -WhatIf:$WhatIf -NoPush:$NoPush
     }
 
     $sync = Get-VersionsInSync -RepoRoot $RepoRoot

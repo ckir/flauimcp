@@ -1004,34 +1004,69 @@ Describe '-NoPush contract' {
         $p.StaticType.Name | Should -Be 'SwitchParameter'
     }
 
-    It 'guards the release push behind $NoPush, and does not merely mention it' {
+    It 'guards EVERY git push --atomic behind $NoPush, and does not merely mention it' {
         # THE load-bearing assertion. A push that is textually near a $NoPush check but not GOVERNED by one
         # still publishes, which is the whole failure this switch exists to prevent -- so assert reachability
-        # against the AST, not the text. Scoped to Invoke-ReleaseCommit on purpose: the OTHER push site,
-        # inside Resolve-HalfFinishedRelease, is the operator explicitly answering [P]ush and must NOT be
-        # suppressed by this flag.
+        # against the AST, not the text.
+        #
+        # This asserts over EVERY push site in the file rather than one named function. The first version
+        # scoped itself to Invoke-ReleaseCommit and reasoned that the OTHER site (Resolve-HalfFinishedRelease,
+        # reached when a previous release did not land) was the operator explicitly answering [P]ush and so
+        # should stay unguarded. An AGY-CAPSTONE round killed that: on a run invoked WITH -NoPush, the
+        # reconciliation prompt fires BEFORE any of this switch's code and offered to push -- one keystroke
+        # from publishing the entire held-back backlog, from inside the flag meant to prevent exactly that.
+        # A file-wide assertion also means a THIRD push site added later cannot quietly escape the flag.
+        #
+        # FindAll, not Find: Find returns only the FIRST match, so the earlier '$pushes.Count | Should -Be 1'
+        # was vacuous -- it counted a one-element array no matter how many push sites existed.
+        #
+        # GetCommandName() -eq 'git', not a text match on the extent: matching any command whose TEXT
+        # mentions 'push --atomic' returned SIX hits, because the Write-Host that hands the operator the
+        # manual escape and the throw messages that name the failed command are themselves commands
+        # containing that string. Only a real git invocation can push.
+        $pushes = @($script:RelAst.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
+                      $n.GetCommandName() -eq 'git' -and
+                      $n.Extent.Text -match '\bpush\b' -and $n.Extent.Text -match '--atomic' }, $true))
+        $pushes.Count | Should -Be 2 -Because 'Invoke-ReleaseCommit and Resolve-HalfFinishedRelease each push; a new site must be added to this gate deliberately'
+
+        foreach ($push in $pushes) {
+            $node = $push
+            $guarded = $false
+            while ($node) {
+                if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
+                    foreach ($clause in $node.Clauses) {
+                        if ($clause.Item1.Extent.Text -match '\$NoPush') { $guarded = $true }
+                    }
+                }
+                $node = $node.Parent
+            }
+            $guarded | Should -BeTrue -Because "every 'git push --atomic' must be unreachable under -NoPush, including the one at line $($push.Extent.StartLineNumber)"
+        }
+    }
+
+    It 'threads -NoPush into the half-finished-release reconciliation' {
+        # The reconciliation runs BEFORE the new code on any later invocation, and it owns the second push.
+        # Declared-but-unthreaded is the exact shape the capstone caught: the switch defaults to $false
+        # inside the function, so every assertion about the guard passes while the prompt still offers [P]ush.
+        $code = Get-CodeWithoutComments $script:RelPath
+        $code | Should -Match 'Resolve-HalfFinishedRelease[^;]*?-NoPush:\s*\$NoPush'
+    }
+
+    It 'states the precondition on the -NoPush resume promise' {
+        # Get-ReleaseReconciliationState keys on HEAD's OWN subject and on tags POINTING AT HEAD, so the
+        # "re-run and it will offer to push" promise silently stops being true the moment the operator
+        # commits past the release commit -- and then the tag is never offered again. Saying so, and giving
+        # the manual escape, is the difference between a stamp and a lost tag.
         $fn = $script:RelAst.Find({
             param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
                       $n.Name -eq 'Invoke-ReleaseCommit' }, $true)
-        $fn | Should -Not -BeNullOrEmpty
-
-        $pushes = @($fn.Find({
-            param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
-                      $n.Extent.Text -match 'push' -and $n.Extent.Text -match '--atomic' }, $true))
-        $pushes.Count | Should -Be 1
-
-        # Walk up from the push to the function itself; some enclosing if/statement must TEST $NoPush.
-        $node = $pushes[0]
-        $guarded = $false
-        while ($node -and $node -ne $fn) {
-            if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
-                foreach ($clause in $node.Clauses) {
-                    if ($clause.Item1.Extent.Text -match '\$NoPush') { $guarded = $true }
-                }
-            }
-            $node = $node.Parent
-        }
-        $guarded | Should -BeTrue -Because 'git push --atomic must be unreachable when -NoPush is passed'
+        $branch = $fn.Find({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses.Item1.Extent.Text -match '\$NoPush' }, $true)
+        $branch | Should -Not -BeNullOrEmpty
+        $branch.Extent.Text | Should -Match 'WHILE HEAD IS STILL THIS COMMIT'
+        $branch.Extent.Text | Should -Match 'git push --atomic origin master' -Because 'the operator needs the manual escape once detection can no longer fire'
     }
 
     It 'threads -NoPush from the entry point into Invoke-ReleaseCommit' {
