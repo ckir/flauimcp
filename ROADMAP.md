@@ -786,3 +786,33 @@ Found while trying to measure `DeploySkill()` in a sandbox for the activation-in
 
 Fix direction: either honour the variable on the modern path (stage and register into it) or rename/retire
 it and make the install refuse to run against a real agy when an isolation variable is set.
+
+### 23. A synced plugin directory activates the driving skill on a machine where the tools cannot exist
+
+The generated plugin declares **no platform constraint** — `publish/plugin/plugin.json` carries only
+`name`/`version`/`description`, `.claude-plugin/marketplace.json` carries none — and there is no runtime OS
+guard. A plugin directory copied or dotfile-synced to macOS or Linux therefore still loads
+`skills/driving-flaui-mcp/SKILL.md`, whose `description:` tells the agent to look at the Windows screen with
+the `desktop_*` tools **and not to ask the user to observe their desktop for it**. On a machine where the
+MCP server cannot start and not one of those tools exists, that framing is worse than silence: the agent is
+told to do something impossible and forbidden from asking for help.
+
+**Not reachable via the shipped path** — the only released artifact is `flaui-mcp-setup.exe`, and
+`publish/` is uncommitted. It is reachable via a synced `~/.claude/plugins` or `~/.gemini/config/plugins`,
+which is an ordinary way to carry an agent config between machines.
+
+MITIGATING, and checked rather than assumed: the description does say *"what is on the **Windows**
+screen"*, and `ActivationPayload.Core` opens with *"you can see and operate this **Windows** desktop"*, so
+an agent gets a platform clue rather than none. The activation branch pinned the word `Windows` in
+`SkillLoadLineTests.The_description_carries_the_activation_behavioural_core` so a reword cannot silently
+drop it. **Neither tells the agent what to do when the tools are simply absent.**
+
+UNVERIFIED: whether the Claude Code plugin schema supports a platform/OS field at all. Establish that
+first — if it does, declaring it is the whole fix.
+
+Fix direction: declare a platform constraint in the manifest if the schema allows one; otherwise add an
+explicit "if these tools are absent, say so and stop" clause to the skill description, and consider having
+the installer refuse a non-Windows target.
+
+Found during the activation-instructions panel, when the operator asked what happens on a non-Windows
+install. Filed from `.clavity/local-anomalies.md` at triage.
