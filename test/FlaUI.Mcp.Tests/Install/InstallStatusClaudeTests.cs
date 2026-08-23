@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using FlaUI.Mcp.Server.Install;
 using Xunit;
 
@@ -100,9 +101,18 @@ public class InstallStatusClaudeTests
         // NotRegistered is the branch that makes a count claim FALSE: nothing else is installed.
         var text = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.NotRegistered);
 
-        Assert.Contains("retired plugin manifest", text);   // the note IS present in this branch
-        foreach (var countWord in new[] { "second", "duplicate", "another", "additional" })
-            Assert.DoesNotContain(countWord, text, StringComparison.OrdinalIgnoreCase);
+        // ⚠ SCOPED TO THE NOTE'S OWN LINE, not the whole report. Asserting over all of Describe(...)
+        // would fail spuriously the day someone adds "took 2 seconds" or "no additional configuration
+        // required" anywhere else in it — and MEASURED, a bare substring test does trip on "seconds".
+        // Word boundaries for the same reason.
+        var noteLine = text.Split('\n').Single(l => l.Contains("retired plugin manifest", StringComparison.Ordinal));
+
+        // ⚠ HONEST LIMIT: this is a BLACKLIST, not a semantic check. It cannot catch every way of
+        // implying a count - "a 2nd plugin", "a pair of plugins" and the like would slip through. It is
+        // sized to the recurrence that actually happened twice, and the comment above the string in
+        // InstallStatus.cs carries the reasoning. Do not mistake a green here for proof of neutrality.
+        foreach (var countWord in new[] { "second", "2nd", "duplicate", "another", "additional", "two", "pair", "extra" })
+            Assert.DoesNotMatch($@"(?i)\b{countWord}\b", noteLine);
     }
 
     /// The INVERSE half, and it is why the check keys on the manifest rather than on the directory.

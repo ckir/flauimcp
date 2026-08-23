@@ -186,7 +186,13 @@ public static class InstallStatus
             // branches of the switch below, so it must be true in every one of them.
             // "can load it as a flaui-mcp plugin" is true whichever branch it lands in.
             // Pinned by Status_never_claims_a_count_for_the_legacy_residue.
-            ? $" (a retired plugin manifest from the old skill-directory model survives at {skillRoot} — install-time cleanup did not finish, and Claude can load it as a flaui-mcp plugin; delete that directory)"
+            // ⚠ AND ASSERT NO HISTORY EITHER. An earlier version said "install-time cleanup did not
+            // finish", which claims the `install` verb ran and failed partway. Reachable states where
+            // that is false: a user upgrades the binary and never runs `install` at all (cleanup did not
+            // fail — it never started), and a partial failure of `uninstall`, which calls the same
+            // removal. This method observes a directory; it cannot know which command last touched it.
+            // State what is TRUE NOW, and nothing about how it got here.
+            ? $" (a retired plugin manifest from the old skill-directory model survives at {skillRoot} — Claude can load it as a flaui-mcp plugin; delete that directory)"
             : "";
 
         return claudePluginStatus switch
