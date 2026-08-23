@@ -145,13 +145,22 @@ public static class InstallStatus
     /// </summary>
     private static string DescribeClaudeSkill(string skillRoot, ClaudePluginStatus claudePluginStatus)
     {
-        // ⚠ Keys on the DIRECTORY, not on a leaf file, and that is the whole point. This used to test
-        // `skills/driving-flaui-mcp/SKILL.md`, which asks the wrong question: `Remove()` deletes
-        // `skillRoot` RECURSIVELY with no ordering guarantee, so a partial failure can delete SKILL.md
-        // and still leave `.claude-plugin/plugin.json` behind — residue that keeps registering a plugin
-        // named `flaui-mcp`, while this note went SILENT because the leaf it watched was gone.
-        // `Directory.Exists(skillRoot)` is exactly the question that matters: did the cleanup finish?
-        var legacyNote = Directory.Exists(skillRoot)
+        // ⚠ KEYS ON THE MANIFEST, and the two obvious alternatives are both WRONG — each was shipped
+        // here and caught in a later review round, so do not "simplify" this back to either.
+        //
+        //   `File.Exists(.../skills/driving-flaui-mcp/SKILL.md)`  — MISSES the danger. Remove() deletes
+        //   recursively with no ordering guarantee, so a partial failure can take SKILL.md and leave the
+        //   manifest behind. That is the harmful state, and this went SILENT for it.
+        //
+        //   `Directory.Exists(skillRoot)`                          — CRIES WOLF. A delete that removed
+        //   every file but could not unlink the directory leaves an EMPTY dir, which loads nothing. A
+        //   status command that reports a scary collision for inert residue trains operators to ignore it.
+        //
+        // `.claude-plugin/plugin.json` is precisely the artifact that makes this a plugin at all — this
+        // repo's own deleted deployer said so: "Claude Code needs `.claude-plugin/plugin.json`". Present
+        // ⇒ a second `flaui-mcp` plugin can load. Absent ⇒ whatever is left cannot.
+        var legacyManifest = Path.Combine(skillRoot, ".claude-plugin", "plugin.json");
+        var legacyNote = File.Exists(legacyManifest)
             // ⚠ THE WORDING HERE HAS BEEN WRONG IN BOTH DIRECTIONS. Keep it modal.
             //
             // It first said "no longer read; safe to delete" — FALSE and reassuring in exactly the wrong
@@ -170,7 +179,7 @@ public static class InstallStatus
             // So: assert the RISK and the ACTION, never a load state we cannot know here. "delete it"
             // is the correct instruction in every one of those states — including the one where only
             // `.claude-plugin/plugin.json` survived, which is residue this note now also catches.
-            ? $" (the retired skill-directory layout still exists at {skillRoot} — install-time cleanup did not finish; it can collide with the plugin-shipped skill, so delete it)"
+            ? $" (a retired plugin manifest from the old skill-directory model survives at {skillRoot} — install-time cleanup did not finish, and Claude can load it as a second flaui-mcp plugin; delete that directory)"
             : "";
 
         return claudePluginStatus switch

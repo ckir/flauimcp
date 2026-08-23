@@ -76,8 +76,28 @@ public class InstallStatusClaudeTests
 
         var text = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.Active);
 
-        Assert.Contains("retired skill-directory layout still exists", text);
+        Assert.Contains("retired plugin manifest", text);
         Assert.Contains(legacyRoot, text);
+    }
+
+    /// The INVERSE half, and it is why the check keys on the manifest rather than on the directory.
+    /// A delete that removed every file but could not unlink the directory leaves an EMPTY dir, which
+    /// loads nothing at all. Warning about that is crying wolf, and a status command that cries wolf
+    /// trains operators to ignore the one message that matters.
+    ///
+    /// Together with the test above this pins BOTH directions: manifest present -> warn; nothing that
+    /// can load -> stay silent. Neither test alone would catch a regression to `Directory.Exists`.
+    [Fact]
+    public void An_empty_leftover_legacy_dir_is_not_reported_as_a_collision()
+    {
+        var claude = Temp();
+        var legacyRoot = Path.Combine(claude, "skills", "flaui-mcp");
+        Directory.CreateDirectory(legacyRoot);   // exists, but holds nothing Claude can load
+
+        var text = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.Active);
+
+        Assert.DoesNotContain("retired plugin manifest", text);
+        Assert.DoesNotContain(legacyRoot, text);
     }
 
     [Fact]
