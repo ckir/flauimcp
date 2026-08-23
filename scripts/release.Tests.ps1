@@ -471,6 +471,55 @@ Describe 'Changelog prompt budget' {
         }
     }
 
+    Context 'the other prompt inputs' {
+        # AGY-CAPSTONE round 3. Bounding the stat bounded ONE of four inputs; the diff already degraded,
+        # but the commit list and the style exemplar had no ceiling at all. MEASURED: a 500,000-char
+        # exemplar produced a 501,047-char prompt -- the same failure the stat cap exists to prevent,
+        # reached through a different door.
+
+        It 'bounds the style exemplar' {
+            $huge = 'E' * 500000
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText 'small' -DiffStatText 'small' -StyleExemplar $huge
+            $p.Length | Should -BeLessThan 100000 -Because 'an unbounded exemplar blows the same limit the stat did'
+        }
+
+        It 'bounds the commit list' {
+            $many = 1..20000 | ForEach-Object { "fix(area): a reasonably long commit subject number $_" }
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $many `
+                -DiffText 'small' -DiffStatText 'small' -StyleExemplar $script:Exemplar
+            $p.Length | Should -BeLessThan 120000 -Because 'an unbounded commit list blows the same limit the stat did'
+        }
+
+        It 'says what the commit-list truncation MEANS' {
+            # Same lesson as the stat notice, which a round-2 mutant proved could be gutted to a bare
+            # phrase while every positional assertion still passed.
+            $many = 1..20000 | ForEach-Object { "fix(area): a reasonably long commit subject number $_" }
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $many `
+                -DiffText 'small' -DiffStatText 'small' -StyleExemplar $script:Exemplar
+            $p | Should -Match 'subjects were omitted'
+            $p | Should -Match 'not the full set'
+        }
+
+        It 'keeps the commit list whole when it fits, and announces nothing' {
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText 'small' -DiffStatText 'small' -StyleExemplar $script:Exemplar
+            $p | Should -Match '- feat\(release\): add release script'
+            $p | Should -Not -Match 'subjects were omitted'
+        }
+
+        It 'accepts a zero stat budget as "omit the stat", and still rejects a negative one' {
+            # ValidateRange(1, ..) forbade 0, but "give me no stat" is a legitimate request; only a
+            # negative value is incoherent.
+            { Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText ('x' * 200000) -DiffStatText 'some stat' -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 0 } | Should -Not -Throw
+            { Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText ('x' * 200000) -DiffStatText 'some stat' -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes -1 } | Should -Throw -ExpectedMessage '*StatBudgetBytes*'
+        }
+    }
+
     It 'builds the degraded stat from a CUMULATIVE diff, not a per-commit log' {
         # The library cap above is a backstop, not the fix. `git log --stat` over a large range is
         # quadratic-ish in output -- one file list per commit -- while `git diff --stat` over the same
