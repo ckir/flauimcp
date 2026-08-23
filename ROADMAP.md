@@ -1013,12 +1013,35 @@ observation, not an echo of the question. The decisive run had the plugin-regist
 connected: it reported **135 deferred tools - 7 built-in, 53 `agentmemory`, 22 `claude-in-chrome`, 3
 `clavity-ls`, and all 50 `mcp__plugin_flaui-mcp_flaui-mcp__desktop_*`**.
 
-| | reaches a subagent? |
-|---|---|
-| **1. `ServerInstructions`** (the payload, with the prohibition) | **NO** - firm negative, explicitly checked |
-| **2. SessionStart hook `additionalContext`** | **NO** - no hook output of any kind |
-| **3. the driving skill's `description:`** | **YES** - present in the skill listing, both bare and plugin-prefixed |
-| the 50 `desktop_*` tools | **YES** |
+**Every agent type was measured, not sampled.** Six probes: `general-purpose` (x2), `Explore`, `Plan`,
+`claude`, and a `fork`. The two remaining types, `claude-code-guide` and `statusline-setup`, carry no MCP
+tools at all by definition, so the gap cannot reach them.
+
+| agent type | 50 `desktop_*` | CLAUDE.md + memory | **1. `ServerInstructions`** | **2. SessionStart hook** | **3. skill listing** |
+|---|---|---|---|---|---|
+| `general-purpose` | YES | YES | **NO** | **NO** | YES |
+| `claude` (the default) | YES | YES | **NO** | **NO** | YES |
+| `Explore` | YES | **NO** | **NO** | **NO** | YES |
+| `Plan` | YES | **NO** | **NO** | **NO** | YES |
+| `fork` | inherits | YES | inherited only - see below | inherited only | YES |
+
+**Unanimous across all four non-fork types: the tools arrive, both payload channels do not, the skill
+listing does.** The negative is stronger than "flaui's block is missing" - every probe reported a firm
+negative on **all four connected servers**, `claude-in-chrome` included, while holding 135 deferred tool
+names. A freshly-composed subagent system prompt carries **no `# MCP Server Instructions` section at
+all.** That makes this a propagation gap, not a flaui-specific one, and not a timing artifact.
+
+**`fork` is the sole exception, and only by copying.** A fork's own system prompt does contain a
+`# MCP Server Instructions` block - but in the measured run it held **`claude-in-chrome` only**, because
+that is what the parent's system prompt held at session start; flaui had connected later, so its payload
+reached the fork inside the inherited transcript instead. The fork drew that positional distinction itself
+and was explicit about its limit: it cannot tell "served directly" from "inherited". **So forking carries
+whatever the parent had AT SESSION START - which makes it dependent on connection timing, not a
+guarantee.**
+
+**A second axis, unrelated to activation but measured on the way:** `CLAUDE.md`, `cli-tooling.md` and
+`MEMORY.md` reach the full-access types (`general-purpose`, `claude`) and **not** the read-only ones
+(`Explore`, `Plan`). Both read-only agents flagged the absence themselves.
 
 So the original title was wrong: it is not *neither* channel. **The skill DESCRIPTION arrives; both
 PAYLOAD channels do not.** That distinction is the whole item, because the description is a discovery
@@ -1028,13 +1051,10 @@ and the lease boundary live. A subagent gets the invitation and not the rules.
 The probe agent noticed the discrepancy unprompted, having received `MEMORY.md`, and wrote: *"that payload
 is not in my context."*
 
-**A second finding, not anticipated: the answer differs by agent type.** A `general-purpose` subagent
-receives `CLAUDE.md`, `cli-tooling.md` and `MEMORY.md` in full; an `Explore` subagent receives none of
-them. Both receive the skill listing, and neither receives either payload channel. So for a
-`general-purpose` agent some flaui framing does arrive - incidentally, through project memory that happens
-to discuss it - and for an `Explore` agent nothing does. Any fix that leans on CLAUDE.md or memory to
-carry the prohibition therefore covers one agent type and not the other, which is this repo's most
-familiar defect shape.
+Note what that second axis costs: for `general-purpose` and `claude`, some flaui framing does arrive -
+incidentally, through project memory that happens to discuss the tools - while for `Explore` and `Plan`
+nothing does. **Any fix leaning on CLAUDE.md or memory therefore covers two agent types and not the other
+two**, which is this repo's most familiar defect shape.
 
 **Two methodological warnings for whoever re-runs this**, both of which nearly produced a wrong answer:
 
