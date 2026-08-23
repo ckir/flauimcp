@@ -179,7 +179,14 @@ public static class InstallStatus
             // So: assert the RISK and the ACTION, never a load state we cannot know here. "delete it"
             // is the correct instruction in every one of those states — including the one where only
             // `.claude-plugin/plugin.json` survived, which is residue this note now also catches.
-            ? $" (a retired plugin manifest from the old skill-directory model survives at {skillRoot} — install-time cleanup did not finish, and Claude can load it as a second flaui-mcp plugin; delete that directory)"
+            // ⚠⚠ ASSERT NO COUNT AND NO RELATIONSHIP. This exact defect has been introduced TWICE:
+            // "a SECOND copy" (folded in d78b637) and then, two rounds later, "a second flaui-mcp
+            // plugin" (this line). Both are false in the `NotRegistered` branch, where the residue is
+            // the FIRST and only plugin Claude would load — and this note is appended to all four
+            // branches of the switch below, so it must be true in every one of them.
+            // "can load it as a flaui-mcp plugin" is true whichever branch it lands in.
+            // Pinned by Status_never_claims_a_count_for_the_legacy_residue.
+            ? $" (a retired plugin manifest from the old skill-directory model survives at {skillRoot} — install-time cleanup did not finish, and Claude can load it as a flaui-mcp plugin; delete that directory)"
             : "";
 
         return claudePluginStatus switch

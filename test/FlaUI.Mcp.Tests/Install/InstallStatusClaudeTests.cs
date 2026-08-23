@@ -80,6 +80,31 @@ public class InstallStatusClaudeTests
         Assert.Contains(legacyRoot, text);
     }
 
+    /// ⚠⚠ A REGRESSION GATE FOR A DEFECT INTRODUCED TWICE, TWO CAPSTONE ROUNDS APART.
+    ///
+    /// The residue note is appended to ALL FOUR branches of the status switch, including
+    /// `NotRegistered` — where no plugin is installed, so the leftover manifest would be the FIRST and
+    /// only plugin Claude loads, not a second one. The wording said "a SECOND copy", that was folded,
+    /// and two rounds later a rewrite said "a second flaui-mcp plugin" and reintroduced it.
+    ///
+    /// A comment did not prevent the second occurrence. This test does: any count word in that sentence
+    /// fails it, in the one branch where a count is provably wrong.
+    [Fact]
+    public void Status_never_claims_a_count_for_the_legacy_residue()
+    {
+        var claude = Temp();
+        var legacyRoot = Path.Combine(claude, "skills", "flaui-mcp");
+        Directory.CreateDirectory(Path.Combine(legacyRoot, ".claude-plugin"));
+        File.WriteAllText(Path.Combine(legacyRoot, ".claude-plugin", "plugin.json"), "{ \"name\": \"flaui-mcp\" }");
+
+        // NotRegistered is the branch that makes a count claim FALSE: nothing else is installed.
+        var text = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.NotRegistered);
+
+        Assert.Contains("retired plugin manifest", text);   // the note IS present in this branch
+        foreach (var countWord in new[] { "second", "duplicate", "another", "additional" })
+            Assert.DoesNotContain(countWord, text, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// The INVERSE half, and it is why the check keys on the manifest rather than on the directory.
     /// A delete that removed every file but could not unlink the directory leaves an EMPTY dir, which
     /// loads nothing at all. Warning about that is crying wolf, and a status command that cries wolf
