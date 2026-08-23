@@ -816,3 +816,54 @@ the installer refuse a non-Windows target.
 
 Found during the activation-instructions panel, when the operator asked what happens on a non-Windows
 install. Filed from `.clavity/local-anomalies.md` at triage.
+
+### 24. The changelog drafter cannot cut a large release — the prompt degrades the DIFF but nothing else
+
+MEASURED cutting v1.0.0, with 400 commits since `v0.20.0`. `claude -p` refused the draft outright:
+*"the request is ~260,934 tokens (limit 200,000)"*.
+
+`Get-ChangelogPrompt` (`scripts/lib/release-lib.ps1:324-328`) swaps the full patch for `git log --stat`
+once the diff passes 150,000 bytes or the range passes 40 commits. That degradation fired correctly — and
+was nowhere near enough, because **only the diff is bounded**:
+
+| part of the prompt | chars | ~tokens | bounded? |
+|---|---|---|---|
+| commit-message list | 599,888 | ~171,000 | **no** |
+| `git log --stat` | 777,038 | ~222,000 | **no** — it IS the degradation |
+| full diff | 5,888,531 | — | yes, degraded away |
+
+The stat ALONE exceeds the whole context limit here, so the "degraded" prompt is unusable and there is no
+further fallback. The failure is clean — it throws before any file is written — but a release simply
+cannot be cut this way.
+
+Reachable by construction in this repository: the standing decision holds `master` hundreds of commits
+ahead of `origin`, which is exactly the shape that breaks it.
+
+WORKAROUND USED FOR v1.0.0, and it is a supported one rather than a hack: `Get-OrCreateDraft` resumes a
+pre-staged draft at `%TEMP%\flaui-mcp-release-draft-<version>.md` when it starts with `### `, and the
+code comment names that workflow explicitly — *"pre-stage a draft interactively, then finish the release
+from CI with -Yes"*. Staging a draft skips the LLM call entirely.
+
+A fix needs to bound BOTH remaining inputs — `--shortstat` or a truncated file list, and a subject-only
+commit list (`%s` rather than `%B`) past some threshold — and should say in the prompt that it has done
+so, since the drafter's output quality depends on knowing what it was not shown.
+
+### 25. Cutting a release never consumes `## [Unreleased]`
+
+`Add-ChangelogSection` deliberately excludes `## [Unreleased]` from the version-heading index it uses to
+find the insert point (`Get-ChangelogVersionHeadingIndex`), so a new `## [X.Y.Z]` section is inserted
+BELOW it. In a repository that maintains an Unreleased section — as this one does — cutting the release
+therefore leaves the same notes in two places, one of them still labelled unreleased.
+
+MEASURED at v1.0.0: 6,716 characters of hand-written notes (3 BREAKING, 3 Security, 3 Added, 3 Fixed
+bullets) were stranded above the release that contained them, and were cleared by hand in `40a28c1` after
+verifying all 72 content lines were present in the new section first.
+
+The exclusion itself is CORRECT and must stay — `Get-TopChangelogSection` has a test pinning that
+`[Unreleased]` is never published as a release body. What is missing is the promotion step: on a cut,
+`[Unreleased]`'s body should become the seed of the new section (or be emptied once the new section is
+written), rather than being ignored by both halves.
+
+Note the interaction with the drafter: if `[Unreleased]` were promoted, item 24 would matter far less for
+a repository that keeps its notes current — the body would already exist and the LLM call would be a
+top-up rather than the whole job.
