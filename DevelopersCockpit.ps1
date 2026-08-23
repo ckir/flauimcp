@@ -141,7 +141,7 @@ $script:Actions = @(
 
     # [2] QUALITY GATE
     [pscustomobject]@{ Key='G'; Tier=1; Desc='Dev gate (build+test+Pester)'; Note=''; Handler={ Invoke-DevGate } }
-    [pscustomobject]@{ Key='E'; Tier=1; Desc='Pester (scripts/)';      Note='';       Cmd='pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/ -EnableExit"' }
+    [pscustomobject]@{ Key='E'; Tier=1; Desc='Pester (scripts/)';      Note='';       Cmd='pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = 'scripts/'; $c.Run.Exit = $true; Invoke-Pester -Configuration $c"' }
     [pscustomobject]@{ Key='I'; Tier=1; Desc='Install smoke';          Note='';       Cmd='pwsh -File scripts/install-smoke.ps1' }
     [pscustomobject]@{ Key='K'; Tier=1; Desc='Desktop suite (the v1.0 gate)'; Note='CONSOLE+LEASE'; Handler={ Invoke-DesktopSuite } }
 
@@ -170,7 +170,11 @@ function Invoke-Scaffold {
 function Invoke-DevGate {
     Invoke-Cmd 'dotnet build FlaUI.Mcp.slnx -c Debug'
     Invoke-Cmd 'dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"'
-    Invoke-Cmd 'pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 5.8.0; Invoke-Pester -Path scripts/ -EnableExit"'
+    # -CI would also do it, but it turns on TestResult.Enabled as well and drops testResults.xml into the
+    # working tree on every run. CHANGELOG records -EnableExit being chosen for exactly that reason ("sets
+    # the exit code without writing result files"); Pester 6 removed -EnableExit, and Run.Exit is the
+    # setting that preserves the property. Keeping a gate from littering the tree it gates is not cosmetic.
+    Invoke-Cmd 'pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = 'scripts/'; $c.Run.Exit = $true; Invoke-Pester -Configuration $c"'
 }
 
 # The Category=Desktop suite is Track A's definition of done, and it is the one gate that CANNOT be run
@@ -263,7 +267,7 @@ function Invoke-HealthCheck {
     if ($script:WhatIf) {
         Write-C '  WHATIF — would probe, nothing executed:' 'DarkCyan'
         foreach ($p in $script:HealthProbes) { Write-C ('    {0,-20} {1}' -f $p.Name, $p.Cmd) 'DarkCyan' }
-        Write-C ('    {0,-20} {1}' -f 'Pester', 'Get-Module -ListAvailable Pester (pinned 5.8.0)') 'DarkCyan'
+        Write-C ('    {0,-20} {1}' -f 'Pester', 'Get-Module -ListAvailable Pester (pinned 6.1.0)') 'DarkCyan'
         return
     }
 
@@ -281,10 +285,10 @@ function Invoke-HealthCheck {
         }
     }
     # Pester is a module, not a PATH exe — probe the pinned version separately.
-    if (Get-Module -ListAvailable Pester | Where-Object { $_.Version -eq '5.8.0' }) {
-        Write-C ('  [ ok ] {0,-20} 5.8.0' -f 'Pester') 'Green'
+    if (Get-Module -ListAvailable Pester | Where-Object { $_.Version -eq '6.1.0' }) {
+        Write-C ('  [ ok ] {0,-20} 6.1.0' -f 'Pester') 'Green'
     } else {
-        Write-C ('  [FAIL] {0,-20} 5.8.0 not installed' -f 'Pester') 'Yellow'
+        Write-C ('  [FAIL] {0,-20} 6.1.0 not installed' -f 'Pester') 'Yellow'
     }
 }
 

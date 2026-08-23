@@ -68,11 +68,19 @@ FlaUI.Mcp tools follow one regular pattern:
    ./scripts/new-tool.ps1 -Name DesktopFoo -ReadOnly  # safe read
    ```
    This stamps a method stub into a `Tools` class and a matching test file. Add `-WhatIf` to preview.
-   Scaffolder tests require Pester 5.8.0 (pinned by CI and `DevelopersCockpit.ps1`). To run them:
+   Scaffolder tests require Pester 6.1.0 (pinned by CI and `DevelopersCockpit.ps1`). The pin is not
+   decorative: PowerShell resolves an unpinned `Invoke-Pester` to the highest version it can see, which is
+   whatever else happens to be installed on the machine or the CI image rather than the one this suite was
+   written against. To run them:
    ```powershell
-   Install-Module Pester -RequiredVersion 5.8.0 -Scope CurrentUser -Force
+   Install-Module Pester -RequiredVersion 6.1.0 -Scope CurrentUser -Force
+   Import-Module Pester -RequiredVersion 6.1.0
    Invoke-Pester -Path scripts/
    ```
+   Do not pass `-EnableExit`: Pester 6 removed it, and passing it fails the run with a parameter-binding
+   error even when every test passes — a gate that is red on green. Where a non-zero exit code is needed
+   (the cockpit's `E` and `G` gates), set `Run.Exit` on a configuration object rather than using `-CI`:
+   `-CI` also enables `TestResult`, which drops a `testResults.xml` into the working tree.
 2. **Fill the stub.** A tool is a method on a `[McpServerToolType] public sealed class XxxTools` in
    `src/FlaUI.Mcp.Server/Tools/`, annotated `[McpServerTool(ReadOnly = true | Destructive = true),
    Description("…")]`. The MCP SDK **auto-discovers** it — no registration to edit.

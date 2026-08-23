@@ -54,7 +54,7 @@ jobs:
       - name: Run Pester tests
         shell: pwsh
         run: |
-          Install-Module Pester -RequiredVersion 5.8.0 -Force -SkipPublisherCheck -Scope CurrentUser
-          Import-Module Pester -RequiredVersion 5.8.0
+          Install-Module Pester -RequiredVersion 6.1.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 6.1.0
           $result = Invoke-Pester -Path scripts/ -CI -PassThru
           if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) Pester test(s) failed." }
