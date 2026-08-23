@@ -39,14 +39,35 @@ Describe 'Pester pin' {
     It 'pins the SAME version everywhere it is named' {
         # Drift between CI and the cockpit is how a contributor ends up running a different Pester from the
         # one the gate uses, which is exactly the situation the pin exists to prevent.
+        #
+        # The rule differs by FILE KIND, and both halves were learned the hard way.
+        #
+        # CODE (.ps1/.yml): EVERY Pester-adjacent version string must match, not only the ones bound to
+        # -RequiredVersion. A review found four bare references in DevelopersCockpit.ps1 -- the health
+        # probe's `$_.Version -eq '6.1.0'` and three display strings -- and MEASURED that flipping all four
+        # to 5.8.0 left the whole suite green. The cockpit would then report "[ ok ] Pester 5.8.0" while
+        # its gates ran 6.1.0, and once the old versions are uninstalled it would report "5.8.0 not
+        # installed" forever. A version the tool ASSERTS about itself is a pin like any other.
+        #
+        # PROSE (.md): only -RequiredVersion counts. The looser rule was measured failing on this repo's
+        # own documentation, where a sentence explaining WHY the pin exists named another version and the
+        # scan read that as a competing pin. Prose legitimately discusses versions; code does not.
         foreach ($file in $script:LiveFiles) {
             $text = Get-Content $file -Raw
-            # Match a PIN -- a version bound to -RequiredVersion -- not any version-shaped text near the
-            # word "Pester". The looser form was measured failing on this repo's own prose: a sentence
-            # explaining WHY the pin exists mentioned another Pester version, and the scan read that as a
-            # competing pin. A gate whose evidence can come from prose about the subject is not a gate.
-            $versions = @([regex]::Matches($text, '-RequiredVersion (?<v>\d+\.\d+\.\d+)') |
-                ForEach-Object { $_.Groups['v'].Value } | Sort-Object -Unique)
+            $isProse = [IO.Path]::GetExtension($file) -eq '.md'
+
+            $versions = if ($isProse) {
+                @([regex]::Matches($text, '-RequiredVersion (?<v>\d+\.\d+\.\d+)') |
+                    ForEach-Object { $_.Groups['v'].Value })
+            } else {
+                # every version-shaped string on a line that mentions Pester
+                @(($text -split "`r?`n") | Where-Object { $_ -match 'Pester' } | ForEach-Object {
+                    [regex]::Matches($_, '(?<v>\d+\.\d+\.\d+)') | ForEach-Object { $_.Groups['v'].Value }
+                })
+            }
+            $versions = @($versions | Sort-Object -Unique)
+            $versions | Should -Not -BeNullOrEmpty -Because "$(Split-Path $file -Leaf) should name the Pester version at least once"
+
             foreach ($v in $versions) {
                 $v | Should -Be $script:PinnedVersion -Because "$(Split-Path $file -Leaf) must not drift from CI's pin"
             }
