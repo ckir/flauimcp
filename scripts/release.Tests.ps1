@@ -381,6 +381,59 @@ Describe 'Changelog prompt budget' {
         $p | Should -Match ([regex]::Escape($stat))
     }
 
+    Context 'when it truncates' {
+        # A realistic stat: per-file lines, then the ONE aggregate line git puts last.
+        BeforeEach {
+            $script:FileLines = (1..400 | ForEach-Object { "src/path/to/file$_.cs | $_ +-" }) -join "`n"
+            $script:Summary   = '400 files changed, 12345 insertions(+), 678 deletions(-)'
+            $script:RealStat  = "$script:FileLines`n$script:Summary"
+        }
+
+        It 'preserves the summary line, which git puts LAST' {
+            # THE finding. `git diff --stat` carries its only aggregate on the final line -- measured on the
+            # v1.0.0 range it began at char 13,982 of 14,041 -- so a head-cut amputates precisely the line a
+            # changelog writer most needs and leaves a partial alphabetical file list with no sense of scale.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $p | Should -Match ([regex]::Escape($script:Summary))
+        }
+
+        It 'still delivers the payload it budgeted for' {
+            # Without this, Substring(0, 0) passes every other gate: the prompt shrinks and the notice
+            # fires, so "bounded" and "announced" are both satisfied while the drafter receives NOTHING.
+            # MEASURED -- that exact mutant survived all 113 tests before this assertion existed.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $p | Should -Match ([regex]::Escape('src/path/to/file1.cs'))
+        }
+
+        It 'cuts on whole lines, never mid-filename' {
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $statSection = $p.Substring($p.IndexOf('Diff stat (full patch'))
+            $kept = @($statSection -split "`n" | Where-Object { $_ -match '\|' } | ForEach-Object { $_.Trim() })
+            $original = @($script:FileLines -split "`n" | ForEach-Object { $_.Trim() })
+            foreach ($line in $kept) { $original | Should -Contain $line }
+        }
+
+        It 'puts the truncation notice OUTSIDE the untrusted data region' {
+            # The notice is an instruction about the data. Appended to the git output it lands inside the
+            # very section the prompt tells the model to treat as untrusted and to take no instruction from
+            # -- measured at index 21,090 against an UNTRUSTED DATA warning at 666 -- so it is either
+            # ignored or repeated into the changelog as content. It belongs in the trusted preamble.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $iNotice = $p.IndexOf('TRUNCATED to fit')
+            $iStat   = $p.IndexOf('Diff stat (full patch')
+            $iNotice | Should -BeGreaterThan -1
+            $iNotice | Should -BeLessThan $iStat -Because 'an instruction inside the untrusted payload is one the model is told to ignore'
+        }
+    }
+
     It 'builds the degraded stat from a CUMULATIVE diff, not a per-commit log' {
         # The library cap above is a backstop, not the fix. `git log --stat` over a large range is
         # quadratic-ish in output -- one file list per commit -- while `git diff --stat` over the same
