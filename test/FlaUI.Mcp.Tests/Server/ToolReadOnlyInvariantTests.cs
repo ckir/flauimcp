@@ -1,6 +1,8 @@
 using System;
+using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using FlaUI.Mcp.Server;
 using FlaUI.Mcp.Server.Tools;
@@ -75,6 +77,50 @@ public class ToolReadOnlyInvariantTests
                 $"{type.Name}.{method.Name} is marked Destructive but did NOT block in --read-only-mode. " +
                 $"Route it through ToolResponse.GuardWrite(_options, ...). Got: {result}");
         }
+    }
+
+    [Fact]
+    public void Every_destructive_tool_STATES_its_read_only_and_lease_posture()
+    {
+        // The enforcement invariant above proves the gate RUNS. This one proves the caller can KNOW it
+        // without running into it, which is a different property and the one that was missing.
+        //
+        // Measured 2026-08-23: a subagent receives the 50 tool NAMES and neither activation channel -
+        // no MCP server instructions, no SessionStart hook output - so a tool's own description is the
+        // only place it can carry its own rules. Nine tools, the entire UIA-pattern family in
+        // InteractionTools, stated NEITHER posture while their sibling InputTools stated both on every
+        // tool. The familiar shape: a convention held on one path and dropped on the adjacent one.
+        //
+        // The posture check matches one of the two CANONICAL statements, not the bare word "lease".
+        // AGY-CAPSTONE round 1 caught the difference: an earlier version of this test accepted any
+        // description containing "lease", and desktop_click passed it while ending with a DANGLING
+        // "Same lease/deny-list/session gates." — same as WHAT? desktop_key delegated its posture to
+        // desktop_type. Both satisfied the gate and told a caller nothing, and because schemas are
+        // DEFERRED a subagent routinely loads one tool without its neighbours, so a cross-reference is
+        // not an answer. A gate that accepts a MENTION does not enforce KNOWLEDGE.
+        //
+        // The two postures are both real and a caller needs to know which: the SendInput tools say
+        // "Requires an active input lease", the UIA-pattern tools say "NO input lease required"
+        // (GuardWrite tests only options.ReadOnly, and InteractionTools references InputGuard zero
+        // times). "needs NO input lease" also matches, which is desktop_set_caret's existing wording.
+        const string PostureRx = @"requires an active input lease|no input lease";
+        var offenders = Tools()
+            .Where(t => t.IsDestructive)
+            .Select(t => (t.Type, t.Method,
+                          Desc: t.Method.GetCustomAttribute<DescriptionAttribute>()?.Description ?? ""))
+            .Select(x => (x.Type, x.Method, x.Desc, Missing: string.Join(" and ", new[]
+            {
+                x.Desc.Contains("--read-only-mode", StringComparison.OrdinalIgnoreCase) ? null : "--read-only-mode",
+                Regex.IsMatch(x.Desc, PostureRx, RegexOptions.IgnoreCase) ? null : "its input-lease posture",
+            }.Where(s => s is not null))))
+            .Where(x => x.Missing.Length > 0)
+            .Select(x => $"{x.Type.Name}.{x.Method.Name} does not state {x.Missing}")
+            .ToList();
+
+        Assert.True(offenders.Count == 0,
+            "Every Destructive tool's description must state that it is blocked in --read-only-mode and " +
+            "whether it needs an input lease — a subagent gets the tool with no other framing:\n" +
+            string.Join("\n", offenders));
     }
 
     // Construct a tool with a ReadOnly ServerOptions and null for every other dependency. GuardWrite

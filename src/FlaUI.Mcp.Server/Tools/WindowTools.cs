@@ -52,7 +52,7 @@ public sealed class WindowTools
             return ToolResponse.Ok(new { handle = handle.Id });
         });
 
-    [McpServerTool(Destructive = true), Description("Launch an app and return a handle to its main window. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Launch an app and return a handle to its main window. Blocked in --read-only-mode. NO input lease required.")]
     public Task<string> DesktopLaunchApp(
         [Description("Executable path.")] string path,
         [Description("Optional arguments.")] string? args = null,
@@ -63,7 +63,7 @@ public sealed class WindowTools
             return ToolResponse.Ok(new { handle = handle.Id, pid });
         });
 
-    [McpServerTool(Destructive = true), Description("Bring a window to the foreground. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Bring a window to the foreground. Blocked in --read-only-mode. NO input lease required.")]
     public Task<string> DesktopFocusWindow([Description("Window handle, e.g. w1.")] string window)
         => ToolResponse.GuardWrite(_options, async () =>
         {
@@ -91,7 +91,7 @@ public sealed class WindowTools
         });
     }
 
-    [McpServerTool(Destructive = true), Description("Close a window and free its handle. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Close a window and free its handle. Blocked in --read-only-mode. NO input lease required.")]
     public Task<string> DesktopCloseWindow([Description("Window handle, e.g. w1.")] string window)
         => ToolResponse.GuardWrite(_options, async () => { await _windows.CloseAsync(new WindowHandle(window)); return ToolResponse.Ok(new { ok = true }); });
 }
