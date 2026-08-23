@@ -35,6 +35,7 @@ public static class InstallStatus
         sb.AppendLine("Driving skill (Claude Code):");
         sb.AppendLine("  " + DescribeClaudeSkill(new ClaudeSkillDeployer(claudeConfigDir).SkillRoot, claudePluginStatus));
         sb.AppendLine("  Activation hook: " + DescribeActivationHook(PluginIds.StagingDir(exePath)));
+        sb.AppendLine("  Server instructions: " + DescribeServerInstructions());
         sb.AppendLine();
 
         var collisions = DescribeCollisions(stateDir);
@@ -103,6 +104,24 @@ public static class InstallStatus
             : "staged but NOT wired — no SessionStart entry invokes the verb; reinstall to regenerate";
     }
 
+    /// <summary>Whether THIS binary advertises the activation core over the MCP handshake. Reported
+    /// because `status` runs the INSTALLED exe, which is not necessarily the one you just built.
+    ///
+    /// ⚠ THE DISCRIMINATOR IS THE PRESENCE OF THE LINE, NOT ITS TEXT. An older binary does not report
+    /// "NOT advertised" — it has no such line at all, because it does not contain this method. An earlier
+    /// version of this returned exactly that string when `Core` was empty, described as meaning "this
+    /// binary predates the change", which is impossible twice over: `Core` is a compile-time-constant
+    /// join of six non-empty literals and can never be empty, and a binary that predated the change could
+    /// never have executed the branch. That was dead code asserting a self-contradiction, so it is gone.
+    /// Do NOT reintroduce an "absent" branch here to "handle old binaries"; absence of the line IS the
+    /// signal, and it is the operator manual that must say so.
+    ///
+    /// ⚠ Deliberately says "advertised", not "delivered". A client may drop the field silently and the
+    /// server cannot tell (spec D5) — agy is MEASURED to do exactly that. Do not reword this into a
+    /// claim that the agent received anything.</summary>
+    public static string DescribeServerInstructions()
+        => $"advertised at connect ({ActivationPayload.Core.Length} chars) — a client may still drop it";
+
     /// Normalizes the two shapes a hooks.json `SessionStart` key can legitimately take — an array of
     /// entries, or a single entry object — into one sequence. Kept in step with
     /// PluginArtifactWriter.MergeActivationHook, which must PRESERVE whichever shape it finds; if these
@@ -126,9 +145,54 @@ public static class InstallStatus
     /// </summary>
     private static string DescribeClaudeSkill(string skillRoot, ClaudePluginStatus claudePluginStatus)
     {
-        var legacySkill = Path.Combine(skillRoot, "skills", "driving-flaui-mcp", "SKILL.md");
-        var legacyNote = File.Exists(legacySkill)
-            ? $" (a retired copy from the old skill-directory model also sits at {skillRoot} — no longer read; safe to delete)"
+        // ⚠ KEYS ON THE MANIFEST, and the two obvious alternatives are both WRONG — each was shipped
+        // here and caught in a later review round, so do not "simplify" this back to either.
+        //
+        //   `File.Exists(.../skills/driving-flaui-mcp/SKILL.md)`  — MISSES the danger. Remove() deletes
+        //   recursively with no ordering guarantee, so a partial failure can take SKILL.md and leave the
+        //   manifest behind. That is the harmful state, and this went SILENT for it.
+        //
+        //   `Directory.Exists(skillRoot)`                          — CRIES WOLF. A delete that removed
+        //   every file but could not unlink the directory leaves an EMPTY dir, which loads nothing. A
+        //   status command that reports a scary collision for inert residue trains operators to ignore it.
+        //
+        // `.claude-plugin/plugin.json` is precisely the artifact that makes this a plugin at all — this
+        // repo's own deleted deployer said so: "Claude Code needs `.claude-plugin/plugin.json`". Present
+        // ⇒ a second `flaui-mcp` plugin can load. Absent ⇒ whatever is left cannot.
+        var legacyManifest = Path.Combine(skillRoot, ".claude-plugin", "plugin.json");
+        var legacyNote = File.Exists(legacyManifest)
+            // ⚠ THE WORDING HERE HAS BEEN WRONG IN BOTH DIRECTIONS. Keep it modal.
+            //
+            // It first said "no longer read; safe to delete" — FALSE and reassuring in exactly the wrong
+            // direction: this class's own doc records that Claude Code auto-loads that layout as
+            // `flaui-mcp@skills-dir` at user scope, and the note only ever appears when install-time
+            // cleanup FAILED, which is precisely when the operator must act.
+            //
+            // The correction then over-swung to "auto-loads it as a SECOND copy", which is wrong in two
+            // reachable states: this note is appended to ALL FOUR status branches below, so it fires
+            // alongside "NOT deployed — plugin not registered" (where a survivor is the ONLY copy, not a
+            // second one) and alongside CliNotFound (where we just admitted we could not check). And
+            // `Remove()` deletes recursively with no ordering guarantee, so a partial failure can drop
+            // `.claude-plugin/plugin.json` while a locked SKILL.md survives — leaving a tree Claude will
+            // NOT load, which makes any unconditional "it is active" claim false too.
+            //
+            // So: assert the RISK and the ACTION, never a load state we cannot know here. "delete it"
+            // is the correct instruction in every one of those states — including the one where only
+            // `.claude-plugin/plugin.json` survived, which is residue this note now also catches.
+            // ⚠⚠ ASSERT NO COUNT AND NO RELATIONSHIP. This exact defect has been introduced TWICE:
+            // "a SECOND copy" (folded in d78b637) and then, two rounds later, "a second flaui-mcp
+            // plugin" (this line). Both are false in the `NotRegistered` branch, where the residue is
+            // the FIRST and only plugin Claude would load — and this note is appended to all four
+            // branches of the switch below, so it must be true in every one of them.
+            // "can load it as a flaui-mcp plugin" is true whichever branch it lands in.
+            // Pinned by Status_never_claims_a_count_for_the_legacy_residue.
+            // ⚠ AND ASSERT NO HISTORY EITHER. An earlier version said "install-time cleanup did not
+            // finish", which claims the `install` verb ran and failed partway. Reachable states where
+            // that is false: a user upgrades the binary and never runs `install` at all (cleanup did not
+            // fail — it never started), and a partial failure of `uninstall`, which calls the same
+            // removal. This method observes a directory; it cannot know which command last touched it.
+            // State what is TRUE NOW, and nothing about how it got here.
+            ? $" (a retired plugin manifest from the old skill-directory model survives at {skillRoot} — Claude can load it as a flaui-mcp plugin; delete that directory)"
             : "";
 
         return claudePluginStatus switch

@@ -316,10 +316,18 @@ public static class CliRouter
                 {
                     new PluginArtifactWriter(stagingDir).Generate(exePath, ThisVersion()); // idempotent if agy already ran
                     new ClaudeCodeConfigWriter(ClaudeRunner(() => sw2.Elapsed, ClaudeBudget)).Uninstall(); // sweep retired `claude mcp` server
-                    new ClaudeSkillDeployer(paths.ClaudeConfigDir).Remove(); // drop legacy ~/.claude/skills/flaui-mcp (skill now ships in the plugin)
+                    // drop legacy ~/.claude/skills/flaui-mcp (skill now ships in the plugin).
+                    // ⚠ Remove() returns a warning ONLY when deletion failed (e.g. a locked file during an
+                    // upgrade). Discarding it left the operator silently unwarned in the one case that
+                    // matters: Claude auto-loads that layout as `flaui-mcp@skills-dir`, so a surviving copy
+                    // is a SECOND active driving skill beside the plugin's, not inert residue. Unlike the
+                    // agy branch — where a locked plugin dir fails the very next `agy plugin install` and
+                    // so surfaces anyway — nothing downstream here touches that path, so the warning was
+                    // the only signal that existed.
+                    var legacySkillWarning = new ClaudeSkillDeployer(paths.ClaudeConfigDir).Remove();
                     var collisionWarning = remedy.Apply();
                     var reg = new ClaudePluginRegistrar(ClaudeInvoker()).Register(stagingDir);
-                    return FoldWarning(reg, collisionWarning);
+                    return FoldWarning(FoldWarning(reg, legacySkillWarning), collisionWarning);
                 }
                 var unreg = new ClaudePluginRegistrar(ClaudeInvoker()).Unregister();
                 var restoreWarning = remedy.Restore();

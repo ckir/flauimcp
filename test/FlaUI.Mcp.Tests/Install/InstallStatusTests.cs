@@ -13,13 +13,36 @@ public class InstallStatusTests
         return (Path.Combine(dir, "plugins"), Path.Combine(dir, "data"), Path.Combine(dir, "claude"), Path.Combine(dir, "state"));
     }
 
+    /// Write exactly what InstallStatus READS, rather than calling an installer to produce it.
+    /// DescribeSeed (InstallStatus.cs:196) needs the SKILL.md plus plugin.json for the version;
+    /// DescribeClaudeSkill (InstallStatus.cs:140) needs only the legacy SKILL.md.
+    private static void WriteSeedPlugin(string pluginRoot, string version)
+    {
+        var skillDir = Path.Combine(pluginRoot, "skills", "driving-flaui-mcp");
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), "---\nname: driving-flaui-mcp\n---\n");
+        File.WriteAllText(Path.Combine(pluginRoot, "plugin.json"),
+            "{\n  \"name\": \"flaui-mcp\",\n  \"version\": \"" + version + "\"\n}\n");
+    }
+
+    private static void WriteLegacyClaudeSkill(string claudeConfigDir)
+    {
+        var dir = Path.Combine(claudeConfigDir, "skills", "flaui-mcp", "skills", "driving-flaui-mcp");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "SKILL.md"), "---\nname: driving-flaui-mcp\n---\n");
+    }
+
     [Fact]
     public void Reports_a_deployed_seed_with_its_version()
     {
         var (plugins, dataDir, claude, state) = TempPaths();
-        new AgyConfigWriter(Path.Combine(dataDir, "s.json"), Path.Combine(dataDir, "p.json"), plugins)
-            .Install(@"C:\flaui-mcp.exe");
-        new ClaudeSkillDeployer(claude).Deploy();   // deploy both skills so nothing reads "NOT deployed"
+        WriteSeedPlugin(Path.Combine(plugins, "flaui-mcp"), "9.9.9");   // load-bearing: without it the seed reads "NOT deployed"
+        // Represents a fully-installed machine. MEASURED: this one is NOT load-bearing for the current
+        // assertions - the test passes ClaudePluginStatus.Active, so the Claude line reads "deployed as
+        // plugin" whether or not the legacy dir exists. Kept because the fixture should describe a real
+        // machine, not the minimum that satisfies today's asserts; do not cite it as the reason nothing
+        // reads "NOT deployed" (the seed write above is that reason).
+        WriteLegacyClaudeSkill(claude);
 
         // Claude's primary signal is the plugin registration (not the skills dir above), so pass
         // Active directly -- matches a correctly plugin-installed machine, per InstallStatusClaudeTests.

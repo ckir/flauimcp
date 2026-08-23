@@ -174,4 +174,19 @@ public class InstallStatusActivationTests : IDisposable
 
         Assert.StartsWith("wired", InstallStatus.DescribeActivationHook(staging), StringComparison.Ordinal);
     }
+
+    /// POLICY LOCK, matching the activation-hook lock above. The wording is the contract: it must say
+    /// ADVERTISED and must not claim delivery, because a client dropping the field is undetectable from
+    /// the server (spec D5).
+    [Fact]
+    public void Status_reports_the_server_instructions_channel_without_claiming_delivery()
+    {
+        var line = InstallStatus.DescribeServerInstructions();
+
+        Assert.StartsWith("advertised at connect (", line, StringComparison.Ordinal);
+        Assert.Contains(ActivationPayload.Core.Length.ToString(), line, StringComparison.Ordinal);
+        Assert.Contains("may still drop it", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("delivered", line, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("received", line, StringComparison.OrdinalIgnoreCase);
+    }
 }

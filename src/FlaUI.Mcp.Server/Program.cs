@@ -211,7 +211,14 @@ builder.Services.AddSingleton<FlaUI.Mcp.Core.Presence.PresenceState>();
 builder.Services.AddSingleton<FlaUI.Mcp.Server.Tools.PresenceTools>();
 
 builder.Services
-    .AddMcpServer()
+    // The install-time approval decision travels over the MCP handshake, not only in the Claude Code
+    // SessionStart hook. The hook is absent between install and client relaunch, and absent silently if
+    // it fails; `initialize` happens on every connect.
+    //
+    // Routed through a NAMED METHOD rather than an inline lambda ON PURPOSE: a method group can be called
+    // directly by a test, so WHAT gets configured is proven by a real assertion instead of by grepping
+    // this file. See McpServerConfiguration.
+    .AddMcpServer(FlaUI.Mcp.Server.Install.McpServerConfiguration.Apply)
     .WithStdioServerTransport()
     .WithToolsFromAssembly();
 

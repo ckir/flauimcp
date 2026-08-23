@@ -336,7 +336,7 @@ stamped** — v1.0.0 ships with no known defects.
 | 12 | the repo's 0-warning gate does not enforce itself | — | ✅ shipped — release-tooling subproject. `dotnet build FlaUI.Mcp.slnx -c Release` is INCREMENTAL and does not re-report warnings for up-to-date projects. MEASURED during SP4: it printed `0 Warning(s)` on a tree where `--no-incremental` printed `2 Warning(s)`. Fixed by a new root `Directory.Build.props` setting `TreatWarningsAsErrors` (`54b1dc5`), which fixes it MECHANICALLY rather than by discipline — MSBuild never marks a FAILED project up to date, so an error re-reports on every build. MUTANT PROVEN: an unused local (CS0219) turns `Build succeeded` into `Build FAILED`. `BuildPropertySweepTests` (`f43d546`) forbids any `.csproj` or nested props file from overriding it — nested props MEASURABLY win over the root, so a csproj-only sweep would be trivially bypassable |
 | 13 | bare `catch` blocks swallow CRITICAL failures repo-wide | — | ⬜ not started — MEASURED at SP4 capstone round 4: **108** bare catches across 20+ files in `src/` can swallow `OutOfMemoryException`. SP4 filtered every catch on its own pixel path and both `ToolResponse` boundaries; the rest are untouched. Repo-wide refactor across input, watch, session and geometry code. Ledgered as AB-12 |
 | 14 | `CollisionMarker.Record()` has no cross-process lock | — | ⬜ not started — `Record()` reads the marker, merges, and rewrites the whole file (`CollisionMarker.cs:62-91`) with no `Mutex` and no file lock. `WriteAtomically` (`:114-121`) prevents a TORN file, not a lost update: two installers that both read the same baseline each write their own entry and the second overwrites the first, so one user's disabled plugin is never restored. CONFIRMED by reading the code during the D1 review (spec `2026-08-20-release-tooling-design.md`, round-2 finding 19). Requires two simultaneous installs, which is why it has never been observed. Pre-existing and deliberately NOT fixed in the D1 subproject — filed here rather than silently widening that scope. |
-| 15 | `ClaudeSkillDeployer.Deploy()` is dead production code | — | ⬜ not started — MEASURED: `grep -rn "\.Deploy()" --include=*.cs` matches only `ClaudeSkillDeployerTests.cs` and `InstallStatusClaudeTests.cs`, never `src/`. Production calls only `.Remove()` (`CliRouter.cs:316`, on every install) because the skill now ships INSIDE the marketplace plugin (`PluginArtifactWriter.cs:126` extracts it to `skills/driving-flaui-mcp/SKILL.md`). So `Deploy()` and the `~/.claude/skills/flaui-mcp` layout it writes are no longer reachable from any shipped path, while a full test suite still pins their behaviour — which reads as if the mechanism were live. Found while checking README staleness during the release-tooling subproject; the stale README line it caused was fixed there, this is the code half. Deleting a public method plus its test suite was deliberately not folded into that branch. |
+| 15 | `ClaudeSkillDeployer.Deploy()` is dead production code | — | ✅ shipped — both dead paths deleted on the activation branch (`ClaudeSkillDeployer.Deploy()`, both `AgyConfigWriter.Install()` overloads, `DeploySkill()`) along with the tests that covered only them. `Remove()`, `SkillRoot` and `Uninstall()` are LIVE and survived, so their tests were PRUNED rather than deleted; two `InstallStatus` tests that used the deleted APIs as fixtures now write the files directly. |
 | 16 | `PopupRootCoverageTests` ARRANGE step is FLAKY on the full Desktop gate | — | ⬜ not started — OBSERVED 2026-08-20 running the final Desktop gate for the release-tooling branch: `A_popup_element_is_returned_exactly_once_across_roots` failed at ARRANGE (`PopupRootCoverageTests.cs:48` — the context menu never opened within 2.5s), then passed 3/3 in isolation and 157/157 on a full re-run. The test DIAGNOSES its own failure mode in the thrown message: the right-click is COORDINATE-BASED, so a sibling `TestApp` window stacked at the same default position swallows it. So this is a fixture-collision flake, not a product defect — but it costs a ~13-minute false failure on the v1.0 Desktop gate, which is the gate a release is judged on. Fix direction: stop opening the menu by coordinate (drive it through the element, or move the fixture window off the default position before right-clicking) rather than widening the 2.5s window, which does not address the cause. |
 
 Also fixed en route, though never one of the ten: `value-and-find-paths-miss-desktop-level-popups`
@@ -786,3 +786,33 @@ Found while trying to measure `DeploySkill()` in a sandbox for the activation-in
 
 Fix direction: either honour the variable on the modern path (stage and register into it) or rename/retire
 it and make the install refuse to run against a real agy when an isolation variable is set.
+
+### 23. A synced plugin directory activates the driving skill on a machine where the tools cannot exist
+
+The generated plugin declares **no platform constraint** — `publish/plugin/plugin.json` carries only
+`name`/`version`/`description`, `.claude-plugin/marketplace.json` carries none — and there is no runtime OS
+guard. A plugin directory copied or dotfile-synced to macOS or Linux therefore still loads
+`skills/driving-flaui-mcp/SKILL.md`, whose `description:` tells the agent to look at the Windows screen with
+the `desktop_*` tools **and not to ask the user to observe their desktop for it**. On a machine where the
+MCP server cannot start and not one of those tools exists, that framing is worse than silence: the agent is
+told to do something impossible and forbidden from asking for help.
+
+**Not reachable via the shipped path** — the only released artifact is `flaui-mcp-setup.exe`, and
+`publish/` is uncommitted. It is reachable via a synced `~/.claude/plugins` or `~/.gemini/config/plugins`,
+which is an ordinary way to carry an agent config between machines.
+
+MITIGATING, and checked rather than assumed: the description does say *"what is on the **Windows**
+screen"*, and `ActivationPayload.Core` opens with *"you can see and operate this **Windows** desktop"*, so
+an agent gets a platform clue rather than none. The activation branch pinned the word `Windows` in
+`SkillLoadLineTests.The_description_carries_the_activation_behavioural_core` so a reword cannot silently
+drop it. **Neither tells the agent what to do when the tools are simply absent.**
+
+UNVERIFIED: whether the Claude Code plugin schema supports a platform/OS field at all. Establish that
+first — if it does, declaring it is the whole fix.
+
+Fix direction: declare a platform constraint in the manifest if the schema allows one; otherwise add an
+explicit "if these tools are absent, say so and stop" clause to the skill description, and consider having
+the installer refuse a non-Windows target.
+
+Found during the activation-instructions panel, when the operator asked what happens on a non-Windows
+install. Filed from `.clavity/local-anomalies.md` at triage.

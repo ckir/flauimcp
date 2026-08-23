@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using FlaUI.Mcp.Server.Install;
 using Xunit;
 
@@ -45,13 +46,93 @@ public class InstallStatusClaudeTests
     public void A_leftover_legacy_skill_dir_does_not_override_the_plugin_signal()
     {
         var claude = Temp();
-        new ClaudeSkillDeployer(claude).Deploy();
+        var legacyDir = Path.Combine(claude, "skills", "flaui-mcp", "skills", "driving-flaui-mcp");
+        Directory.CreateDirectory(legacyDir);
+        File.WriteAllText(Path.Combine(legacyDir, "SKILL.md"), "---\nname: driving-flaui-mcp\n---\n");
 
         var active = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.Active);
         Assert.Contains("deployed as plugin (flaui-mcp@flaui-mcp-marketplace)", active);
 
         var notRegistered = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.NotRegistered);
         Assert.Contains("NOT deployed", notRegistered);
+    }
+
+    /// AGY-CAPSTONE round 3. The residue note used to key on `skills/driving-flaui-mcp/SKILL.md`, which
+    /// asks the wrong question: `ClaudeSkillDeployer.Remove()` deletes the root RECURSIVELY with no
+    /// ordering guarantee, so a partial failure can take SKILL.md and still leave
+    /// `.claude-plugin/plugin.json` — residue that keeps registering a plugin named `flaui-mcp` while the
+    /// note went SILENT because the one leaf it watched was gone.
+    ///
+    /// This is the shape that fixture writes: root present, plugin.json present, NO SKILL.md.
+    [Fact]
+    public void A_partially_deleted_legacy_dir_is_still_reported_even_without_its_SKILL_md()
+    {
+        var claude = Temp();
+        var legacyRoot = Path.Combine(claude, "skills", "flaui-mcp");
+        Directory.CreateDirectory(Path.Combine(legacyRoot, ".claude-plugin"));
+        File.WriteAllText(Path.Combine(legacyRoot, ".claude-plugin", "plugin.json"),
+            "{\n  \"name\": \"flaui-mcp\"\n}\n");
+        Assert.False(File.Exists(Path.Combine(legacyRoot, "skills", "driving-flaui-mcp", "SKILL.md")),
+            "fixture must NOT create SKILL.md - that is the whole point of this case");
+
+        var text = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.Active);
+
+        Assert.Contains("retired plugin manifest", text);
+        Assert.Contains(legacyRoot, text);
+    }
+
+    /// ⚠⚠ A REGRESSION GATE FOR A DEFECT INTRODUCED TWICE, TWO CAPSTONE ROUNDS APART.
+    ///
+    /// The residue note is appended to ALL FOUR branches of the status switch, including
+    /// `NotRegistered` — where no plugin is installed, so the leftover manifest would be the FIRST and
+    /// only plugin Claude loads, not a second one. The wording said "a SECOND copy", that was folded,
+    /// and two rounds later a rewrite said "a second flaui-mcp plugin" and reintroduced it.
+    ///
+    /// A comment did not prevent the second occurrence. This test does: any count word in that sentence
+    /// fails it, in the one branch where a count is provably wrong.
+    [Fact]
+    public void Status_never_claims_a_count_for_the_legacy_residue()
+    {
+        var claude = Temp();
+        var legacyRoot = Path.Combine(claude, "skills", "flaui-mcp");
+        Directory.CreateDirectory(Path.Combine(legacyRoot, ".claude-plugin"));
+        File.WriteAllText(Path.Combine(legacyRoot, ".claude-plugin", "plugin.json"), "{ \"name\": \"flaui-mcp\" }");
+
+        // NotRegistered is the branch that makes a count claim FALSE: nothing else is installed.
+        var text = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.NotRegistered);
+
+        // ⚠ SCOPED TO THE NOTE'S OWN LINE, not the whole report. Asserting over all of Describe(...)
+        // would fail spuriously the day someone adds "took 2 seconds" or "no additional configuration
+        // required" anywhere else in it — and MEASURED, a bare substring test does trip on "seconds".
+        // Word boundaries for the same reason.
+        var noteLine = text.Split('\n').Single(l => l.Contains("retired plugin manifest", StringComparison.Ordinal));
+
+        // ⚠ HONEST LIMIT: this is a BLACKLIST, not a semantic check. It cannot catch every way of
+        // implying a count - "a 2nd plugin", "a pair of plugins" and the like would slip through. It is
+        // sized to the recurrence that actually happened twice, and the comment above the string in
+        // InstallStatus.cs carries the reasoning. Do not mistake a green here for proof of neutrality.
+        foreach (var countWord in new[] { "second", "2nd", "duplicate", "another", "additional", "two", "pair", "extra" })
+            Assert.DoesNotMatch($@"(?i)\b{countWord}\b", noteLine);
+    }
+
+    /// The INVERSE half, and it is why the check keys on the manifest rather than on the directory.
+    /// A delete that removed every file but could not unlink the directory leaves an EMPTY dir, which
+    /// loads nothing at all. Warning about that is crying wolf, and a status command that cries wolf
+    /// trains operators to ignore the one message that matters.
+    ///
+    /// Together with the test above this pins BOTH directions: manifest present -> warn; nothing that
+    /// can load -> stay silent. Neither test alone would catch a regression to `Directory.Exists`.
+    [Fact]
+    public void An_empty_leftover_legacy_dir_is_not_reported_as_a_collision()
+    {
+        var claude = Temp();
+        var legacyRoot = Path.Combine(claude, "skills", "flaui-mcp");
+        Directory.CreateDirectory(legacyRoot);   // exists, but holds nothing Claude can load
+
+        var text = InstallStatus.Describe(@"C:\x.exe", Temp(), Temp(), claude, Temp(), ClaudePluginStatus.Active);
+
+        Assert.DoesNotContain("retired plugin manifest", text);
+        Assert.DoesNotContain(legacyRoot, text);
     }
 
     [Fact]

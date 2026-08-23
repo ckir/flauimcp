@@ -43,6 +43,67 @@ public class CliRouterPluginRegistrationTests : IDisposable
         try { Directory.Delete(_root, recursive: true); } catch { }
     }
 
+    /// AGY-CAPSTONE finding, round 1. `CliRouter` used to DISCARD the result of
+    /// `ClaudeSkillDeployer.Remove()`, so a FAILED legacy-skill cleanup was completely invisible.
+    ///
+    /// That is the one case where it matters: `ClaudeSkillDeployer`'s own doc records that Claude Code
+    /// AUTO-LOADS the legacy layout as `flaui-mcp@skills-dir` at user scope, so a surviving copy is a
+    /// SECOND active driving skill beside the plugin-shipped one — not inert residue. And unlike the agy
+    /// branch, where a locked plugin dir fails the very next `agy plugin install` and surfaces anyway,
+    /// nothing downstream of this call touches that path. The warning was the only signal in existence.
+    ///
+    /// `AgentResult.Warning`'s own contract states it: "a shortfall nobody reports is how a feature goes
+    /// missing without anyone noticing."
+    [Fact]
+    public void A_failed_legacy_skill_cleanup_is_reported_not_swallowed()
+    {
+        var exe = Path.Combine(_root, "flaui-mcp.exe");
+        File.WriteAllText(exe, "");
+        var legacyRoot = Path.Combine(_root, "claude", "skills", "flaui-mcp");
+        Directory.CreateDirectory(Path.Combine(legacyRoot, "skills", "driving-flaui-mcp"));
+        File.WriteAllText(Path.Combine(legacyRoot, "skills", "driving-flaui-mcp", "SKILL.md"),
+            "---\nname: driving-flaui-mcp\n---\n");
+        var sw = new StringWriter();
+
+        // Holding a file open inside the tree is what makes the recursive delete fail - the same
+        // technique ClaudeSkillDeployerTests.Remove_survives_an_undeletable_tree_and_says_so uses.
+        using (File.Create(Path.Combine(legacyRoot, "held-open.txt")))
+        {
+            CliRouter.Run(
+                new[] { "install", "--agent", "claude", "--config", Path.Combine(_root, "dummy.json") },
+                exe, sw);
+        }
+
+        Assert.Contains("left behind", sw.ToString(), StringComparison.Ordinal);
+    }
+
+    /// AGY-TEST-AUDIT gap 2. The UNINSTALL branch folds `remedy.Restore()`'s warning into its result the
+    /// same way install folds the legacy-cleanup one, and nothing asserted that it survives to the
+    /// operator. Simplifying that return to `return unreg;` would keep the build and the whole suite
+    /// green while a failed marketplace restore became invisible — leaving the user's OWN plugin disabled
+    /// with no message saying so, at the exact moment they have removed the tool that disabled it.
+    ///
+    /// Driven entirely through the existing env seams: a CORRUPT collision marker in the redirected state
+    /// dir makes `Restore()` return its "unreadable" warning. No production seam was needed, so the
+    /// AGY-CAPSTONE green over this range stands.
+    [Fact]
+    public void A_failed_marketplace_restore_is_reported_on_uninstall()
+    {
+        var exe = Path.Combine(_root, "flaui-mcp.exe");
+        File.WriteAllText(exe, "");
+        var stateDir = Path.Combine(_root, "state");
+        Directory.CreateDirectory(stateDir);
+        // A JSON ARRAY parses, but ReadState demands a JsonObject -> MarkerState.Corrupt, deterministically.
+        File.WriteAllText(Path.Combine(stateDir, "disabled-plugins.json"), "[]");
+        var sw = new StringWriter();
+
+        CliRouter.Run(
+            new[] { "uninstall", "--agent", "claude", "--config", Path.Combine(_root, "dummy.json") },
+            exe, sw);
+
+        Assert.Contains("unreadable", sw.ToString(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Install_generates_staging_artifacts_and_writes_no_agent_config_file()
     {
@@ -61,6 +122,14 @@ public class CliRouterPluginRegistrationTests : IDisposable
         Assert.True(File.Exists(Path.Combine(staging, ".mcp.json")));
         Assert.True(File.Exists(Path.Combine(staging, ".claude-plugin", "marketplace.json")));
         Assert.True(File.Exists(Path.Combine(staging, "skills", "driving-flaui-mcp", "SKILL.md")));
+
+        // Existence is not enough. This is the ONLY check that what the installer EMITS matches the
+        // source of truth. The shipped skill's frontmatter is agy's only activation channel (agy drops
+        // ServerInstructions - measured), so a truncated or empty extract silently removes it while
+        // SkillLoadLineTests, which reads the REPO copies, stays green.
+        Assert.Equal(
+            File.ReadAllText(RepoPaths.At(".claude", "skills", "driving-flaui-mcp", "SKILL.md")),
+            File.ReadAllText(Path.Combine(staging, "skills", "driving-flaui-mcp", "SKILL.md")));
 
         // NO hand-written AGY config: the rework registers agy/claude via their CLIs, not a config file.
         // The GENERIC writer is deliberately left unchanged (it has no CLI to register with — its written
