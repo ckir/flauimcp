@@ -78,9 +78,15 @@ public class ServerInstructionsWiringTests
     /// the current pattern fires and the `[^"]` variant does not, because the quoted server name sits
     /// between the anchor and the assignment. A negative gate that fails open ships the defect silently;
     /// this one fails LOUD, at build time, where it is diagnosed in seconds. Loud beats silent here.
+    /// ⚠ The right-hand side is `[\w.]*Text`, NOT `[\w.]*ActivationPayload\.Text`. Requiring the class
+    /// name made this gate FAIL OPEN, which is the one direction a negative gate must never fail:
+    /// `using static FlaUI.Mcp.Server.Install.ActivationPayload;` plus a bare
+    /// `ServerInstructions = Text;` is a real inline configuration that the qualified pattern did not
+    /// match at all. MEASURED both forms — the qualified pattern is silent on the using-static one, this
+    /// one catches both, and neither fires on the real shipped wiring. Do not re-add the class name.
     [Fact]
     public void Program_never_configures_instructions_inline()
         => Assert.DoesNotMatch(
-            @"AddMcpServer[\s\S]{0,300}?ServerInstructions\s*=\s*[\w.]*ActivationPayload\.Text",
+            @"AddMcpServer[\s\S]{0,300}?ServerInstructions\s*=\s*[\w.]*Text",
             ProgramSourceWithoutComments());
 }

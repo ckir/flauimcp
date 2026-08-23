@@ -77,6 +77,33 @@ public class CliRouterPluginRegistrationTests : IDisposable
         Assert.Contains("left behind", sw.ToString(), StringComparison.Ordinal);
     }
 
+    /// AGY-TEST-AUDIT gap 2. The UNINSTALL branch folds `remedy.Restore()`'s warning into its result the
+    /// same way install folds the legacy-cleanup one, and nothing asserted that it survives to the
+    /// operator. Simplifying that return to `return unreg;` would keep the build and the whole suite
+    /// green while a failed marketplace restore became invisible — leaving the user's OWN plugin disabled
+    /// with no message saying so, at the exact moment they have removed the tool that disabled it.
+    ///
+    /// Driven entirely through the existing env seams: a CORRUPT collision marker in the redirected state
+    /// dir makes `Restore()` return its "unreadable" warning. No production seam was needed, so the
+    /// AGY-CAPSTONE green over this range stands.
+    [Fact]
+    public void A_failed_marketplace_restore_is_reported_on_uninstall()
+    {
+        var exe = Path.Combine(_root, "flaui-mcp.exe");
+        File.WriteAllText(exe, "");
+        var stateDir = Path.Combine(_root, "state");
+        Directory.CreateDirectory(stateDir);
+        // A JSON ARRAY parses, but ReadState demands a JsonObject -> MarkerState.Corrupt, deterministically.
+        File.WriteAllText(Path.Combine(stateDir, "disabled-plugins.json"), "[]");
+        var sw = new StringWriter();
+
+        CliRouter.Run(
+            new[] { "uninstall", "--agent", "claude", "--config", Path.Combine(_root, "dummy.json") },
+            exe, sw);
+
+        Assert.Contains("unreadable", sw.ToString(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Install_generates_staging_artifacts_and_writes_no_agent_config_file()
     {

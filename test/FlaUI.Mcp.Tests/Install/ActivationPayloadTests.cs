@@ -107,6 +107,21 @@ public class ActivationPayloadTests
         Assert.DoesNotContain("ToolSearch", ActivationPayload.Core, StringComparison.Ordinal);
     }
 
+    /// A STRICT PARTITION, not a blacklist of two tokens.
+    ///
+    /// `Core_carries_the_behavioural_rules_and_no_client_specific_mechanism` names only "ToolSearch" and
+    /// "driving-flaui-mcp". That leaves the rest of the Addendum free to migrate into Core unnoticed:
+    /// move `"Load the tools (one call):"` or the fallback line up, and every existing assertion still
+    /// passes — `Text` is composed from both halves so the composition test cannot see it either — while
+    /// Claude-Code-only instructions start reaching every generic MCP client. That is precisely the leak
+    /// spec D1 exists to prevent, so it is asserted line by line rather than token by token.
+    [Fact]
+    public void Core_does_not_contain_any_Addendum_lines()
+    {
+        foreach (var line in ActivationPayload.Addendum.Split('\n'))
+            Assert.DoesNotContain(line, ActivationPayload.Core, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Addendum_carries_the_claude_code_load_block()
     {
