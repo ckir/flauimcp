@@ -22,8 +22,16 @@ and regenerated, so a stale non-changelog draft cannot be accepted unreviewed. S
 Do everything except the push: gate, changelog, version bump, commit and tag all happen, but
 'git push --atomic' is skipped. Use when the repository is deliberately held back from origin. The
 resulting local-commit-plus-local-tag is the SAME state a failed push leaves behind, which
-Get-ReleaseReconciliationState already recognises -- so a later run detects it and offers
-"[P]ush the existing commit+tag now". Stamping and publishing are separable; this is the switch.
+Get-ReleaseReconciliationState already recognises, so a later run detects it. Stamping and publishing
+are separable; this is the switch.
+
+What that later run offers depends on how you invoke it, and the two are not the same prompt:
+  - WITHOUT -NoPush: "[P]ush the existing commit+tag now" -- finishes the release.
+  - WITH -NoPush: "[T]ag the existing release commit locally (no push)" when the tag is missing, so a
+    commit-landed-but-tag-failed stamp is recoverable without breaking the freeze; and if the tag is
+    already there, it says so and exits.
+Detection only fires WHILE HEAD IS STILL THE RELEASE COMMIT: it keys on HEAD's own subject and on tags
+pointing at HEAD, so once you commit past the stamp you must push the tag by hand.
 
 .PARAMETER Version
 Pin the release to this exact X.Y.Z version instead of computing one.
@@ -87,7 +95,7 @@ FLOW
   5. You review: Accept / Regenerate / Edit / Abort.
   6. Confirm: "Cut release vX.Y.Z?" (skipped under -Yes).
   7. Commit chore(release), tag vX.Y.Z, 'git push --atomic origin master vX.Y.Z'
-     (-NoPush stops after the tag; re-run later to push the existing commit+tag).
+     (-NoPush stops after the tag; re-run while HEAD is still that commit to push it).
 
 FLAGS
   -Help, -H, -?     Print this usage and exit 0. No side effects.
@@ -95,8 +103,8 @@ FLAGS
   -Yes, -y          Unattended: auto-accept the draft and the final confirmation;
                     every other interactive gate hard-fails instead of blocking.
                     Resumes a previous run's draft only if it starts with '### '.
-  -NoPush           Commit and tag locally; skip the push. Re-run later to push
-                    the existing commit+tag.
+  -NoPush           Commit and tag locally; skip the push. Re-run WHILE HEAD IS
+                    STILL that commit to push it; after that, push the tag by hand.
   -Version X.Y.Z    Pin the release version (skips commit-driven computation).
   -Bump <level>     Force major/minor/patch from the last tag.
   -Model <name>     claude -p model for the changelog draft (default: haiku).

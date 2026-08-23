@@ -1031,17 +1031,27 @@ Describe '-NoPush contract' {
         $pushes.Count | Should -Be 2 -Because 'Invoke-ReleaseCommit and Resolve-HalfFinishedRelease each push; a new site must be added to this gate deliberately'
 
         foreach ($push in $pushes) {
+            # Find the enclosing if that mentions $NoPush...
             $node = $push
-            $guarded = $false
-            while ($node) {
-                if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
-                    foreach ($clause in $node.Clauses) {
-                        if ($clause.Item1.Extent.Text -match '\$NoPush') { $guarded = $true }
-                    }
-                }
+            $guard = $null
+            while ($node -and -not $guard) {
+                if ($node -is [System.Management.Automation.Language.IfStatementAst] -and
+                    $node.Clauses[0].Item1.Extent.Text -match '\$NoPush') { $guard = $node }
                 $node = $node.Parent
             }
-            $guarded | Should -BeTrue -Because "every 'git push --atomic' must be unreachable under -NoPush, including the one at line $($push.Extent.StartLineNumber)"
+            $guard | Should -Not -BeNullOrEmpty -Because "the 'git push --atomic' at line $($push.Extent.StartLineNumber) must be governed by a \$NoPush guard"
+
+            # ...and then pin its POLARITY and the push's SIDE of it. Matching only that the condition
+            # MENTIONS $NoPush was catastrophically weak, and an AGY-CAPSTONE round proved it with a
+            # mutation the suite SURVIVED: flipping `if ($NoPush)` to `if (-not $NoPush)` still matches the
+            # regex ('-not $NoPush' contains '$NoPush'), so the safety switch inverted into a PUSH BUTTON
+            # -- -NoPush would publish and a normal run would not -- with all 104 tests green. Measured on
+            # BOTH guards, not just the one that was reported.
+            $guard.Clauses[0].Item1.Extent.Text.Trim() | Should -Be '$NoPush' -Because 'a negated guard inverts the switch while still matching a mention-only assertion'
+            $guard.ElseClause | Should -Not -BeNullOrEmpty -Because 'the push must live in the else branch'
+            $inElse = ($push.Extent.StartOffset -ge $guard.ElseClause.Extent.StartOffset) -and
+                      ($push.Extent.EndOffset   -le $guard.ElseClause.Extent.EndOffset)
+            $inElse | Should -BeTrue -Because "the push at line $($push.Extent.StartLineNumber) must sit in the ELSE of if (\$NoPush), so -NoPush cannot reach it"
         }
     }
 
@@ -1095,8 +1105,26 @@ Describe '-NoPush contract' {
         # Neither may regress to HeadIsUnpushedRelease, which conflates "is a release commit" with "is not
         # yet on the remote": measured, a stamped-then-manually-pushed master leaves the subject matching
         # while that flag is false, so the message called a genuine release commit a hand-made tag.
-        $thenCond | Should -Not -Match 'HeadIsUnpushedRelease'
-        $elseCond | Should -Not -Match 'HeadIsUnpushedRelease'
+        # ...and the conflated flag must be absent from EVERY condition in both halves, not merely from
+        # the one condition we happened to find first. Otherwise a flawed `if ($Reconciliation.
+        # HeadIsUnpushedRelease)` inserted alongside the correct check runs unnoticed while this test
+        # passes by validating its surviving neighbour.
+        $allConds = {
+            param($block)
+            @($block.FindAll({
+                param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true)) |
+                ForEach-Object { $_.Clauses[0].Item1.Extent.Text }
+        }
+        foreach ($c in (& $allConds $noPushIf.Clauses[0].Item2)) {
+            $c | Should -Not -Match 'HeadIsUnpushedRelease'
+        }
+        foreach ($c in (& $allConds $noPushIf.ElseClause)) {
+            $c | Should -Not -Match 'HeadIsUnpushedRelease'
+        }
+
+        # The top-level guard's own polarity, pinned here too: this test walks into Clauses[0].Item2 as
+        # "the -NoPush half", which is only true while the condition is positive.
+        $noPushIf.Clauses[0].Item1.Extent.Text.Trim() | Should -Be '$NoPush'
     }
 
     It 'states the precondition on the -NoPush resume promise' {
