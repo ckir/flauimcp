@@ -978,7 +978,7 @@ same answer.
 **The general rule, which outlives this repo:** ask *"did the tests RUN?"* before *"did they pass?"* —
 check the file and test counts, not the failure count.
 
-### 29. A subagent gets the TOOLS and none of the ACTIVATION - fifty desktop tools with no framing and no prohibition
+### 29. A subagent gets all fifty tools and neither PAYLOAD channel - MEASURED 2026-08-23
 
 Filed 2026-08-23. Every activation channel this project built is scoped to a **session** or to a
 **client's own system prompt**, and a subagent is neither. So a subagent can hold the full `desktop_*`
@@ -1004,19 +1004,46 @@ state indirectly from process lists."* That line exists because agents reach for
 default. A subagent holding the tools without that line is not merely uninformed - it is the exact
 configuration the line was written to prevent, and it has the tools to act on it.
 
-**Evidence, split honestly:**
+**MEASURED 2026-08-23. The probe has been run and the gap is real, though not in the shape first filed.**
 
-- **VERIFIED (read at filing time):** the three channels above, their scopes, and the fact that no fourth
-  channel exists. `plugins/flaui-mcp/hooks/hooks.json` registers only a `Stop` hook; the SessionStart
-  entry is generated into the agent's own settings by the installer.
-- **OBSERVED EARLIER, NOT RE-MEASURED:** that a subagent in practice receives working `desktop_*` tools
-  while receiving neither channel 1 nor channel 2. This is the claim the item rests on and it is the one
-  to re-establish first. **Do not build against it until it is re-measured.**
+Three subagents were dispatched with a prompt that never contained the words *desktop*, *screen*, *GUI*,
+*window* or *flaui* - they were asked only to enumerate their own tools and quote any instruction that did
+not come from the task prompt. So every appearance of this project's vocabulary in their answers is an
+observation, not an echo of the question. The decisive run had the plugin-registered server demonstrably
+connected: it reported **135 deferred tools - 7 built-in, 53 `agentmemory`, 22 `claude-in-chrome`, 3
+`clavity-ls`, and all 50 `mcp__plugin_flaui-mcp_flaui-mcp__desktop_*`**.
 
-**The measurement that settles it, and it is cheap:** dispatch a subagent with no instructions about the
-desktop at all and ask it two questions - can it list the `desktop_*` tools, and can it quote any
-instruction about them. Tools-yes/framing-no confirms the gap; anything else refutes it and closes this
-item. Run it for a plain subagent and for a Task-tool subagent separately if those differ.
+| | reaches a subagent? |
+|---|---|
+| **1. `ServerInstructions`** (the payload, with the prohibition) | **NO** - firm negative, explicitly checked |
+| **2. SessionStart hook `additionalContext`** | **NO** - no hook output of any kind |
+| **3. the driving skill's `description:`** | **YES** - present in the skill listing, both bare and plugin-prefixed |
+| the 50 `desktop_*` tools | **YES** |
+
+So the original title was wrong: it is not *neither* channel. **The skill DESCRIPTION arrives; both
+PAYLOAD channels do not.** That distinction is the whole item, because the description is a discovery
+hint - *"use these tools rather than asking the user"* - while the payload is where the flat prohibition
+and the lease boundary live. A subagent gets the invitation and not the rules.
+
+The probe agent noticed the discrepancy unprompted, having received `MEMORY.md`, and wrote: *"that payload
+is not in my context."*
+
+**A second finding, not anticipated: the answer differs by agent type.** A `general-purpose` subagent
+receives `CLAUDE.md`, `cli-tooling.md` and `MEMORY.md` in full; an `Explore` subagent receives none of
+them. Both receive the skill listing, and neither receives either payload channel. So for a
+`general-purpose` agent some flaui framing does arrive - incidentally, through project memory that happens
+to discuss it - and for an `Explore` agent nothing does. Any fix that leans on CLAUDE.md or memory to
+carry the prohibition therefore covers one agent type and not the other, which is this repo's most
+familiar defect shape.
+
+**Two methodological warnings for whoever re-runs this**, both of which nearly produced a wrong answer:
+
+- **A single negative `ToolSearch` is not proof of disconnection.** The tools resolved to nothing, then
+  surfaced one call later. Two of the three probes launched inside that window and reported no flaui tools
+  at all - a result that looked like a finding and was an artifact.
+- **This project's `disabledMcpServers` disables the BARE `flaui-mcp` registration**, so only the
+  plugin-registered `mcp__plugin_flaui-mcp_flaui-mcp__*` names exist here. A probe searching for
+  `mcp__flaui-mcp__*` alone finds nothing and concludes the server is down.
 
 **Directions, none chosen - this is a fork, not a plan:**
 
@@ -1029,6 +1056,9 @@ item. Run it for a plain subagent and for a Task-tool subagent separately if tho
 - **Accept and document.** If subagents in practice never drive the desktop, the gap is theoretical. That
   is a legitimate answer, but it should be a recorded decision rather than the current situation, which is
   that nobody chose it.
+
+⚠ **Whichever is chosen, it must cover BOTH agent types.** The measurement above rules out any fix routed
+through `CLAUDE.md` or project memory on its own: an `Explore` subagent receives neither.
 
 **Related:** this is the same shape as item 23 - an activation channel and a tool surface that disagree
 about where they are - and the same shape the whole activation subproject exists to close. It sat in
