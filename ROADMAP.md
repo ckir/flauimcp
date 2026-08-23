@@ -880,3 +880,45 @@ written), rather than being ignored by both halves.
 Note the interaction with the drafter: if `[Unreleased]` were promoted, item 24 would matter far less for
 a repository that keeps its notes current — the body would already exist and the LLM call would be a
 top-up rather than the whole job.
+
+### 26. The changelog drafter is an AGENT WITH FILESYSTEM ACCESS, not a text completion
+
+MEASURED 2026-08-23 while designing a probe for something else entirely, and it reframes what
+`Get-ChangelogPrompt` is for.
+
+**The direct test.** `claude -p --safe-mode --model haiku`, the exact invocation `release.ps1` uses, was
+asked to read `ROADMAP.md` and echo its first line. It replied:
+
+    FILESYSTEM: # FlaUI.Mcp Roadmap
+
+**The accidental discovery that prompted it.** A probe fed the drafter a prompt whose commit list was
+4,000 synthetic subjects (`fix(ui): adjust button colour ... iteration N`), a 11-character diff and a
+one-line stat — 1,787 characters in total. The changelog it returned described **the real release-tooling
+work**, including the figures `~236,523` and `~17,666`. Verified: the strings `236,523`, `17,666`,
+`ValidateRange`, `surrogate` and `diff --stat` appear **nowhere in that prompt**. It read the repository.
+
+**What this means, and none of it is hypothetical:**
+
+- **The prompt is not the drafter's only input.** Every design decision in `Get-ChangelogPrompt` assumes
+  the model sees what we send it and nothing else. It does not.
+- **The output is not reproducible from the prompt.** Two runs against the same range can differ because
+  the WORKING TREE differed, not because the model did.
+- **The `UNTRUSTED DATA` framing is weaker than it reads.** The prompt carefully labels the commit list
+  and diff as untrusted and tells the model to take no instruction from them — while the model can open
+  those same files directly, outside that frame.
+- **`--safe-mode` does not close this.** It disables customizations (CLAUDE.md, hooks, skills, extensions,
+  MCP servers). It does not disable file tools; the probe above ran under it.
+
+**It also invalidates a comparison.** A qwen-versus-claude trial on the identical prompt showed claude
+producing an accurate draft and qwen fabricating one. That was not a like-for-like test of judgement: one
+of them was reading the repository. Re-run any model comparison with tool access equalised.
+
+**NOT A DEFECT WITH AN OBVIOUS FIX — it is a fork the operator should decide:**
+- **Lean in:** accept that the drafter is an agent, and prompt it to read the range itself. The prompt
+  budget work (ROADMAP 24) then matters much less, and the honest job of the prompt becomes instruction
+  and voice rather than evidence.
+- **Constrain:** run the draft with tools disabled, so the prompt genuinely is the whole input and the
+  output is reproducible. Establish first whether the CLI can do that — UNVERIFIED.
+
+⚠ UNVERIFIED, and it decides which branch is even available: whether `claude -p` exposes a flag that
+disables file tools while keeping the model. Establish that before choosing.

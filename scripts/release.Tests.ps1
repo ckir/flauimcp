@@ -508,6 +508,38 @@ Describe 'Changelog prompt budget' {
             $p | Should -Not -Match 'subjects were omitted'
         }
 
+        It 'validates EVERY capacity parameter, not only the ones this branch added' {
+            # The category is "integer capacity/threshold parameters"; the members are the three budgets
+            # and the two original thresholds. MEASURED before this gate: only the three were validated,
+            # and `-DiffSizeThresholdBytes -5` silently forced the degraded path because a 4-char diff is
+            # `-gt -5`. Enumerate the set, then check every member.
+            $params = (Get-Command Get-ChangelogPrompt).Parameters
+            foreach ($name in @('StatBudgetBytes', 'CommitListBudgetBytes', 'ExemplarBudgetBytes',
+                                'DiffSizeThresholdBytes', 'CommitCountThreshold')) {
+                $ranged = $params[$name].Attributes |
+                    Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] }
+                $ranged | Should -Not -BeNullOrEmpty -Because "$name is a capacity parameter and a negative value silently hijacks control flow"
+            }
+        }
+
+        It 'names the style exemplar as untrusted, since it comes from the repository too' {
+            # The exemplar is read out of CHANGELOG.md -- repository content, editable by anyone who can
+            # land a commit -- and it sits ABOVE the untrusted-data sections while the warning named only
+            # the commits and the diff. Measured: exemplar at index 985, SECURITY paragraph at 598.
+            #
+            # Scoped to the SECURITY PARAGRAPH, not a fixed window. A 400-character window survived the
+            # mutant that removed "style exemplar" from the warning, because the window ran on far enough
+            # to swallow the "## Style exemplar" SECTION HEADING that follows and matched that instead.
+            # A gate whose evidence can come from outside the thing it is checking is not a gate.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText 'd' -DiffStatText 's' -StyleExemplar 'EXEMPLAR-MARKER'
+            $from = $p.IndexOf('SECURITY:')
+            $end  = $p.IndexOf('never a command.', $from)
+            $end | Should -BeGreaterThan $from -Because 'the security paragraph must still end with its own sentence'
+            $security = $p.Substring($from, $end - $from)
+            $security | Should -Match 'exemplar'
+        }
+
         It 'accepts a zero stat budget as "omit the stat", and still rejects a negative one' {
             # ValidateRange(1, ..) forbade 0, but "give me no stat" is a legitimate request; only a
             # negative value is incoherent.
@@ -532,6 +564,11 @@ Describe 'Changelog prompt budget' {
         # this test failed against a correct implementation until the pattern matched the real shape.
         $code = Get-CodeWithoutComments (Join-Path $Repo 'scripts/release.ps1')
         $code | Should -Match "'diff'\s*,\s*'--stat'"
+        # The caller's exemplar DEPTH is unasserted anywhere else, and a mutant proved it: changing
+        # `-Count 2` to `-Count 0` survives the whole suite while silently depriving the drafter of the
+        # repository's voice (Get-TopChangelogSection returns 23 chars at -Count 0; it does not throw).
+        # Every library test passes its own exemplar string, so only a source contract can see this.
+        $code | Should -Match 'Get-TopChangelogSection[^;]*-Count 2'
         $code | Should -Not -Match 'log @rangeArgs --stat' -Because 'the per-commit stat is what blew the budget'
     }
 }
