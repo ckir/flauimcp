@@ -1053,6 +1053,22 @@ Describe '-NoPush contract' {
         $code | Should -Match 'Resolve-HalfFinishedRelease[^;]*?-NoPush:\s*\$NoPush'
     }
 
+    It 'does not recommend publishing a tag this script did not produce' {
+        # AGY-CAPSTONE round 2, measured in .clavity/scratch/release-nopush/: a hand-made vX.Y.Z tag on an
+        # ordinary commit yields HalfFinished=True with HeadReleaseVersion=<null>, so "the tag already
+        # exists" never implied this pipeline made it. Both the -NoPush message and the push prompt must
+        # consult HeadIsUnpushedRelease before treating HEAD as a release.
+        $fn = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $n.Name -eq 'Resolve-HalfFinishedRelease' }, $true)
+        $fn | Should -Not -BeNullOrEmpty
+
+        $checks = @($fn.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                      $n.Clauses.Item1.Extent.Text -match 'HeadIsUnpushedRelease' }, $true))
+        $checks.Count | Should -BeGreaterOrEqual 2 -Because 'both the -NoPush message and the push prompt must distinguish a real release commit from a hand-made tag'
+    }
+
     It 'states the precondition on the -NoPush resume promise' {
         # Get-ReleaseReconciliationState keys on HEAD's OWN subject and on tags POINTING AT HEAD, so the
         # "re-run and it will offer to push" promise silently stops being true the moment the operator

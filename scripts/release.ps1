@@ -450,7 +450,18 @@ function Resolve-HalfFinishedRelease {
     if ($NoPush) {
         Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release."
         if ($tagExistsLocally) {
-            Write-Host "-NoPush: commit and tag both already exist locally — nothing to complete without pushing. Re-run without -NoPush to publish."
+            # MEASURED: a HAND-MADE vX.Y.Z tag at HEAD sets HalfFinished on an ordinary commit -- the probe
+            # in .clavity/scratch/release-nopush/ tagged a plain 'fix:' commit and got HalfFinished=True with
+            # HeadReleaseVersion=<null>, because orphanTags alone is enough. So "already exists locally" does
+            # NOT mean this script produced it, and the earlier unconditional "re-run without -NoPush to
+            # publish" invited the operator to publish a commit that never saw the gate, the changelog or a
+            # version bump. Only recommend publishing what this pipeline actually stamped.
+            if ($Reconciliation.HeadIsUnpushedRelease) {
+                Write-Host "-NoPush: commit and tag both already exist locally — nothing to complete without pushing. Re-run without -NoPush to publish."
+            }
+            else {
+                Write-Host "-NoPush: $tag exists locally and points at HEAD, but HEAD is NOT a 'chore(release):' commit — this tag did not come from this script. Nothing to complete, and it should not be published as a release."
+            }
             exit 0
         }
         $ans = Read-Host "[T]ag the existing release commit locally (no push) / e[X]it and leave as-is?"
@@ -466,6 +477,13 @@ function Resolve-HalfFinishedRelease {
     }
     else {
         Write-Host "Half-finished prior release detected: HEAD looks like an unpushed '$tag' release (the commit and/or tag exist locally, but a previous 'git push --atomic' didn't land)."
+        # The same misclassification reaches THIS prompt, where the answer publishes. A local-only version
+        # tag is sufficient for HalfFinished, so HEAD may be an ordinary commit somebody tagged by hand.
+        # Warn rather than refuse: the operator may legitimately want to push a hand-made tag, but they
+        # should not learn only afterwards that this bypassed the gate, changelog and version bump.
+        if (-not $Reconciliation.HeadIsUnpushedRelease) {
+            Write-Warning "HEAD is NOT a 'chore(release):' commit — $tag looks hand-made rather than produced by this script. Pushing here publishes master and that tag WITHOUT the gate, changelog or version bump."
+        }
         $ans = Read-Host "[P]ush the existing commit+tag now / e[X]it and leave as-is?"
         $choice = if ([string]::IsNullOrWhiteSpace($ans)) { 'X' } else { $ans.Substring(0,1).ToUpperInvariant() }
         if ($choice -eq 'P') {
