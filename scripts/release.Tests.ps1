@@ -419,6 +419,43 @@ Describe 'Changelog prompt budget' {
             foreach ($line in $kept) { $original | Should -Contain $line }
         }
 
+        It 'says what the truncation MEANS, not merely that one happened' {
+            # Round 1 folded exactly this class for the stat -- assertions that pin a boundary and abandon
+            # the payload -- and the fix reproduced it one layer up. MEASURED: replacing the whole notice
+            # with the bare string "TRUNCATED to fit" SURVIVED all 117 tests, because the gates checked
+            # that a notice EXISTS and is POSITIONED correctly and never that it carries its two
+            # load-bearing claims. Those claims are the whole point: the totals can be trusted, the file
+            # list cannot be read as complete.
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 2000
+            $p | Should -Match 'totals are exact'
+            $p | Should -Match 'is a sample'
+        }
+
+        It 'rejects a non-positive budget at binding rather than crashing inside Substring' {
+            # `Should -Throw` ALONE is vacuous here and a mutant proved it: without the ValidateRange
+            # attribute the value still throws, just from inside Substring
+            # ("length ('-5') must be a non-negative value"), so removing the validation left the suite
+            # green. The distinction that matters is WHICH error -- a binding failure naming the parameter
+            # an operator can fix, versus a stack trace about string indexing. So assert the message.
+            { Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $script:RealStat -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes -5 } | Should -Throw -ExpectedMessage '*StatBudgetBytes*'
+        }
+
+        It 'does not leave a dangling surrogate when it hard-cuts' {
+            # The degenerate path: one enormous line with no breaks, so the backstop does a raw cut. Pad
+            # with an astral character so a cut can land mid-pair.
+            $emoji = [char]::ConvertFromUtf32(0x1F600)
+            $degenerate = ($emoji * 5000)
+            $p = Get-ChangelogPrompt -Version '0.17.0' -CommitMessages $script:Commits `
+                -DiffText $script:BigDiff -DiffStatText $degenerate -StyleExemplar $script:Exemplar `
+                -StatBudgetBytes 101
+            $statSection = $p.Substring($p.IndexOf('Diff stat (full patch'))
+            [char]::IsHighSurrogate($statSection[$statSection.TrimEnd().Length - 1]) | Should -BeFalse
+        }
+
         It 'puts the truncation notice OUTSIDE the untrusted data region' {
             # The notice is an instruction about the data. Appended to the git output it lands inside the
             # very section the prompt tells the model to treat as untrusted and to take no instruction from

@@ -323,7 +323,12 @@ function Get-ChangelogPrompt {
         [Parameter(Mandatory)][string]$StyleExemplar,
         [int]$DiffSizeThresholdBytes = 150000,
         [int]$CommitCountThreshold = 40,
-        [int]$StatBudgetBytes = 20000
+        # MEASURED: a negative value reached Substring and threw
+        # "length ('-5') must be a non-negative value" from inside the prompt builder -- a stack trace
+        # about string indexing for what is really a bad argument. ValidateRange rejects it at binding
+        # with a message naming the parameter. Not reachable from release.ps1, which never passes this;
+        # it is a contract on a public function that any future caller can get wrong.
+        [ValidateRange(1, [int]::MaxValue)][int]$StatBudgetBytes = 20000
     )
 
     $useStat = ($DiffText.Length -gt $DiffSizeThresholdBytes) -or ($CommitMessages.Count -gt $CommitCountThreshold)
@@ -379,7 +384,12 @@ function Get-ChangelogPrompt {
         # ignored the budget entirely -- 401,387 chars survived a 20,000 cap. The budget is the invariant;
         # the summary is only what gets priority INSIDE it.
         if ($statText.Length -gt $StatBudgetBytes) {
-            $statText = $statText.Substring(0, $StatBudgetBytes)
+            # .NET indexes by UTF-16 code unit, so a cut can land BETWEEN the halves of a surrogate pair
+            # (an emoji in a filename) and leave a dangling high surrogate, which is not valid text to
+            # hand to an API. Rare, and one character cheaper to avoid than to diagnose.
+            $cut = $StatBudgetBytes
+            if ($cut -gt 0 -and [char]::IsHighSurrogate($statText[$cut - 1])) { $cut-- }
+            $statText = $statText.Substring(0, $cut)
             $statNotice = "The diff stat below was TRUNCATED to fit and is INCOMPLETE — it was too large to " +
                 "include even in summary form, so treat it as a fragment and do not infer totals from it."
         }
