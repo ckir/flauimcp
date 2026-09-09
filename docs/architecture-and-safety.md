@@ -87,9 +87,9 @@ Auditing features ensure a supervising human can predict and verify agent action
 
 Native Windows apps expose an accessibility tree by default. Chromium and Electron apps keep their trees off by default for performance, exposing only a single opaque `Document` node to a snapshot.
 
-The `desktop_wake_accessibility` tool activates and holds the native UI Automation tree for that specific process.
+The `desktop_wake_accessibility` tool activates and holds the native UI Automation tree for that specific process. Waking hydrates the UI hierarchy, enabling standard snapshot and interaction tools.
 
-Hydration is triggered by the first UI Automation walk, not by the wake. The wake's job is to HOLD the tree open; once released, Chromium re-collapses it lazily. Measured on Chrome and VS Code: a wake before the first walk changed nothing about what the second walk saw. So expect the first snapshot after waking to still read as opaque, and walk again.
+Hydration is a RAMP, not a step: poll until the node count crosses a threshold rather than sleeping once. This is pinned by `DesktopWakeTests.Waking_hydrates_the_tree_while_held`, whose CONTROL proves an unwoken tree does not hydrate under the same polling.
 
 If an application exposes zero accessibility data (games, canvas apps) or keeps its document text body gated even when woken, the agent falls back to on-box OCR (`desktop_find_text`). OCR resolves visible text to click coordinates so the agent can act via coordinate-based input.
 

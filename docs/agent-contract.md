@@ -186,7 +186,7 @@ Event payload shape:
 
 ## Opaque-App Access
 
-1. **Chromium/Electron:** Return an empty `Document` node with `wakeable:true`. Call `desktop_wake_accessibility`, then snapshot **twice**. The first walk triggers hydration; the second reads it. A single snapshot after waking can still look opaque — that is expected, not a failed wake. The wake's job is to HOLD the tree open (Chromium re-collapses it lazily once released), not to hydrate it. Page DOM comes through as real elements: target it by `name`/`automationId` like any control, no OCR needed.
+1. **Chromium/Electron:** Return an empty `Document` node with `wakeable:true`. Call `desktop_wake_accessibility` to hydrate the tree, then snapshot. Hydration is a RAMP, not a step — poll `desktop_snapshot_stats` until the count crosses a threshold instead of sleeping once, or you sample mid-ramp and read it as a failed wake. The wake is HELD; once released Chromium re-collapses lazily. Page content, once loaded, is addressable by `name`/`automationId` — OCR is for surfaces that expose nothing, not for Chromium generally.
 2. **Zero-accessibility surfaces (games, Citrix, RDP):** Use `desktop_find_text` for on-box OCR targeting. OCR resolves visible text to click coordinates. Fuzzy match can trigger false positives in body text. OCR returns `OcrUnavailable` if no Windows OCR pack is installed.
 
 ## Known Tool Limitations

@@ -66,13 +66,25 @@ public class RetiredRuleAbsenceTests
     /// matches. Without this the check is defeated by ordinary re-wrapping.</summary>
     private static string Normalize(string s) => Regex.Replace(s, @"\s+", " ").Trim();
 
+    /// <summary>Reads ONLY the "## Retired" section, stopping at the next "## " heading.
+    ///
+    /// Section-scoped deliberately. An earlier version scanned the whole file for lines starting with `- "`,
+    /// which meant prose ANYWHERE in the ledger could re-arm a fragment: writing up a RE-VALIDATED phrase in
+    /// that shape put it straight back into enforcement, and the suite went red on a phrase that had just been
+    /// deliberately un-retired. Scoping to the section makes the file's own narrative sections inert.</summary>
     private static List<string> RetiredFragments()
     {
         var fragments = new List<string>();
+        var inSection = false;
         foreach (var line in Read(LedgerRel).Split('\n'))
         {
-            var trimmed = line.TrimStart();
-            if (!trimmed.StartsWith("- \"", StringComparison.Ordinal)) continue;
+            var trimmed = line.TrimStart().TrimEnd('\r');
+            if (trimmed.StartsWith("## ", StringComparison.Ordinal))
+            {
+                inSection = trimmed.StartsWith("## Retired", StringComparison.Ordinal);
+                continue;
+            }
+            if (!inSection || !trimmed.StartsWith("- \"", StringComparison.Ordinal)) continue;
             var open = trimmed.IndexOf('"');
             var close = trimmed.IndexOf('"', open + 1);
             if (close > open + 1) fragments.Add(Normalize(trimmed.Substring(open + 1, close - open - 1)));

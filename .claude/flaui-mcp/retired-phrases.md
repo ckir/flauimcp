@@ -39,5 +39,19 @@ Format: `- "<fragment>" · retired <YYYY-MM-DD> · <why it was wrong>`
 
 - "no items in UIA" · retired 2026-09-09 · Win11 context-menu items ARE in UIA; `includeOffscreen:true` reveals them and `desktop_find` returns all 16 at defaults
 - "returns off-screen rows WITHOUT scrolling" · retired 2026-09-09 · `get_grid_cell` indexes the REALIZED set, so an absolute row number silently returns the WRONG row; routed to fix-the-tool instead
-- "Hydration is a **RAMP" · retired 2026-09-09 · `wake_accessibility` does not hydrate at all - the FIRST UIA walk does (two-arm cold-provider test, 39->63 identically with and without a wake)
-- "500ms polling for 4s did NOT hydrate" · retired 2026-09-09 · same measurement: one walk triggers hydration, so polling demonstrably DOES hydrate an opaque tree
+
+## Re-validated — no longer retired, kept as the record
+
+⚠ Entries here must NOT start with `- "`. That is the parser's marker for an ACTIVE fragment, and writing
+a re-validated phrase in that shape puts it straight back into enforcement — which happened, and the guard
+caught it within one run.
+
+**2026-09-09 — two wake fragments were retired and RE-VALIDATED the same day.** They were the phrases
+`Hydration is a **RAMP` and `500ms polling for 4s did NOT hydrate`.
+`DesktopWakeTests.Waking_hydrates_the_tree_while_held` passed at the PHYSICAL CONSOLE: its CONTROL (no wake,
+500ms polling, 4s) held, and its post-wake assertion held. The hand run that retired them was not controlled
+— its Chrome delta was 24, under the test's 50 threshold and probably page load, and its VS Code reading
+followed an uncontrolled `window_transform restore`. Both claims are correct and are back in GROWTH.
+
+**A retirement is only as good as the measurement behind it.** This ledger must not become a place where a
+bad measurement is preserved as fact.

@@ -347,12 +347,17 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   SUCCEEDS on a minimized window (`IsForeground:true`, ZOrder 0, bounds still `{-32000,...}`), and that window
   snapshots as **7** nodes - root `@{0,0,0,0}` plus TitleBar/System/Restore/Maximize/Close - with ZERO content
   (147 once restored). Gate readiness on BOUNDS or expected CONTENT, never on `foregroundGained` or `nodeCount>1`.
-- **`wake_accessibility` does NOT hydrate - the FIRST UIA WALK does.** Two-arm test on COLD providers: with NO
-  wake, walk1=39 -> walk2=63 (the full page DOM); with a wake FIRST, the SAME 39 -> 63. A cold VS Code went
-  14 -> 194 the same way, no wake. Walk once to TRIGGER, again to READ, and judge a wake by ADDRESSABILITY, not
-  by a second node count. The DOM is targetable (`desktop_find` hit a button by its literal HTML id) - so do NOT
-  reach for `find_text`/OCR for Chromium page content. *(measured 2026-09-09)*
-  ⚠ `alreadyAwake` is SERVER bookkeeping (does THIS server hold a wake?), never a hydration probe - it returned false on an already fully-hydrated 199-node window.
+- **`wake_accessibility` DOES hydrate an opaque Chromium/Electron tree, and hydration is a RAMP, not a step.**
+  Pinned by `DesktopWakeTests.Waking_hydrates_the_tree_while_held`, which holds a CONTROL: polled at 500ms for
+  4s with NO wake the tree does NOT cross baseline+50; after the wake it does. Poll `snapshot_stats` until it
+  crosses a threshold rather than sleeping once - a fixed delay samples mid-ramp and reads as "the wake did
+  nothing". Judge it by an ADDITIVE delta from this run's own baseline, never an absolute count or a multiple.
+  ⚠ A hand run on 2026-09-09 concluded the opposite and was WRONG: its Chrome delta (39->63 = 24) sat under
+  the threshold and was likely just page load, and its VS Code reading followed a `window_transform restore`
+  that was never controlled for. Page content is separate: a loaded page's DOM is addressable by
+  `name`/`automationId` once present, so do not reach for OCR merely because a page is Chromium.
+  ⚠ `alreadyAwake` is SERVER bookkeeping (does THIS server hold a wake?), never a hydration probe - it
+  returned false on an already fully-hydrated 199-node window.
 - **A watch's FIRST `drain_events` proves nothing; heavy coalescing is INVISIBLE in `droppedCount`.**
   Measured: `snapshot_stats` showed 1402 -> 134 while the first drain gave `count:0, droppedCount:0`; a later
   drain gave ONE event, `coalescedCount 3603`, naming the ROOT not the changed subtree. Poll drain more than
