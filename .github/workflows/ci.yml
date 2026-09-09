@@ -10,7 +10,7 @@ jobs:
     name: Unit (non-Desktop)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "10.0.x"
@@ -35,7 +35,7 @@ jobs:
   scaffolder-smoke:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
@@ -50,7 +50,7 @@ jobs:
     name: Pester (scripts/)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Run Pester tests
         shell: pwsh
         run: |
