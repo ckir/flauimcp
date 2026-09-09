@@ -1,0 +1,23 @@
+version: 2
+
+# GitHub Actions ONLY, deliberately.
+#
+# NuGet is not listed: this repo pins its dependencies on purpose (Pester is pinned to an exact version and
+# guarded by scripts/pester-pin.Tests.ps1, which fails if the justfile drifts from what CI installs). A bot
+# opening version-bump PRs against a deliberate pin fights the guard rather than helping.
+#
+# Actions, by contrast, rot silently and visibly cost something: checkout@v4 -> v5 and setup-dotnet@v4 -> v5
+# took this repo's Node-20 deprecation annotations from 5 to 0, and nothing surfaced that until someone
+# happened to read a run log.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      # Conventional prefix on purpose: scripts/release.ps1 computes the next version from commit subjects,
+      # and a non-conventional subject is silently ignored for version math.
+      prefix: chore
+    labels:
+      - dependencies

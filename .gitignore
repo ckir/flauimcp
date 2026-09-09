@@ -47,3 +47,6 @@ publish/
 
 # Pester -CI writes this; the cockpit gates use Run.Exit instead and write nothing.
 testResults.xml
+
+# Dated reports from `just desktop` (scripts/desktop-suite.ps1)
+artifacts/desktop-runs/

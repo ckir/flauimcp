@@ -18,6 +18,11 @@ from a previous run is resumed only if it still starts with a '### ' heading -- 
 and regenerated, so a stale non-changelog draft cannot be accepted unreviewed. See the plan's
 "Unattended (-Yes) contract" table.
 
+.PARAMETER PublishUnreviewed
+Opt out of the safety rule that -Yes implies -NoPush. Without this, -Yes stamps the release locally and stops,
+so a human reads the LLM-drafted CHANGELOG before it is published. Pass this only when you have already read
+the draft, or when you accept an unreviewed changelog reaching users.
+
 .PARAMETER NoPush
 Do everything except the push: gate, changelog, version bump, commit and tag all happen, but
 'git push --atomic' is skipped. Use when the repository is deliberately held back from origin. The
@@ -55,6 +60,7 @@ param(
     [switch]$WhatIf,
     [Alias('y')][switch]$Yes,
     [switch]$NoPush,
+    [switch]$PublishUnreviewed,
     [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [ValidateSet('major','minor','patch')][string]$Bump,
     [string]$Model = 'haiku',
@@ -103,6 +109,11 @@ FLAGS
   -Yes, -y          Unattended: auto-accept the draft and the final confirmation;
                     every other interactive gate hard-fails instead of blocking.
                     Resumes a previous run's draft only if it starts with '### '.
+                    IMPLIES -NoPush: the changelog is LLM-drafted and has invented
+                    facts twice, so it stamps locally and stops for you to read it.
+  -PublishUnreviewed  Opt out of that rule and let -Yes push. Deliberately verbose
+                    to type: an unreviewed changelog reaching users is the path you
+                    should have to ask for.
   -NoPush           Commit and tag locally; skip the push. Re-run WHILE HEAD IS
                     STILL that commit to push it; after that, push the tag by hand.
   -Version X.Y.Z    Pin the release version (skips commit-driven computation).
@@ -580,6 +591,21 @@ function Invoke-ReleaseCommit {
 if ($Help) { Show-Usage; exit 0 }
 
 try {
+    # -Yes auto-accepts the changelog draft, and that draft is written by an LLM that has FABRICATED twice
+    # here: a changelog describing work that never happened (ROADMAP 26), and on 2026-09-09 an entry
+    # asserting a defect in the PREVIOUS RELEASE that had only ever existed in unpushed commits. A structural
+    # extractor cannot detect an invented fact - only a reader can. So -Yes stamps but does not publish;
+    # review the CHANGELOG, then re-run to push. -PublishUnreviewed opts out, and is deliberately verbose to
+    # type, because the unreviewed path should be the one you have to ask for.
+    if ($Yes -and -not $NoPush -and -not $PublishUnreviewed -and -not $WhatIf) {
+        Write-Host ''
+        Write-Host '-Yes implies -NoPush: the release will be stamped locally, NOT pushed.' -ForegroundColor Yellow
+        Write-Host 'Read the CHANGELOG entry, then re-run scripts/release.ps1 to publish it.' -ForegroundColor Yellow
+        Write-Host 'To skip that review deliberately, pass -PublishUnreviewed.' -ForegroundColor Yellow
+        Write-Host ''
+        $NoPush = $true
+    }
+
     Assert-Preconditions -RepoRoot $RepoRoot
 
     $recon = Get-ReleaseReconciliationState -RepoRoot $RepoRoot

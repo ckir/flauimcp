@@ -54,6 +54,17 @@ pester:
 # Build, headless tests, and the PowerShell suite. The cockpit's [G] Dev gate.
 gate: build test pester
 
+# Needs an interactive session; it is not a CI job and never will be. The script header carries the
+# scheduled-task registration one-liner.
+#
+# Run the LEASE-EXEMPT half of the Desktop (UIA) suite; dated report under artifacts/desktop-runs.
+desktop:
+    pwsh -File scripts/desktop-suite.ps1
+
+# Install the git hooks (commit-msg subject check, pre-push headless gate). Once per clone.
+hooks:
+    lefthook install
+
 # End-to-end install/uninstall smoke.
 smoke:
     pwsh -File scripts/install-smoke.ps1

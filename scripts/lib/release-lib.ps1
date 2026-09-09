@@ -617,6 +617,42 @@ function Get-ChangelogBodyFromLlmOutput {
     $null
 }
 
+function Get-RepoBuildLockHolder {
+    <#
+    .SYNOPSIS
+    Processes holding this repo's build output open, which make a Release build fail MSB3027.
+
+    .DESCRIPTION
+    A running flaui-mcp.exe launched FROM THIS REPO keeps src/**/bin/**/*.dll open, so `dotnet build -c
+    Release` cannot overwrite it. That failure is loud but unhelpful: ten MSB3026 retry warnings and two
+    errors, and - worse - the half-written output then produces a MISLEADING test failure on the next run,
+    because the staged plugin artifact is stale rather than wrong. Both happened on 2026-09-09.
+
+    Matching is by PATH UNDER THE REPO ROOT, never by process name alone. The installed copy under
+    %LOCALAPPDATA%\Programs holds its OWN files and is harmless - killing it is collateral damage, and
+    naming it here would train exactly that.
+
+    ProcessQuery is injectable so this is unit-testable without launching anything.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [scriptblock]$ProcessQuery = { Get-Process -Name 'flaui-mcp' -ErrorAction SilentlyContinue }
+    )
+
+    $root = try { (Resolve-Path -LiteralPath $RepoRoot -ErrorAction Stop).Path } catch { $RepoRoot }
+    # No literal separators here on purpose: a backslash in this file has been eaten in transit before.
+    $root = $root.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $prefix = $root + [IO.Path]::DirectorySeparatorChar
+
+    @(& $ProcessQuery) | Where-Object {
+        # .Path throws for processes the caller cannot open; treat those as 'not ours' rather than failing
+        # the whole gate on an unrelated protected process.
+        $path = $null
+        try { $path = $_.Path } catch { $path = $null }
+        $path -and $path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+}
 function Invoke-Gate {
     [CmdletBinding()]
     param(
@@ -641,10 +677,29 @@ function Invoke-Gate {
             $global:LASTEXITCODE = $LASTEXITCODE
             'plugin snapshot regenerated and diffed against the working tree'
         },
-        [switch]$SkipPluginDrift
+        [switch]$SkipPluginDrift,
+        [scriptblock]$BuildLockQuery = { Get-Process -Name 'flaui-mcp' -ErrorAction SilentlyContinue }
     )
 
     $checks = @()
+
+    # FIRST, and it short-circuits: a locked build output makes every later check meaningless. The build
+    # fails on a file copy, and the test run then measures a STALE artifact - which reads as a real defect.
+    $holders = @(Get-RepoBuildLockHolder -RepoRoot $RepoRoot -ProcessQuery $BuildLockQuery)
+    if ($holders.Count -gt 0) {
+        $lines = $holders | ForEach-Object { "  PID $($_.Id)  $($_.Path)" }
+        $kill = ($holders | ForEach-Object { "taskkill /F /PID $($_.Id)" }) -join '; '
+        $detail = @(
+            "$($holders.Count) process(es) launched from this repo hold its build output open, so a Release",
+            'build would fail MSB3027 and any test run after it would measure a STALE artifact:',
+            ($lines -join [Environment]::NewLine),
+            "Close them, then re-run:  $kill",
+            'If one is your editor/agent MCP server, expect to reconnect it afterwards.'
+        ) -join [Environment]::NewLine
+        $checks += [pscustomobject]@{ Name = 'BuildLock'; Passed = $false; Detail = $detail }
+        return [pscustomobject]@{ Passed = $false; Checks = $checks }
+    }
+    $checks += [pscustomobject]@{ Name = 'BuildLock'; Passed = $true; Detail = 'no repo-launched process holds the build output' }
 
     $buildOutput = & $BuildCheck $RepoRoot | Out-String
     $warnMatch = [regex]::Match($buildOutput, '(?m)^\s*(\d+)\s+Warning\(s\)\s*$')

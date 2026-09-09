@@ -1598,3 +1598,82 @@ Describe '-NoPush contract' {
         $branch | Should -Not -BeNullOrEmpty -Because 'the confirmation wording must branch on $NoPush'
     }
 }
+
+Describe 'Get-RepoBuildLockHolder' {
+    BeforeEach {
+        $script:Repo = Join-Path ([IO.Path]::GetTempPath()) ('lockbox_' + [guid]::NewGuid())
+        New-Item -ItemType Directory -Force -Path $Repo | Out-Null
+    }
+    AfterEach { if (Test-Path $script:Repo) { Remove-Item -Recurse -Force $script:Repo } }
+
+    It 'flags a process launched from inside the repo' {
+        $inside = [pscustomobject]@{ Id = 4242; Path = (Join-Path $Repo 'src/FlaUI.Mcp.Server/bin/Release/flaui-mcp.exe') }
+        $held = @(Get-RepoBuildLockHolder -RepoRoot $Repo -ProcessQuery { $inside })
+        $held.Count | Should -Be 1
+        $held[0].Id | Should -Be 4242
+    }
+
+    It 'does NOT flag the INSTALLED copy outside the repo' {
+        # The discriminating case. Matching on process NAME alone flags this too, and killing it is
+        # collateral damage on a process holding none of the repo's files.
+        $installed = [pscustomobject]@{ Id = 777; Path = 'C:\Users\someone\AppData\Local\Programs\FlaUI.Mcp\flaui-mcp.exe' }
+        @(Get-RepoBuildLockHolder -RepoRoot $Repo -ProcessQuery { $installed }) | Should -BeNullOrEmpty
+    }
+
+    It 'does not flag a sibling dir that merely shares the repo path as a prefix' {
+        # Guards the naive StartsWith($root): 'C:\repo' is a prefix of 'C:\repo-backup'.
+        $sibling = [pscustomobject]@{ Id = 9; Path = (Join-Path ($Repo + '-backup') 'bin/flaui-mcp.exe') }
+        @(Get-RepoBuildLockHolder -RepoRoot $Repo -ProcessQuery { $sibling }) | Should -BeNullOrEmpty
+    }
+
+    It 'tolerates a process whose Path throws instead of failing the whole gate' {
+        $protected = New-Object psobject
+        $protected | Add-Member -MemberType NoteProperty   -Name Id   -Value 1
+        $protected | Add-Member -MemberType ScriptProperty -Name Path -Value { throw 'access denied' }
+        { Get-RepoBuildLockHolder -RepoRoot $Repo -ProcessQuery { $protected } } | Should -Not -Throw
+        @(Get-RepoBuildLockHolder -RepoRoot $Repo -ProcessQuery { $protected }) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-Gate build-lock preflight' {
+    BeforeEach {
+        $script:GateBox = Join-Path ([IO.Path]::GetTempPath()) ('gatelock_' + [guid]::NewGuid())
+        New-Item -ItemType Directory -Force -Path (Join-Path $GateBox 'src/FlaUI.Mcp.Server') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $GateBox 'installer') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $GateBox 'plugins/flaui-mcp/.claude-plugin') | Out-Null
+        '<Project><PropertyGroup><Version>0.1.0</Version></PropertyGroup></Project>' | Set-Content (Join-Path $GateBox 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj')
+        '#define AppVersion "0.1.0"' | Set-Content (Join-Path $GateBox 'installer/flaui-mcp.iss')
+        '{"version": "0.1.0"}' | Set-Content (Join-Path $GateBox 'plugins/flaui-mcp/.claude-plugin/plugin.json')
+        $script:Ok = { param($Root) $global:LASTEXITCODE = 0; 'ok' }
+        $script:NoHolders = { @() }
+    }
+    AfterEach { if (Test-Path $script:GateBox) { Remove-Item -Recurse -Force $script:GateBox } }
+
+    It 'passes BuildLock and still runs the other checks when nothing holds the output' {
+        $r = Invoke-Gate -RepoRoot $GateBox -BuildCheck $Ok -TestCheck $Ok -PluginDriftCheck $Ok -BuildLockQuery $NoHolders
+        ($r.Checks | Where-Object Name -eq 'BuildLock').Passed | Should -BeTrue
+        ($r.Checks | Where-Object Name -eq 'Build').Passed     | Should -BeTrue
+        $r.Passed | Should -BeTrue
+    }
+
+    It 'fails fast and does NOT run the build when the output is locked' {
+        # Failing FAST is the point. Building anyway yields an MSB3027 wall, and the test run after it then
+        # measures a STALE artifact - which reads as a genuine defect. Both happened for real on 2026-09-09.
+        $held = [pscustomobject]@{ Id = 15940; Path = (Join-Path $GateBox 'src/FlaUI.Mcp.Server/bin/Release/flaui-mcp.exe') }
+        $script:BuildRan = $false
+        $spy = { param($Root) $script:BuildRan = $true; $global:LASTEXITCODE = 0; 'ok' }
+        $r = Invoke-Gate -RepoRoot $GateBox -BuildCheck $spy -TestCheck $Ok -PluginDriftCheck $Ok -BuildLockQuery { $held }
+        $r.Passed | Should -BeFalse
+        ($r.Checks | Where-Object Name -eq 'BuildLock').Passed | Should -BeFalse
+        $script:BuildRan | Should -BeFalse
+        ($r.Checks | Where-Object Name -eq 'Build') | Should -BeNullOrEmpty
+    }
+
+    It 'names the offending PID and the exact command that clears it' {
+        $held = [pscustomobject]@{ Id = 15940; Path = (Join-Path $GateBox 'src/FlaUI.Mcp.Server/bin/Release/flaui-mcp.exe') }
+        $r = Invoke-Gate -RepoRoot $GateBox -BuildCheck $Ok -TestCheck $Ok -PluginDriftCheck $Ok -BuildLockQuery { $held }
+        $detail = ($r.Checks | Where-Object Name -eq 'BuildLock').Detail
+        $detail | Should -Match '15940'
+        $detail | Should -Match 'taskkill /F /PID 15940'
+    }
+}

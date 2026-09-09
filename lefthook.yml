@@ -1,0 +1,28 @@
+# lefthook — git hooks for this repo. Single Go binary, no Node toolchain (this is a .NET + PowerShell repo,
+# so commitlint/husky would drag in an ecosystem nothing else here needs).
+#
+# INSTALL (per clone, once):   lefthook install
+# SKIP once:                   LEFTHOOK=0 git commit ...
+# UNINSTALL:                   lefthook uninstall
+#
+# Deliberately small. A hook that runs the full gate on every commit gets bypassed within a day, and a
+# bypassed hook is worse than none because it still looks like protection.
+
+commit-msg:
+  commands:
+    conventional-subject:
+      # release.ps1 computes the next version from commit subjects, so a malformed one silently votes
+      # nothing. Merge/revert/fixup subjects are accepted — see scripts/check-commit-msg.ps1 for why.
+      run: pwsh -NoProfile -File scripts/check-commit-msg.ps1 -Path {1}
+
+pre-push:
+  parallel: false
+  commands:
+    headless-gate:
+      # The fast gate only: build + the non-Desktop suite. NOT the Desktop/SyntheticInput suites, which need
+      # an interactive session and a human-granted input lease, and NOT the Pester suite, which adds ~30s.
+      #
+      # Debug on purpose. A Release build fails MSB3027 whenever a flaui-mcp.exe launched from this repo is
+      # running — which, while developing this server, is most of the time. Making the common case fail is
+      # how a hook earns a --no-verify habit.
+      run: dotnet build FlaUI.Mcp.slnx -c Debug && dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"
