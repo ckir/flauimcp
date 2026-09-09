@@ -415,4 +415,13 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   so "flaky, re-run it" is the wrong read too. Correlate on HUMAN-INPUT RECENCY, not on the lease (the lease stayed
   active throughout the failures — a red herring); prove the display and capture path with a `desktop_screenshot`
   of any window first, then re-run after real console input. *(live 2026-08-17)*
+- **`desktop_launch_app` on Win11 Notepad does NOT hand you a blank editor - SESSION RESTORE reopens the user's
+  UNSAVED tabs.** Measured: a freshly launched notepad.exe (process StartTime 2 min old, and only ONE instance
+  existed) came up holding 9 tabs, 8 flagged modified with real work. A step that assumes launch==blank and ends
+  in `desktop_close_window` force-closes that work AND reads as a successful tidy-up. Make your own tab, work
+  there, close only it (`Ctrl+W`). Check StartTime before believing "it attached to a running instance".
+- **In a virtualized list, refs are reissued on EVERY re-read - not merely after a scroll.** The same item
+  (stable `automationId "0"`) went e30 -> e177 -> e196 -> e217 -> e222 -> e227 across successive finds. Never
+  cache a ref across any re-read: re-find immediately before acting, or target by selector/automationId, which
+  resolves fresh at call time. *(2026-09-09)*
 <!-- AUTOTRAIN:GROWTH:END -->

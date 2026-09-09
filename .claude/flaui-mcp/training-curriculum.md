@@ -50,6 +50,14 @@ execute its `steps` with the live MCP server, and capture what you observe.
   target_app: terminal
   framework: Terminal
   trap_class: terminal-tab-title-not-a-filter
+  precondition: |
+    MEASURED 2026-09-09 - the trap is SHELL-DEPENDENT. cmd.exe REWRITES its tab title to name each
+    child (`cmd.exe - python  -i`), so a cmd-titled tab hides NOTHING; powershell/pwsh does not, so
+    only those conceal a running program (a Python REPL sat behind a `powershell.exe` tab). If no
+    such tab exists on the desktop, this task is UNEXERCISED, not passed - report it that way.
+    To build one deliberately you must TYPE the program into a plain powershell tab (lease with
+    --allow-shells); launching via `wt ... <prog>` does NOT work - WT titles the tab from the
+    command line it was given, and an explicit --title does not override it.
   steps: |
     1. desktop_list_windows includeHandles:true — find the WindowsTerminal window (Hint flags it).
     2. desktop_user_state — presence check; read_terminal_tab is Destructive, don't flip a present
@@ -58,8 +66,9 @@ execute its `steps` with the live MCP server, and capture what you observe.
     4. For each candidate whose title does NOT uniquely identify its program, desktop_read_terminal_tab
        {window, tabIndex, fromEnd:true} and read the buffer tail to identify the actual CLI app.
   observe: |
-    App-Framework=WindowsTerminal. Trigger=a tab whose title is the launcher (PowerShell/cmd), not the
-    running app (agy, nano, a REPL). Failure-Mode=title-based filtering misidentifies the tab.
+    App-Framework=WindowsTerminal. Trigger=a tab whose title is the launcher (powershell/pwsh - NOT
+    cmd, which renames itself), not the running app (agy, nano, a REPL). Failure-Mode=title-based
+    filtering misidentifies the tab.
     Recovery=read_terminal_tab the buffer to confirm; or NONE if the buffer read itself fails/garbles.
 - id: opaque-chromium-wake
   tier: lease-exempt
@@ -102,6 +111,15 @@ execute its `steps` with the live MCP server, and capture what you observe.
   target_app: settings
   framework: WinUI
   trap_class: dynamic-loading
+  precondition: |
+    MEASURED 2026-09-09 - launch-then-snapshot LOSES THE RACE: a page opened and then snapshotted
+    was already fully populated (1402 nodes, 177 ListItems). What works is subscribing
+    desktop_watch FIRST and then re-navigating the SAME window (Settings reuses its window, so a
+    second `ms-settings:<page>` re-navigates it) - that caught it at 134 nodes mid-repopulate.
+    The tier below is CORRECT and was re-confirmed: ms-settings: URI + watch + snapshot needs NO
+    lease. But note that navigation CHURN is not the placeholder/disabled ghost UI this task
+    describes; seeing TRUE ghost elements likely needs a click that starts a fetch, which is
+    INPUT-tier. If you only see churn, report the trap UNEXERCISED.
   steps: |
     1. Attach to an already-open Windows Settings on a slow-populating page (e.g. Bluetooth & devices,
        Windows Update) via desktop_open_window (by title/pid — it attaches read-only, it does NOT launch;
