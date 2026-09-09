@@ -50,6 +50,8 @@ and turns the headless gate RED — with a failure that names drift, not your pr
 obvious from the message. Make the same edit in both, then `diff` them before you finish.
 
 Write **only** between the `<!-- AUTOTRAIN:GROWTH:START -->` … `<!-- AUTOTRAIN:GROWTH:END -->` markers.
+
+⚠ **RETIRING a rule? Append its fragment to `.claude/flaui-mcp/retired-phrases.md` in the SAME commit.** `RetiredRuleAbsenceTests` then asserts it never reappears in either twin. This is not bookkeeping: on 2026-09-09 a retired rule came back — a regeneration skipped the retired bullet but appended its CONTINUATION lines to the last graduated entry, which was later reinstated wholesale — and it sat in the shipped skill contradicting its own replacement while every gate stayed green, because the twin test proves the copies MATCH, never what they SAY. Pick a fragment the REPLACEMENT rule cannot contain, and after any bulk regenerate, grep the region for what you retired: absence is the assertion.
 Everything outside them is the hand-authored floor — **never touch it**. Regenerate the region wholesale from
 **(current GROWTH content) + (this run's promotions) − (retired/contradicted)** — never rebuild from the inbox
 alone (that would delete prior wisdom). Do not duplicate a rule already stated in the hand-authored floor.
