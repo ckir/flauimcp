@@ -178,13 +178,15 @@ Event payload shape:
 ```json
 { "subscriptionId": "s1", "event": "...", "window": "w1", "ref": "e123", "coalescedCount": 1, "timestampUtc": "..." }
 ```
-- `structure_changed` bursts are coalesced. If a list shows `droppedCount > 0`, the buffer overflowed under load; re-snapshot to sync.
+- `structure_changed` bursts coalesce into ONE event carrying `coalescedCount`. Coalescing is **not** loss — the aggregate keeps the freshest meta. But it reports the common ancestor: a large burst names the ROOT window, not the subtree that changed. Scope the watch if you need WHERE.
+- `droppedCount` counts **evictions only** (capacity or buffer), never coalescing. It stays `0` through a heavy burst — measured 3603 coalesced with `droppedCount: 0`. So `droppedCount > 0` means state was genuinely lost; re-snapshot to sync.
+- An empty first `drain_events` is not evidence nothing happened — `structure_changed` is debounced, so poll again and cross-check with a snapshot.
 - Event refs are ephemeral. Re-snapshot for a durable ref.
 - Subscriptions auto-evict when the window closes.
 
 ## Opaque-App Access
 
-1. **Chromium/Electron:** Return an empty `Document` node with `wakeable:true`. Call `desktop_wake_accessibility` to hydrate the tree, then snapshot as usual.
+1. **Chromium/Electron:** Return an empty `Document` node with `wakeable:true`. Call `desktop_wake_accessibility`, then snapshot **twice**. The first walk triggers hydration; the second reads it. A single snapshot after waking can still look opaque — that is expected, not a failed wake. The wake's job is to HOLD the tree open (Chromium re-collapses it lazily once released), not to hydrate it. Page DOM comes through as real elements: target it by `name`/`automationId` like any control, no OCR needed.
 2. **Zero-accessibility surfaces (games, Citrix, RDP):** Use `desktop_find_text` for on-box OCR targeting. OCR resolves visible text to click coordinates. Fuzzy match can trigger false positives in body text. OCR returns `OcrUnavailable` if no Windows OCR pack is installed.
 
 ## Known Tool Limitations
