@@ -42,6 +42,34 @@ public class ContentToolsTests : IClassFixture<TestAppFixture>
         Assert.False(cell.IsPassword);
     }
 
+    /// <summary>The success path must report the SAME dimensions the out-of-range error cites. That
+    /// equality IS the mitigation for the silent-wrong-row defect (docs/fix-the-tool-backlog/
+    /// grid-cell-indexes-realized-rows.md): the dims were always computed, but only an out-of-range caller
+    /// ever saw them, so an in-range caller on a virtualized list got a plausible wrong value and no signal.
+    ///
+    /// Asserting the INVARIANT rather than 3x2 on purpose — a hardcoded pair passes just as well if the
+    /// success path returns a constant, and would need editing whenever the fixture's grid changes.</summary>
+    [Fact]
+    public async Task Get_grid_cell_reports_the_grid_dimensions_that_the_out_of_range_error_cites()
+    {
+        using var d = new AutomationDispatcher();
+        using var w = new WindowManager(d);
+        var (mgr, handle, gridRef) = await SnapshotAndFindGridAsync(w, new RefRegistry());
+
+        var cell = await mgr.GetGridCellAsync(handle, gridRef, 0, 0, 4000);
+
+        // Non-vacuity: 0x0 would satisfy any equality below while telling a caller nothing.
+        Assert.True(cell.RowCount > 0 && cell.ColumnCount > 0,
+            $"expected real grid dimensions on the success path, got {cell.RowCount}x{cell.ColumnCount}");
+
+        var ex = await Assert.ThrowsAsync<FlaUI.Mcp.Core.Errors.ToolException>(
+            () => mgr.GetGridCellAsync(handle, gridRef, cell.RowCount + 10, 0, 4000));
+        Assert.Equal(FlaUI.Mcp.Core.Errors.ToolErrorCode.GridCellOutOfRange, ex.Code);
+
+        // The error has always named the dims; the success path now agrees with it.
+        Assert.Contains($"{cell.RowCount}x{cell.ColumnCount}", ex.Message);
+    }
+
     [Fact]
     public async Task Get_grid_cell_out_of_range_throws_GridCellOutOfRange()
     {

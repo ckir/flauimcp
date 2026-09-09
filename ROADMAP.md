@@ -1091,7 +1091,7 @@ its own small instance of the problem.
 Filed 2026-09-09 from the driving-curriculum run. Two findings that arrived together; the first is settled,
 the second is **not** and must be measured before anyone acts on it.
 
-**(a) SETTLED — `desktop_get_grid_cell(row, col)` silently returns the WRONG row on a virtualized list.**
+**(a) FIXED 2026-09-09 — `desktop_get_grid_cell` no longer fails silently.**
 Backlog: `docs/fix-the-tool-backlog/grid-cell-indexes-realized-rows.md`. Repro:
 `FlaUI.Mcp.Tests.Perception.GridCellVirtualizedRowTests` (Tier-2, `Category=Desktop`).
 
@@ -1108,7 +1108,26 @@ The index addresses the REALIZATION WINDOW, not the list; `RowCount` tracks real
 21 after scrolling), never 500. ⚠ **Probing at `row 0` FALSELY CONFIRMS the old behaviour**, because
 absolute index 0 and realized index 0 coincide — only `row 1` or deeper discriminates. This retired the
 GROWTH rule that called it "the recovery for the off-screen catch-22": it does not solve that catch-22.
-**Mitigation** (in the backlog file): return `RowCount`/`ColumnCount` on the SUCCESS path — the dims are
+**Mitigation** (in the backlog file): return `RowCount`/`ColumnCount` on the SUCCESS path
+**SHIPPED:** `GridCellInfo` now carries `RowCount`/`ColumnCount` and both tool projections (ref and selector)
+emit `rowCount`/`columnCount` on the SUCCESS path. The dimensions were always computed for the bounds check;
+withholding them from success is what made the wrong answer silent. The tool description now states that the
+index addresses the realized rows and tells the caller to compare `rowCount` against however many items it
+believes exist. Backlog file deleted — `docs/fix-the-tool-backlog/` is empty again.
+
+**Tests:** `ContentToolsTests.Get_grid_cell_reports_the_grid_dimensions_that_the_out_of_range_error_cites`
+pins the INVARIANT (success dims == the dims the error cites) rather than a hardcoded 3x2, plus a >0
+non-vacuity guard so 0x0 cannot satisfy it. The Tier-2 repro is completed rather than deleted:
+`GridCellVirtualizedRowTests` now asserts that a 500-file folder reports `RowCount < 500`, i.e. the
+virtualization is VISIBLE. Verified green against a live Explorer window (4/4).
+⚠ Its `Category=Desktop` trait is KEPT. The backlog's retirement recipe says to strip the trait on green,
+but that assumes a headless-expressible defect; this one needs a real virtualized list, and stripping it
+would put a desktop-requiring test into the headless gate.
+
+**NOT implemented, deliberately:** the optional stronger mitigation (surfacing the owning row's own
+identity). It needs a parent walk with its own failure modes, and `rowCount` already gives the caller the
+signal that its index space is wrong — which was the actual harm. Revisit only if a caller needs to confirm
+WHICH row it got rather than merely that absolute indexing does not apply. — the dims are
 already computed for the `GridCellOutOfRange` message — so a caller asking for row 450 of a 500-item folder
 sees `rowCount: 21` and knows the index space is not the one it assumed.
 

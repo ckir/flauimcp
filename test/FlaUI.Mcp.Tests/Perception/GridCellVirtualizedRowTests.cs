@@ -10,28 +10,28 @@ using Xunit;
 
 namespace FlaUI.Mcp.Tests.Perception;
 
-/// <summary>Tier-2 partial repro for docs/fix-the-tool-backlog/grid-cell-indexes-realized-rows.md
+/// <summary>Regression test for the silent-wrong-row defect, now FIXED.
 ///
-/// desktop_get_grid_cell's row index addresses the REALIZED set of a virtualized list, not the backing
-/// list, so an absolute row number returns a plausible WRONG row with no error. Measured live 2026-09-09:
-/// with the viewport scrolled to ~450 in a 500-file folder, row 1 read back "item-449.txt".
+/// `desktop_get_grid_cell`'s row index addresses the grid as UIA reports it, which on a virtualized list is
+/// the REALIZED rows, not the backing collection. Measured on a 500-file Explorer folder scrolled to ~450:
+/// row 1 returned "item-449.txt" — a real filename from the wrong position, with no error. Nothing in the
+/// success payload let a caller notice, because the dimensions were computed and then only ever surfaced in
+/// the GridCellOutOfRange message.
 ///
-/// This arranges the folder, opens it, and invokes the tool at a row that CANNOT be realized (499 of 500,
-/// with nothing scrolled). The correct post-fix behaviour is not asserted yet — the mitigation in the
-/// backlog is to surface RowCount/ColumnCount on the SUCCESS path so a caller can see the index space is
-/// not the one it assumed, and there is no field to assert until that lands. So this ends in Assert.Fail
-/// carrying what was observed.
+/// The fix puts RowCount/ColumnCount on the SUCCESS path. This test pins the property that makes the defect
+/// detectable: on a folder of KnownFileCount items, a virtualized grid reports a RowCount far smaller, so a
+/// caller comparing the two learns its absolute index is meaningless here.
 ///
 /// Desktop-gated: needs a real Explorer window with a live virtualized list. The repo's WPF fixture has no
-/// virtualized grid, and inflating that shared fixture to hundreds of rows would perturb the tree-shape
-/// assertions other tests make against it.</summary>
+/// virtualized grid, and inflating that shared fixture would perturb the tree-shape assertions other tests
+/// make against it.</summary>
 [Trait("Category", "Desktop")]
 public class GridCellVirtualizedRowTests
 {
     private const int FileCount = 500;
 
     [Fact]
-    public async Task Get_grid_cell_row_index_addresses_only_realized_rows()
+    public async Task Grid_dimensions_on_the_success_path_reveal_a_virtualized_index_space()
     {
         var folder = Path.Combine(Path.GetTempPath(), "flaui-gridcell-" + Guid.NewGuid().ToString("N").Substring(0, 8));
         Directory.CreateDirectory(folder);
@@ -49,24 +49,14 @@ public class GridCellVirtualizedRowTests
         {
             Process.Start(new ProcessStartInfo("explorer.exe") { Arguments = folder, UseShellExecute = true })?.Dispose();
 
-            // Explorer hands the folder to a shell process and may take a moment to paint a titled window.
             for (var attempt = 0; attempt < 20 && handle is null; attempt++)
             {
                 await Task.Delay(500);
-                try
-                {
-                    handle = await windows.OpenByTitleAsync(expectedTitle);
-                }
-                catch (Exception)
-                {
-                    // Not up yet; keep polling until the attempt budget runs out.
-                }
+                try { handle = await windows.OpenByTitleAsync(expectedTitle); }
+                catch (Exception) { /* not up yet; keep polling within the attempt budget */ }
             }
 
-            if (handle is null)
-            {
-                Assert.Fail($"grid-cell-indexes-realized-rows: arrange failed - no window titled '{expectedTitle}' appeared.");
-            }
+            Assert.True(handle is not null, $"arrange failed: no window titled '{expectedTitle}' appeared");
 
             var perception = new PerceptionManager(windows, new RefRegistry(), new SnapshotCache());
             var snapshot = await perception.SnapshotAsync(handle.Value, new SnapshotOptions
@@ -77,52 +67,41 @@ public class GridCellVirtualizedRowTests
             });
 
             var listLine = snapshot.Tree.Split('\n').FirstOrDefault(l => l.Contains("List \"Items View\""));
-            if (listLine is null)
-            {
-                Assert.Fail("grid-cell-indexes-realized-rows: arrange failed - no List \"Items View\" node in the Explorer snapshot.");
-            }
+            Assert.True(listLine is not null, "arrange failed: no List \"Items View\" node in the Explorer snapshot");
+            var listRef = listLine!.TrimStart().Split(']')[0].TrimStart('[');
 
-            var listRef = listLine.TrimStart().Split(']')[0].TrimStart('[');
+            // Row 0 is deliberately NOT the probe: absolute index 0 and realized index 0 coincide there, so
+            // reading it confirms nothing about which index space is in play. Read a row that certainly
+            // exists in the grid's own space, and inspect the dimensions it reports.
+            var cell = await perception.GetGridCellAsync(handle.Value, listRef, 0, 0, 4000);
 
-            // The shipped rule this backlog retires claimed a details-view [Grid] returns off-screen rows
-            // WITHOUT scrolling. If that were true, the last row of a 500-item folder would read back here.
-            var lastRow = FileCount - 1;
-            string observed;
-            try
-            {
-                var cell = await perception.GetGridCellAsync(handle.Value, listRef, lastRow, 0, 4000);
-                observed = $"row {lastRow} returned '{cell.Value}' (the rule's premise would make this 'item-{lastRow:D3}.txt')";
-            }
-            catch (FlaUI.Mcp.Core.Errors.ToolException ex) when (ex.Code == FlaUI.Mcp.Core.Errors.ToolErrorCode.GridCellOutOfRange)
-            {
-                observed = $"row {lastRow} threw GridCellOutOfRange ('{ex.Message}') - the grid exposes only realized rows, "
-                         + $"so the off-screen catch-22 is NOT solved by get_grid_cell";
-            }
+            Assert.True(cell.RowCount > 0 && cell.ColumnCount > 0,
+                $"expected real dimensions on the success path, got {cell.RowCount}x{cell.ColumnCount}");
 
-            Assert.Fail($"grid-cell-indexes-realized-rows: observed {observed}; correct behavior not asserted yet - see backlog");
+            // THE POINT: the folder holds FileCount items, and the grid reports far fewer, because it counts
+            // only realized rows. Before the fix a caller could not see this at all — which is exactly how an
+            // absolute row number returned the wrong file in silence.
+            Assert.True(cell.RowCount < FileCount,
+                $"expected a virtualized grid to report FEWER rows than the {FileCount} files present, got " +
+                $"RowCount={cell.RowCount}. If Explorer ever realizes every row up front this assertion is " +
+                "wrong about the fixture, not about the tool.");
+
+            // And the dimensions must agree with what an out-of-range call reports, so the two paths cannot
+            // drift apart and leave the success path lying.
+            var ex = await Assert.ThrowsAsync<FlaUI.Mcp.Core.Errors.ToolException>(
+                () => perception.GetGridCellAsync(handle.Value, listRef, FileCount - 1, 0, 4000));
+            Assert.Equal(FlaUI.Mcp.Core.Errors.ToolErrorCode.GridCellOutOfRange, ex.Code);
+            Assert.Contains($"{cell.RowCount}x{cell.ColumnCount}", ex.Message);
         }
         finally
         {
             if (handle is not null)
             {
-                try
-                {
-                    await windows.CloseAsync(handle.Value);
-                }
-                catch (Exception)
-                {
-                    // Leaving a window open must not mask the finding this test exists to report.
-                }
+                try { await windows.CloseAsync(handle.Value); }
+                catch (Exception) { /* a left-open window must not mask the assertion above */ }
             }
-
-            try
-            {
-                Directory.Delete(folder, recursive: true);
-            }
-            catch (Exception)
-            {
-                // Temp cleanup is best-effort.
-            }
+            try { Directory.Delete(folder, recursive: true); }
+            catch (Exception) { /* temp cleanup is best-effort */ }
         }
     }
 }

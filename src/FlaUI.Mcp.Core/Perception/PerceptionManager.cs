@@ -349,8 +349,10 @@ public sealed class PerceptionManager
             string ct = "Unknown", aid = string.Empty;
             try { ct = cell.ControlType.ToString(); } catch { }
             try { aid = cell.Properties.AutomationId.ValueOrDefault ?? string.Empty; } catch { }
+            // rows/cols come from the SAME GridPattern read that the bounds check above used, so the
+            // dimensions reported on success are exactly the ones the out-of-range message would have cited.
             return new GridCellInfo(read.Text, ct, aid, read.Sensitivity.Source == RedactionSource.Os,
-                read.Sensitivity.Redact, ElementContent.RedactedBy(read.Sensitivity));
+                read.Sensitivity.Redact, ElementContent.RedactedBy(read.Sensitivity), rows, cols);
         }
         catch (System.UnauthorizedAccessException)
         { throw new ToolException(ToolErrorCode.AccessDeniedIntegrity, "Cannot read the target (higher-integrity/elevated window).", "run the target at the same integrity level"); }
@@ -1430,8 +1432,16 @@ public sealed record CaptureGeometry(System.Drawing.Rectangle Bounds, IReadOnlyL
 public sealed record DesktopMaskSet(IReadOnlyList<System.Drawing.Rectangle> Rects, IReadOnlyList<MaskEscalationEntry> Escalations,
     IReadOnlyList<string> UnmaskedProcesses);
 
+/// <summary>RowCount/ColumnCount are the grid's OWN dimensions as UIA reports them, and they are on the
+/// SUCCESS path deliberately. On a virtualized list they count REALIZED rows, not the backing collection, so
+/// the row index addresses the realization window rather than the list: measured on a 500-file Explorer
+/// folder scrolled to ~450, row 1 returned "item-449.txt" with no error at all. Without these fields a
+/// caller has no way to notice — the value looks perfectly plausible. With them, asking for row 450 of a
+/// folder it believes holds 500 items and seeing RowCount=21 tells it immediately that the index space is
+/// not the one it assumed. The GridCellOutOfRange message already reported these dimensions; withholding
+/// them from the success path is what made the wrong answer silent.</summary>
 public sealed record GridCellInfo(string Value, string ControlType, string AutomationId, bool IsPassword,
-    bool Redacted, string? RedactedBy);
+    bool Redacted, string? RedactedBy, int RowCount, int ColumnCount);
 
 public sealed record TextReadResult(string Text, bool Truncated, bool IsPassword, string? TruncatedFrom = null,
     bool Redacted = false, string? RedactedBy = null);

@@ -18,7 +18,7 @@ public sealed class ContentTools
     public ContentTools(PerceptionManager perception, WindowManager windows, ServerOptions options)
     { _perception = perception; _windows = windows; _options = options; }
 
-    [McpServerTool(ReadOnly = true), Description("Read one grid/table cell by (row,col) without snapshotting the whole grid. ref = a Grid/Table element; row/col are 0-based. Returns the cell value (Value pattern else Name), controlType, automationId, redacted, redactedBy (\"os\", \"rule:<name>\", or \"unreadable\"), isPassword. Read redacted, NOT isPassword: isPassword is the deprecated OS-only signal and is false for rule-redacted cells. GridCellOutOfRange if out of bounds; PatternUnsupported if not a grid. To ACT on a cell, re-snapshot with rootRef=<grid ref>.")]
+    [McpServerTool(ReadOnly = true), Description("Read one grid/table cell by (row,col) without snapshotting the whole grid. ref = a Grid/Table element; row/col are 0-based. Returns the cell value (Value pattern else Name), controlType, automationId, redacted, redactedBy (\"os\", \"rule:<name>\", or \"unreadable\"), isPassword, rowCount, columnCount. Read redacted, NOT isPassword: isPassword is the deprecated OS-only signal and is false for rule-redacted cells. GridCellOutOfRange if out of bounds; PatternUnsupported if not a grid. To ACT on a cell, re-snapshot with rootRef=<grid ref>. ROW/COL ADDRESS THE GRID AS UIA REPORTS IT, WHICH ON A VIRTUALIZED LIST IS THE REALIZED ROWS, NOT THE BACKING COLLECTION: in a 500-item folder scrolled to ~450, row 1 returns the 449th file and no error. CHECK rowCount against however many items you believe exist — if it is far smaller, your absolute index is meaningless here; scroll the row into view and re-read instead.")]
     public Task<string> DesktopGetGridCell(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("0-based row index.")] int row,
@@ -33,10 +33,10 @@ public sealed class ContentTools
             {
                 sel.Validate();
                 var (c, resolved) = await _perception.GetGridCellBySelectorAsync(new WindowHandle(window), sel, row, col, timeoutMs);
-                return ToolResponse.Ok(new { value = c.Value, controlType = c.ControlType, automationId = c.AutomationId, isPassword = c.IsPassword, redacted = c.Redacted, redactedBy = c.RedactedBy, resolvedElement = resolved });
+                return ToolResponse.Ok(new { value = c.Value, controlType = c.ControlType, automationId = c.AutomationId, isPassword = c.IsPassword, redacted = c.Redacted, redactedBy = c.RedactedBy, rowCount = c.RowCount, columnCount = c.ColumnCount, resolvedElement = resolved });
             }
             var c2 = await _perception.GetGridCellAsync(new WindowHandle(window), @ref!, row, col, timeoutMs);
-            return ToolResponse.Ok(new { value = c2.Value, controlType = c2.ControlType, automationId = c2.AutomationId, isPassword = c2.IsPassword, redacted = c2.Redacted, redactedBy = c2.RedactedBy });
+            return ToolResponse.Ok(new { value = c2.Value, controlType = c2.ControlType, automationId = c2.AutomationId, isPassword = c2.IsPassword, redacted = c2.Redacted, redactedBy = c2.RedactedBy, rowCount = c2.RowCount, columnCount = c2.ColumnCount });
         });
 
     [McpServerTool(Destructive = true), Description("Select a grid/table cell by (row,col) via UIA SelectionItemPattern. ref = the Grid element; row/col 0-based. GridCellOutOfRange if out of bounds; ElementNotActionable if the cell is off-screen (scroll first); PatternUnsupported if the cell isn't selectable. Blocked in --read-only-mode. NO input lease required.")]
