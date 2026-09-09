@@ -120,6 +120,9 @@ execute its `steps` with the live MCP server, and capture what you observe.
     lease. But note that navigation CHURN is not the placeholder/disabled ghost UI this task
     describes; seeing TRUE ghost elements likely needs a click that starts a fetch, which is
     INPUT-tier. If you only see churn, report the trap UNEXERCISED.
+    And PROVE 'settled' rather than eyeballing it: desktop_snapshot_diff across the whole probe
+    returning added/removed/changed ALL EMPTY is evidence of a static page; a single glance that
+    happens to look finished is not.
   steps: |
     1. Attach to an already-open Windows Settings on a slow-populating page (e.g. Bluetooth & devices,
        Windows Update) via desktop_open_window (by title/pid — it attaches read-only, it does NOT launch;
