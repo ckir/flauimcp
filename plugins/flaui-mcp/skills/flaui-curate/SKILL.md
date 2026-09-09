@@ -54,7 +54,10 @@ Everything outside them is the hand-authored floor — **never touch it**. Regen
 **(current GROWTH content) + (this run's promotions) − (retired/contradicted)** — never rebuild from the inbox
 alone (that would delete prior wisdom). Do not duplicate a rule already stated in the hand-authored floor.
 
-**HARD CAP: the GROWTH region must stay ≤ 30 lines.** On breach, in order: (1) **compress/merge** related
+**HARD CAP: the GROWTH region must stay ≤ 120 lines.** (Raised from 30 on 2026-09-09: the cap was being
+held by graduating rules into `graduation-candidates.md`, which NOTHING reads at runtime and which only a
+human can drain — so every graduation was an invisible loss. Graduate only when a rule genuinely belongs
+in the hand-authored floor, not merely to make room.) On breach, in order: (1) **compress/merge** related
 rules or supersede an old one; (2) **graduate** — if it's full of distinct proven rules, append the best as a
 one-line entry to `.claude/flaui-mcp/graduation-candidates.md` for a human to fold into the manual floor;
 (3) drop only a genuinely low-leverage rule not worth graduating. Never let GROWTH exceed 30 lines.
