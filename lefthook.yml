@@ -22,7 +22,8 @@ pre-push:
       # The fast gate only: build + the non-Desktop suite. NOT the Desktop/SyntheticInput suites, which need
       # an interactive session and a human-granted input lease, and NOT the Pester suite, which adds ~30s.
       #
-      # Debug on purpose. A Release build fails MSB3027 whenever a flaui-mcp.exe launched from this repo is
-      # running — which, while developing this server, is most of the time. Making the common case fail is
-      # how a hook earns a --no-verify habit.
-      run: dotnet build FlaUI.Mcp.slnx -c Debug && dotnet test FlaUI.Mcp.slnx --filter "Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect"
+      # Delegated to a script, NOT inlined. The inline form
+      #   dotnet build ... && dotnet test ... --filter "Category!=Desktop&..."
+      # ran BOTH halves green and then exited 127: the `&&` chain and the `!`/`&` in the filter do not
+      # survive the shell lefthook invokes here. A hook that fails after a green gate teaches --no-verify.
+      run: pwsh -NoProfile -File scripts/headless-gate.ps1
