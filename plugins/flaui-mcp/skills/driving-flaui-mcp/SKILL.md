@@ -352,6 +352,7 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   14 -> 194 the same way, no wake. Walk once to TRIGGER, again to READ, and judge a wake by ADDRESSABILITY, not
   by a second node count. The DOM is targetable (`desktop_find` hit a button by its literal HTML id) - so do NOT
   reach for `find_text`/OCR for Chromium page content. *(measured 2026-09-09)*
+  ⚠ `alreadyAwake` is SERVER bookkeeping (does THIS server hold a wake?), never a hydration probe - it returned false on an already fully-hydrated 199-node window.
 - **A watch's FIRST `drain_events` proves nothing; heavy coalescing is INVISIBLE in `droppedCount`.**
   Measured: `snapshot_stats` showed 1402 -> 134 while the first drain gave `count:0, droppedCount:0`; a later
   drain gave ONE event, `coalescedCount 3603`, naming the ROOT not the changed subtree. Poll drain more than
@@ -374,16 +375,7 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   Quick Settings `Win+A`) are NOT in `desktop_list_windows` — open the surface, then `desktop_get_focused_element`
   returns its hidden handle → snapshot/find/type it; the UIA walk is non-ephemeral; Start's `SearchTextBox` Edit
   types clean.
-- No window move/resize verb — `desktop_focus_window` then `Win+Left`/`Win+Right` tiles to a half, `Win+Up`
-  maximizes. Hydration is a **RAMP, not a step** (measured ~14 nodes opaque → ~97 at 2s → ~137 at 6s → plateau
-  ~142): POLL `snapshot_stats` until it crosses a threshold. One fixed sleep samples mid-ramp, returns a
-  barely-changed count, and reads as "the wake did nothing" — sending you to debug the wake instead of the wait.
-  Assert a **DELTA from the same run's own opaque baseline** — never an absolute count (~231 woken historically vs
-  ~142 later, −41% across app versions, rots an absolute floor into a false red long after the code was last
-  touched) and never a MULTIPLE (hydration adds a roughly fixed population rather than scaling, so a multiplier
-  inverts into a false GREEN on a small baseline). Your own polling is part of the experiment: Chromium hydrates
-  lazily in response to UIA activity, so a control that merely IDLES proves nothing — match the real loop's CADENCE
-  minus the wake. *(measured that way, 500ms polling for 4s did NOT hydrate an opaque tree; live 2026-07-29)*
+- No window move/resize verb — `desktop_focus_window` then `Win+Left`/`Win+Right` tiles to a half, `Win+Up` maximizes.
 - **WPF trees are FLATTER and DENSER than the XAML implies.** Layout panels (`Grid`/`StackPanel`/`Canvas`/
   `Border`) never override `OnCreateAutomationPeer` → ABSENT from the tree, so an `AutomationId` on one can never
   scope a find (use a `GroupBox`, or walk from the window root — same set). And a `Button`'s `Content` gets its OWN
@@ -442,4 +434,10 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   arguments were fine, the element simply has no focus support, so an identical retry can only fail again. Pass
   a ref the snapshot marks `{focusable}`, or omit ref/window to target the foreground window - but re-verify
   `IsForeground` in the immediately preceding call before any destructive chord. *(2026-09-09)*
+- **The foreground-lock is CONDITIONAL - and when focus will not land, check the SESSION before re-looping.**
+  `desktop_focus_window` returned `foregroundGained:true` twice on visible non-foreground windows at the physical
+  console with the operator present, so it is NOT a constant property of a background-process server. It failed
+  only after the session moved console -> RDP: `foregroundGained:false` with `currentForeground:{handle:"0"}`
+  (handle 0 = NOTHING owns foreground), and `wait_for_foreground` then timed out at 20s while `qwinsta` showed
+  the move. *(CONFOUNDED: session change and input recency moved together; not isolated.)*
 <!-- AUTOTRAIN:GROWTH:END -->
