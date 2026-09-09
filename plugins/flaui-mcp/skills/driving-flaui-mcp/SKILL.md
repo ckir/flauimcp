@@ -424,4 +424,22 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   (stable `automationId "0"`) went e30 -> e177 -> e196 -> e217 -> e222 -> e227 across successive finds. Never
   cache a ref across any re-read: re-find immediately before acting, or target by selector/automationId, which
   resolves fresh at call time. *(2026-09-09)*
+- **Competing WT windows: the ORDINAL is trustworthy, the TITLE is not, and `restoreConfidence` is the tell.**
+  MEASURED with two WT windows x two tabs, all four titled identically `cmd.exe`: every
+  `read_terminal_tab {window, tabIndex}` returned its OWN window's tab, 4/4 correct - so an earlier worry that
+  reads cross windows does NOT reproduce. But `tabTitle` came back `cmd.exe` for all four, so it can confirm
+  NOTHING; identify a tab by a marker in its TEXT. `restoreConfidence` dropped `high` -> `reduced` on every read
+  once a second WT window existed (it was `high` with one window, even reading an already-active tab) - treat
+  `reduced` as "another WT window is competing", CORRELATED not isolated. And every WT window shares ONE pid
+  (the agent's own session's), so pid can never distinguish them: close by window HANDLE, never by process.
+- **Coordinate-based input lands on the WRONG instance when two copies of an app sit at the same default spot.**
+  A right-click produced NO context menu at all, so it presents as "the element never appeared" rather than as a
+  mis-click, and 2.5s of deterministic polling never surfaced it - not a timing race. Focusing the target window
+  first did NOT prevent it. Run one instance at a time for coordinate input, or target by element ref instead.
+  *(mechanism INFERRED by elimination - fails only alongside other instances, passes alone, immune to waiting.)*
+- **`desktop_key` with a window AND a ref that cannot take focus fails `INTERNAL` / `DISP_E_MEMBERNOTFOUND`** - a
+  raw COM error surfaced verbatim, and its `suggestedRecovery` ("re-check arguments and retry") misdirects: the
+  arguments were fine, the element simply has no focus support, so an identical retry can only fail again. Pass
+  a ref the snapshot marks `{focusable}`, or omit ref/window to target the foreground window - but re-verify
+  `IsForeground` in the immediately preceding call before any destructive chord. *(2026-09-09)*
 <!-- AUTOTRAIN:GROWTH:END -->
