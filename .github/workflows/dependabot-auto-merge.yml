@@ -1,0 +1,108 @@
+name: dependabot-auto-merge
+
+# Merge dependabot's LOW-RISK updates once every check on the head commit is green.
+#
+# WHY NOT GitHub's native auto-merge: it requires branch protection with required status checks, and a
+# protected master would also gate DIRECT PUSHES — which is how this repo releases
+# (`git push --atomic origin master vX.Y.Z` from scripts/release.ps1). Adding protection to gain a
+# convenience would break the release path, so this waits for checks itself instead.
+#
+# WHY MAJORS ARE EXCLUDED, and this is the whole design: on 2026-09-09 dependabot proposed
+# actions/checkout v5 -> v7. Every check was green, and v7 still carried a real breaking change — it blocks
+# checking out a fork PR's head under `pull_request_target`/`workflow_run` unless you opt in. That repo
+# happened not to be exposed, but establishing THAT required reading every workflow's triggers. No amount of
+# green CI substitutes for it, so majors stay human-reviewed.
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    # Cheap gates first: the triggering run must have succeeded and come from a dependabot branch.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    steps:
+      # No actions/checkout on purpose. This job only queries and merges through the API, and checking out a
+      # PR head under workflow_run is precisely the pattern checkout v7 restricts.
+      - name: Find the PR for this run
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          num=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open \
+                  --json number,headRefOid,author \
+                  --jq '.[] | select(.headRefOid == env.SHA) | select(.author.login == "app/dependabot") | .number' \
+                | head -1)
+          if [ -z "$num" ]; then
+            echo "No open dependabot PR whose head is $SHA on $BRANCH — nothing to do."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true"  >> "$GITHUB_OUTPUT"
+            echo "number=$num" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Classify the update
+        id: meta
+        if: steps.pr.outputs.found == 'true'
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require EVERY check on the head commit to be green
+        id: checks
+        if: steps.pr.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          # The triggering run succeeding says nothing about the OTHER workflows on this commit — notably
+          # release.yml, which runs on workflow-touching PRs and is the only check that covers the release
+          # path. Re-read the whole rollup rather than trusting the trigger.
+          rollup=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+                     --json statusCheckRollup \
+                     --jq '[.statusCheckRollup[] | (.conclusion // .state // "PENDING")] | join(",")')
+          echo "rollup: $rollup"
+          if [ -z "$rollup" ]; then
+            echo "no checks reported yet — declining to merge"; echo "green=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          case "$rollup" in
+            *PENDING*|*FAILURE*|*CANCELLED*|*TIMED_OUT*|*ACTION_REQUIRED*|*STARTUP_FAILURE*)
+              echo "not all checks are green — declining to merge"
+              echo "green=false" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "green=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Merge patch and minor updates
+        if: >
+          steps.pr.outputs.found == 'true' &&
+          steps.checks.outputs.green == 'true' &&
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+           steps.meta.outputs.update-type == 'version-update:semver-minor')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+        # --merge, not --squash: this repo keeps merge commits (merges are --no-ff by convention).
+        run: gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --merge
+
+      - name: Explain why a major was left alone
+        if: >
+          steps.pr.outputs.found == 'true' &&
+          steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body \
+            "Auto-merge skipped: this is a **major** update, which this repo reviews by hand. Green checks do not establish that a major is safe — \`actions/checkout\` v7 shipped with green CI and still blocked fork-PR checkout under \`pull_request_target\`/\`workflow_run\`. Read the release notes, check whether this repo is exposed, and merge manually."

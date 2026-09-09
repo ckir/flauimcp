@@ -3,6 +3,14 @@ on:
   push:
     tags: [ "v*" ]
   workflow_dispatch: {}   # manual run: builds/tests/publishes to verify CI; skips the Release step (no tag)
+  # Workflow-touching PRs get this validated automatically. Without it, a PR that edits release.yml is
+  # merged on the strength of ci.yml's checks alone — which never run this file — and the break surfaces at
+  # the NEXT release. That is exactly what the 2026-09-09 dependabot bumps would have done: six green checks,
+  # none of them covering the workflow that builds the artifacts.
+  # Safe by construction: every publishing step is gated on startsWith(github.ref, 'refs/tags/'), so a PR run
+  # builds, tests and checksums but cannot create a release or upload an asset.
+  pull_request:
+    paths: [ ".github/workflows/**" ]
 
 permissions:
   contents: write   # create releases + upload assets
