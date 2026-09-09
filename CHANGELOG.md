@@ -5,6 +5,43 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-09
+
+### Changed
+
+- **Every tool description now states its own lease and read-only posture.** An agent reading the tool
+  catalog can tell, without going to the docs, whether a call needs `flaui-mcp unlock` and whether it is
+  blocked under `--read-only-mode`. All 23 descriptions were traced against the code that enforces them:
+  17 need no lease, 6 do. Confirmed on the wire, not only by unit test.
+
+- **The shipped `driving-flaui-mcp` skill carries substantially more field-measured guidance.** Each of
+  these came from driving a real desktop, not from inference:
+  - Win11 context-menu items **are** reachable through UIA. A plain snapshot shows one empty `PopupHost`
+    pane only because the popup's ancestors are zero-bounds and get culled as off-screen;
+    `desktop_find controlType:MenuItem` returns every item at default settings, with real automation ids.
+  - `desktop_get_grid_cell` indexes a virtualized list's **realized** rows, not the backing list, so an
+    absolute row number returns a plausible wrong row with no error. Probing at row 0 falsely confirms the
+    old behaviour, because absolute and realized index coincide there.
+  - `foregroundGained:true` does not mean a window is usable: focus succeeds on a **minimized** window,
+    whose tree is 7 chrome nodes with no content rather than the single node previously documented.
+  - A Windows Terminal tab title is informative under `cmd.exe`, which rewrites it per child process, and
+    uninformative under PowerShell, which does not — so only the latter can hide a running program.
+  - A watch's first `drain_events` can come back empty while the tree has already changed, and heavy
+    coalescing never appears in `droppedCount`.
+  - `desktop_launch_app` on Win11 Notepad does not hand you a blank editor: session restore reopens the
+    user's unsaved tabs, so a launch/type/close sequence can destroy real work.
+
+### Fixed
+
+- **Coalescing is not dropping (`docs/agent-contract.md`, `docs/architecture-and-safety.md`).**
+  `droppedCount` counts evictions only and stays `0` through a large coalesced burst, so it cannot be used
+  to detect that events were merged; the surviving aggregate names the ROOT window rather than the subtree
+  that changed. The docs previously placed those two facts side by side in a way that implied a link.
+
+- **Internal:** a new headless gate asserts that guidance retired as measurably wrong cannot reappear in
+  the shipped skill or the live docs. The existing twin check proves the skill's two copies match, never
+  what they say, so two identically-wrong copies passed it.
+
 ## [1.0.0] - 2026-08-23
 
 ### BREAKING
