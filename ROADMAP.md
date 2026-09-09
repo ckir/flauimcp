@@ -57,7 +57,7 @@ The six, and only one was the flake the entry assumed:
 
 | # | Test | Actual cause |
 |---|---|---|
-| 1 | `DesktopWakeTests.Waking_hydrates_the_tree_while_held` | Chromium hydration is a **ramp, not a step**; the fixed `Delay(1500)` sampled inside it |
+| 1 | `DesktopWakeTests.Waking_hydrates_the_tree_while_held` | Chromium hydration is a **ramp, not a step**; the fixed `Delay(1500)` sampled inside it <!-- retired-ok: a 2026-07-29 record of what was believed then; superseded by item 30, kept verbatim as history --> |
 | 2 | `PresenceDesktopTests.Real_idle_source_reports_active_right_after_input` | Asserted a **human** had typed within 60s while synthesising nothing — so it failed whenever nobody had touched the machine, which is the state the suite requires |
 | 3 | `WaitForStableTests.Structure_is_stable_despite_a_live_ticker` | **Arithmetic, not flakiness.** One full walk costs ~3.0s, so `wait_for_stable` floors at ~12.5s against a 5000ms budget — unreachable by 2.5× even against a static tree |
 | 4,5 | `FindTests` ×2 | The tests confused `AutomationId` with **Name**. A `ListBoxItem`'s UIA Name is its `Content`, so items were `A/B/C/NamedOnly` and `contains "Item"` matched nothing. **Wrong since authored** — Desktop is not a CI job, so nothing caught it |
@@ -632,7 +632,9 @@ injection cure. These are stable, documented behaviors — reference, not backlo
   can re-mask it.
 - **Electron/Chromium a11y is off by default.** Chromium exposes its full UIA tree only when a screen
   reader is detected or it's launched with `--force-renderer-accessibility`; otherwise a snapshot is one
-  large `Document` node. `desktop_wake_accessibility` hydrates it on demand (Phase 9); typed text into
+  large `Document` node. `desktop_wake_accessibility` (Phase 9) HOLDS that tree open; the FIRST UIA walk is
+  what hydrates it, so snapshot twice — a single snapshot after waking can still read as opaque. See item 30
+  for the shipped test whose control asserts the opposite and has not run since the v1.0 gate. Typed text into
   Chromium editors garbles like the new Notepad — `desktop_paste_text` is the reliable path. WinUI 3 /
   WPF / Qt expose proper UIA and are unaffected.
 - **Popup detection is class-name-based.** `FindOwnerPopups` recognizes Win32 (`#32768`), WPF
@@ -1084,3 +1086,59 @@ through `CLAUDE.md` or project memory on its own: an `Explore` subagent receives
 about where they are - and the same shape the whole activation subproject exists to close. It sat in
 session memory flagged *"still needs its own ROADMAP item"* for a day before being filed here, which is
 its own small instance of the problem.
+
+### 30. `desktop_get_grid_cell` indexes the REALIZED set, and the wake mechanism it was found beside is now contested — MEASURED 2026-09-09
+
+Filed 2026-09-09 from the driving-curriculum run. Two findings that arrived together; the first is settled,
+the second is **not** and must be measured before anyone acts on it.
+
+**(a) SETTLED — `desktop_get_grid_cell(row, col)` silently returns the WRONG row on a virtualized list.**
+Backlog: `docs/fix-the-tool-backlog/grid-cell-indexes-realized-rows.md`. Repro:
+`FlaUI.Mcp.Tests.Perception.GridCellVirtualizedRowTests` (Tier-2, `Category=Desktop`).
+
+Measured on a 500-file Explorer folder with the viewport scrolled to ~450 — the realized set was 21 rows
+(`item-000` still anchored and offscreen, plus `item-449..468`):
+
+| call | returns |
+|---|---|
+| `row 0` | `item-000.txt` |
+| `row 1` | **`item-449.txt`** — not `item-001.txt`, and no error |
+| `row 499` | `GridCellOutOfRange, "outside the 21x4 grid"` |
+
+The index addresses the REALIZATION WINDOW, not the list; `RowCount` tracks realized rows (19 at the top,
+21 after scrolling), never 500. ⚠ **Probing at `row 0` FALSELY CONFIRMS the old behaviour**, because
+absolute index 0 and realized index 0 coincide — only `row 1` or deeper discriminates. This retired the
+GROWTH rule that called it "the recovery for the off-screen catch-22": it does not solve that catch-22.
+**Mitigation** (in the backlog file): return `RowCount`/`ColumnCount` on the SUCCESS path — the dims are
+already computed for the `GridCellOutOfRange` message — so a caller asking for row 450 of a 500-item folder
+sees `rowCount: 21` and knows the index space is not the one it assumed.
+
+**(b) OPEN, NOT DIAGNOSED — a shipped Desktop test asserts a wake mechanism that a hand measurement
+contradicts, and it has not run since the v1.0 gate.**
+
+`DesktopWakeTests.Waking_hydrates_the_tree_while_held` (`Category=Desktop`, so excluded from the default
+gate) contains a CONTROL asserting an *unwoken* tree stays below `baseline + HydrationDelta` (50) while
+polled at 500ms for 4s. Hand-measured 2026-09-09 at the physical console, on a cold VS Code and a cold
+Chrome with a fresh `--user-data-dir` per arm:
+
+| arm | walk 1 | walk 2 |
+|---|---|---|
+| Chrome, NO wake | 39 | **63** (full page DOM) |
+| Chrome, wake FIRST | 39 | **63** — same counts, same histogram |
+| VS Code, NO wake | 14 | **194** |
+
+Against a 14-node baseline that control's ceiling is 64, and the second walk reached 194 — so **the control
+should now fail**, with the message its own author wrote for this case: *"the tree hydrated WITHOUT any wake
+… hydration cannot be attributed to WakeAsync."*
+
+⚠ **This is a CONFLICT, not a filed defect.** Either the hand measurement is right and the test's central
+claim is wrong, or the test's fixture differs in some way the hand run did not control for. The hand run has
+NOT been reproduced through the test, and the ROADMAP entry at Track A line 1 records the opposite belief as
+of 2026-07-29 (kept verbatim as history). **Next action: run that single test at the PHYSICAL CONSOLE**
+(`--filter FullyQualifiedName~Waking_hydrates_the_tree_while_held`) — the 2026-09-09 attempt was declined
+because the session had moved to RDP and hydration behaviour there is an uncontrolled variable. Do not
+"fix" the test, the skill, or the docs on the strength of the hand run alone.
+
+**Blast radius if (b) resolves against the test:** the test NAME encodes the claim, `docs/agent-contract.md`
+and `docs/architecture-and-safety.md` were corrected on its strength (`bcee695`), and the GROWTH rule
+promoted in `88afdeb` says the same. Those all move together, or all move back.

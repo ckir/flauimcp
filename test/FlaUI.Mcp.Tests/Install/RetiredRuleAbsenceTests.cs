@@ -39,11 +39,17 @@ public class RetiredRuleAbsenceTests
         "plugins/flaui-mcp/skills/driving-flaui-mcp/SKILL.md",
     };
 
-    /// <summary>Docs that state CURRENT behaviour. Deliberately excludes history and defect-records.</summary>
+    /// <summary>Docs that state CURRENT behaviour. Deliberately excludes history and defect-records.
+    ///
+    /// ROADMAP.md is MIXED — its "known limitations" section states current behaviour (and did carry a
+    /// retired claim), while its Track A tables record what was believed on a past date. It is scanned, and
+    /// the historical lines carry the `retired-ok:` marker with their reason. That is the case the marker
+    /// exists for: a file worth guarding that legitimately quotes superseded claims in places.</summary>
     private static readonly string[] LiveDocs =
     {
         "README.md",
         "CONTRIBUTING.md",
+        "ROADMAP.md",
         "docs/agent-contract.md",
         "docs/architecture-and-safety.md",
         "docs/operator-manual.md",
@@ -121,9 +127,13 @@ public class RetiredRuleAbsenceTests
         var fragments = RetiredFragments();
         var resurrected = new List<string>();
 
+        // CASE-INSENSITIVE on purpose. A resurrection that arrives re-cased evades an Ordinal match for no
+        // good reason — ROADMAP's history line says "hydration is a **ramp" where the ledger fragment reads
+        // "Hydration is a **RAMP", and an Ordinal compare simply misses it. These fragments are distinctive
+        // enough that widening to IgnoreCase costs no realistic false positive.
         foreach (var (label, text) in Haystacks())
             resurrected.AddRange(
-                fragments.Where(f => text.Contains(f, StringComparison.Ordinal))
+                fragments.Where(f => text.Contains(f, StringComparison.OrdinalIgnoreCase))
                          .Select(f => $"{label}: \"{f}\""));
 
         Assert.True(resurrected.Count == 0,
