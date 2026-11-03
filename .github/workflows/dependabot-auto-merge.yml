@@ -55,7 +55,7 @@ jobs:
       - name: Classify the update
         id: meta
         if: steps.pr.outputs.found == 'true'
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
