@@ -337,7 +337,7 @@ stamped** — v1.0.0 ships with no known defects.
 | 13 | bare `catch` blocks swallow CRITICAL failures repo-wide | — | ⬜ not started — MEASURED at SP4 capstone round 4: **108** bare catches across 20+ files in `src/` can swallow `OutOfMemoryException`. SP4 filtered every catch on its own pixel path and both `ToolResponse` boundaries; the rest are untouched. Repo-wide refactor across input, watch, session and geometry code. Ledgered as AB-12 |
 | 14 | `CollisionMarker.Record()` has no cross-process lock | — | ⬜ not started — `Record()` reads the marker, merges, and rewrites the whole file (`CollisionMarker.cs:62-91`) with no `Mutex` and no file lock. `WriteAtomically` (`:114-121`) prevents a TORN file, not a lost update: two installers that both read the same baseline each write their own entry and the second overwrites the first, so one user's disabled plugin is never restored. CONFIRMED by reading the code during the D1 review (spec `2026-08-20-release-tooling-design.md`, round-2 finding 19). Requires two simultaneous installs, which is why it has never been observed. Pre-existing and deliberately NOT fixed in the D1 subproject — filed here rather than silently widening that scope. |
 | 15 | `ClaudeSkillDeployer.Deploy()` is dead production code | — | ✅ shipped — both dead paths deleted on the activation branch (`ClaudeSkillDeployer.Deploy()`, both `AgyConfigWriter.Install()` overloads, `DeploySkill()`) along with the tests that covered only them. `Remove()`, `SkillRoot` and `Uninstall()` are LIVE and survived, so their tests were PRUNED rather than deleted; two `InstallStatus` tests that used the deleted APIs as fixtures now write the files directly. |
-| 16 | `PopupRootCoverageTests` ARRANGE step is FLAKY on the full Desktop gate | — | ✅ fixed (test-only) — OBSERVED 2026-08-20: `A_popup_element_is_returned_exactly_once_across_roots` failed at ARRANGE (menu never opened within 2.5s), then passed in isolation. The recorded diagnosis ("a sibling TestApp stacked at the same default position") was MEASURED to be incomplete: a stacked plain sibling and a maximized Explorer do NOT reproduce it, because `FocusAsync` raises the TestApp above both. Two mechanisms do. (1) A window `FocusAsync` cannot beat, such as a topmost window (and, on one run, the developer's own terminal), swallows the coordinate click while `FocusAsync` still reports gained=True. (2) While the TestApp is covered, UIA's `GetClickablePoint()` for `MenuTarget` returns a point OUTSIDE the TestApp's own window — (1059,360) for a window whose right edge is x=1008 — and FlaUI's `RightClick()` uses that point. Fix: the shared `ContextMenuArrange` helper raises the window to topmost, then computes the point, confirms the window owns it, clicks that exact point, and names the occluder if one remains. `PopupGraftingTests` used the same right-click pattern and now uses the helper too. Pinned by `ContextMenuArrangeTests` under a topmost occluder. MUTANT PROVEN: without the topmost raise it fails with the R16 signature. Opening the menu with a posted `WM_CONTEXTMENU` was MEASURED as a non-starter, because WPF ignores it |
+| 16 | `PopupRootCoverageTests` ARRANGE step is FLAKY on the full Desktop gate | — | 🔶 fix implemented (test-only), RDP-verified; console gate pending — OBSERVED 2026-08-20: `A_popup_element_is_returned_exactly_once_across_roots` failed at ARRANGE (menu never opened within 2.5s), then passed in isolation. A first fix (`7169ab4`: raise the TestApp to topmost, then right-click) was WRONG: it passed over RDP and failed 7 of 24 runs on the physical console, because `SetWindowPos(HWND_TOPMOST)` returns TRUE and does nothing while another process holds the foreground. The full chain, all MEASURED: (1) every coordinate right-click fails one of four ways (the click lands on whatever is on top; `FocusAsync` reports gained=True while the TestApp is still covered; UIA's `GetClickablePoint()` on a covered element returns a point OUTSIDE the window; a posted `WM_CONTEXTMENU` is ignored by WPF). (2) The menu's UIA PARENT depends on whether the TestApp owns the FOREGROUND when the menu opens: foreground gives the window-child shape the dedup tests need, anything else gives a desktop-level popup — WPF's `IsActive=True` alone is not enough. (3) Windows grants a newly launched TestApp the foreground only some of the time: in an idle session, one launch route gave every TestApp the foreground, while another stopped granting it ~35-40 s into the run. Once a foreign window holds it, `SetForegroundWindow` fails, with or without `AttachThreadInput`. Fix: the TestApp opens and closes its own menu on a registered window message (no mouse), and the shared `ContextMenuArrange` helper ASSERTS the shape instead of assuming it. For the window-child shape it first sends one zero-distance mouse move through `SendInput` (5 of 5 against 0 of 3 for a plain `SetForegroundWindow`, interleaved), takes the foreground, and proves it before opening. No input lease is involved, so the tests stay `Desktop`, not `SyntheticInput`. The TestApp writes an arrange event log (`%TEMP%laui-testapp-<pid>.log`) that every arrange failure quotes. `ContextMenuArrangeTests` (the topmost-occluder pin of the wrong fix) is retired; the desktop-level shape gets its own tests (`DesktopLevelPopupTests`) |
 
 Also fixed en route, though never one of the ten: `value-and-find-paths-miss-desktop-level-popups`
 (deleted in `94e932a`).
@@ -388,14 +388,13 @@ in their sequence. Before it, `negative-timeout-disables-the-sta-watchdog` was f
   permanently unresolvable — breaking exactly the controls this item targeted. `PerceptionManager.cs:580`
   already documented this. The descriptor `Name` is already never echoed (`RefRegistry.cs:206-209`); that
   guarantee is now pinned by `PasswordRedactionTestsHeadless`.
-- **Desktop-level popup coverage is structural, not test-proven.** SP1 routed `find` and
-  `wait_for(valueEquals)` through `PopupFinder.SearchRoots`, so both now reach popups at either level —
-  but this host's WPF context menu is a window CHILD (measured: `viaWindowRoot=1, viaPopupRoots=1`), so
-  the fixture exercises cross-root DEDUP and cannot reproduce desktop-level blindness at all. The fix is
-  the same structural routing every other perception path already used, and `PopupRootCoverageTests`
-  deliberately claims no blindness test. To close it for real, the fixture needs a Win32 `#32768` menu or
-  an older `HwndWrapper` popup host that lands at the desktop level. Recorded here because the backlog
-  entry it came from was retired when the code shipped.
+- **Desktop-level popup coverage is now test-proven.** SP1 routed `find` and `wait_for(valueEquals)`
+  through `PopupFinder.SearchRoots`, so both reach popups at either level. Until ROADMAP item 16 the fixture
+  could only produce the window-child shape, so that was structural and untested. Item 16 MEASURED that the
+  TestApp's own WPF context menu lands at DESKTOP LEVEL whenever the TestApp does not own the foreground when
+  it opens. `DesktopLevelPopupTests` arranges exactly that, ASSERTS the desktop-level shape, and pins `find`
+  (exactly once), `valueEquals` and the `[Active Overlays]` graft (exactly once) against it.
+  `PopupRootCoverageTests` keeps the window-child shape and its cross-root dedup.
 - **A genuinely hung window still consumes an action slot permanently — KNOWN, BY DESIGN, and NOT what the
   timeout guard fixes.** Stated here because the two are easy to conflate. The `timeoutMs` guard
   (`AutomationDispatcher.ClampActionTimeout`) closes the *caller-input* vector: no argument can now make the
@@ -733,9 +732,10 @@ plausibly reach the installer permissions path — so the mutant is not the caus
 running at the time.
 
 That makes it a sibling of item 16 (the `PopupRootCoverage` ARRANGE flake) rather than a product defect:
-two independent tests now produce false failures on a gate a release is judged on. Root cause unpinned in
-both cases; the shared suspicion is order- or fixture-dependence under a full-suite run that does not
-reproduce in isolation.
+two independent tests now produce false failures on a gate a release is judged on. Item 16's root cause
+has since been MEASURED: it was foreground ownership, which Windows grants unreliably depending on the
+launch route and timing, not test order. This one is still unpinned. Before suspecting order, check whether
+anything here depends on which window holds the foreground.
 
 Worth fixing for the same reason as item 16 — not because the product is wrong, but because a gate that
 cries wolf gets overridden. Fix direction: run the installer-permissions suite repeatedly under a full-suite

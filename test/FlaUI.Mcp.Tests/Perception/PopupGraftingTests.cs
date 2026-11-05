@@ -27,7 +27,7 @@ public class PopupGraftingTests : IClassFixture<TestAppFixture>
 
         // Same coordinate right-click hazard as ROADMAP item 16; ContextMenuArrange owns the fix and waits
         // for the menu instead of sleeping a fixed 400ms.
-        await ContextMenuArrange.OpenAsync(mgr, handle);
+        await ContextMenuArrange.OpenAsync(mgr, handle, PopupShape.WindowChild);
 
         var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
         Assert.Contains("[Active Overlays]", snap.Tree);

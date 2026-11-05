@@ -14,9 +14,8 @@ For reproducible defect tests that intentionally fail by design, see [docs/fix-t
 
 Take these in order. Gate trust comes first because B2 is verified on the Desktop suite that R16 makes flaky.
 
-1. [x] **R16 — `PopupRootCoverageTests` ARRANGE flake** *(fixed: shared `ContextMenuArrange` helper)*: the coordinate-based right-click is swallowed by a sibling
-   `TestApp` window stacked at the same default position. Open the menu without depending on screen coordinates
-   rather than widening the 2.5 s window. Confirm on the full Desktop suite — the test already passes in isolation.
+1. [ ] **R16 — popup-test ARRANGE flake** *(fix implemented, RDP-verified; console gate pending)*: the root cause was
+   foreground ownership, not a stacked sibling TestApp. The first fix (`7169ab4`) was wrong. See ROADMAP item 16.
 2. [ ] **ROADMAP item-8 citation gap**: the item 8 row cites filed debt "items 17, 18, 19", but the table ends at 16.
    Add the rows or correct the citation.
 3. [ ] **Agent Best Practices Guide**: expand `docs/agent-contract.md` with retry/recovery guidance for agents
@@ -52,6 +51,11 @@ Take these in order. Gate trust comes first because B2 is verified on the Deskto
 - [ ] **Render Full Content Verification (A5 Debt)**: Explore stable, environment-agnostic assertions for `PW_RENDERFULLCONTENT` (flag 2) non-client chrome capture.
 
 ### Unscheduled
+
+- [ ] **Structured logging in the flaui-mcp server**: today `Program.cs` only wires the default console logger to
+  stderr, and just a few files write log output. Add structured, leveled logging (tool name, window handle,
+  outcome, duration) to a file sink that an operator can read after the fact, so a failure in a live session
+  can be diagnosed from the log rather than reconstructed. Keep stdout clean: it carries the MCP protocol.
 
 - [ ] **OCR Pre-filtering**: Improve performance of opaque-window OCR text search by downsampling or caching unchanged window regions. Measure first.
 - [ ] **Redaction Rule Presets**: Provide out-of-the-box rule templates for popular enterprise applications (e.g., ERP, CRM, banking clients) in `docs/operator-manual.md`.

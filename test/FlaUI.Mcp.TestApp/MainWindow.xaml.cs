@@ -39,7 +39,71 @@ public partial class MainWindow : Window
         int tick = 0;
         ticker.Tick += (_, _) => Ticker.Text = (++tick).ToString();
         ticker.Start();
+        SourceInitialized += (_, _) =>
+            System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle)
+                .AddHook(OpenContextMenuHook);
+        Activated += (_, _) => Log("window Activated");
+        Deactivated += (_, _) => Log("window Deactivated");
+        MenuTarget.ContextMenu.Opened += (_, _) => Log("ContextMenu Opened");
+        MenuTarget.ContextMenu.Closed += (_, _) => Log("ContextMenu Closed");
+        Log("started");
     }
+
+    // ARRANGE EVENT LOG (test diagnostics). One line per event that decides whether an arrange step can work, so a
+    // failing Desktop test can QUOTE what the app saw instead of the reader guessing. Path is derived from the pid,
+    // which the tests already know: %TEMP%laui-testapp-<pid>.log (ContextMenuArrange.LogPath). Best-effort: a
+    // logging fault must never change the app's behaviour under test.
+    public static string LogPath(int pid) =>
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"flaui-testapp-{pid}.log");
+    private static readonly System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
+    private void Log(string what)
+    {
+        try
+        {
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            System.IO.File.AppendAllText(LogPath(System.Environment.ProcessId),
+                $"+{Clock.ElapsedMilliseconds,6}ms {what} | IsActive={IsActive} foreground={(hwnd != System.IntPtr.Zero && GetForegroundWindow() == hwnd)} " +
+                $"menuOpen={MenuTarget.ContextMenu.IsOpen} staysOpen={MenuTarget.ContextMenu.StaysOpen}{System.Environment.NewLine}");
+        }
+        catch (System.Exception) { /* diagnostics only */ }
+    }
+
+    // TEST-ONLY ARRANGE HOOK (ROADMAP item 16). The Desktop tests need MenuTarget's context menu OPEN (and then
+    // CLOSED again, so no test inherits another's popup), and a real right-click cannot deliver that reliably: it
+    // lands on whatever window is on top at that screen point, and while a human holds the foreground Windows
+    // silently refuses to raise this window (MEASURED: a SetWindowPos(HWND_TOPMOST) that returned TRUE left
+    // WS_EX_TOPMOST unset). A posted WM_CONTEXTMENU does not work either: WPF ignores it (MEASURED). So the tests
+    // post THESE registered messages and the window opens/closes the SAME ContextMenu object itself. No XAML
+    // change, so the layout guards are untouched. The strings are duplicated in
+    // test/FlaUI.Mcp.Tests/Perception/ContextMenuArrange.cs; keep them equal.
+    public const string OpenContextMenuMessage = "FlaUI.Mcp.TestApp.OpenMenuTargetContextMenu";
+    public const string CloseContextMenuMessage = "FlaUI.Mcp.TestApp.CloseMenuTargetContextMenu";
+    private static readonly uint OpenContextMenuMsg = RegisterWindowMessage(OpenContextMenuMessage);
+    private static readonly uint CloseContextMenuMsg = RegisterWindowMessage(CloseContextMenuMessage);
+
+    private System.IntPtr OpenContextMenuHook(System.IntPtr hwnd, int msg, System.IntPtr w, System.IntPtr l, ref bool handled)
+    {
+        if (OpenContextMenuMsg != 0 && (uint)msg == OpenContextMenuMsg)
+        {
+            Log("open-menu message received");
+            MenuTarget.ContextMenu.PlacementTarget = MenuTarget;
+            MenuTarget.ContextMenu.IsOpen = true;
+            Log("IsOpen=true set");
+            handled = true;
+        }
+        else if (CloseContextMenuMsg != 0 && (uint)msg == CloseContextMenuMsg)
+        {
+            Log("close-menu message received");
+            MenuTarget.ContextMenu.IsOpen = false;
+            handled = true;
+        }
+        return System.IntPtr.Zero;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern uint RegisterWindowMessage(string name);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern System.IntPtr GetForegroundWindow();
 
     private void OkButton_Click(object sender, RoutedEventArgs e)
         => Status.Text = $"clicked: {Input.Text}";

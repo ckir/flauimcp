@@ -16,8 +16,10 @@ namespace FlaUI.Mcp.Tests.Perception;
 /// two roots — via `win` and via the popup root. SnapshotEngine prunes that duplication for snapshots
 /// (pinned by PopupGraftingTests); find has no such pruning, so it must dedup by RuntimeId.
 /// MEASURED on this host: viaWindowRoot=1, viaPopupRoots=1 — the fixture's WPF context menu is a
-/// window child that ALSO appears as an owner popup, so it exercises dedup but CANNOT reproduce the
-/// desktop-level blindness the fix also addresses. There is deliberately no blindness test here.</summary>
+/// window child that ALSO appears as an owner popup, so it exercises dedup. That holds ONLY while the
+/// TestApp window is ACTIVE when the menu opens, so the arrange step ASSERTS PopupShape.WindowChild
+/// rather than assuming it. The desktop-level case (an INACTIVE window's menu) is covered separately by
+/// DesktopLevelPopupTests.</summary>
 [Trait("Category", "Desktop")]
 public class PopupRootCoverageTests : IClassFixture<TestAppFixture>
 {
@@ -32,7 +34,7 @@ public class PopupRootCoverageTests : IClassFixture<TestAppFixture>
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
 
-        await ContextMenuArrange.OpenAsync(mgr, handle);
+        await ContextMenuArrange.OpenAsync(mgr, handle, PopupShape.WindowChild);
 
         // FindQuery is a POSITIONAL record (FindQuery.cs:13-19) — object-initializer syntax does not
         // compile. Order: AutomationId, Name, NameMatch, ControlType, EnabledOnly, IgnoreCase=false.
@@ -58,7 +60,7 @@ public class PopupRootCoverageTests : IClassFixture<TestAppFixture>
         var wait = new WaitCoordinator(perception);
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
 
-        await ContextMenuArrange.OpenAsync(mgr, handle);
+        await ContextMenuArrange.OpenAsync(mgr, handle, PopupShape.WindowChild);
 
         // MenuAlpha's Header is "Alpha" (MainWindow.xaml:103), and the value read falls back
         // ValuePattern -> Name, so a MenuItem with no ValuePattern yields its Name.
