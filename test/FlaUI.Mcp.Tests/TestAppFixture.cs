@@ -65,10 +65,11 @@ public sealed class TestAppFixture : IDisposable
         }
         // ⚠ KEEP THE FULL 500ms SETTLE. The defect being fixed above was "does not WAIT for the window",
         // not "sleeps too long" — and shortening this to 100ms immediately broke a different test.
-        // PopupRootCoverageTests right-clicks at a COORDINATE, and its own arrange-failure message names
-        // the hazard: "a sibling TestApp window stacked at the same default position can swallow it". The
-        // extra ~400ms is what lets the PREVIOUS class's dying TestApp window leave the screen before the
-        // next class clicks at that same default position. Returning sooner is not a virtue here.
+        // At the time, PopupRootCoverageTests right-clicked at a COORDINATE and blamed "a sibling TestApp
+        // window stacked at the same default position". That diagnosis was later MEASURED to be incomplete
+        // (ROADMAP item 16, see ContextMenuArrange) and the right-click no longer depends on this settle. The
+        // 500ms stays because nothing has re-measured whether another test still does. Returning sooner is
+        // not a virtue here.
         //
         // So: the handle poll makes window presence DETERMINISTIC, and this preserves the original timing
         // envelope. Both are needed; neither replaces the other.

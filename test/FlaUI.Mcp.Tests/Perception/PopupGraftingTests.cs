@@ -25,14 +25,9 @@ public class PopupGraftingTests : IClassFixture<TestAppFixture>
         var perception = new PerceptionManager(mgr, new RefRegistry(), new SnapshotCache());
         var handle = await mgr.OpenByPidAsync(_app.Process.Id);
 
-        await mgr.FocusAsync(handle);
-        await mgr.RunWithWindowAndDesktopAsync(handle, (win, _) =>
-        {
-            var target = win.FindFirstDescendant(cf => cf.ByAutomationId("MenuTarget"))!;
-            target.RightClick();
-            return true;
-        });
-        await Task.Delay(400); // let the menu open as a desktop-level popup
+        // Same coordinate right-click hazard as ROADMAP item 16; ContextMenuArrange owns the fix and waits
+        // for the menu instead of sleeping a fixed 400ms.
+        await ContextMenuArrange.OpenAsync(mgr, handle);
 
         var snap = await perception.SnapshotAsync(handle, new SnapshotOptions { FullProperties = true });
         Assert.Contains("[Active Overlays]", snap.Tree);
