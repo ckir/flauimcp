@@ -1685,3 +1685,38 @@ Describe 'Invoke-Gate build-lock preflight' {
         $detail | Should -Match 'taskkill /F /PID 15940'
     }
 }
+Describe 'Test-DesktopSuiteFreshness' {
+    BeforeEach {
+        $script:FreshBox = Join-Path ([System.IO.Path]::GetTempPath()) ("flaui-fresh-" + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:FreshBox 'artifacts/desktop-runs') | Out-Null
+    }
+    AfterEach {
+        if (Test-Path $script:FreshBox) { Remove-Item -Recurse -Force $script:FreshBox }
+    }
+
+    It 'reports not fresh and warns when no desktop run reports exist' {
+        $res = Test-DesktopSuiteFreshness -RepoRoot $script:FreshBox
+        $res.Fresh | Should -BeFalse
+        $res.Warning | Should -Match 'never recorded'
+    }
+
+    It 'reports not fresh and warns when the latest report is older than MaxAgeDays' {
+        $reportPath = Join-Path $script:FreshBox 'artifacts/desktop-runs/desktop-2026-01-01_000000.txt'
+        'sample report' | Set-Content $reportPath
+        (Get-Item $reportPath).LastWriteTime = (Get-Date).AddDays(-10)
+
+        $res = Test-DesktopSuiteFreshness -RepoRoot $script:FreshBox -MaxAgeDays 7
+        $res.Fresh | Should -BeFalse
+        $res.Warning | Should -Match '10 days ago'
+    }
+
+    It 'reports fresh with no warning when the latest report is within MaxAgeDays' {
+        $reportPath = Join-Path $script:FreshBox 'artifacts/desktop-runs/desktop-2026-01-01_000000.txt'
+        'sample report' | Set-Content $reportPath
+        (Get-Item $reportPath).LastWriteTime = (Get-Date).AddDays(-2)
+
+        $res = Test-DesktopSuiteFreshness -RepoRoot $script:FreshBox -MaxAgeDays 7
+        $res.Fresh | Should -BeTrue
+        $res.Warning | Should -BeNullOrEmpty
+    }
+}

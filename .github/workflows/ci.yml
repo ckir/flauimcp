@@ -12,6 +12,19 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  license-check:
+    name: License Headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.22"
+      - name: Install addlicense
+        run: go install github.com/google/addlicense@latest
+      - name: Verify license headers
+        run: addlicense -check -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" .
+
   unit:
     name: Unit (non-Desktop)
     runs-on: windows-latest
@@ -61,6 +74,7 @@ jobs:
         shell: pwsh
         run: |
           Install-Module Pester -RequiredVersion 6.1.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -Force -SkipPublisherCheck -Scope CurrentUser
           Import-Module Pester -RequiredVersion 6.1.0
           $result = Invoke-Pester -Path scripts/ -CI -PassThru
           if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) Pester test(s) failed." }

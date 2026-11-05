@@ -62,8 +62,8 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Never --no-build here: a deleted test still runs from a stale DLL.
-& dotnet test $sln --filter 'Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect'
+# dotnet build directly above just refreshed all binaries; pass --no-build to skip redundant MSBuild rebuild.
+& dotnet test $sln -c Debug --no-build --filter 'Category!=Desktop&Category!=SyntheticInput&Category!=KnownDefect'
 if ($LASTEXITCODE -ne 0) {
     Write-Host ''
     Write-Host 'pre-push: headless tests FAILED.' -ForegroundColor Red

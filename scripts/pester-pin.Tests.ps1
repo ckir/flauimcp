@@ -266,4 +266,27 @@ Describe 'Pester pin' {
             $errorCount | Should -Be 0 -Because "Script $($ps.FullName) has syntax errors: $errMsg"
         }
     }
+
+    It 'all runnable repository PowerShell scripts declare a -WhatIf switch' {
+        $scripts = Get-ChildItem -Path $script:Repo -Recurse -Filter *.ps1 |
+            Where-Object { $_.Name -notlike "*.Tests.ps1" -and $_.Name -ne "release-lib.ps1" }
+        $scripts | Should -Not -BeNullOrEmpty -Because 'there must be runnable PowerShell scripts in the repo'
+        foreach ($ps in $scripts) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($ps.FullName, [ref]$null, [ref]$null)
+            $params = if ($ast.ParamBlock) { $ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath } } else { @() }
+            ($params -contains 'WhatIf') | Should -BeTrue -Because "Runnable script $($ps.FullName) must implement -WhatIf"
+        }
+    }
+
+    It 'PSScriptAnalyzer reports zero Error-level diagnostics across repository scripts if installed' {
+        if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+            return
+        }
+        $scripts = Get-ChildItem -Path $script:Repo -Recurse -Filter *.ps1
+        foreach ($ps in $scripts) {
+            $issues = @(Invoke-ScriptAnalyzer -Path $ps.FullName -Severity Error)
+            $issueMsg = if ($issues) { ($issues | ForEach-Object { "$($_.Line): $($_.Message)" }) -join '; ' } else { '' }
+            $issues.Count | Should -Be 0 -Because "Script $($ps.FullName) has PSScriptAnalyzer Error issues: $issueMsg"
+        }
+    }
 }

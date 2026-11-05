@@ -671,6 +671,11 @@ try {
     }
     if (-not $gate.Passed) { throw "Gate failed — fix the failing check(s) above before releasing." }
 
+    $desktopFreshness = Test-DesktopSuiteFreshness -RepoRoot $RepoRoot
+    if (-not $desktopFreshness.Fresh) {
+        Write-Warning $desktopFreshness.Warning
+    }
+
     $diffText = (git -C $RepoRoot log @rangeArgs -p 2>$null | Out-String)
     # `git log --stat` repeats a whole file list ONCE PER COMMIT. Over the 403-commit range for v1.0.0
     # that measured 779,976 chars (~222,850 tokens) and was 94.2% of a prompt that exceeded the model's

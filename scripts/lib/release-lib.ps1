@@ -738,3 +738,41 @@ function Invoke-Gate {
         Checks = $checks
     }
 }
+function Test-DesktopSuiteFreshness {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [int]$MaxAgeDays = 7,
+        [datetime]$Now = (Get-Date)
+    )
+    $desktopRunsDir = Join-Path $RepoRoot 'artifacts/desktop-runs'
+    $latestDesktopRun = Get-ChildItem -Path $desktopRunsDir -Filter 'desktop-*.txt' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+    if (-not $latestDesktopRun) {
+        return [pscustomobject]@{
+            Fresh        = $false
+            LatestReport = $null
+            AgeDays      = $null
+            Warning      = "Local Desktop UIA suite has not run recently (never recorded). Consider running 'just desktop' or Cockpit [K] to verify interactive behavior before publishing."
+        }
+    }
+
+    $age = ($Now - $latestDesktopRun.LastWriteTime).TotalDays
+    if ($age -gt $MaxAgeDays) {
+        $ageInt = [int]$age
+        return [pscustomobject]@{
+            Fresh        = $false
+            LatestReport = $latestDesktopRun.FullName
+            AgeDays      = $age
+            Warning      = "Local Desktop UIA suite has not run recently ($ageInt days ago). Consider running 'just desktop' or Cockpit [K] to verify interactive behavior before publishing."
+        }
+    }
+
+    [pscustomobject]@{
+        Fresh        = $true
+        LatestReport = $latestDesktopRun.FullName
+        AgeDays      = $age
+        Warning      = $null
+    }
+}
