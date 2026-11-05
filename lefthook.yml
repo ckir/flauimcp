@@ -25,8 +25,8 @@ pre-push:
   parallel: false
   commands:
     headless-gate:
-      # The fast gate only: build + the non-Desktop suite. NOT the Desktop/SyntheticInput suites, which need
-      # an interactive session and a human-granted input lease, and NOT the Pester suite, which adds ~30s.
+      # The fast gate: license check + build + the non-Desktop suite. NOT the Desktop/SyntheticInput suites,
+      # which need an interactive session and a human-granted input lease, and NOT the Pester suite, which adds ~30s.
       #
       # Delegated to a script, NOT inlined. The inline form
       #   dotnet build ... && dotnet test ... --filter "Category!=Desktop&..."

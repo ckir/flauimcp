@@ -33,6 +33,9 @@ Where to write the dated report. Default: artifacts/desktop-runs (git-ignored).
 .PARAMETER Filter
 Override the test filter. Default is the lease-exempt Desktop subset.
 
+.PARAMETER WhatIf
+Dry run: preview test filter and report path without building or running tests.
+
 .EXAMPLE
 pwsh -File scripts/desktop-suite.ps1
 
@@ -47,17 +50,25 @@ Register-ScheduledTask -TaskName 'flaui-mcp desktop suite' -Action $action -Trig
 [CmdletBinding()]
 param(
     [string]$ReportDir,
-    [string]$Filter = 'Category=Desktop&Category!=SyntheticInput&Category!=KnownDefect&Category!=Measurement'
+    [string]$Filter = 'Category=Desktop&Category!=SyntheticInput&Category!=KnownDefect&Category!=Measurement',
+    [switch]$WhatIf
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-. (Join-Path $PSScriptRoot 'lib/release-lib.ps1')
 
 if (-not $ReportDir) { $ReportDir = Join-Path $repoRoot 'artifacts/desktop-runs' }
-New-Item -ItemType Directory -Force -Path $ReportDir | Out-Null
 $stamp  = Get-Date -Format 'yyyy-MM-dd_HHmmss'
 $report = Join-Path $ReportDir "desktop-$stamp.txt"
+
+if ($WhatIf) {
+    Write-Host "[WhatIf] Would check build locks and interactive session, build FlaUI.Mcp.slnx (Debug), run tests matching filter '$Filter', and write report to $report"
+    exit 0
+}
+
+. (Join-Path $PSScriptRoot 'lib/release-lib.ps1')
+
+New-Item -ItemType Directory -Force -Path $ReportDir | Out-Null
 
 function Write-Both { param([string]$Text) Write-Host $Text; Add-Content -LiteralPath $report -Value $Text }
 

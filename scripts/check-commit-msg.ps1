@@ -35,17 +35,27 @@ Path to the commit message file (git passes this to the commit-msg hook as $1).
 
 .PARAMETER Subject
 A subject string to validate directly. For tests; mutually exclusive with -Path.
+
+.PARAMETER WhatIf
+Preview validation check without returning non-zero exit codes.
 #>
 [CmdletBinding()]
 param(
     [string]$Path,
-    [string]$Subject
+    [string]$Subject,
+    [switch]$WhatIf
 )
 
 $script:AllowedTypes = @(
     'feat', 'fix', 'docs', 'chore', 'test', 'refactor', 'perf', 'ci', 'build', 'style', 'revert',
     'measure'   # repo-specific: commits that record a measurement rather than change behaviour
 )
+
+if ($WhatIf) {
+    $target = if ($Subject) { "subject: '$Subject'" } elseif ($Path) { "file: '$Path'" } else { "commit message" }
+    Write-Host "[WhatIf] Would validate conventional format of $target against allowed types: $($script:AllowedTypes -join ', ')"
+    exit 0
+}
 
 function Test-CommitSubject {
     [CmdletBinding()]

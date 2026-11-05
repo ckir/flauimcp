@@ -11,6 +11,7 @@
 #
 #   just            list the recipes
 #   just gate       what to run before you commit
+#   just pre-push   what to run before you push
 #   just release    cut a release
 
 set shell := ["pwsh", "-NoProfile", "-Command"]
@@ -54,6 +55,14 @@ pester:
 # Build, headless tests, and the PowerShell suite. The cockpit's [G] Dev gate.
 gate: build test pester
 
+# Check that source files have license headers.
+license-check:
+    addlicense -check -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" .
+
+# The pre-push fast gate: license check, build, and headless test suite (same as lefthook pre-push).
+pre-push:
+    pwsh -File scripts/headless-gate.ps1
+
 # Needs an interactive session; it is not a CI job and never will be. The script header carries the
 # scheduled-task registration one-liner.
 #
@@ -86,6 +95,13 @@ release-local:
     pwsh -File scripts/release.ps1 -NoPush
 
 # --- [4] HOUSEKEEPING -------------------------------------------------------
+
+# Ensure source files have license headers using header.txt.
+addlicense:
+    addlicense -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" .
+
+# Alias for addlicense.
+license: addlicense
 
 # Bundle the codebase for review.
 bundle:

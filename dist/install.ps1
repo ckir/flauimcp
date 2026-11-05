@@ -9,12 +9,14 @@
 <#
 .SYNOPSIS  Download and silently run the FlaUI.Mcp installer.
 .EXAMPLE   irm https://raw.githubusercontent.com/ckir/flauimcp/master/dist/install.ps1 | iex
+.EXAMPLE   pwsh -File dist/install.ps1 -WhatIf
 #>
 [CmdletBinding()]
 param(
     [string] $Version = "latest",
     [string] $Owner   = "ckir",
-    [string] $Repo    = "flauimcp"
+    [string] $Repo    = "flauimcp",
+    [switch] $WhatIf
 )
 $ErrorActionPreference = "Stop"
 
@@ -30,6 +32,12 @@ $asset = $release.assets | Where-Object { $_.name -eq "flaui-mcp-setup.exe" } | 
 if (-not $asset) { throw "flaui-mcp-setup.exe not found in release '$($release.tag_name)'." }
 
 $dest = Join-Path $env:TEMP "flaui-mcp-setup.exe"
+
+if ($WhatIf) {
+    Write-Host "[WhatIf] Would download $($asset.name) ($($release.tag_name)) from $($asset.browser_download_url) to $dest and execute silent install (/VERYSILENT /SUPPRESSMSGBOXES /NORESTART)."
+    exit 0
+}
+
 Write-Host "Downloading $($asset.name) ($($release.tag_name))..."
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $dest -Headers @{ "User-Agent" = "flaui-mcp-installer" }
 

@@ -26,7 +26,15 @@
   v0.15.0 release.
 #>
 [CmdletBinding()]
-param([string]$Exe = "$PSScriptRoot\..\publish\flaui-mcp.exe")
+param(
+    [string]$Exe = "$PSScriptRoot\..\publish\flaui-mcp.exe",
+    [switch]$WhatIf
+)
+
+if ($WhatIf) {
+    Write-Host "[WhatIf] Would create isolated sandbox in TEMP and run install/manifest/skill/uninstall smoke against '$Exe'."
+    exit 0
+}
 
 $ErrorActionPreference = 'Stop'
 $failed = @()

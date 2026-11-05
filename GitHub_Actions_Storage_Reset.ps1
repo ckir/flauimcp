@@ -10,11 +10,16 @@
 # GitHub Actions Storage Reset Script (Windows)
 # ============================================
 
+[CmdletBinding()]
 param(
-    [switch]$NonInteractive  # skip the y/N prompts and proceed with deletions (lets an agent run it unattended)
+    [switch]$NonInteractive, # skip the y/N prompts and proceed with deletions (lets an agent run it unattended)
+    [switch]$WhatIf          # dry run: list caches/runs and preview deletions without deleting
 )
 
 Write-Host "=== GitHub Actions Storage Reset ===" -ForegroundColor Cyan
+if ($WhatIf) {
+    Write-Host "[WhatIf] Dry-run mode: listing only, no caches or runs will be deleted." -ForegroundColor Cyan
+}
 
 # Check for gh CLI
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -37,20 +42,24 @@ if (-not $cacheList) {
 # --------------------------------------------
 # 2. DELETE CACHES
 # --------------------------------------------
-if ($NonInteractive) {
-    $confirmCaches = "y"
-    Write-Host "`n[NonInteractive] Deleting ALL caches..." -ForegroundColor Yellow
+if ($WhatIf) {
+    Write-Host "`n[WhatIf] Would delete ALL caches (gh cache delete --all)." -ForegroundColor Cyan
 } else {
-    Write-Host "`nDelete ALL caches? (y/N)" -ForegroundColor Yellow
-    $confirmCaches = Read-Host
-}
+    if ($NonInteractive) {
+        $confirmCaches = "y"
+        Write-Host "`n[NonInteractive] Deleting ALL caches..." -ForegroundColor Yellow
+    } else {
+        Write-Host "`nDelete ALL caches? (y/N)" -ForegroundColor Yellow
+        $confirmCaches = Read-Host
+    }
 
-if ("$confirmCaches".ToLower() -eq "y") {
-    Write-Host "Deleting caches..." -ForegroundColor Red
-    gh cache delete --all
-    Write-Host "All caches deleted." -ForegroundColor Green
-} else {
-    Write-Host "Skipping cache deletion." -ForegroundColor Yellow
+    if ("$confirmCaches".ToLower() -eq "y") {
+        Write-Host "Deleting caches..." -ForegroundColor Red
+        gh cache delete --all
+        Write-Host "All caches deleted." -ForegroundColor Green
+    } else {
+        Write-Host "Skipping cache deletion." -ForegroundColor Yellow
+    }
 }
 
 # --------------------------------------------
@@ -69,25 +78,30 @@ if (-not $Runs) {
 # --------------------------------------------
 # 4. DELETE WORKFLOW RUNS
 # --------------------------------------------
-if ($NonInteractive) {
-    $confirmRuns = "y"
-    Write-Host "`n[NonInteractive] Deleting ALL displayed workflow runs..." -ForegroundColor Yellow
+if ($WhatIf) {
+    $count = if ($Runs) { $Runs.Count } else { 0 }
+    Write-Host "`n[WhatIf] Would delete $count displayed workflow run(s)." -ForegroundColor Cyan
 } else {
-    Write-Host "`nDelete ALL displayed workflow runs? (y/N)" -ForegroundColor Yellow
-    $confirmRuns = Read-Host
-}
-
-if ("$confirmRuns".ToLower() -eq "y") {
-    Write-Host "Deleting workflow runs..." -ForegroundColor Red
-    foreach ($run in $Runs) {
-        Write-Host "Deleting run $($run.databaseId)..." -NoNewline
-        # Removed --yes flag as it is not supported/needed when deleting by ID
-        gh run delete $run.databaseId
-        Write-Host " Done." -ForegroundColor Green
+    if ($NonInteractive) {
+        $confirmRuns = "y"
+        Write-Host "`n[NonInteractive] Deleting ALL displayed workflow runs..." -ForegroundColor Yellow
+    } else {
+        Write-Host "`nDelete ALL displayed workflow runs? (y/N)" -ForegroundColor Yellow
+        $confirmRuns = Read-Host
     }
-    Write-Host "Batch deletion complete." -ForegroundColor Green
-} else {
-    Write-Host "Skipping workflow run deletion." -ForegroundColor Yellow
+
+    if ("$confirmRuns".ToLower() -eq "y") {
+        Write-Host "Deleting workflow runs..." -ForegroundColor Red
+        foreach ($run in $Runs) {
+            Write-Host "Deleting run $($run.databaseId)..." -NoNewline
+            # Removed --yes flag as it is not supported/needed when deleting by ID
+            gh run delete $run.databaseId
+            Write-Host " Done." -ForegroundColor Green
+        }
+        Write-Host "Batch deletion complete." -ForegroundColor Green
+    } else {
+        Write-Host "Skipping workflow run deletion." -ForegroundColor Yellow
+    }
 }
 
 # --------------------------------------------

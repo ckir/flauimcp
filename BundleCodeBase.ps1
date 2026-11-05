@@ -13,15 +13,19 @@
 #
 #   ./BundleCodeBase.ps1               # code only (docs/ excluded)
 #   ./BundleCodeBase.ps1 -IncludeDocs  # also bundle docs/superpowers (plans/specs)
+#   ./BundleCodeBase.ps1 -WhatIf       # dry run: preview bundle configuration
 
+[CmdletBinding()]
 param(
     # Include docs/ (plans + specs under docs/superpowers) so agy has design context.
-    [switch]$IncludeDocs
+    [switch]$IncludeDocs,
+
+    # Preview bundle configuration and output path without executing dir-to-text.
+    [switch]$WhatIf
 )
 
 $folderName = if ($PSScriptRoot) { (Get-Item $PSScriptRoot).Name } else { (Get-Item .).Name }
 $bundle = "$folderName.txt"
-Remove-Item $bundle -ErrorAction SilentlyContinue
 
 # Excludes tuned for this C#/.NET solution:
 #   bin/obj      - per-project build output
@@ -35,6 +39,14 @@ $exclude = @('bin', 'obj', 'dist', '.git', '.vs', '.idea', 'TestResults', '*.use
 
 # docs/ is excluded by default to keep the bundle code-focused; -IncludeDocs keeps it.
 if (-not $IncludeDocs) { $exclude += 'docs' }
+
+if ($WhatIf) {
+    $scope = if ($IncludeDocs) { "code + docs" } else { "code only" }
+    Write-Host "[WhatIf] Would bundle ($scope) into '$bundle' excluding: $($exclude -join ', ')"
+    exit 0
+}
+
+Remove-Item $bundle -ErrorAction SilentlyContinue
 
 $dtArgs = @('--use-gitignore')
 foreach ($e in $exclude) { $dtArgs += '-e'; $dtArgs += $e }
