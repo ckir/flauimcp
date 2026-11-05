@@ -14,7 +14,7 @@ For reproducible defect tests that intentionally fail by design, see [docs/fix-t
 
 Take these in order. Gate trust comes first because B2 is verified on the Desktop suite that R16 makes flaky.
 
-1. [ ] **R16 — popup-test ARRANGE flake** *(fix implemented, RDP-verified; console gate pending)*: the root cause was
+1. [x] **R16 — popup-test ARRANGE flake** *(fixed `016cac5`; console Desktop gate 164/164)*: the root cause was
    foreground ownership, not a stacked sibling TestApp. The first fix (`7169ab4`) was wrong. See ROADMAP item 16.
 2. [ ] **ROADMAP item-8 citation gap**: the item 8 row cites filed debt "items 17, 18, 19", but the table ends at 16.
    Add the rows or correct the citation.
