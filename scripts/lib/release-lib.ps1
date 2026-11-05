@@ -1,3 +1,11 @@
+<#
+ Copyright (c) 2026 Costas Kirgoussios
+
+ This software is licensed under the PolyForm Noncommercial License 1.0.0.
+ You may obtain a copy of the License at:
+ https://polyformproject.org/licenses/noncommercial/1.0.0/
+#>
+
 # scripts/lib/release-lib.ps1
 # Pure, testable functions backing scripts/release.ps1.
 # Dot-source this file; every function below is then available in the caller's scope.

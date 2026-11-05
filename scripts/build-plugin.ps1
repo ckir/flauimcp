@@ -1,4 +1,12 @@
 #!/usr/bin/env pwsh
+<#
+ Copyright (c) 2026 Costas Kirgoussios
+
+ This software is licensed under the PolyForm Noncommercial License 1.0.0.
+ You may obtain a copy of the License at:
+ https://polyformproject.org/licenses/noncommercial/1.0.0/
+#>
+
 # Regenerates plugins/flaui-mcp/{skills,scripts} from the repo's .claude source of truth.
 # The plugin's manifests (.claude-plugin/plugin.json, hooks/hooks.json) are hand-authored and NOT touched.
 $ErrorActionPreference = 'Stop'

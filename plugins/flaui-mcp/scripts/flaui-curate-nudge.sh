@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
 # Stop hook: once per session, if the inbox has pending items, surface a nudge to run flaui-curate.
 # Emits hookSpecificOutput.additionalContext JSON — the only Stop-hook output that reaches the model
 # (plain stdout on Stop is transcript-only). Dumb: reads only session_id from stdin JSON (no date math).
