@@ -44,7 +44,10 @@ public sealed class WindowTools
         {
             var handle = by switch
             {
-                "pid"   => await _windows.OpenByPidAsync(int.Parse(value)),
+                "pid"   => int.TryParse(value, out var pid)
+                    ? await _windows.OpenByPidAsync(pid)
+                    : throw new ToolException(ToolErrorCode.InvalidArguments,
+                        $"PID '{value}' is not a valid integer.", "pass a numeric pid, e.g. 1234"),
                 "title" => await _windows.OpenByTitleAsync(value),
                 _ => throw new ToolException(ToolErrorCode.WindowNotFound,
                         $"Unknown selector '{by}'.", "use by=pid or by=title")

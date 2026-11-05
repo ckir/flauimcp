@@ -246,4 +246,16 @@ Describe 'Pester pin' {
             $available | Should -Contain $switch -Because "Invoke-Pester -$switch does not exist in the pinned Pester $($script:PinnedVersion); under 6.x that is a parameter-binding error, so the gate fails even when every test passes"
         }
     }
+
+    It 'all repository PowerShell scripts parse with zero syntax errors' {
+        $scripts = Get-ChildItem -Path $script:Repo -Recurse -Filter *.ps1
+        $scripts | Should -Not -BeNullOrEmpty -Because 'there must be PowerShell scripts in the repo'
+        foreach ($ps in $scripts) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($ps.FullName, [ref]$null, [ref]$errors)
+            $errorCount = if ($errors) { $errors.Count } else { 0 }
+            $errMsg = if ($errors) { ($errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }) -join '; ' } else { '' }
+            $errorCount | Should -Be 0 -Because "Script $($ps.FullName) has syntax errors: $errMsg"
+        }
+    }
 }

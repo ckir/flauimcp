@@ -1,8 +1,7 @@
 # Bundle this repo into a single text file for upload to agy's web interface.
 #
-# dir-to-text writes "<current-folder-name>.txt" into the current directory (here:
-# "aidesktop.txt"), strictly respecting every .gitignore (--use-gitignore). Run it
-# from the repo root:
+# dir-to-text writes "<current-folder-name>.txt" into the current directory,
+# strictly respecting every .gitignore (--use-gitignore). Run it from the repo root:
 #
 #   ./BundleCodeBase.ps1               # code only (docs/ excluded)
 #   ./BundleCodeBase.ps1 -IncludeDocs  # also bundle docs/superpowers (plans/specs)
@@ -12,7 +11,8 @@ param(
     [switch]$IncludeDocs
 )
 
-$bundle = "aidesktop.txt"
+$folderName = if ($PSScriptRoot) { (Get-Item $PSScriptRoot).Name } else { (Get-Item .).Name }
+$bundle = "$folderName.txt"
 Remove-Item $bundle -ErrorAction SilentlyContinue
 
 # Excludes tuned for this C#/.NET solution:

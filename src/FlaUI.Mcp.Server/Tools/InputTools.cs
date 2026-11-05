@@ -507,6 +507,8 @@ public sealed class InputTools
     private static (string[] mods, string key) SplitChord(string chord)
     {
         var tokens = chord.Split('+', System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0)
+            throw new ToolException(ToolErrorCode.InvalidArguments, $"Key chord '{chord}' cannot be empty.", "pass a valid chord, e.g. \"Ctrl+S\"");
         var mods = tokens.Length > 1 ? tokens[..^1] : System.Array.Empty<string>();
         return (mods, tokens[^1]);
     }

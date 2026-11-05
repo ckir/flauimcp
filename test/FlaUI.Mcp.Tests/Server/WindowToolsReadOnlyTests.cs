@@ -21,4 +21,8 @@ public class WindowToolsReadOnlyTests
     [Fact]
     public async Task Close_is_blocked_in_read_only_mode()
         => Assert.Contains("WriteBlockedReadOnly", await ReadOnly().DesktopCloseWindow("w1"));
+
+    [Fact]
+    public async Task OpenWindow_with_invalid_pid_returns_InvalidArguments()
+        => Assert.Contains("InvalidArguments", await ReadOnly().DesktopOpenWindow("pid", "not-a-number"));
 }

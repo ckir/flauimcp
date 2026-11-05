@@ -141,7 +141,7 @@ $script:Actions = @(
 
     # [2] QUALITY GATE
     [pscustomobject]@{ Key='G'; Tier=1; Desc='Dev gate (build+test+Pester)'; Note=''; Handler={ Invoke-DevGate } }
-    [pscustomobject]@{ Key='E'; Tier=1; Desc='Pester (scripts/)';      Note='';       Cmd='pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = 'scripts/'; $c.Run.Exit = $true; Invoke-Pester -Configuration $c"' }
+    [pscustomobject]@{ Key='E'; Tier=1; Desc='Pester (scripts/)';      Note='';       Cmd='pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = ''scripts/''; $c.Run.Exit = $true; Invoke-Pester -Configuration $c"' }
     [pscustomobject]@{ Key='I'; Tier=1; Desc='Install smoke';          Note='';       Cmd='pwsh -File scripts/install-smoke.ps1' }
     [pscustomobject]@{ Key='K'; Tier=1; Desc='Desktop suite (the v1.0 gate)'; Note='CONSOLE+LEASE'; Handler={ Invoke-DesktopSuite } }
 
@@ -174,7 +174,7 @@ function Invoke-DevGate {
     # working tree on every run. CHANGELOG records -EnableExit being chosen for exactly that reason ("sets
     # the exit code without writing result files"); Pester 6 removed -EnableExit, and Run.Exit is the
     # setting that preserves the property. Keeping a gate from littering the tree it gates is not cosmetic.
-    Invoke-Cmd 'pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = 'scripts/'; $c.Run.Exit = $true; Invoke-Pester -Configuration $c"'
+    Invoke-Cmd 'pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = ''scripts/''; $c.Run.Exit = $true; Invoke-Pester -Configuration $c"'
 }
 
 # The Category=Desktop suite is Track A's definition of done, and it is the one gate that CANNOT be run
