@@ -1,0 +1,83 @@
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+name: 🐛 Bug Report
+description: File a defect, crash, or unexpected behavior when automating Windows applications.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please review [docs/fix-the-tool-backlog/](https://github.com/ckir/flauimcp/tree/master/docs/fix-the-tool-backlog) to see if this is an already-known defect before filing.
+
+  - type: input
+    id: os_version
+    attributes:
+      label: Windows Version & OS Build
+      description: e.g. Windows 11 Pro 23H2 (Build 22631.3880)
+      placeholder: Windows 11 Build ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: session_type
+    attributes:
+      label: Session Type
+      description: Did this run on a physical console or over an RDP session?
+      options:
+        - "Physical Console (local monitor/keyboard)"
+        - "RDP (Connected & Unlocked)"
+        - "RDP (Disconnected / Locked)"
+        - "Unattended / Scheduled Task / Virtual Machine"
+    validations:
+      required: true
+
+  - type: input
+    id: target_app
+    attributes:
+      label: Target Application & Framework
+      description: What application were you driving? (e.g., Notepad, VS Code, Custom WPF app, Electron, WinUI 3)
+      placeholder: App name and framework
+    validations:
+      required: true
+
+  - type: textarea
+    id: tool_call
+    attributes:
+      label: MCP Tool Call & Arguments
+      description: The exact MCP tool invoked and parameters passed.
+      placeholder: |
+        desktop_click(target: "Save Button")
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: What Happened? (Actual Behavior)
+      description: Include any error envelope returned ({ error, message, suggestedRecovery }) or log output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: What Did You Expect to Happen?
+      description: Describe what should have occurred instead.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklists
+    attributes:
+      label: Pre-flight Verification
+      options:
+        - label: I verified this issue is not already documented in `docs/fix-the-tool-backlog/`
+          required: true
+        - label: If this involves synthetic input (clicks/keystrokes), I confirmed an active lease was granted via `flaui-mcp unlock`
+          required: false

@@ -1,0 +1,63 @@
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+name: 💡 Feature / Tool Request
+description: Suggest a new MCP tool, perception capability, or safety mechanism for FlaUI.Mcp.
+title: "[Proposal]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a new capability! Check [ROADMAP.md](https://github.com/ckir/flauimcp/blob/master/ROADMAP.md) and [docs/agent-contract.md](https://github.com/ckir/flauimcp/blob/master/docs/agent-contract.md) first to ensure the tool isn't already planned or provided.
+
+  - type: input
+    id: tool_name
+    attributes:
+      label: Proposed Tool Name (if applicable)
+      description: Follows the `desktop_*` prefix naming convention (e.g., `desktop_drag_drop`, `desktop_find_text`).
+      placeholder: desktop_...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: safety_classification
+    attributes:
+      label: Safety Classification
+      description: In FlaUI.Mcp, tools are strictly partitioned into safe reads or state-changing writes.
+      options:
+        - "ReadOnly (pure observation, no state mutation, safe under --read-only-mode)"
+        - "Destructive (state-changing, requires lease / guarded by --read-only-mode)"
+        - "Other / General Enhancement"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem_statement
+    attributes:
+      label: What problem does this solve?
+      description: Describe what an AI agent or human operator cannot currently do with the existing tool surface.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_contract
+    attributes:
+      label: Proposed Tool Signature & Parameters
+      description: How should the tool be called, and what structured response / recovery guidance should it return?
+      placeholder: |
+        Tool: desktop_example(windowHandle: string, option: boolean)
+        Returns: { success: true, count: 5 }
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Did you consider achieving this using existing tools or keyboard shortcuts?
+    validations:
+      required: false

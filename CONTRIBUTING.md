@@ -109,5 +109,4 @@ FlaUI.Mcp tools follow one regular pattern:
 
 ## Reporting bugs / requesting tools
 
-For now, open a GitHub Issue (structured templates are coming). Include OS build, the app you were
-driving, the tool call, and what you expected vs. saw.
+Open a [GitHub Issue](https://github.com/ckir/flauimcp/issues/new/choose) using the structured **Bug Report** or **Feature/Tool Request** templates. Include your Windows OS build, the target application and UI framework, the MCP tool call, and what you expected vs. observed.

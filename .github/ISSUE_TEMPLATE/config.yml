@@ -1,0 +1,17 @@
+# Copyright (c) 2026 Costas Kirgoussios
+#
+# This software is licensed under the PolyForm Noncommercial License 1.0.0.
+# You may obtain a copy of the License at:
+# https://polyformproject.org/licenses/noncommercial/1.0.0/
+
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Documentation & Operator Manual
+    url: https://github.com/ckir/flauimcp/blob/master/docs/operator-manual.md
+    about: Read how to configure, run, and secure FlaUI.Mcp.
+  - name: 🔒 Report a Security Vulnerability
+    url: https://github.com/ckir/flauimcp/security/advisories/new
+    about: Privately report a security vulnerability or safety-bypass issue.
+  - name: 💬 Questions & Discussions
+    url: https://github.com/ckir/flauimcp/discussions
+    about: Ask questions or discuss prompt design and driving strategies.
