@@ -286,7 +286,7 @@ accept the first of an ambiguous match; report `selected` without sending the se
 
 | # | Question | Why it matters | Where |
 |---|---|---|---|
-| Q1 | Does UIA Invoke on a K1 `MenuItem` (ShareX) actually run the command? | §2 step 7 K1 path | plan, first task |
+| Q1 | Does UIA Invoke on a K1 `MenuItem` (ShareX) actually run the command? | §2 step 7 K1 path | MEASURED 2026-11-06 (console 100%): UIA Invoke on 'Open main window' ran the command; menu closed by itself: yes |
 | Q2 | Is `GetMenuItemRect` in physical pixels at 125% (RDP)? | K3 click lands on the item | plan; if not, the K3 tests also get a `ScaledDisplay` variant |
 | Q3 | Auto-hidden taskbar behaviour | §5 expected error | plan |
 | Q4 | Does a `TrackPopupMenu` fixture menu classify as K3 the way ZoomIt's does? | the fixture must exercise the real K3 path, not a look-alike | plan, fixture task |
