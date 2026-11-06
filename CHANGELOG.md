@@ -5,14 +5,49 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-06
+
 ### Added
 
 - **System tray as a driveable surface (ROADMAP B2).** Three tools: `desktop_open_tray` (a handle for the taskbar,
   optionally the hidden-icons overflow), `desktop_list_tray_icons` (`name` + `location` visible/system/hidden) and
   `desktop_tray_action` (`left_click` via UIA Invoke, `right_click` under the input lease: lists the menu or selects
   `menuItem`, for WinForms/WPF menus, classic Win32 menus and OneDrive-style windows alike). Icons are matched by
-  tooltip substring; every reply echoes `matchedIcon`. Tray handles refuse close/minimize/resize. Measured on
-  Windows 11 (`NotifyIconOverflowWindow` no longer exists; the overflow is `TopLevelWindowForOverflowXamlIsland`, shown only while open).
+  tooltip substring; every reply echoes `matchedIcon`. Tray handles refuse close/minimize/resize. Right-click settles
+  and re-verifies the icon before it clicks, because overflow icons animate and a stale point can land on a neighbouring
+  app. Icon tooltips are redacted like other content, and the three tools run behind one process-wide tray lock. Measured
+  on Windows 11 (`NotifyIconOverflowWindow` no longer exists; the overflow is `TopLevelWindowForOverflowXamlIsland`,
+  shown only while open).
+
+- **Deny-list and read-only checks for tray actions.** Tray actions that would hit a blocked target are refused, and tray actions are blocked under `--read-only-mode`. Tray windows cannot be closed or transformed through the window tools, so the tray cannot be torn down by accident.
+
+### Changed
+
+- **Warnings now fail the build.** The repository's 0-warning gate previously relied on an incremental `dotnet build`, which does not re-report warnings for projects it considers up to date. A warning introduced by one commit could therefore pass every later gate. Warnings are now errors, so a failed project is recompiled and reported on the next build.
+
+### Fixed
+
+- **`desktop_get_grid_cell` reports the grid's dimensions on success.** Previously a successful lookup returned only the cell, so a caller could not tell how large the grid was without a second call.
+
+- **A hidden tray-overflow window counts as closed.** Its handle now goes stale when the window is hidden, rather than continuing to resolve to a window the user can no longer see.
+
+- **Tray overflow no longer toggles open when it has already auto-closed.** Closing the overflow after it had auto-closed used to reopen it late. Overflow is also restored correctly when a read fails partway through.
+
+- **The popup context-menu tests no longer flake.** The intermittent failure came from foreground ownership, and the test setup now handles it directly (ROADMAP item 16).
+
+- **Tool argument validation is stricter.** Malformed arguments are rejected earlier and with clearer errors.
+
+- **The pre-push hook no longer exits 127 after a green gate.**
+
+### Internal
+
+- **Release tooling.** `scripts/release.ps1` gains `-NoPush`, so a version can be stamped locally (gate, changelog, version bump, commit, tag) without publishing. The release scripts have Pester coverage, and `-WhatIf` is supported across the PowerShell scripts.
+
+- **Commit and CI hygiene.** A commit-msg hook checks message format, a build-lock preflight guards against concurrent builds, the Desktop suite runs on a schedule, and Dependabot updates are auto-merged for patch and minor versions. License headers are applied through `addlicense` recipes in the justfile.
+
+- **Community files.** Added `SECURITY.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, `AUTHORS.md`, `TODO.md`, and issue templates.
+
+- **Design and planning docs.** The B2 system tray design spec and its implementation plan are in `docs/superpowers/`, with measured results recorded against each open question. Agent-contract docs now include retry and recovery guidance, and some incorrect error and parameter names were corrected.
 
 ## [1.0.1] - 2026-09-09
 
