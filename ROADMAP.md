@@ -100,11 +100,13 @@ foreground when that is the correct outcome, versus today's flash-and-wait hands
 SP-A follow-on ([`SP-A design`](docs/superpowers/specs/2026-07-05-flaui-mcp-human-attention-toolset-design.md));
 backlog only, not yet planned.
 
-### B2 — System-tray pseudo-window (`desktop_open_tray`)
+### B2 — System tray as a driveable surface (`desktop_open_tray`) — ✅ shipped
 
-Walk `Shell_TrayWnd` / `NotifyIconOverflowWindow` to expose the notification area as a driveable
-surface. Useful for machine management (Wi-Fi, Docker, VPN trays). A special-case surface beyond core
-app control — **prioritized** within Track B.
+Shipped 2026-11-06 (`7290f84`): `desktop_open_tray`, `desktop_list_tray_icons`, `desktop_tray_action`.
+Spec: `docs/superpowers/specs/2026-11-06-b2-system-tray-design.md`; plan:
+`docs/superpowers/plans/2026-11-06-b2-system-tray.md`. The original text named `NotifyIconOverflowWindow`, which
+no longer exists on Windows 11: hidden icons live in a `TopLevelWindowForOverflowXamlIsland` window that is shown only while the overflow is open (it persists hidden afterwards). Out of scope for v1: submenus, double-click, secondary taskbars,
+auto-hidden taskbars.
 
 ### B3 — OLE/COM file drop (`desktop_drop_files`) — **low**
 

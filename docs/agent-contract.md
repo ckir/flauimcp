@@ -153,6 +153,34 @@ Subscribe to UIA events instead of polling. Lease-exempt.
 | `desktop_list_watches` | ReadOnly | List active watches. |
 | `desktop_drain_events` | ReadOnly | Fetch buffered events. **Params:** `max` (limit count). |
 
+### System Tray
+The notification area as a driveable surface. Icons are identified by **tooltip substring only**: a tooltip is
+app-chosen (any app can name its icon "Docker"), so always check `matchedIcon` in a reply.
+
+| Tool | Access | Description & Key Parameters |
+|---|---|---|
+| `desktop_open_tray` | ReadOnly | Handle for the taskbar (`Shell_TrayWnd`), usable with snapshot/find/invoke. `includeHidden` also opens the hidden-icons overflow and returns `overflowHandle`, **left open** (`overflowLeftOpen`); it closes by itself when the foreground moves, after which the handle is `WindowHandleStale`. Tray handles refuse `desktop_close_window` / `desktop_window_transform` (`ElementNotActionable`). Lease-exempt. |
+| `desktop_list_tray_icons` | ReadOnly | `{ icons: [{ name, location }], overflowRestored? }`, `location` = `visible` \| `system` \| `hidden`. `includeHidden` opens and restores the overflow. Lease-exempt. |
+| `desktop_tray_action` | Destructive | `icon` (substring), `action` = `left_click` (UIA Invoke, lease-exempt) \| `right_click` (real input, **lease required**), `menuItem?`, `timeoutMs` (default 4000). Blocked in `--read-only-mode`. |
+
+`right_click` returns one of three shapes:
+
+| `menuKind` | When | Fields |
+|---|---|---|
+| `"menu"` | a UIA menu (WinForms/WPF) or a classic Win32 menu appeared | `matchedIcon`, `items: [{ text, enabled, hasSubmenu }]`, `selected?`, `dismissed`, `overflowRestored?`, `warning?` |
+| `"window"` | the app opened its own titled window instead (OneDrive-style) | `matchedIcon`, `handle` (use snapshot/click on it), `warning?`, `overflowRestored?` |
+
+`menuItem` matches exact text first, then substring. Disabled items and submenus are refused
+(`ElementNotActionable`); the menu is dismissed with Escape on every error path. A menu owned by a credential-store
+process is refused (`TargetDenied`) before any item is read.
+
+**Tooltip redaction limit.** Icon names pass through the same redaction rules as a snapshot, evaluated against the
+icons' real owner, **explorer**: a rule scoped to a password manager's process does **not** hide that manager's tray
+tooltip; a global or explorer-scoped rule does. Redacted icons cannot be matched by `icon`.
+
+**Out of scope (v1):** submenus, `double_click`, secondary-monitor taskbars, auto-hidden taskbars (the right-click is
+refused `ElementNotActionable`), selecting inside a `"window"` result.
+
 ### Opaque-App Access
 For apps lacking out-of-the-box trees. Lease-exempt.
 
@@ -215,6 +243,7 @@ A UI that does not respond to an action is one of two different things, and they
 | `ElementDisappearedDuringAction` | Input tools only: the target lost the foreground, or the window under the pointer changed, just before input was sent. Usually nothing was sent. But a paced `desktop_type` (`interKeyDelayMs` > 0) checks before each character, so it can stop with part of the text typed, and a drag that aborts releases the button at its start point. | Check the field's current text before retrying a paced type. Then re-snapshot, re-focus the target, retry once. |
 | `WindowHandleStale` | The window closed, or its HWND now belongs to another window. | `desktop_list_windows`, then `desktop_open_window` again, and take fresh refs from the new handle. |
 | `InputDesktopUnavailable` | The session is locked, disconnected, or on a secure desktop (a UAC prompt). | Nothing to retry. Tell the user; input resumes only after they unlock or reconnect. |
+| `Timeout` (`desktop_tray_action`) | No menu settled within `timeoutMs` after the right-click, or another tray call holds the tray lock. | Retry once with a larger `timeoutMs`; if the icon's app has no right-click menu, stop. |
 
 A wait that runs out of time is **not** an error. `desktop_wait_for` returns `satisfied: false`, with
 `unsatisfiedBecause` when it can say why (e.g. `outsideWindowBounds`), and `desktop_wait_for_stable` returns
@@ -245,3 +274,6 @@ A wait that runs out of time is **not** an error. `desktop_wait_for` returns `sa
 - Credential stores (matched by process name) deny snapshot and grid cell reads.
 - Elements with no `AutomationId` and no `Name` cannot be re-resolved after recycling. Fall back to `desktop_click_at`.
 - Input tools abort with `ElementDisappearedDuringAction` if the target loses foreground mid-sequence (a TOCTOU guard).
+- Tray icons carry no owner process: `desktop_tray_action` matches tooltips, and a redaction rule scoped to an app's process does not reach that app's tray tooltip (explorer owns the icon).
+- Classic Win32 tray menus (menuKind "menu" from a native popup) are read through Win32 (GetMenuString), outside the UIA redaction path: item text is NOT passed through the redaction rules, unlike UIA menus and tooltips. A credential-store process's menu is still refused (TargetDenied) before any item is read.
+- desktop_tray_action right_click on a hidden icon waits for the overflow's icons to stop animating (up to 1.5 s) and verifies through UIA that the click point belongs to the matched icon; if it cannot, it refuses (ElementNotActionable) rather than click.

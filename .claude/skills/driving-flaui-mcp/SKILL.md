@@ -207,6 +207,10 @@ Add per task: `desktop_type,desktop_key,desktop_click,desktop_drag,desktop_paste
   sink (WindowsTerminal, conhost) fails `SinkInterlocked` on a plain unlock → re-grant with
   `flaui-mcp unlock --minutes N --allow-shells`. Reading (`desktop_get_text`) is **not** gated — only
   click/type/key into the terminal hit this. (Deliberate: injecting keystrokes into a live shell is high-risk.)
+- **System tray:** read icons with `desktop_list_tray_icons includeHidden:true`; act with `desktop_tray_action`
+  (`left_click` needs no lease; `right_click` lists the menu or selects `menuItem` under the lease). Never
+  `desktop_click` a tray icon through the `desktop_open_tray` handle for its menu: the menu is an untitled window
+  you cannot open. Always check `matchedIcon`.
 
 ## Typing
 

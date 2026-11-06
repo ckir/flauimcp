@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **System tray as a driveable surface (ROADMAP B2).** Three tools: `desktop_open_tray` (a handle for the taskbar,
+  optionally the hidden-icons overflow), `desktop_list_tray_icons` (`name` + `location` visible/system/hidden) and
+  `desktop_tray_action` (`left_click` via UIA Invoke, `right_click` under the input lease: lists the menu or selects
+  `menuItem`, for WinForms/WPF menus, classic Win32 menus and OneDrive-style windows alike). Icons are matched by
+  tooltip substring; every reply echoes `matchedIcon`. Tray handles refuse close/minimize/resize. Measured on
+  Windows 11 (`NotifyIconOverflowWindow` no longer exists; the overflow is `TopLevelWindowForOverflowXamlIsland`, shown only while open).
+
 ## [1.0.1] - 2026-09-09
 
 ### Changed
