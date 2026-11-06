@@ -20,6 +20,9 @@ namespace FlaUI.Mcp.Tests.Tray;
 [Trait("Category", "SyntheticInput")]
 public class TrayRightClickTests
 {
+    /// <summary>xunit builds one instance per test: normalise a leftover-open overflow first.</summary>
+    public TrayRightClickTests() => TrayTestHygiene.EnsureOverflowClosed();
+
     private static bool InputLocked()
     {
         var lease = new FileLeaseProvider().Read(out _);

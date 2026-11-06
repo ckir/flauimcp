@@ -19,6 +19,9 @@ namespace FlaUI.Mcp.Tests.Tray;
 [Trait("Category", "Desktop")]
 public class TrayDesktopTests
 {
+    /// <summary>xunit builds one instance per test: normalise a leftover-open overflow first.</summary>
+    public TrayDesktopTests() => TrayTestHygiene.EnsureOverflowClosed();
+
     /// <summary>Everything a tray test needs, built the way Program.cs builds it (real Win32 env, real sink,
     /// file lease provider — the read tools and left_click never consult the lease).</summary>
     private sealed class Rig : IDisposable
