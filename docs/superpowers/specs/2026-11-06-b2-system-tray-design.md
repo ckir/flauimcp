@@ -17,7 +17,7 @@ The ROADMAP text names `NotifyIconOverflowWindow`. **It no longer exists** on Wi
 | | Visible icons | Hidden icons |
 |---|---|---|
 | Host | UIA descendants of `Shell_TrayWnd` (explorer) | a separate top-level explorer window, Name `System tray overflow window.`, class `TopLevelWindowForOverflowXamlIsland`, that exists **only while open** (M3) |
-| How to show | always shown | Invoke the chevron button (`aid=SystemTrayIcon`, Name starts `Show Hidden Icons`) |
+| How to show | always shown | Invoke the chevron button (see "Finding the chevron" below) |
 | Icon element | `Button`, `aid=NotifyItemIcon`, class `SystemTray.NormalButton` | same |
 | System icons | `aid=SystemTrayIcon` (Network, Volume, Clock, input indicator, Show Desktop) | — |
 | Patterns | Invoke, ScrollItem — **no right-click path in UIA** (M8) | same |
@@ -25,6 +25,13 @@ The ROADMAP text names `NotifyIconOverflowWindow`. **It no longer exists** on Wi
 
 - The chevron is a toggle, and its Name becomes `Show Hidden Icons Hide` while the overflow is open (M14).
   Overflow state is therefore detected by **window presence**, never by the chevron's Name.
+- **Finding the chevron, without its Name (panel r2).** The Name is localized, so it is never matched. The
+  obvious structural key is NOT unique: the input indicator is also `aid=SystemTrayIcon`,
+  class `SystemTray.NormalButton` (M2). Rule: the **first** element with that aid and class in tree order
+  under `Shell_TrayWnd` (where the chevron sat in every measured walk), **confirmed by its effect**: invoking
+  it must make the overflow window appear within 1500 ms, else `ElementNotActionable` ("could not open the
+  hidden-icons overflow"), and the tool invokes it no further. No candidate at all means nothing is hidden:
+  the hidden list is empty. Q8 measures this on a second display language.
 - `Shell_TrayWnd` and tray menus are untitled, so `desktop_list_windows` (`WindowManager.EnumTopLevel`,
   `WindowManager.cs:400`) never lists them, and `desktop_open_window` cannot reach them (M5).
 - A right-click needs real `SendInput`, so it needs flaui-mcp's input lease (M8).
@@ -49,7 +56,7 @@ restarting").
 
 **One tray at a time (F5).** The three tools share one process-wide lock. A second call waits for the first
 (bounded by its own `timeoutMs`; `desktop_open_tray` and `desktop_list_tray_icons` take no `timeoutMs` and wait
-at most 4000 ms, then fail `Timeout`), so two calls never toggle the overflow or take baselines over each other.
+at most 4000 ms, then fail `Timeout` with the message "another tray operation is in progress"), so two calls never toggle the overflow or take baselines over each other.
 
 ### 1.1 `desktop_open_tray(includeHidden = false)` — ReadOnly, lease-exempt
 
@@ -97,13 +104,13 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
   untrusted: any app can call its icon "Docker". The tool cannot tell them apart (no owner process, M4), so the
   description tells the agent to check `matchedIcon` before trusting the result (F7). `matchedIcon`, and the
   candidate names in an `AmbiguousMatch` message, pass through the same redaction as §3.4.
-- `action = "left_click"`: UIA Invoke on the icon. **No lease.**
+- `action = "left_click"`: UIA Invoke on the icon. **No lease.** It does not try to catch whatever window the
+  app opens; the agent uses `desktop_list_windows`.
 - **Overflow after an action (both actions, F4).** If the tool opened the overflow, it closes it if it is still
   open. If the overflow was already open, the tool never re-opens it: the action usually moves the foreground
   to the app, which closes the overflow by itself, and re-opening it over the app would undo what the agent
-  asked for. `overflowRestored` is reported only when the overflow was open before the call (true = still
-  open afterwards).
-  It does not try to catch whatever window the app opens; the agent uses `desktop_list_windows`.
+  asked for. `overflowRestored` (panel r2: one rule for every tool) is present whenever the call opened the
+  overflow or found it open, and is `true` when the end state equals the start state.
 - `action = "right_click"`: **lease required** (`InputNotLeased`). §2 describes the whole sequence.
 
 **Result shapes (F8).** Fields not listed for a case are absent, never `null`.
@@ -140,10 +147,10 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
    (`AutomationDispatcher.RunActionAsync`), so a hung app cannot block the tool forever (F9). Kinds,
    strongest first:
    - **K3**: class `#32768` and `SendMessage(MN_GETHMENU)` returns a non-null HMENU;
-   - **K1**: it is **untitled** and its UIA root's ControlType is `Menu` (M6: ShareX's menu window, untitled,
-     `ControlType.Menu`). Merely containing `MenuItem`s is NOT enough: OneDrive's titled 'Activity Center' also
-     contains `MenuItem`s (M7, Value pattern only), and taking it for K1 would try to Invoke items that have no
-     Invoke (panel r2);
+   - **K1**: it is **untitled**, and either its UIA root's ControlType is `Menu` (M6: ShareX) or it has
+     `MenuItem` descendants supporting Invoke or ExpandCollapse (panel r2: a WPF/Qt popup host may root as
+     Window or Pane; unmeasured). The **untitled** requirement is what keeps OneDrive's titled 'Activity
+     Center' out: it also contains `MenuItem`s, Value pattern only (M7);
    - **K2**: it has a non-empty title **and is the foreground window**. In both measured cases the right-click
      result took the foreground (M6: the K1 menu's owner; M7: OneDrive's window). Requiring it keeps an
      unrelated titled window that happens to appear during the poll (a toast, another app) from being taken
@@ -152,8 +159,10 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
    candidate windows and the same item counts. An empty set is never "stable": the poll continues until
    `timeoutMs`, so a slow app is not cut off after 200 ms. Then the strongest kind present wins. K2 is chosen only when no K1/K3
    candidate exists at that point, so a slow menu cannot lose to a window that classified earlier.
-   Nothing stable by `timeoutMs` → `Timeout` ("no menu appeared"), after the cleanup in step 8, which also
-   covers a menu that appears late (F2).
+   Nothing stable by `timeoutMs` → first re-check that the icon still exists: if it vanished after the click
+   (explorer discards a ghost icon of a dead process when it is clicked), fail `ElementDisappearedDuringAction`
+   ("the icon disappeared when clicked; its app is probably no longer running"). Otherwise `Timeout` ("no
+   menu appeared"). Both after the cleanup in step 8, which also covers a menu that appears late (F2).
 6. **Deny-list**: if the winning window's process is denied (`PerceptionPolicy.IsDenied`, which fails closed on
    an unreadable process), dismiss (step 8) and fail `TargetDenied`. No item is read first.
 7. **Read items** (K1, K3). Clean each label: drop `&` accelerator markers, drop everything from the first tab
@@ -174,8 +183,9 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
        the hit-test re-verify that the point maps to the `#32768` window. A NULL window handle is MEASURED to
        work for a tray `#32768` menu (M17: `ok=True`, four real rects).
      - If the menu window is gone before the selection is sent → `ElementDisappearedDuringAction`.
-     - Success returns `{ menuKind: "menu", items, selected: "<cleaned text>" }`; the menu is gone afterwards
-       (verified; if it is still present, `dismissed: false` and a `warning`).
+     - Success returns `{ menuKind: "menu", items, selected: "<cleaned text>" }`; the menu is gone afterwards,
+       verified by polling every 50 ms for up to 500 ms (a selected menu fades out while still visible,
+       panel r2); only if it is still present after that, `dismissed: false` and a `warning`.
    - **K2**: return `{ menuKind: "window", handle, warning }`, where `handle` comes from `LazyHandleFor`. If
      `menuItem` was given, the warning says the target opened an application window and nothing was selected:
      use `desktop_snapshot` / `desktop_click` on the handle. A K2 window is not dismissed.
@@ -281,6 +291,7 @@ accept the first of an ambiguous match; report `selected` without sending the se
 | Q4 | Does a `TrackPopupMenu` fixture menu classify as K3 the way ZoomIt's does? | the fixture must exercise the real K3 path, not a look-alike | plan, fixture task |
 | Q5 | Does a new tray icon land in the overflow on Windows 11? | which path the fixture exercises (F10) | plan, fixture task |
 | Q7 | Can a test promote the fixture icon to the visible tray (e.g. `HKCU\Control Panel\NotifyIconSettings\<id>\IsPromoted`), and restore it? | the visible right-click test (panel r1, 5.1). If it cannot, the gap is recorded under Stand-downs as UNVERIFIED-ACCEPTED, not hidden | plan, fixture task |
+| Q8 | Does the chevron rule hold on a second display language, and when no icon is hidden? | the rule in "Finding the chevron" | plan; a second language may be UNVERIFIED-ACCEPTED if no such machine is available |
 | Q6 | Is the right-click result's process the foreground process for every kind, including the fixture's? | §2 step 5's candidate rule (F6) | plan, measured on K1/K2/K3 fixtures |
 
 ## Stand-downs
