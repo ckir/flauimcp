@@ -47,6 +47,9 @@ through the existing `WindowManager.LazyHandleFor(hwnd, pid)` path (`WindowManag
 it becomes `internal`), so no new handle machinery is introduced. No `Shell_TrayWnd` → `WindowNotFound` ("taskbar not available; explorer may be
 restarting").
 
+**One tray at a time (F5).** The three tools share one process-wide lock. A second call waits for the first
+(bounded by its own `timeoutMs`), so two calls never toggle the overflow or take baselines over each other.
+
 ### 1.1 `desktop_open_tray(includeHidden = false)` — ReadOnly, lease-exempt
 
 Returns `{ handle, overflowHandle?, overflowLeftOpen }`.
@@ -83,14 +86,31 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
 - `icon`: case-insensitive substring of the tooltip, searched across visible, system and hidden icons (the
   overflow is opened for the search if needed, and restored as in §1.2).
   0 matches → `SelectorNoMatch`; more than 1 → `AmbiguousMatch`, whose message lists every candidate's name.
-- `action = "left_click"`: UIA Invoke on the icon. **No lease.** Returns `{ ok: true, overflowRestored? }`.
-  For a hidden icon the click usually moves the foreground to the app, which closes the overflow by itself;
-  the tool then does not reopen it. `overflowRestored` is reported only when the overflow was **open** before
-  the call (true = still open afterwards), because re-opening it over the app the agent just activated would
-  undo what the agent asked for.
+  **Every result echoes `matchedIcon`** (the full tooltip that matched). A tooltip is set by the app and is
+  untrusted: any app can call its icon "Docker". The tool cannot tell them apart (no owner process, M4), so the
+  description tells the agent to check `matchedIcon` before trusting the result (F7).
+- `action = "left_click"`: UIA Invoke on the icon. **No lease.**
+- **Overflow after an action (both actions, F4).** If the tool opened the overflow, it closes it if it is still
+  open. If the overflow was already open, the tool never re-opens it: the action usually moves the foreground
+  to the app, which closes the overflow by itself, and re-opening it over the app would undo what the agent
+  asked for. `overflowRestored` is reported only when the overflow was open before the call (true = still
+  open afterwards).
   It does not try to catch whatever window the app opens; the agent uses `desktop_list_windows`.
 - `action = "right_click"`: **lease required** (`InputNotLeased`). §2 describes the whole sequence.
-  Returns `{ menuKind, items?, selected?, handle?, warning?, dismissed, overflowRestored? }`.
+
+**Result shapes (F8).** Fields not listed for a case are absent, never `null`.
+
+| Case | Fields |
+|---|---|
+| `left_click` | `matchedIcon`, `overflowRestored`? |
+| `right_click`, K1/K3, no `menuItem` | `matchedIcon`, `menuKind: "menu"`, `items`, `dismissed`, `overflowRestored`? |
+| `right_click`, K1/K3, `menuItem` selected | `matchedIcon`, `menuKind: "menu"`, `items`, `selected`, `dismissed`, `overflowRestored`? |
+| `right_click`, K2 | `matchedIcon`, `menuKind: "window"`, `handle`, `warning`?, `overflowRestored`? |
+| any of the above, cleanup trouble | add `warning` |
+
+`items` is `[{ text, enabled, hasSubmenu }]` in menu order. `selected` is the cleaned text of the chosen item.
+`dismissed` is `true` when no menu window of the tool's is left open. `warning` is a sentence for the agent.
+`action` and `menuItem` are matched case-insensitively; an empty `menuItem` is `InvalidArguments`.
 - Any other `action` → `InvalidArguments`. (`double_click` is out of scope, §5.)
 
 ## 2. `right_click`, step by step
@@ -104,15 +124,23 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
 4. **Poll** every 100 ms, up to `timeoutMs`, for visible top-level windows not in the baseline. Ignore:
    explorer's tooltip host (`Xaml_WindowedPopupClass`), `SysShadow`, the overflow window, and the intent
    overlay (`WindowManager.ShouldSkipTopLevel`).
-5. **Classify** each new window, strongest first; the first window that classifies wins:
+5. **Classify.** Only a window of the **foreground process** is a candidate (F6): in every measured case the
+   right-click result belonged to the process that then held the foreground (M6 K1: the menu's owner; M7 K2:
+   the window itself; M13 K3: ZoomIt's own window). A menu another app opens meanwhile is ignored. Every UIA
+   read of a candidate runs on the action STA under the call's remaining `timeoutMs`
+   (`AutomationDispatcher.RunActionAsync`), so a hung app cannot block the tool forever (F9). Kinds,
+   strongest first:
    - **K3**: class `#32768` and `SendMessage(MN_GETHMENU)` returns a non-null HMENU;
    - **K1**: its UIA control view has at least one `MenuItem` descendant;
    - **K2**: it has a non-empty title **and is the foreground window**. In both measured cases the right-click
      result took the foreground (M6: the K1 menu's owner; M7: OneDrive's window). Requiring it keeps an
      unrelated titled window that happens to appear during the poll (a toast, another app) from being taken
      for the menu.
-   A window is **settled** when two consecutive polls see the same item count (K1/K3) or the same title (K2).
-   Nothing settled by `timeoutMs` → `Timeout` ("no menu appeared"), after the cleanup in step 8.
+   **Decide only when the picture is stable (F1):** two consecutive polls see the same set of new candidate
+   windows and the same item counts. Then the strongest kind present wins. K2 is chosen only when no K1/K3
+   candidate exists at that point, so a slow menu cannot lose to a window that classified earlier.
+   Nothing stable by `timeoutMs` → `Timeout` ("no menu appeared"), after the cleanup in step 8, which also
+   covers a menu that appears late (F2).
 6. **Deny-list**: if the winning window's process is denied (`PerceptionPolicy.IsDenied`, which fails closed on
    an unreadable process), dismiss (step 8) and fail `TargetDenied`. No item is read first.
 7. **Read items** (K1, K3). Clean each label: drop `&` accelerator markers, drop everything from the first tab
@@ -134,9 +162,14 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
    - **K2**: return `{ menuKind: "window", handle, warning }`, where `handle` comes from `LazyHandleFor`. If
      `menuItem` was given, the warning says the target opened an application window and nothing was selected:
      use `desktop_snapshot` / `desktop_click` on the handle. A K2 window is not dismissed.
-8. **Cleanup** (in a `finally`): if a K1/K3 menu is still up, send Escape through the input pipeline
-   (lease already held) and verify the window is gone → `dismissed: true|false`. Then restore the overflow
-   to its step-1 state → `overflowRestored`.
+8. **Cleanup** (in a `finally`), on every path including errors:
+   - One last scan for new K1/K3 windows of the foreground process, so a menu that appeared after the poll
+     ended is not left behind (F2). If any is up, send Escape through the input pipeline and verify it is
+     gone → `dismissed: true|false`.
+   - Handle the overflow as §1.3 says → `overflowRestored`.
+   - **Cleanup never replaces the primary result or error (F3).** If the Escape itself is refused (the lease
+     lapsed, the session locked), the call still returns its primary outcome, with `dismissed: false` and a
+     `warning` naming why; an error's message gets the same sentence appended.
 
 ## 3. Safety
 
@@ -194,10 +227,14 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
 **Fixture.** A new app, `test/FlaUI.Mcp.TrayFixture`, adds its own tray icon. Arguments:
 `--kind uia|classic|window` (K1 WinForms `ContextMenuStrip` / K3 `TrackPopupMenu` / K2 a titled window) and
 `--tooltip "FlaUI Tray Fixture <guid>"`, unique per test so a test can never pass by matching another app's
-icon. Its menu has fixed items, including one disabled item and one submenu. It **logs every command it
+icon, **including a ghost of an earlier fixture (F11)**: a tray icon is not removed when its process is
+killed, so the fixture exits on a registered window message and removes its icon (`NotifyIcon.Dispose` /
+`NIM_DELETE`), and tests only ever kill it as a last resort. Its menu has fixed items, including one disabled item and one submenu. It **logs every command it
 receives** to `%TEMP%\flaui-trayfixture-<pid>.log` (the TestApp's event-log pattern), and tests assert that log,
-not only the tool's reply. Windows 11 places a new tray icon in the **overflow** by default, so the fixture
-exercises the hidden path; the visible path is covered through system icons (the Clock is always present).
+not only the tool's reply. The belief that Windows 11 places a new tray icon in the **overflow** is **not measured yet** (Q5).
+Each hidden-path test therefore asserts the fixture icon's `location` first and fails, with a message
+naming Q5, if it is not `hidden`: a test that silently ran the visible path would prove nothing about the
+hidden one (F10). The visible path is covered through system icons (the Clock is always present).
 
 | Category | Tests |
 |---|---|
@@ -216,3 +253,9 @@ accept the first of an ambiguous match; report `selected` without sending the se
 | Q2 | Is `GetMenuItemRect` in physical pixels at 125% (RDP)? | K3 click lands on the item | plan; if not, the K3 tests also get a `ScaledDisplay` variant |
 | Q3 | Auto-hidden taskbar behaviour | §5 expected error | plan |
 | Q4 | Does a `TrackPopupMenu` fixture menu classify as K3 the way ZoomIt's does? | the fixture must exercise the real K3 path, not a look-alike | plan, fixture task |
+| Q5 | Does a new tray icon land in the overflow on Windows 11? | which path the fixture exercises (F10) | plan, fixture task |
+| Q6 | Is the right-click result's process the foreground process for every kind, including the fixture's? | §2 step 5's candidate rule (F6) | plan, measured on K1/K2/K3 fixtures |
+
+## Stand-downs
+
+None so far.
