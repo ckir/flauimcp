@@ -234,7 +234,7 @@ $ABM_GETSTATE=4; $ABM_SETSTATE=10; $ABS_AUTOHIDE=1
 $d = New-Object T+APPBARDATA; $d.cbSize=[System.Runtime.InteropServices.Marshal]::SizeOf($d)
 $orig = [uint64][T]::SHAppBarMessage($ABM_GETSTATE,[ref]$d); "original ABM state: $orig"
 try {
-  $d.lParam=[IntPtr]($orig -bor $ABS_AUTOHIDE); [void][T]::SHAppBarMessage($ABM_SETSTATE,[ref]$d); Start-Sleep -Seconds 2
+  $d.lParam=[IntPtr][int64]($orig -bor $ABS_AUTOHIDE); [void][T]::SHAppBarMessage($ABM_SETSTATE,[ref]$d); Start-Sleep -Seconds 2
   $p=New-Object T+POINT; [void][T]::GetCursorPos([ref]$p); [void][T]::SetCursorPos(400,400); Start-Sleep -Seconds 2   # move away so the bar hides
   $tray = Get-Tray; $r=$tray.Current.BoundingRectangle; "Shell_TrayWnd rect while hidden: $r"
   $icon = Find-Icon 'ShareX'; if ($icon) { $ir=$icon.Current.BoundingRectangle; "icon rect: $ir isOffscreen=$($icon.Current.IsOffscreen)"
@@ -242,7 +242,7 @@ try {
     "hit-test at icon centre: " + [T]::D([T]::GetAncestor([T]::WindowFromPhysicalPoint($pt),2)) }
   "chevron found: " + [bool](Get-Chevron)
   [void][T]::SetCursorPos($p.X,$p.Y)
-} finally { $d.lParam=[IntPtr]$orig; [void][T]::SHAppBarMessage($ABM_SETSTATE,[ref]$d); "restored ABM state: " + [uint64][T]::SHAppBarMessage($ABM_GETSTATE,[ref]$d) }
+} finally { $d.lParam=[IntPtr][int64]$orig; [void][T]::SHAppBarMessage($ABM_SETSTATE,[ref]$d); "restored ABM state: " + [uint64][T]::SHAppBarMessage($ABM_GETSTATE,[ref]$d) }
 ```
 
 - [ ] **Step 2: Run it** on the console. Record in SPEC §8 Q3 what the icon's rect, `IsOffscreen` and the hit-test root are while hidden. The product rule (Task 16) is: before clicking, if `IsOffscreen` is true **or** the hit-test root at the icon centre is not `Shell_TrayWnd`/the overflow, fail `ElementNotActionable` ("the taskbar is hidden; the icon is not on screen"). Write in the cell whether the measurement matched that expectation. If `SHAppBarMessage` did not change the state (`restored` ≠ `original|1` during the run), say so and record Q3 as `UNVERIFIED-ACCEPTED: auto-hide could not be toggled programmatically; the §5 rule stands as expected behaviour`.
