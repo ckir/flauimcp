@@ -70,7 +70,8 @@ Returns `{ handle, overflowHandle?, overflowLeftOpen }`.
   `Shell_TrayWnd` or the overflow window with `ElementNotActionable` ("the taskbar cannot be closed, minimized
   or resized"). Sending the taskbar a close request is the classic way to raise Windows' "Shut Down Windows"
   dialog. The refusal keys on the HWND's class, so it also covers a tray handle obtained any other way.
-- `includeHidden = true`: opens the overflow if it is closed, and returns `overflowHandle` for it.
+- `includeHidden = true`: opens the overflow if it is closed (or uses it as found if already open), and returns
+  `overflowHandle` for it either way.
   **The overflow is deliberately left open**, because a handle to a window about to be closed is useless.
   `overflowLeftOpen: true` says so. `desktop_open_tray(includeHidden = false)` returns only `handle` and does
   not touch the overflow. To close an overflow, the agent invokes the chevron through the taskbar handle, or
@@ -165,7 +166,7 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
    menu appeared"). Both after the cleanup in step 8, which also covers a menu that appears late (F2).
 6. **Deny-list**: if the winning window's process is denied (`PerceptionPolicy.IsDenied`, which fails closed on
    an unreadable process), dismiss (step 8) and fail `TargetDenied`. No item is read first.
-7. **Read items** (K1, K3). Clean each label: drop `&` accelerator markers, drop everything from the first tab
+7. **Read items** (K1, K3). Clean each label: drop single `&` accelerator markers and turn `&&` into a literal `&` (Win32 escaping), drop everything from the first tab
    (shortcut text), trim. Drop separators from what is **returned**. Each returned item carries `{ text, enabled, hasSubmenu }`;
    internally each K3 item also keeps its **raw position** in the HMENU (separators included), because
    `GetMenuItemRect` and `GetMenuState` index by raw position. Selecting by the filtered index would click the
@@ -232,7 +233,7 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
 | menu owned by a denied process | `TargetDenied` |
 | `menuItem` matches nothing / more than one | `SelectorNoMatch` / `AmbiguousMatch` (items listed) |
 | `menuItem` disabled, or opens a submenu | `ElementNotActionable` |
-| menu vanished before selection | `ElementDisappearedDuringAction` |
+| menu vanished before selection, or the icon vanished when clicked (a ghost of a dead process) | `ElementDisappearedDuringAction` |
 | `desktop_tray_action` in read-only mode | `WriteBlockedReadOnly` |
 
 ## 5. Out of scope for v1 (documented, not silently unsupported)
@@ -292,8 +293,12 @@ accept the first of an ambiguous match; report `selected` without sending the se
 | Q5 | Does a new tray icon land in the overflow on Windows 11? | which path the fixture exercises (F10) | plan, fixture task |
 | Q7 | Can a test promote the fixture icon to the visible tray (e.g. `HKCU\Control Panel\NotifyIconSettings\<id>\IsPromoted`), and restore it? | the visible right-click test (panel r1, 5.1). If it cannot, the gap is recorded under Stand-downs as UNVERIFIED-ACCEPTED, not hidden | plan, fixture task |
 | Q8 | Does the chevron rule hold on a second display language, and when no icon is hidden? | the rule in "Finding the chevron" | plan; a second language may be UNVERIFIED-ACCEPTED if no such machine is available |
+| Q9 | Does the input pipeline's hit-test re-verify resolve a point on a K3 item to the `#32768` window itself (`HitTestRoot`)? | the K3 click's pre-send check; asserted by a reviewer, not measured | plan, before the K3 selection code |
 | Q6 | Is the right-click result's process the foreground process for every kind, including the fixture's? | §2 step 5's candidate rule (F6) | plan, measured on K1/K2/K3 fixtures |
 
 ## Stand-downs
 
-None so far.
+None. Adversarial panel (3 rounds, solo + agy each round) ended CLEAN at round 3; every finding was FOLDED,
+except one REJECTED by measurement (round 1: "`GetMenuItemRect` with a NULL HWND fails" — M17 measured
+`ok=True`; the peer withdrew it in round 2). No finding was discarded below the floor, and none was accepted
+unverified.
