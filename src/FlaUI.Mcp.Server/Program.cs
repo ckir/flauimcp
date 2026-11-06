@@ -180,6 +180,14 @@ builder.Services.AddSingleton(sp => new FlaUI.Mcp.Server.Capture.CaptureAuditSig
     sp.GetRequiredService<FlaUI.Mcp.Core.Attention.IAttentionSignal>(),
     sp.GetRequiredService<ServerOptions>().CaptureAuditSignal));
 builder.Services.AddSingleton<InputTools>();
+// --- ROADMAP B2: system tray ---
+builder.Services.AddSingleton(sp => new FlaUI.Mcp.Core.Tray.TrayManager(
+    sp.GetRequiredService<WindowManager>(),
+    sp.GetRequiredService<AutomationDispatcher>(),
+    sp.GetRequiredService<InputGuard>(),
+    sp.GetRequiredService<IPlatformEnvironment>(),
+    sp.GetRequiredService<FlaUI.Mcp.Core.Perception.SensitivityClassifier>()));
+builder.Services.AddSingleton<TrayTools>();
 
 // --- Phase 8 desktop_watch (UIA event streaming over stdio; push+drain) ---
 builder.Services.AddSingleton(_ =>

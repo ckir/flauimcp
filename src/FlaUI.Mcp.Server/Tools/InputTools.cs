@@ -410,7 +410,7 @@ public sealed class InputTools
         return new ActionTarget(root, 0, r.ProcessName, r.WindowClass);
     }
 
-    [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers=optional array of Ctrl|Alt|Shift|Win held for the duration of the click (e.g. [\"Ctrl\"] for additive-select, [\"Shift\"] for range-select). Re-hit-tests that the point still maps to the target window immediately before sending. Requires an active input lease (`flaui-mcp unlock`); same deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
+    [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers=optional array of Ctrl|Alt|Shift|Win held for the duration of the click (e.g. [\"Ctrl\"] for additive-select, [\"Shift\"] for range-select). Re-hit-tests that the point still maps to the target window immediately before sending. For a TRAY icon's right-click menu use desktop_tray_action instead: the menu appears as an untitled window this tool cannot open. Requires an active input lease (`flaui-mcp unlock`); same deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
     public Task<string> DesktopClick(
         [Description("Window handle, e.g. w1.")] string window,
         [Description("Element ref to click, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
