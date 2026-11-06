@@ -329,7 +329,7 @@ public sealed class TrayForm : Form
     private const int IdAlpha = 101, IdDisabled = 102, IdSub = 103, IdBeta = 104, IdExit = 105;
 
     private readonly NotifyIcon _icon;
-    private readonly bool _allowVisible; // always false: the form is a message sink, never shown
+    private readonly bool _allowVisible = false; // always false: the form is a message sink, never shown
 
     public TrayForm(string kind, string tooltip)
     {
@@ -2512,7 +2512,7 @@ public class TrayRightClickTests
 }
 ```
 
-If Q7 measured that `IsPromoted=1` promotes the icon, add this test (arrange: find the fixture's `HKCU\Control Panel\NotifyIconSettings\*` key by `ExecutablePath`, set `IsPromoted=1`, restart the fixture if Q7 said "after restart", assert `location == "visible"` via `desktop_list_tray_icons`, then run the same right-click/list assertions as `Right_click_lists_the_fixture_menu_and_dismisses_it("uia")`; restore the value in `finally`). Name it `Right_click_on_a_VISIBLE_icon_lists_the_menu`.
+If Q7 measured that `IsPromoted=1` promotes the icon, add this test (arrange: find the fixture's `HKCU\Control Panel\NotifyIconSettings\*` key by `ExecutablePath`, set `IsPromoted=1`, restart the fixture if Q7 said "after restart", assert `location == "visible"` via `desktop_list_tray_icons`, then run the same right-click/list assertions as `Right_click_lists_the_fixture_menu_and_dismisses_it("uia")`; restore the value in `finally` AFTER the fixture process has exited and the icon is gone: MEASURED, explorer re-creates `IsPromoted=0` when a killed fixture icon is dropped, so a restore done before exit is undone; Q7 = live, no restart needed). Name it `Right_click_on_a_VISIBLE_icon_lists_the_menu`.
 
 - [ ] **Step 2: Run with a lease on the console** (`flaui-mcp unlock --minutes 30` first): `dotnet test test/FlaUI.Mcp.Tests --filter "FullyQualifiedName~TrayRightClickTests"` → all pass, 1 skipped (the locked-state test). Then run once **without** a lease (`flaui-mcp lock` or wait for expiry) → the locked-state test passes, the others skip.
 
