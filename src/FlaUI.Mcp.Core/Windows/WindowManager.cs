@@ -256,10 +256,11 @@ public sealed class WindowManager : IDisposable, IHwndSource
     /// event) RefRegistry are all reclaimed on one path. Pure Win32 (IsWindow) + ConcurrentDictionary ops
     /// — needs no STA, safe to call off the query STA. Snapshots _hwnds first so the Invalidate-driven
     /// TryRemove inside the loop can't corrupt the enumeration. <paramref name="isAlive"/> is injectable
-    /// for tests (default = Win32 IsWindow).</summary>
+    /// for tests (default = <see cref="IsLive"/>: IsWindow, except that the Windows 11 tray overflow window
+    /// survives hidden when it closes, so it counts as closed when it is not visible).</summary>
     internal void PruneClosedWindows(Func<IntPtr, bool>? isAlive = null)
     {
-        isAlive ??= IsWindow;
+        isAlive ??= IsLive;
         foreach (var id in DeadWindowIds(_hwnds.ToArray(), isAlive))
             Invalidate(new WindowHandle(id));
     }
@@ -324,6 +325,15 @@ public sealed class WindowManager : IDisposable, IHwndSource
     /// Same STA, same automation as every other read; the caller must not retain the element.</summary>
     internal Task<T> RunOnHwndAsync<T>(IntPtr hwnd, Func<AutomationElement, T> func)
         => _dispatcher.RunQueryAsync(() => func(_automation.FromHandle(hwnd)));
+
+    private static bool IsLive(IntPtr h) => IsLiveWindow(IsWindow(h), ClassNameOf(h), IsWindowVisible(h));
+
+    /// <summary>Pure liveness decision. The Windows 11 tray overflow window (class literal shared with
+    /// TrayMenuClassifier.OverflowClass; not referenced here to keep Windows free of a Tray dependency) is
+    /// hidden, not destroyed, when the overflow closes, so IsWindow stays true: treat it as closed when not
+    /// visible. Any other existing window stays live even when hidden.</summary>
+    internal static bool IsLiveWindow(bool isWindow, string? className, bool isVisible)
+        => isWindow && !(className == "TopLevelWindowForOverflowXamlIsland" && !isVisible);
 
     /// <summary>SPEC B2 §1.1: the taskbar and its overflow are never closed, minimized or resized through a
     /// handle. Sending `Shell_TrayWnd` a close request is the classic way to raise "Shut Down Windows". Keyed

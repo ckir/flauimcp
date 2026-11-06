@@ -124,4 +124,13 @@ public class WindowLivenessTests
         Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
         Assert.Contains("taskbar", ex.Message);
     }
+
+    [Theory]
+    [InlineData(true, "TopLevelWindowForOverflowXamlIsland", false, false)]
+    [InlineData(true, "TopLevelWindowForOverflowXamlIsland", true, true)]
+    [InlineData(true, "Notepad", false, true)]
+    [InlineData(false, "Notepad", true, false)]
+    public void IsLiveWindow_counts_a_hidden_tray_overflow_as_closed_but_any_other_existing_window_as_live(
+        bool isWindow, string cls, bool visible, bool expected)
+        => Assert.Equal(expected, WindowManager.IsLiveWindow(isWindow, cls, visible));
 }
