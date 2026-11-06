@@ -293,7 +293,7 @@ accept the first of an ambiguous match; report `selected` without sending the se
 | Q5 | Does a new tray icon land in the overflow on Windows 11? | which path the fixture exercises (F10) | plan, fixture task |
 | Q7 | Can a test promote the fixture icon to the visible tray (e.g. `HKCU\Control Panel\NotifyIconSettings\<id>\IsPromoted`), and restore it? | the visible right-click test (panel r1, 5.1). If it cannot, the gap is recorded under Stand-downs as UNVERIFIED-ACCEPTED, not hidden | plan, fixture task |
 | Q8 | Does the chevron rule hold on a second display language, and when no icon is hidden? | the rule in "Finding the chevron" | plan; a second language may be UNVERIFIED-ACCEPTED if no such machine is available |
-| Q9 | Does the input pipeline's hit-test re-verify resolve a point on a K3 item to the `#32768` window itself (`HitTestRoot`)? | the K3 click's pre-send check; asserted by a reviewer, not measured | plan, before the K3 selection code |
+| Q9 | Does the input pipeline's hit-test re-verify resolve a point on a K3 item to the `#32768` window itself (`HitTestRoot`)? | MEASURED 2026-11-06 (console 100%): WindowFromPhysicalPoint -> GA_ROOT == #32768 for 4/4 items | plan, before the K3 selection code |
 | Q6 | Is the right-click result's process the foreground process for every kind, including the fixture's? | §2 step 5's candidate rule (F6) | plan, measured on K1/K2/K3 fixtures |
 
 ## Stand-downs
