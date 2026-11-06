@@ -173,3 +173,17 @@ the gate by including the word 'lease' with the wrong meaning"* — and dismisse
 round 2 it reached the correct conclusion through a wrong premise, reporting the split as 15/8 and placing
 `desktop_set_caret` and `desktop_select_text_range` in the "requires a lease" bucket when both claim the
 opposite. **Read its reasoning; never its verdict.**
+
+## 2026-11-06 — B2 system tray (`desktop_open_tray` / `desktop_list_tray_icons` / `desktop_tray_action`)
+
+| date | range | rounds | verdict | evidence |
+|---|---|---|---|---|
+| 2026-11-06 | `6995a09..de10217` (B2 system tray, `src` + `test`) | 3 | GREEN — human-adjudicated (`de10217` reviewed) | round 1 `FINDINGS-4`, folded in `1f6d24d` (Escape gated on the owning process and never sent after a selection; `OverflowRestore.Report` measures the real end state; merged `dismissed` flag; two vacuous test assertions); round 2 `ALIGNED` with an empty json but three real points in the throwaway prose, two folded in `de10217` (bounded `MN_GETHMENU` send; `overflowLeftOpen` only when true, spec line 63 and contract), one REJECTED by measurement; round 3 `ALIGNED`, empty json, Fold Auditor and a 12-step furthest-point walk reached the end; seam briefs `.clavity/seams/b2-tray-capstone-r1.md`, `-r2.md`, `-r3.md` |
+
+**Dispositions.** FOLDED: the four round-1 findings; round-2 `HmenuOf` hang under the tray lock and the `overflowLeftOpen` contradiction (the driver's first rejection cited spec line 63 and had not read line 76; the peer was right). REJECTED by measurement: "deleting the visible-icon loop in `TrayIconReader.ReadTaskbar` leaves the suite green" — with a valid lease that mutation turns `TrayRightClickTests.Right_click_on_a_VISIBLE_icon_lists_the_menu` red (Failed 1, Passed 18, Skipped 1); it survives only with no lease. DISCARDED-BELOW-FLOOR: HWND recycling retaining a tracked menu HWND (re-validated through `IsWindowVisible`, bounded by `timeoutMs` under the tray lock); Explorer crash mid-operation (external fault; the target is re-found by runtime id in `RefreshTargetAsync` and the call fails with a `ToolException`, never a stale click).
+
+**Anti-sweep (top below-floor items).** (1) Explorer restart between `ReadAllAsync` and cleanup leaves `read.TrayPid` stale. (2) Virtual-desktop switching may affect `GetForegroundRoot`; named by the peer as its least-examined area, not a finding.
+
+**Found by the Desktop tests, not by review.** Three defects that no pre-execution review could see, all fixed with measurement: the overflow window persists HIDDEN on Windows 11 (`3825847`); overflow icons animate for ~500 ms so a right-click landed on a neighbouring app's icon (`31f8b25`); the chevron toggle can re-open an overflow that auto-closed (`197e207`); plus a leftover-open overflow cascading into later tests (`598899b`).
+
+**Known, documented, not fixed.** Classic Win32 menu text bypasses the redaction rules (deny-list still applies); the Win32 classic-menu path is not uniquely pinned (mutation `hasHmenu=false` survives because UIA also reads the classic menu); mixed-DPI multi-monitor and non-bottom taskbars were not measured.
