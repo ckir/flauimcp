@@ -18,6 +18,9 @@ namespace FlaUI.Mcp.Core.Tray;
 public sealed class TrayLocator
 {
     private const int OverflowSettleMs = 1500;
+    private const int CloseConfirmMs = 150;
+    private const int ReopenWatchMs = 500;
+    private const int CloseAttempts = 2;
     private readonly WindowManager _windows;
     private readonly AutomationDispatcher _dispatcher;
 
@@ -58,21 +61,48 @@ public sealed class TrayLocator
             "retry; if it persists the taskbar layout may have changed");
     }
 
-    /// <summary>Best effort: invoke the chevron once if the overflow is open, wait for it to go. Never throws
-    /// (cleanup never replaces a primary result, F3). Returns true when the overflow is closed afterwards.</summary>
+    /// <summary>Best effort: close the overflow if it is open. The chevron is a TOGGLE and the overflow both
+    /// animates in (~250-290 ms) and auto-closes when the foreground moves, so a visible overflow is re-checked
+    /// before the chevron is invoked and a closed one is watched for a late reopen. Never throws (cleanup never
+    /// replaces a primary result, F3). Returns true when the overflow is closed afterwards.</summary>
     public async Task<bool> CloseOverflowAsync(nint tray)
     {
         try
         {
-            if (!IsOverflowOpen()) return true;
-            var rid = await ChevronRuntimeIdAsync(tray);
-            if (rid is null) return !IsOverflowOpen();
-            await InvokeChevronAsync(tray, rid);
-            var deadline = DateTime.UtcNow.AddMilliseconds(OverflowSettleMs);
-            while (DateTime.UtcNow < deadline && IsOverflowOpen()) await Task.Delay(50);
+            for (var attempt = 1; attempt <= CloseAttempts; attempt++)
+            {
+                if (!IsOverflowOpen())
+                {
+                    if (await StaysClosedAsync()) return true;
+                }
+                else
+                {
+                    await Task.Delay(CloseConfirmMs);
+                    // It closed by itself: do NOT invoke the chevron (that would open it again).
+                    if (!IsOverflowOpen() && await StaysClosedAsync()) return true;
+                }
+                if (!IsOverflowOpen()) continue;
+                var rid = await ChevronRuntimeIdAsync(tray);
+                if (rid is null) return !IsOverflowOpen();
+                await InvokeChevronAsync(tray, rid);
+                var deadline = DateTime.UtcNow.AddMilliseconds(OverflowSettleMs);
+                while (DateTime.UtcNow < deadline && IsOverflowOpen()) await Task.Delay(50);
+            }
             return !IsOverflowOpen();
         }
         catch (ToolException) { return !IsOverflowOpen(); }
+    }
+
+    /// <summary>True when the overflow stays closed for ReopenWatchMs (a late animate-in or reopen shows up here).</summary>
+    private static async Task<bool> StaysClosedAsync()
+    {
+        var end = DateTime.UtcNow.AddMilliseconds(ReopenWatchMs);
+        while (DateTime.UtcNow < end)
+        {
+            if (IsOverflowOpen()) return false;
+            await Task.Delay(50);
+        }
+        return !IsOverflowOpen();
     }
 
     private Task InvokeChevronAsync(nint tray, string rid)
