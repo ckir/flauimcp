@@ -48,4 +48,15 @@ pwsh -File scripts/release.ps1           # Cut the release.
 | `-Bump major\|minor\|patch` | Force a bump level from the last tag. |
 | `-Model <name>` | `claude -p` model used for the draft. Default: `haiku`. |
 
+Before you cut it, run the one check the Desktop gate cannot: find_text coordinates on a SCALED display. The gate
+runs at 100%, and the in-process find_text test cannot run anywhere else (the test host is not DPI-aware). On a
+session at more than 100% scaling (on the reference machine, RDP at 125%):
+
+```powershell
+dotnet test test/FlaUI.Mcp.Tests --filter "Category=ScaledDisplay"
+```
+
+It starts the built server exe and checks that an OCR match lands inside the real control. It fails at 100% on
+purpose, so it can never pass without testing anything.
+
 Pushing the `vX.Y.Z` tag triggers `.github/workflows/release.yml`. CI builds the executable and the Inno Setup installer, generates checksums, and publishes a GitHub Release using the top section of `CHANGELOG.md` as the body.

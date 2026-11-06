@@ -50,7 +50,7 @@ Register-ScheduledTask -TaskName 'flaui-mcp desktop suite' -Action $action -Trig
 [CmdletBinding()]
 param(
     [string]$ReportDir,
-    [string]$Filter = 'Category=Desktop&Category!=SyntheticInput&Category!=KnownDefect&Category!=Measurement',
+    [string]$Filter = 'Category=Desktop&Category!=SyntheticInput&Category!=KnownDefect&Category!=Measurement&Category!=ScaledDisplay',
     [switch]$WhatIf
 )
 

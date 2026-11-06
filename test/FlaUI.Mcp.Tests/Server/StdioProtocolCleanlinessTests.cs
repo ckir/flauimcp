@@ -74,7 +74,7 @@ public class StdioProtocolCleanlinessTests
         }
     }
 
-    private static string LocateServerExe()
+    internal static string LocateServerExe()
     {
         var baseDir = AppContext.BaseDirectory;
         var config = baseDir.Contains($"{Path.DirectorySeparatorChar}Debug{Path.DirectorySeparatorChar}",

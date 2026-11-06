@@ -36,8 +36,9 @@ namespace FlaUI.Mcp.Tests.Vision;
 /// and OCR returns {"matches":[]} — a capture/bounds coordinate-space MISMATCH that exists only under the
 /// virtualized test host, NOT in the production server (which is PerMonitorV2 DPI-aware and captures correctly).
 /// We deliberately do NOT call SetProcessDpiAwarenessContext here (process-wide; would perturb other Desktop
-/// tests). The true end-to-end §6 coord-landing is validated by the release live-smoke on the installed
-/// (DPI-aware) server.</summary>
+/// tests). At 100% (the Desktop gate) the mismatch does not exist and this test is faithful. The scaled case is
+/// checked against the real DPI-aware server by DesktopFindTextScaledTests, a release step on a scaled session
+/// (docs/building.md, "Cutting a release"); accepted boundary AB-19 in docs/coverage-debt.md.</summary>
 [Trait("Category", "Desktop")]
 public class DesktopFindTextTests
 {

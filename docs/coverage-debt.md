@@ -364,6 +364,23 @@ corruption is separately covered.
 ⚠ **Re-validation note:** if `SweepBackups` ever stops deleting `.bak-*`, those bytes acquire real value
 and this entry is promoted straight back to a live gap.
 
+### AB-19 — the in-process find_text coordinate test is only faithful at 100% scaling  *(ROADMAP item 16 investigation, 2026-11-05)*
+
+`DesktopFindTextTests` runs the OCR pipeline inside the xUnit test host, which is NOT DPI-aware. At 100% it
+passes, and the Desktop gate runs at 100%. At any other scale the host is DPI-virtualized: its UIA bounds and
+the physical screen it captures disagree. MEASURED at 125% (RDP, 1920x1080): the OCR match for "Rebuild Items"
+landed ~92 px below the button, failing deterministically, including on a baseline before any related change.
+
+**Why not covered in-process:** fixing it means `SetProcessDpiAwarenessContext` in the test host, which is
+process-wide and would change the coordinate space of every other Desktop test in the same run.
+**Compensation + anchor:** `DesktopFindTextScaledTests` checks the PRODUCTION process instead. It starts the
+built server exe (PerMonitorV2, `src/FlaUI.Mcp.Server/app.manifest`) over stdio and asserts that a
+`desktop_find_text` match centre lies inside the button's `desktop_get_bounds`. It carries the `ScaledDisplay`
+trait, which both gate filters exclude, and FAILS (never skips) at 100%, so it cannot pass vacuously. It runs
+as a release step on a scaled session (`docs/building.md`, "Cutting a release").
+⚠ **Re-validation note:** this compensation exists only if someone runs it. If the release step is dropped,
+or the gate ever moves to a scaled display, this entry is a live gap again.
+
 ### Refuted, recorded so it is not re-raised — the "mixed restorable" gap
 
 A test audit flagged `restorable == justDisabled.Count` (`ClaudeCollisionRemedy`) as untested in its mixed
