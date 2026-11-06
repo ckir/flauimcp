@@ -113,7 +113,19 @@ auto-hidden taskbars.
 Synthesize `IDataObject` / `IDropTarget` to drop files into apps (the real need: uploading files into a
 UI). Complex, error-prone COM injection; rated **YAGNI-High**. Kept on the list but lowest priority.
 
-### B4 — Reduce the visible-switch cost of WT multi-tab app discovery — **low / opportunistic**
+### B4 — Reduce the visible-switch cost of WT multi-tab app discovery — ✅ closed by ruling (2026-11-06, YAGNI)
+
+**Ruling (operator, 2026-11-06, after an AGY-FIRST consult that leaned A-first):** do nothing now. The shipped
+recipe (`desktop_list_terminal_tabs` + `desktop_read_terminal_tab`, "tab title is a HINT, never a filter") is
+sufficient. **Reopen if** an agent has a real need to identify or drive a background WT tab without a visible
+switch (not a driver error). **Measured facts to start from** (WT 1.24.12741.0): each tab/pane has its own
+`OpenConsole.exe`, the shell and everything it launched sit below it, and full command lines are available, so
+"is X running under this WT" needs no tab switch; UIA `TabItem`s expose no PID or session id (`pid` = the WT
+process, `AutomationId`/`HelpText`/`ItemStatus` empty), so the tab ordinal cannot be derived from the process
+tree. **Design conditions if reopened (agy, verified in-session):** Toolhelp32 rather than WMI; `commandLine` opt-in
+and passed through `SensitivityClassifier` plus `PerceptionPolicy.IsDenied` (command lines carry secrets); document
+split panes (several `OpenConsole`s per tab), WSL (Linux processes invisible to Win32 walks), elevated tabs (UIPI),
+tab reorder/churn between list and read; claim no ordinal.
 
 *Dogfooding note, 2026-07-26 — logged honestly after a driver error, NOT a missing-capability claim.*
 The capability to find a CLI app hiding in a **generic-titled** Windows Terminal tab **already ships**
