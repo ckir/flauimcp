@@ -140,7 +140,10 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
    (`AutomationDispatcher.RunActionAsync`), so a hung app cannot block the tool forever (F9). Kinds,
    strongest first:
    - **K3**: class `#32768` and `SendMessage(MN_GETHMENU)` returns a non-null HMENU;
-   - **K1**: its UIA control view has at least one `MenuItem` descendant;
+   - **K1**: it is **untitled** and its UIA root's ControlType is `Menu` (M6: ShareX's menu window, untitled,
+     `ControlType.Menu`). Merely containing `MenuItem`s is NOT enough: OneDrive's titled 'Activity Center' also
+     contains `MenuItem`s (M7, Value pattern only), and taking it for K1 would try to Invoke items that have no
+     Invoke (panel r2);
    - **K2**: it has a non-empty title **and is the foreground window**. In both measured cases the right-click
      result took the foreground (M6: the K1 menu's owner; M7: OneDrive's window). Requiring it keeps an
      unrelated titled window that happens to appear during the poll (a toast, another app) from being taken
@@ -239,6 +242,11 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
 - `ROADMAP.md` B2: correct the stale `NotifyIconOverflowWindow` text and mark shipped.
 - The plan enumerates every test or doc that pins the tool list or tool count (e.g. the JSON-shape tripwires)
   and updates it; it does not guess.
+
+- **Routing (panel r2).** An agent that right-clicks a tray icon with `desktop_click` through the tray handle
+  is left with an untitled menu it cannot open. The `desktop_open_tray` description, and `desktop_click`'s
+  description, say: for a tray icon's right-click menu, use `desktop_tray_action`. The driving skill
+  (`driving-flaui-mcp`, both twinned copies) gets the same one-line route.
 
 ## 7. Testing
 
