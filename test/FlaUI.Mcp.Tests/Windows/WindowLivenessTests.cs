@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Windows;
 using Xunit;
 
@@ -106,4 +107,21 @@ public class WindowLivenessTests
     public void PickForegroundFallback_returns_zero_for_an_empty_desktop()
         => Assert.Equal(IntPtr.Zero,
             WindowManager.PickForegroundFallback(Array.Empty<(IntPtr, string, int)>(), new IntPtr(10)));
+
+    [Theory]
+    [InlineData("Shell_TrayWnd", true)]
+    [InlineData("TopLevelWindowForOverflowXamlIsland", true)]
+    [InlineData("Shell_SecondaryTrayWnd", false)]
+    [InlineData("Notepad", false)]
+    [InlineData("", false)]
+    public void IsTrayWindowClass_names_the_taskbar_and_the_overflow_only(string cls, bool expected)
+        => Assert.Equal(expected, WindowManager.IsTrayWindowClass(cls));
+
+    [Fact]
+    public void RefuseIfTrayWindow_throws_ElementNotActionable_for_the_taskbar()
+    {
+        var ex = Assert.Throws<ToolException>(() => WindowManager.RefuseIfTrayWindow("Shell_TrayWnd", "closed"));
+        Assert.Equal(ToolErrorCode.ElementNotActionable, ex.Code);
+        Assert.Contains("taskbar", ex.Message);
+    }
 }

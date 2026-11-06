@@ -299,7 +299,7 @@ public sealed class WindowManager : IDisposable, IHwndSource
     /// bound later, lazily, by ResolveWindow (with the M2 pid-reverify). Populates _hwnds so
     /// PruneClosedWindows reclaims this handle if its window closes without a process exit. Runs on the
     /// query STA (called from inside ListWindowsAsync).</summary>
-    private string LazyHandleFor(IntPtr hwnd, int pid)
+    internal string LazyHandleFor(IntPtr hwnd, int pid)
     {
         if (_byHwnd.TryGetValue(hwnd, out var existing)
             && _ids.TryGetValue(existing, out var cachedPid)
@@ -313,6 +313,36 @@ public sealed class WindowManager : IDisposable, IHwndSource
         _byHwnd[hwnd] = id;
         TryWatchProcessExit(id, pid);
         return id;
+    }
+
+    /// <summary>B2: mint (or reuse) a wN for an arbitrary HWND on the query STA — the tray tools' path to a
+    /// handle for `Shell_TrayWnd` / the overflow window, which EnumTopLevel never lists (untitled).</summary>
+    internal Task<string> MintHandleAsync(IntPtr hwnd, int pid)
+        => _dispatcher.RunQueryAsync(() => LazyHandleFor(hwnd, pid));
+
+    /// <summary>B2: run a read on the query STA against an element bound from a raw HWND (no handle needed).
+    /// Same STA, same automation as every other read; the caller must not retain the element.</summary>
+    internal Task<T> RunOnHwndAsync<T>(IntPtr hwnd, Func<AutomationElement, T> func)
+        => _dispatcher.RunQueryAsync(() => func(_automation.FromHandle(hwnd)));
+
+    /// <summary>SPEC B2 §1.1: the taskbar and its overflow are never closed, minimized or resized through a
+    /// handle. Sending `Shell_TrayWnd` a close request is the classic way to raise "Shut Down Windows". Keyed
+    /// on the window CLASS so a tray handle obtained any way is covered. Pure, headless-testable.</summary>
+    internal static bool IsTrayWindowClass(string? className)
+        => className is "Shell_TrayWnd" or "TopLevelWindowForOverflowXamlIsland";
+
+    internal static void RefuseIfTrayWindow(string? className, string verb)
+    {
+        if (IsTrayWindowClass(className))
+            throw new ToolException(ToolErrorCode.ElementNotActionable,
+                $"the taskbar cannot be {verb}: this handle is bound to the system tray.",
+                "use desktop_tray_action for tray icons; the taskbar is not a window you close");
+    }
+
+    private static string ClassNameOf(IntPtr hwnd)
+    {
+        var sb = new StringBuilder(64);
+        return GetClassNameW(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : string.Empty;
     }
 
     private void TryWatchProcessExit(string id, int pid)
@@ -670,6 +700,8 @@ public sealed class WindowManager : IDisposable, IHwndSource
 
     public async Task CloseAsync(WindowHandle handle)
     {
+        if (_hwnds.TryGetValue(handle.Id, out var guardHwnd) && guardHwnd != IntPtr.Zero)
+            RefuseIfTrayWindow(ClassNameOf(guardHwnd), "closed, minimized or resized");
         try
         {
             await RunOnWindowAsync(handle, w =>
@@ -697,6 +729,7 @@ public sealed class WindowManager : IDisposable, IHwndSource
     public Task<bool> WindowTransformAsync(WindowHandle handle, string action, int timeoutMs) =>
         RunOnWindowActionAsync(handle, (winEl, _) =>
         {
+            RefuseIfTrayWindow(ClassNameOf(winEl.Properties.NativeWindowHandle.ValueOrDefault), "minimized, maximized or resized");
             var w = winEl.AsWindow();
             bool minimizing = string.Equals(action?.Trim(), "minimize", StringComparison.OrdinalIgnoreCase);
             IntPtr hwnd = IntPtr.Zero;
