@@ -18,8 +18,8 @@ Take these in order. Gate trust comes first because B2 is verified on the Deskto
    foreground ownership, not a stacked sibling TestApp. The first fix (`7169ab4`) was wrong. See ROADMAP item 16.
 2. [x] **ROADMAP item-8 citation gap** *(not a gap)*: items 17–19 exist as `### N.` sections under Notes; the
    table now says so, and row 8's citation points there.
-3. [ ] **Agent Best Practices Guide**: expand `docs/agent-contract.md` with retry/recovery guidance for agents
-   when UI elements are temporarily unresponsive.
+3. [x] **Agent Best Practices Guide**: `docs/agent-contract.md` now has a **Retry and recovery** section (per error
+   code, plus rules), checked against the code.
 4. [ ] **B2 — `desktop_open_tray`**: system-tray pseudo-window. Own spec → plan → implementation cycle.
    **v1.1.0 is cut once this lands** (no v1.0.2).
 5. [ ] **B4 — `desktop_list_terminal_processes`**: identify Windows Terminal tabs by hosted process, without

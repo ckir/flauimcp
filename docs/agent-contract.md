@@ -9,8 +9,8 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 **`ref` (e.g. `e23`):**
 - Bound to an element within a `desktop_snapshot`.
 - Re-resolved on use: state-changing tools require the exact UIA RuntimeId. Read tools fall back to binding within the element's original container.
-- If the element was destroyed and recreated (e.g. a virtualized row recycled its AutomationId), the action is refused with `REF_STALE_UNRESOLVABLE`. Take a fresh snapshot.
-- A `desktop_wait_for_stable` call that returns `stable:true` ends by taking a whole-window snapshot, which supersedes the window's refs — so a `scopeRef` passed to it is dead afterwards, and reusing it returns `REF_NOT_FOUND`. Recover cheaply with `desktop_find` (targeted, and it registers matches **additively** without superseding — `PerceptionManager.cs:478`, `:623`), not another `desktop_snapshot`. A timeout (`stable:false`) does not supersede refs, so `scopeRef` survives it.
+- If the element was destroyed and recreated (e.g. a virtualized row recycled its AutomationId), the action is refused with `RefStaleUnresolvable`. Take a fresh snapshot.
+- A `desktop_wait_for_stable` call that returns `stable:true` ends by taking a whole-window snapshot, which supersedes the window's refs — so a `scopeRef` passed to it is dead afterwards, and reusing it returns `RefNotFound`. Recover cheaply with `desktop_find` (targeted, and it registers matches **additively** without superseding — `PerceptionManager.cs:478`, `:623`), not another `desktop_snapshot`. A timeout (`stable:false`) does not supersede refs, so `scopeRef` survives it.
 
 **`selector`:**
 - Schema: `{ automationId?, name?, nameMatch?, controlType?, scope?, ignoreCase? }`.
@@ -22,7 +22,7 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 
 ## Common parameters
 
-- **`timeoutMs`:** Most interaction, perception, and wait tools accept an explicit block timeout in milliseconds (default 4000). Agents can extend it for slow UIs.
+- **`timeoutMs`:** Interaction and input tools accept a block timeout in milliseconds (default 4000); the wait tools take a total budget (default 5000). The server caps an action's timeout at 60000. See **Retry and recovery** before raising it.
 - **`overlay`:** Mutative tools accept `overlay: true` (or `<milliseconds>`) to draw the red intent overlay before acting (visibility aid).
 - **`verify`:** Synthetic-text tools (`desktop_type`, `desktop_paste_text`) perform an advisory read-back. They return a `verify` object; a mismatch is advisory and does NOT throw an error. Exact shape:
   ```json
@@ -53,11 +53,11 @@ Many interaction and content tools accept either a `ref` (from a snapshot) or a 
 ### Perception
 | Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_snapshot` | ReadOnly | Walk tree into ref-tagged snapshot. **Params:** `root` (subtree scope), `maxDepth`, `interactiveOnly`, `fullProperties`, `includeOffscreen`, `timeoutMs`. |
+| `desktop_snapshot` | ReadOnly | Walk tree into ref-tagged snapshot. **Params:** `root` (subtree scope), `maxDepth`, `interactiveOnly`, `fullProperties`, `includeOffscreen`. |
 | `desktop_snapshot_diff` | ReadOnly | Diff CURRENT tree against baseline `snapshotId`. **Params:** `scope` (subtree ref). |
 | `desktop_snapshot_stats` | ReadOnly | Control counts. **Params:** `snapshotId` (offline stats) OR `window`. ⚠ The `redacted` field is now `osPasswordCount` (v1.0.0 BREAKING). |
 | `desktop_get_focused_element` | ReadOnly | Return UIA-focused element's ref and descriptor. ⚠ `window.title` is the OWNING WINDOW's title. Before v1.0.0 it carried the focused ELEMENT's name — a silent BREAKING change, see the CHANGELOG. The element's name is in `descriptor`. |
-| `desktop_find` | ReadOnly | Query window for refs without full walk. **Params:** `timeoutMs`. |
+| `desktop_find` | ReadOnly | Query window for refs without full walk. **Params:** `automationId`, `name`, `nameMatch`, `controlType`, `enabledOnly`, `max`, `scope`, `ignoreCase`. |
 | `desktop_screenshot` | ReadOnly | PNG capture. Masks redacted elements (see **Redaction on the wire**). **Params:** `window`, `ref`, `maxWidth` (default 1600). Metadata carries `maskEscalations` + `escalated` + `unmaskedProcesses`; can fail `RedactionUnmaskable`. |
 | `desktop_get_bounds` | ReadOnly | Get absolute screen bounds, dpiScale, isOffscreen status. |
 | `desktop_wait_for` | ReadOnly | Poll until selector condition holds. **Params:** `by`, `value`, `until`, `equals`, `pollIntervalMs`, `timeoutMs`, `includeOffscreen`. |
@@ -188,6 +188,53 @@ Event payload shape:
 
 1. **Chromium/Electron:** Return an empty `Document` node with `wakeable:true`. Call `desktop_wake_accessibility` to hydrate the tree, then snapshot. Hydration is a RAMP, not a step — poll `desktop_snapshot_stats` until the count crosses a threshold instead of sleeping once, or you sample mid-ramp and read it as a failed wake. The wake is HELD; once released Chromium re-collapses lazily. Page content, once loaded, is addressable by `name`/`automationId` — OCR is for surfaces that expose nothing, not for Chromium generally.
 2. **Zero-accessibility surfaces (games, Citrix, RDP):** Use `desktop_find_text` for on-box OCR targeting. OCR resolves visible text to click coordinates. Fuzzy match can trigger false positives in body text. OCR returns `OcrUnavailable` if no Windows OCR pack is installed.
+
+## Retry and recovery
+
+Every tool error has the shape `{ "error": "<Code>", "message": "...", "suggestedRecovery": "..." }`. The
+code is the PascalCase name shown below. Read `suggestedRecovery`: it is written for you.
+
+A UI that does not respond to an action is one of two different things, and they need opposite handling:
+
+- **The element is not ready**: not there yet, disabled, scrolled out of view, or replaced. Waiting fixes it.
+  Wait for the condition, then act once.
+- **The application is not answering**: a modal dialog opened, or the window is hung. Repeating the action
+  does not help, and it can do the action twice.
+
+### By error code
+
+| Code | What it means | What to do |
+|---|---|---|
+| `SelectorNoMatch` | No element matches yet. | `desktop_wait_for` with `until: "exists"`, then act once. Do not loop the action. |
+| `RefNotFound` | The ref is not in the window's current snapshot (a later snapshot superseded it). | Re-acquire with `desktop_find`. It adds refs without superseding your others. |
+| `RefStaleUnresolvable` | The element is gone, or it was destroyed and recreated. | Re-acquire with `desktop_find` or a fresh snapshot. The same ref will never resolve again. |
+| `AmbiguousMatch` | The selector matches more than one element. | Narrow the selector (`scope`, `controlType`), or use a ref. |
+| `ElementNotActionable` | The element cannot be acted on as it is: off-screen, or a read-only value control. The message says which. | Off-screen: `desktop_scroll_into_view`, then retry once. Read-only: pick another control; retrying cannot help. |
+| `ActionBlockedPending` | The action did not return within `timeoutMs`. Usually it opened a modal dialog that is now waiting for you. | **Do not repeat the action**: it has probably already happened. Snapshot the window, find the dialog, and act on the dialog. |
+| `TooManyPendingActions` | Five actions are parked waiting for the UI, so the server refuses new ones. | Snapshot and dismiss the pending dialogs, then retry. If the window is genuinely hung, those slots are not freed while the server runs. Stop and tell the user. |
+| `ElementDisappearedDuringAction` | Input tools only: the target lost the foreground, or the window under the pointer changed, just before input was sent. Usually nothing was sent. But a paced `desktop_type` (`interKeyDelayMs` > 0) checks before each character, so it can stop with part of the text typed, and a drag that aborts releases the button at its start point. | Check the field's current text before retrying a paced type. Then re-snapshot, re-focus the target, retry once. |
+| `WindowHandleStale` | The window closed, or its HWND now belongs to another window. | `desktop_list_windows`, then `desktop_open_window` again, and take fresh refs from the new handle. |
+| `InputDesktopUnavailable` | The session is locked, disconnected, or on a secure desktop (a UAC prompt). | Nothing to retry. Tell the user; input resumes only after they unlock or reconnect. |
+
+A wait that runs out of time is **not** an error. `desktop_wait_for` returns `satisfied: false`, with
+`unsatisfiedBecause` when it can say why (e.g. `outsideWindowBounds`), and `desktop_wait_for_stable` returns
+`stable: false`. Decide from those fields; do not treat a timeout as an exception to retry.
+
+### Rules
+
+1. **Wait for a condition, never sleep and retry.** Before acting on a control that is not ready, use
+   `desktop_wait_for` with `until: "exists"`, `"enabled"` or `"gone"`, or `"valueEquals"` with `equals`.
+   Use `desktop_wait_for_stable` to let a busy window settle. Then act once.
+2. **Never repeat a state-changing action blind.** After `ActionBlockedPending`, a dropped connection or
+   any doubt, snapshot (or `desktop_get_text`) to see whether the action took effect. Invoking, clicking,
+   typing and pasting are not idempotent.
+3. **A larger `timeoutMs` does not cure a hung window.** It only keeps the call parked longer. The server
+   caps an action's timeout at 60000 ms. Use a longer timeout for an app that is slow but responsive.
+4. **`desktop_wait_for_stable` needs a scope on large trees.** Measured on a ~95-node window, one
+   whole-window poll took ~4 s, so the default 5000 ms budget leaves room for about one poll. Pass
+   `scopeRef` (a ref to the subtree that changes) and raise `timeoutMs`.
+5. **Bound your retries.** Retry a step at most twice, each time after a wait or re-acquisition. Then stop
+   and report what you saw (the error code, and what a snapshot or screenshot showed) rather than looping.
 
 ## Known Tool Limitations
 
