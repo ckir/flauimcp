@@ -1233,9 +1233,9 @@ SPEC §1 ("`LazyHandleFor` … becomes `internal`") and §1.1 (close/transform r
 
 **Files:**
 - Modify: `src/FlaUI.Mcp.Core/Windows/WindowManager.cs:302` (`private string LazyHandleFor` → `internal`), add three members, guard `CloseAsync` (671) and `WindowTransformAsync` (697).
-- Test: `test/FlaUI.Mcp.Tests/Windows/WindowManagerTests.cs` (append two headless tests).
+- Test: `test/FlaUI.Mcp.Tests/Windows/WindowLivenessTests.cs` (append two headless tests; `WindowManagerTests` is a class-level `Desktop` fixture and would silently drop them from the headless gate).
 
-- [ ] **Step 1: Failing headless tests** (append inside the existing `WindowManagerTests` class; it already tests `internal static` pure members, e.g. `DeadWindowIds`):
+- [ ] **Step 1: Failing headless tests** (append inside the existing headless `WindowLivenessTests` class, which already tests `internal static` pure `WindowManager` members such as `DeadWindowIds`):
 
 ```csharp
     [Theory]
@@ -1256,9 +1256,9 @@ SPEC §1 ("`LazyHandleFor` … becomes `internal`") and §1.1 (close/transform r
     }
 ```
 
-(Add `using FlaUI.Mcp.Core.Errors;` at the top of the test file if it is not there.)
+(Add `using FlaUI.Mcp.Core.Errors;` at the top of the test file.)
 
-- [ ] **Step 2: Run** `--filter "FullyQualifiedName~WindowManagerTests"` → build error.
+- [ ] **Step 2: Run** `--filter "FullyQualifiedName~WindowLivenessTests"` → build error.
 
 - [ ] **Step 3: Edit `WindowManager.cs`.** Change line 302 to `internal string LazyHandleFor(IntPtr hwnd, int pid)`. Insert after the `LazyHandleFor` method (after its closing brace, before `private void TryWatchProcessExit`):
 
@@ -1315,9 +1315,9 @@ In `CloseAsync` (line 671), replace the body's first statement so the refusal ru
             var w = winEl.AsWindow();
 ```
 
-- [ ] **Step 4: Run** `--filter "FullyQualifiedName~WindowManagerTests"` → the two new tests pass; build clean.
+- [ ] **Step 4: Run** `--filter "FullyQualifiedName~WindowLivenessTests"` → the two new tests pass; build clean.
 
-- [ ] **Step 5: Commit** `git add src/FlaUI.Mcp.Core/Windows/WindowManager.cs test/FlaUI.Mcp.Tests/Windows/WindowManagerTests.cs && git commit -m "feat(windows): internal handle mint by HWND; refuse close/transform on tray windows"`.
+- [ ] **Step 5: Commit** `git add src/FlaUI.Mcp.Core/Windows/WindowManager.cs test/FlaUI.Mcp.Tests/Windows/WindowLivenessTests.cs && git commit -m "feat(windows): internal handle mint by HWND; refuse close/transform on tray windows"`.
 
 ### Task 15: `TrayIconReader` (UIA icons, redacted names) and `TrayLocator` (taskbar, overflow, chevron)
 
