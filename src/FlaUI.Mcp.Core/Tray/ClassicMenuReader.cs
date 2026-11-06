@@ -41,7 +41,7 @@ public static class ClassicMenuReader
         var items = new List<ClassicMenuItem>();
         foreach (var e in raw)
         {
-            if ((e.State & TrayWin32.MF_SEPARATOR) != 0) continue;
+            if ((e.State & TrayWin32.MF_POPUP) == 0 && (e.State & TrayWin32.MF_SEPARATOR) != 0) continue;
             bool enabled = (e.State & (TrayWin32.MF_GRAYED | TrayWin32.MF_DISABLED)) == 0;
             bool submenu = (e.State & TrayWin32.MF_POPUP) != 0;
             items.Add(new ClassicMenuItem(e.Position, MenuLabel.Clean(e.RawText), enabled, submenu));

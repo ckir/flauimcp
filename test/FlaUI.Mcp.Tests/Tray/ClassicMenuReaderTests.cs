@@ -30,6 +30,15 @@ public class ClassicMenuReaderTests
     }
 
     [Fact]
+    public void FromRaw_does_not_treat_a_popup_with_8_to_15_items_as_a_separator()
+    {
+        // GetMenuState puts the submenu item count in the HIGH byte for MF_POPUP items; 8 sets bit 0x800.
+        var item = ClassicMenuReader.FromRaw(new[] { new RawMenuEntry(0, "More", TrayWin32.MF_POPUP | (8u << 8)) }).Single();
+        Assert.True(item.HasSubmenu);
+        Assert.True(item.Enabled);
+    }
+
+    [Fact]
     public void FromRaw_treats_MF_DISABLED_as_disabled_too()
         => Assert.False(ClassicMenuReader.FromRaw(new[] { new RawMenuEntry(0, "x", TrayWin32.MF_DISABLED) }).Single().Enabled);
 }

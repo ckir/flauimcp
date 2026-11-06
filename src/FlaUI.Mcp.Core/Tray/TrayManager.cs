@@ -104,10 +104,21 @@ public sealed class TrayManager
         nint overflow = 0; bool opened = false;
         if (includeHidden)
         {
-            overflow = await _locator.OpenOverflowAsync(tray);
-            opened = overflow != 0 && !wasOpen;
-            if (overflow != 0)
-                icons.AddRange(await _windows.RunOnHwndAsync(overflow, el => TrayIconReader.ReadOverflow(el, overflow, _classifier)));
+            try
+            {
+                overflow = await _locator.OpenOverflowAsync(tray);
+                opened = overflow != 0 && !wasOpen;
+                if (overflow != 0)
+                    icons.AddRange(await _windows.RunOnHwndAsync(overflow, el => TrayIconReader.ReadOverflow(el, overflow, _classifier)));
+            }
+            catch
+            {
+                if (!wasOpen && TrayLocator.IsOverflowOpen())
+                {
+                    try { await _locator.CloseOverflowAsync(tray); } catch { }
+                }
+                throw;
+            }
         }
         return new TrayRead(icons, tray, pid, overflow, wasOpen, opened);
     }
@@ -139,11 +150,14 @@ public sealed class TrayManager
     }
 
     // ---- §1.3 left_click ----
-    public Task<TrayActionResult> LeftClickAsync(string icon, int timeoutMs) => WithLockAsync(timeoutMs, async () =>
+    public Task<TrayActionResult> LeftClickAsync(string icon, int timeoutMs)
+    {
+        timeoutMs = AutomationDispatcher.ClampActionTimeout(timeoutMs);
+        return WithLockAsync(timeoutMs, async () =>
     {
         var read = await ReadAllAsync(includeHidden: true);
         TrayIconInfo target;
-        bool? restored;
+        bool? restored = null;
         try
         {
             target = ResolveIcon(read.Icons, icon);
@@ -155,14 +169,22 @@ public sealed class TrayManager
                 Interactor.Invoke(el);
             }, timeoutMs);
         }
-        finally { restored = await FinishOverflowAsync(read.TrayHwnd, read.WasOpen, read.OpenedByTool); }
+        finally
+        {
+            try { restored = await FinishOverflowAsync(read.TrayHwnd, read.WasOpen, read.OpenedByTool); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { restored = null; }
+        }
         return new TrayActionResult(target.Tooltip, OverflowRestored: restored);
-    });
+        });
+    }
 
     // ---- §2 right_click ----
     private const int PollMs = 100, GoneSettleMs = 500, GonePollMs = 50;
 
-    public Task<TrayActionResult> RightClickAsync(string icon, string? menuItem, int timeoutMs) => WithLockAsync(timeoutMs, async () =>
+    public Task<TrayActionResult> RightClickAsync(string icon, string? menuItem, int timeoutMs)
+    {
+        timeoutMs = AutomationDispatcher.ClampActionTimeout(timeoutMs);
+        return WithLockAsync(timeoutMs, async () =>
     {
         timeoutMs = AutomationDispatcher.ClampActionTimeout(timeoutMs);
         if (menuItem is not null && string.IsNullOrWhiteSpace(menuItem))
@@ -175,6 +197,7 @@ public sealed class TrayManager
         TrayIconInfo target = null!;
         TrayActionResult? result = null; ToolException? failure = null;
         var tracked = new HashSet<nint>();                                        // every window this call treated as a candidate
+        bool clicked = false;
         try
         {
             target = ResolveIcon(read.Icons, icon);   // inside the try: a no-match/ambiguous throw must still run step 8 (restore the overflow ReadAllAsync opened)
@@ -185,18 +208,20 @@ public sealed class TrayManager
                 throw new ToolException(ToolErrorCode.ElementNotActionable, "the icon's position is covered by another window.", "move that window, then retry");
             await Task.Run(() => _guard.MouseClick(target.CentreX, target.CentreY, "right", 1, Array.Empty<string>(),
                 new ActionTarget(pt.Root, TrayWin32.PidOf(pt.Root), pt.ProcessName, pt.WindowClass)));
+            clicked = true;
 
             // steps 4–5: poll until the picture is stable
             IReadOnlyList<ClassifiedWindow>? previous = null; IReadOnlyList<ClassifiedWindow> current = Array.Empty<ClassifiedWindow>();
             var deadline = started.AddMilliseconds(timeoutMs);
+            bool stable = false;
             while (DateTime.UtcNow < deadline)
             {
                 await Task.Delay(PollMs);
                 current = await ClassifyNewWindowsAsync(baseline, tracked, Remaining());
-                if (TrayMenuClassifier.IsStable(previous, current)) break;
+                if (TrayMenuClassifier.IsStable(previous, current)) { stable = true; break; }
                 previous = current;
             }
-            var winner = TrayMenuClassifier.IsStable(previous, current) ? TrayMenuClassifier.Strongest(current) : null;
+            var winner = stable ? TrayMenuClassifier.Strongest(current) : null;
             if (winner is null)
             {
                 var stillThere = (await ReadAllAsync(includeHidden: true)).Icons.Any(i => i.RuntimeId == target.RuntimeId);
@@ -224,8 +249,14 @@ public sealed class TrayManager
         finally
         {
             // step 8: cleanup never replaces the primary outcome (F3)
-            var (dismissed, warning) = await DismissLeftoversAsync(baseline, tracked, read.TrayPid);
-            bool? restored = await FinishOverflowAsync(read.TrayHwnd, read.WasOpen, read.OpenedByTool);
+            bool dismissed = false; string? warning = null; bool? restored = null;
+            if (clicked)
+            {
+                try { (dismissed, warning) = await DismissLeftoversAsync(baseline, tracked, read.TrayPid); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { (dismissed, warning) = (false, "cleanup failed: " + ex.GetType().FullName); }
+            }
+            try { restored = await FinishOverflowAsync(read.TrayHwnd, read.WasOpen, read.OpenedByTool); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { restored = null; }
             if (failure is not null)
             {
                 failure = warning is null ? failure : new ToolException(failure.Code, failure.Message + " " + warning, failure.SuggestedRecovery);
@@ -239,7 +270,8 @@ public sealed class TrayManager
         }
         if (failure is not null) throw failure;
         return result!;
-    });
+        });
+    }
 
     /// <summary>Step 4+5: classify every visible top-level window not in the baseline, ignoring the classes
     /// §2 step 4 names. UIA facts are read on the action STA under the remaining budget (F9); a candidate
@@ -255,6 +287,7 @@ public sealed class TrayManager
             var cls = TrayWin32.ClassOf(h);
             if (TrayMenuClassifier.IsIgnoredClass(cls)) continue;
             int pid = TrayWin32.PidOf(h);
+            var denied = PerceptionPolicy.IsDenied(ProcessIdentity.OfPid(pid));
             if (pid != fgPid) continue;
             bool hasTitle = TrayWin32.HasTitle(h);
             bool hasHmenu = cls == TrayMenuClassifier.ClassicMenuClass && ClassicMenuReader.HmenuOf(h) != 0;
@@ -267,16 +300,16 @@ public sealed class TrayManager
                     {
                         using var automation = new UIA3Automation();
                         var root = automation.FromHandle(h);
-                        var items = UiaMenuReader.Read(root, _classifier, ProcessIdentity.OfPid(pid));
-                        return (UiaMenuReader.RootIsMenu(root), UiaMenuReader.HasActionableMenuItems(root), items.Count);
+                        int n = denied ? 0 : UiaMenuReader.Read(root, _classifier, ProcessIdentity.OfPid(pid)).Count; // SPEC §2 step 6: never read a denied process's menu
+                        return (UiaMenuReader.RootIsMenu(root), UiaMenuReader.HasActionableMenuItems(root), n);
                     }, budgetMs);
                 }
                 catch (ToolException) { continue; } // parked or stale this poll
             }
-            else count = ClassicMenuReader.Read(ClassicMenuReader.HmenuOf(h)).Count;
+            else count = denied ? 0 : ClassicMenuReader.Read(ClassicMenuReader.HmenuOf(h)).Count;
             var kind = TrayMenuClassifier.Classify(new CandidateFacts(h, cls, hasTitle, pid, h == fg, hasHmenu, rootIsMenu, actionable), fgPid);
             if (kind == MenuKind.None) continue;
-            tracked.Add(h);
+            if (kind != MenuKind.AppWindow) tracked.Add(h); // K2 (an app window) is never Escaped
             list.Add(new ClassifiedWindow(h, kind, count));
         }
         return list;
