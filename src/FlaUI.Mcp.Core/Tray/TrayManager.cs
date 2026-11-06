@@ -64,6 +64,13 @@ public sealed class TrayManager
         _locator = new TrayLocator(windows, dispatcher);
     }
 
+    /// <summary>SPEC §2 step 6: a menu owned by a credential-store (or unidentifiable) process is refused before any item text is read.</summary>
+    internal static void RefuseIfDenied(string? proc)
+    {
+        if (PerceptionPolicy.IsDenied(proc))
+            throw new ToolException(ToolErrorCode.TargetDenied, $"the menu belongs to a denied process ('{proc ?? "unknown"}').", "this app's menu is never read");
+    }
+
     internal async Task<T> WithLockAsync<T>(int timeoutMs, Func<Task<T>> body)
     {
         if (!await _lock.WaitAsync(timeoutMs))
@@ -289,8 +296,7 @@ public sealed class TrayManager
             // step 6: deny-list before reading anything
             int pid = TrayWin32.PidOf(w.Hwnd);
             var proc = ProcessIdentity.OfPid(pid);
-            if (PerceptionPolicy.IsDenied(proc))
-                throw new ToolException(ToolErrorCode.TargetDenied, $"the menu belongs to a denied process ('{proc ?? "unknown"}').", "this app's menu is never read");
+            RefuseIfDenied(proc);
 
             // step 7
             result = w.Kind switch
