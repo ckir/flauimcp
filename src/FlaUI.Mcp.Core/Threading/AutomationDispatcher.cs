@@ -49,7 +49,7 @@ public sealed class AutomationDispatcher : IDisposable
     ///
     /// 0 is deliberately left alone: it fails FAST (an immediate ActionBlockedPending), which is degenerate
     /// but is the opposite of the hang this guard exists to prevent.</summary>
-    internal static int ClampActionTimeout(int requestedMs)
+    public static int ClampActionTimeout(int requestedMs)
     {
         if (requestedMs < 0)
             throw new ToolException(
