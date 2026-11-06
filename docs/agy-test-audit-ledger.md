@@ -1,0 +1,9 @@
+# AGY-TEST-AUDIT ledger
+
+One row per test audit, recorded before the audit is declared complete. Newest row at the BOTTOM. Every `|`
+inside a cell must be escaped as `\|`. Evidence must be independently checkable (fold commits or the brief);
+`none` is not a permitted value.
+
+| date | range | rounds | verdict | evidence |
+|---|---|---|---|---|
+| 2026-11-06 | B2 system tray test suites (`test/FlaUI.Mcp.Tests/Tray/*`, `Windows/WindowLivenessTests.cs`) at `cee7d8d` | 1 | GAPS FOUND — all dispositioned (3 FOLDED, 1 REJECTED) | gaps: deny-list refusal, read-only `GuardWrite`, lock timeout all FOLDED in `724049c` (`TrayManagerGuardTests`, each proven non-vacuous by a logic mutant that turned its own test red; deny-list needed the `RefuseIfDenied` source seam so capstone round 4 re-ran GREEN); visible-icon loop REJECTED (deleting it turns the lease-gated `Right_click_on_a_VISIBLE_icon_lists_the_menu` red, measured); brief `.clavity/seams/b2-tray-test-audit.md` |
