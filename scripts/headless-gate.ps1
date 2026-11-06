@@ -44,7 +44,7 @@ if ($WhatIf) {
 
 # Verify license headers before compiling and testing.
 if (Get-Command addlicense -ErrorAction SilentlyContinue) {
-    & addlicense -check -f $headerFile -ignore '**/obj/**' -ignore '**/bin/**' -ignore '**/artifacts/**' $repoRoot
+    & addlicense -check -f $headerFile -ignore '**/obj/**' -ignore '**/bin/**' -ignore '**/artifacts/**' -ignore '**/.serena/**' $repoRoot
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
         Write-Host 'pre-push: license check FAILED. Source files are missing the license header.' -ForegroundColor Red

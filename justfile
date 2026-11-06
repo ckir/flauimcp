@@ -57,7 +57,7 @@ gate: build test pester
 
 # Check that source files have license headers.
 license-check:
-    addlicense -check -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" .
+    addlicense -check -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" -ignore "**/.serena/**" .
 
 # The pre-push fast gate: license check, build, and headless test suite (same as lefthook pre-push).
 pre-push:
@@ -98,7 +98,7 @@ release-local:
 
 # Ensure source files have license headers using header.txt.
 addlicense:
-    addlicense -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" .
+    addlicense -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" -ignore "**/.serena/**" .
 
 # Alias for addlicense.
 license: addlicense

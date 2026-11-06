@@ -23,7 +23,7 @@ jobs:
       - name: Install addlicense
         run: go install github.com/google/addlicense@latest
       - name: Verify license headers
-        run: addlicense -check -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" .
+        run: addlicense -check -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" -ignore "**/.serena/**" .
 
   unit:
     name: Unit (non-Desktop)

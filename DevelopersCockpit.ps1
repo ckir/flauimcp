@@ -150,7 +150,7 @@ $script:Actions = @(
     # [2] QUALITY GATE
     [pscustomobject]@{ Key='G'; Tier=1; Desc='Dev gate (build+test+Pester)'; Note=''; Handler={ Invoke-DevGate } }
     [pscustomobject]@{ Key='E'; Tier=1; Desc='Pester (scripts/)';      Note='';       Cmd='pwsh -NoProfile -Command "Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = ''scripts/''; $c.Run.Exit = $true; Invoke-Pester -Configuration $c"' }
-    [pscustomobject]@{ Key='L'; Tier=1; Desc='Check license headers';  Note='';       Cmd='addlicense -check -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" .' }
+    [pscustomobject]@{ Key='L'; Tier=1; Desc='Check license headers';  Note='';       Cmd='addlicense -check -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" -ignore "**/.serena/**" .' }
     [pscustomobject]@{ Key='I'; Tier=1; Desc='Install smoke';          Note='';       Cmd='pwsh -File scripts/install-smoke.ps1' }
     [pscustomobject]@{ Key='K'; Tier=1; Desc='Desktop suite (the v1.0 gate)'; Note='CONSOLE+LEASE'; Handler={ Invoke-DesktopSuite } }
 
@@ -161,7 +161,7 @@ $script:Actions = @(
 
     # [4] HOUSEKEEPING
     [pscustomobject]@{ Key='H'; Tier=3; Desc='Health check';           Note='';       Handler={ Invoke-HealthCheck } }
-    [pscustomobject]@{ Key='F'; Tier=3; Desc='Apply license headers';  Note='writes'; Cmd='addlicense -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" .' }
+    [pscustomobject]@{ Key='F'; Tier=3; Desc='Apply license headers';  Note='writes'; Cmd='addlicense -f header.txt -ignore "**/obj/**" -ignore "**/bin/**" -ignore "**/artifacts/**" -ignore "**/.serena/**" .' }
     [pscustomobject]@{ Key='D'; Tier=3; Desc='Bundle codebase';        Note='';       Cmd='pwsh -File BundleCodeBase.ps1' }
     [pscustomobject]@{ Key='A'; Tier=3; Desc='Reset GH Actions storage'; Note='OWNER'; Handler={ Invoke-ResetStorage } }
     [pscustomobject]@{ Key='Q'; Tier=3; Desc='Quit';                   Note='';       Handler={ $script:Quit = $true } }
