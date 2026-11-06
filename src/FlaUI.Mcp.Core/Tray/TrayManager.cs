@@ -10,6 +10,7 @@ using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Windows;
+using FlaUI.Core.AutomationElements;
 using FlaUI.UIA3;
 
 namespace FlaUI.Mcp.Core.Tray;
@@ -179,7 +180,60 @@ public sealed class TrayManager
     }
 
     // ---- §2 right_click ----
-    private const int PollMs = 100, GoneSettleMs = 500, GonePollMs = 50;
+    private const int PollMs = 100, GoneSettleMs = 500, GonePollMs = 50, IconSettleMs = 1500, IconSettlePollMs = 60;
+
+    private static (int X, int Y, bool Off)? ReadCentre(AutomationElement? el)
+    {
+        if (el is null) return null;
+        int cx = 0, cy = 0; bool off = true;
+        try { var r = el.BoundingRectangle; cx = r.Left + r.Width / 2; cy = r.Top + r.Height / 2; off = r.Width <= 0 || r.Height <= 0; } catch { }
+        try { off = off || el.Properties.IsOffscreen.ValueOrDefault; } catch { }
+        return (cx, cy, off);
+    }
+
+    /// <summary>Overflow icons slide for ~500 ms after the chevron opens. Re-read the target's centre until two
+    /// consecutive reads agree, then check on the same STA that UIA hit-testing that point yields the target itself
+    /// (or a near ancestor). Anything else refuses: a stale point lands on a neighbouring app's icon.</summary>
+    private async Task<TrayIconInfo> RefreshTargetAsync(TrayIconInfo target)
+    {
+        var gone = new ToolException(ToolErrorCode.ElementDisappearedDuringAction, "the icon disappeared before it could be clicked.", "re-list and retry");
+        var settleStart = DateTime.UtcNow;
+        (int X, int Y, bool Off)? prev = null;
+        while (true)
+        {
+            var cur = await _windows.RunOnHwndAsync(target.HostHwnd, root => ReadCentre(TrayIconReader.FindByRuntimeId(root, target.RuntimeId)));
+            if (cur is null) throw gone;
+            if (prev is { } p && p.X == cur.Value.X && p.Y == cur.Value.Y)
+            {
+                var (cx, cy, off) = cur.Value;
+                if (!off)
+                {
+                    var ok = await _windows.RunOnHwndAsync(target.HostHwnd, root =>
+                    {
+                        try
+                        {
+                            var el = TrayIconReader.FindByRuntimeId(root, target.RuntimeId);
+                            if (el is null) return (bool?)null;
+                            var again = ReadCentre(el);
+                            if (again is null || again.Value.X != cx || again.Value.Y != cy) return false;
+                            var hit = el.Automation.FromPoint(new System.Drawing.Point(cx, cy));
+                            for (int i = 0; hit is not null && i <= 3; i++, hit = hit.Parent)
+                                if (TrayIconReader.RidOf(hit) == target.RuntimeId) return true;
+                            return false;
+                        }
+                        catch (Exception) { return false; }
+                    });
+                    if (ok is null) throw gone;
+                    if (ok == false) throw new ToolException(ToolErrorCode.ElementNotActionable, "the icon's position is covered or moved; refusing to click.", "retry");
+                }
+                return target with { CentreX = cx, CentreY = cy, IsOffscreen = off };
+            }
+            prev = cur;
+            if ((DateTime.UtcNow - settleStart).TotalMilliseconds >= IconSettleMs)
+                throw new ToolException(ToolErrorCode.ElementNotActionable, "the icon is still moving; retry.", "retry in a moment");
+            await Task.Delay(IconSettlePollMs);
+        }
+    }
 
     public Task<TrayActionResult> RightClickAsync(string icon, string? menuItem, int timeoutMs)
     {
@@ -201,6 +255,7 @@ public sealed class TrayManager
         try
         {
             target = ResolveIcon(read.Icons, icon);   // inside the try: a no-match/ambiguous throw must still run step 8 (restore the overflow ReadAllAsync opened)
+            target = await RefreshTargetAsync(target);   // overflow icons animate: re-read until still, then prove the point is the icon (fail closed)
             // step 3: the click goes through the input pipeline (lease, deny-list, session, budget, audit, re-verify)
             if (target.IsOffscreen) throw new ToolException(ToolErrorCode.ElementNotActionable, "the icon is not on screen (hidden or auto-hidden taskbar).", "show the taskbar, then retry");
             var pt = _env.HitTestRoot(target.CentreX, target.CentreY);
