@@ -1794,12 +1794,13 @@ public static class UiaMenuReader
         int Remaining() => Math.Max(250, timeoutMs - (int)(DateTime.UtcNow - started).TotalMilliseconds);
 
         var read = await ReadAllAsync(includeHidden: true);                       // step 1
-        TrayIconInfo target = ResolveIcon(read.Icons, icon);
         var baseline = TrayWin32.VisibleTopLevel().ToHashSet();                   // step 2
+        TrayIconInfo target = null!;
         TrayActionResult? result = null; ToolException? failure = null;
         var tracked = new HashSet<nint>();                                        // every window this call treated as a candidate
         try
         {
+            target = ResolveIcon(read.Icons, icon);   // inside the try: a no-match/ambiguous throw must still run step 8 (restore the overflow ReadAllAsync opened)
             // step 3: the click goes through the input pipeline (lease, deny-list, session, budget, audit, re-verify)
             if (target.IsOffscreen) throw new ToolException(ToolErrorCode.ElementNotActionable, "the icon is not on screen (hidden or auto-hidden taskbar).", "show the taskbar, then retry");
             var pt = _env.HitTestRoot(target.CentreX, target.CentreY);
