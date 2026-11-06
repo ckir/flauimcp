@@ -1807,7 +1807,7 @@ public static class UiaMenuReader
             if (pt.Root != read.TrayHwnd && pt.Root != read.OverflowHwnd)
                 throw new ToolException(ToolErrorCode.ElementNotActionable, "the icon's position is covered by another window.", "move that window, then retry");
             await Task.Run(() => _guard.MouseClick(target.CentreX, target.CentreY, "right", 1, Array.Empty<string>(),
-                new ActionTarget(pt.Root, 0, pt.ProcessName, pt.WindowClass)));
+                new ActionTarget(pt.Root, TrayWin32.PidOf(pt.Root), pt.ProcessName, pt.WindowClass)));
 
             // steps 4–5: poll until the picture is stable
             IReadOnlyList<ClassifiedWindow>? previous = null; IReadOnlyList<ClassifiedWindow> current = Array.Empty<ClassifiedWindow>();
@@ -1946,7 +1946,7 @@ public static class UiaMenuReader
         if (pt.Root != menuHwnd)
             throw new ToolException(ToolErrorCode.ElementDisappearedDuringAction, "the point no longer belongs to the menu.", "retry");
         await Task.Run(() => _guard.MouseClick(centre.X, centre.Y, "left", 1, Array.Empty<string>(),
-            new ActionTarget(menuHwnd, 0, pt.ProcessName, pt.WindowClass)));
+            new ActionTarget(menuHwnd, TrayWin32.PidOf(menuHwnd), pt.ProcessName, pt.WindowClass)));
         bool gone = await WaitGoneAsync(menuHwnd);
         return new TrayActionResult(target.Tooltip, MenuKind: "menu", Items: dto, Selected: items[idx].Text,
             Dismissed: gone, Warning: gone ? null : "the menu is still visible after the selection.");
@@ -2009,7 +2009,7 @@ public static class UiaMenuReader
             var root = _env.GetForegroundRoot();
             if (root == 0) return (false, "a menu is still open and there is no foreground window to send Escape to.");
             var r = _env.ResolveRoot(root);
-            await Task.Run(() => _guard.KeyChord(Array.Empty<string>(), "Esc", new ActionTarget(root, 0, r.ProcessName, r.WindowClass)));
+            await Task.Run(() => _guard.KeyChord(Array.Empty<string>(), "Esc", new ActionTarget(root, TrayWin32.PidOf(root), r.ProcessName, r.WindowClass)));
         }
         catch (ToolException ex)
         {
