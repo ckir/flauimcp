@@ -21,4 +21,9 @@ public static class OverflowRestore
         bool? restored = (openedByTool || wasOpenAtStart) ? endOpen == wasOpenAtStart : null;
         return new OverflowPlan(closeNow, restored);
     }
+
+    /// <summary>The `overflowRestored` value from the REAL end state, measured after the close attempt
+    /// (Decide reports the planned end state). null = the tool never opened nor found the overflow open.</summary>
+    public static bool? Report(bool wasOpenAtStart, bool openedByTool, bool isOpenAfter)
+        => (openedByTool || wasOpenAtStart) ? isOpenAfter == wasOpenAtStart : null;
 }

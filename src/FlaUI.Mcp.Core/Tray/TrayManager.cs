@@ -129,7 +129,7 @@ public sealed class TrayManager
     {
         var plan = OverflowRestore.Decide(wasOpen, openedByTool, TrayLocator.IsOverflowOpen());
         if (plan.CloseNow) await _locator.CloseOverflowAsync(tray);
-        return OverflowRestore.Decide(wasOpen, openedByTool, TrayLocator.IsOverflowOpen()).Restored;
+        return OverflowRestore.Report(wasOpen, openedByTool, TrayLocator.IsOverflowOpen());
     }
 
     // ---- §1.3 icon resolution (pure) ----
@@ -307,7 +307,7 @@ public sealed class TrayManager
             bool dismissed = false; string? warning = null; bool? restored = null;
             if (clicked)
             {
-                try { (dismissed, warning) = await DismissLeftoversAsync(baseline, tracked, read.TrayPid); }
+                try { (dismissed, warning) = await DismissLeftoversAsync(baseline, tracked, read.TrayPid, result?.Selected is not null); }
                 catch (Exception ex) when (ex is not OperationCanceledException) { (dismissed, warning) = (false, "cleanup failed: " + ex.GetType().FullName); }
             }
             try { restored = await FinishOverflowAsync(read.TrayHwnd, read.WasOpen, read.OpenedByTool); }
@@ -318,7 +318,12 @@ public sealed class TrayManager
             }
             else if (result is not null)
             {
-                if (result.MenuKind == "menu") result = result with { Dismissed = result.Dismissed ?? dismissed };
+                if (result.MenuKind == "menu")
+                {
+                    bool merged = (result.Dismissed ?? false) || dismissed;
+                    result = result with { Dismissed = merged };
+                    if (merged && result.Warning == "the menu is still visible after the selection.") result = result with { Warning = null };
+                }
                 if (warning is not null) result = result with { Warning = result.Warning is null ? warning : result.Warning + " " + warning };
                 result = result with { OverflowRestored = restored };
             }
@@ -459,7 +464,7 @@ public sealed class TrayManager
     /// <summary>§2 step 8: one last scan for K1/K3 windows of the foreground process (a late menu, F2) plus
     /// anything this call tracked; if any is still up, Escape through the input pipeline targeting the CURRENT
     /// foreground root, then verify. Never throws. Returns (dismissed, warning).</summary>
-    private async Task<(bool Dismissed, string? Warning)> DismissLeftoversAsync(HashSet<nint> baseline, HashSet<nint> tracked, int explorerPid)
+    private async Task<(bool Dismissed, string? Warning)> DismissLeftoversAsync(HashSet<nint> baseline, HashSet<nint> tracked, int explorerPid, bool selectionSent)
     {
         var fg = TrayWin32.GetForegroundWindow();
         int fgPid = fg == 0 ? -1 : TrayWin32.PidOf(fg);
@@ -469,10 +474,21 @@ public sealed class TrayManager
             .Where(h => TrayWin32.IsWindowVisible(h))
             .ToList();
         if (up.Count == 0) return (true, null);
+        if (selectionSent)
+        {
+            // never Escape after a selection: the command may have raised a dialog that is now foreground
+            var selDeadline = DateTime.UtcNow.AddMilliseconds(GoneSettleMs);
+            while (DateTime.UtcNow < selDeadline && up.Any(h => TrayWin32.IsWindow(h) && TrayWin32.IsWindowVisible(h))) await Task.Delay(GonePollMs);
+            bool selGone = !up.Any(h => TrayWin32.IsWindow(h) && TrayWin32.IsWindowVisible(h));
+            return (selGone, selGone ? null : "a menu window is still visible after the selection.");
+        }
         try
         {
             var root = _env.GetForegroundRoot();
             if (root == 0) return (false, "a menu is still open and there is no foreground window to send Escape to.");
+            int rootPid = TrayWin32.PidOf(root);
+            if (!up.Any(h => TrayWin32.PidOf(h) == rootPid))
+                return (false, "a menu may still be open, but the foreground belongs to another application; Escape was not sent.");
             var r = _env.ResolveRoot(root);
             await Task.Run(() => _guard.KeyChord(Array.Empty<string>(), "Esc", new ActionTarget(root, TrayWin32.PidOf(root), r.ProcessName, r.WindowClass)));
         }

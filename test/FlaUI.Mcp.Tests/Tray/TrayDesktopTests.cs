@@ -108,15 +108,13 @@ public class TrayDesktopTests
         var tray = new WindowHandle(j.GetProperty("handle").GetString()!);
         var found = await perception.FindAsync(tray, new FindQuery(TrayIconReader.SystemItemAid, null, "eq", null, false), 50, null);
         Assert.NotEmpty(found.Matches);
-        if (j.TryGetProperty("overflowHandle", out var oh))
-        {
-            var overflow = new WindowHandle(oh.GetString()!);
-            Assert.NotEmpty((await perception.FindAsync(overflow, new FindQuery(TrayIconReader.NotifyItemAid, null, "eq", null, false), 50, null)).Matches);
-            await new TrayLocator(rig.Windows, rig.Dispatcher).CloseOverflowAsync(TrayLocator.RequireTaskbar().Hwnd);
-            rig.Windows.PruneClosedWindows();
-            var ex = await Assert.ThrowsAsync<FlaUI.Mcp.Core.Errors.ToolException>(() => perception.FindAsync(overflow, new FindQuery(TrayIconReader.NotifyItemAid, null, "eq", null, false), 50, null));
-            Assert.Equal(FlaUI.Mcp.Core.Errors.ToolErrorCode.WindowHandleStale, ex.Code);
-        }
+        Assert.True(j.TryGetProperty("overflowHandle", out var oh), "the fixture or other apps keep at least one icon in the overflow on this machine; if none are hidden the test cannot exercise the overflow handle");
+        var overflow = new WindowHandle(oh.GetString()!);
+        Assert.NotEmpty((await perception.FindAsync(overflow, new FindQuery(TrayIconReader.NotifyItemAid, null, "eq", null, false), 50, null)).Matches);
+        await new TrayLocator(rig.Windows, rig.Dispatcher).CloseOverflowAsync(TrayLocator.RequireTaskbar().Hwnd);
+        rig.Windows.PruneClosedWindows();
+        var ex = await Assert.ThrowsAsync<FlaUI.Mcp.Core.Errors.ToolException>(() => perception.FindAsync(overflow, new FindQuery(TrayIconReader.NotifyItemAid, null, "eq", null, false), 50, null));
+        Assert.Equal(FlaUI.Mcp.Core.Errors.ToolErrorCode.WindowHandleStale, ex.Code);
     }
 
     [Fact]

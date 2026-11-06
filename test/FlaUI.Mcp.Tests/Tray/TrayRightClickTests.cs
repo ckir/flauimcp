@@ -85,6 +85,7 @@ public class TrayRightClickTests
         Assert.Equal("Beta", j.GetProperty("selected").GetString());
         Assert.True(j.GetProperty("dismissed").GetBoolean());
         Assert.True(fx.WaitForEvent("command Beta"), string.Join(" / ", fx.Events()));
+        Assert.True(fx.WaitForEvent("menu closed"), string.Join(" / ", fx.Events()));
         Assert.Equal(0, TrayWin32.FindVisibleByClass(TrayMenuClassifier.ClassicMenuClass));
     }
 

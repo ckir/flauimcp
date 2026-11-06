@@ -43,6 +43,20 @@ public class OverflowRestoreTests
         Assert.False(p.Restored);
     }
 
+    [Theory]
+    [InlineData(false, true, true, false)]  // opened by the tool and still open after the close attempt: NOT restored
+    [InlineData(false, true, false, true)]
+    [InlineData(true, false, true, true)]
+    [InlineData(true, false, false, false)]
+    public void Report_compares_the_real_end_state_with_the_start_state(bool wasOpen, bool openedByTool, bool isOpenAfter, bool expected)
+        => Assert.Equal(expected, OverflowRestore.Report(wasOpen, openedByTool, isOpenAfter));
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    public void Report_is_null_when_the_tool_never_touched_it(bool wasOpen, bool openedByTool, bool isOpenAfter)
+        => Assert.Null(OverflowRestore.Report(wasOpen, openedByTool, isOpenAfter));
+
     [Fact]
     public void Never_touched_reports_nothing()
     {
