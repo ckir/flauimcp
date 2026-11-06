@@ -1168,3 +1168,6 @@ is not required merely because a surface is Chromium.
 experiment was run, believed, and propagated into a skill, two docs and a roadmap over ~20 commits before the
 existing Desktop test — excluded from the default gate — was ever consulted. **Before trusting a hand
 measurement that contradicts shipped behaviour, look for the test that already pins it.**
+
+### 31. `desktop_close_window` can report `ok:true` while the window stays visible
+**Status:** OPEN 2026-11-06 - seen once on ShareX ("ShareX 21.0"): `{"ok":true}`, `IsWindowVisible` still true after 4 s, UIA `WindowPattern.Close()` hid it. Reported by a subagent during B2 Task 1, NOT yet reproduced by the driver; reproduce on a WinForms window before fixing.
