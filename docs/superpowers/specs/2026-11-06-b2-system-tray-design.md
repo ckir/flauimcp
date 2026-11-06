@@ -48,14 +48,21 @@ it becomes `internal`), so no new handle machinery is introduced. No `Shell_Tray
 restarting").
 
 **One tray at a time (F5).** The three tools share one process-wide lock. A second call waits for the first
-(bounded by its own `timeoutMs`), so two calls never toggle the overflow or take baselines over each other.
+(bounded by its own `timeoutMs`; `desktop_open_tray` and `desktop_list_tray_icons` take no `timeoutMs` and wait
+at most 4000 ms, then fail `Timeout`), so two calls never toggle the overflow or take baselines over each other.
 
 ### 1.1 `desktop_open_tray(includeHidden = false)` — ReadOnly, lease-exempt
 
 Returns `{ handle, overflowHandle?, overflowLeftOpen }`.
 
-- `handle`: a `wN` for `Shell_TrayWnd` (the whole taskbar, ~30 control-view elements, M15). Usable with every
-  existing window tool: `desktop_snapshot`, `desktop_find`, `desktop_invoke`, `desktop_click`...
+- `handle`: a `wN` for `Shell_TrayWnd` (the whole taskbar, ~30 control-view elements, M15). Usable with the
+  existing perception and interaction tools: `desktop_snapshot`, `desktop_find`, `desktop_invoke`,
+  `desktop_click`...
+- **Except the window-lifecycle tools.** `desktop_close_window` (`WindowManager.CloseAsync`,
+  `WindowManager.cs:671`, calls `w.Close()` unguarded) and `desktop_window_transform` refuse a handle bound to
+  `Shell_TrayWnd` or the overflow window with `ElementNotActionable` ("the taskbar cannot be closed, minimized
+  or resized"). Sending the taskbar a close request is the classic way to raise Windows' "Shut Down Windows"
+  dialog. The refusal keys on the HWND's class, so it also covers a tray handle obtained any other way.
 - `includeHidden = true`: opens the overflow if it is closed, and returns `overflowHandle` for it.
   **The overflow is deliberately left open**, because a handle to a window about to be closed is useless.
   `overflowLeftOpen: true` says so. `desktop_open_tray(includeHidden = false)` returns only `handle` and does
@@ -88,7 +95,8 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
   0 matches → `SelectorNoMatch`; more than 1 → `AmbiguousMatch`, whose message lists every candidate's name.
   **Every result echoes `matchedIcon`** (the full tooltip that matched). A tooltip is set by the app and is
   untrusted: any app can call its icon "Docker". The tool cannot tell them apart (no owner process, M4), so the
-  description tells the agent to check `matchedIcon` before trusting the result (F7).
+  description tells the agent to check `matchedIcon` before trusting the result (F7). `matchedIcon`, and the
+  candidate names in an `AmbiguousMatch` message, pass through the same redaction as §3.4.
 - `action = "left_click"`: UIA Invoke on the icon. **No lease.**
 - **Overflow after an action (both actions, F4).** If the tool opened the overflow, it closes it if it is still
   open. If the overflow was already open, the tool never re-opens it: the action usually moves the foreground
@@ -110,7 +118,8 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
 
 `items` is `[{ text, enabled, hasSubmenu }]` in menu order. `selected` is the cleaned text of the chosen item.
 `dismissed` is `true` when no menu window of the tool's is left open. `warning` is a sentence for the agent.
-`action` and `menuItem` are matched case-insensitively; an empty `menuItem` is `InvalidArguments`.
+`action` and `menuItem` are matched case-insensitively. An empty or whitespace-only `icon` or `menuItem` is
+`InvalidArguments` (an empty substring would otherwise match everything).
 - Any other `action` → `InvalidArguments`. (`double_click` is out of scope, §5.)
 
 ## 2. `right_click`, step by step
@@ -136,15 +145,19 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
      result took the foreground (M6: the K1 menu's owner; M7: OneDrive's window). Requiring it keeps an
      unrelated titled window that happens to appear during the poll (a toast, another app) from being taken
      for the menu.
-   **Decide only when the picture is stable (F1):** two consecutive polls see the same set of new candidate
-   windows and the same item counts. Then the strongest kind present wins. K2 is chosen only when no K1/K3
+   **Decide only when the picture is stable (F1):** two consecutive polls see the same **non-empty** set of new
+   candidate windows and the same item counts. An empty set is never "stable": the poll continues until
+   `timeoutMs`, so a slow app is not cut off after 200 ms. Then the strongest kind present wins. K2 is chosen only when no K1/K3
    candidate exists at that point, so a slow menu cannot lose to a window that classified earlier.
    Nothing stable by `timeoutMs` → `Timeout` ("no menu appeared"), after the cleanup in step 8, which also
    covers a menu that appears late (F2).
 6. **Deny-list**: if the winning window's process is denied (`PerceptionPolicy.IsDenied`, which fails closed on
    an unreadable process), dismiss (step 8) and fail `TargetDenied`. No item is read first.
 7. **Read items** (K1, K3). Clean each label: drop `&` accelerator markers, drop everything from the first tab
-   (shortcut text), trim. Drop separators. Each item carries `{ text, enabled, hasSubmenu }`.
+   (shortcut text), trim. Drop separators from what is **returned**. Each returned item carries `{ text, enabled, hasSubmenu }`;
+   internally each K3 item also keeps its **raw position** in the HMENU (separators included), because
+   `GetMenuItemRect` and `GetMenuState` index by raw position. Selecting by the filtered index would click the
+   wrong item in any menu with a separator above the target.
    - K1: `enabled` = UIA IsEnabled; `hasSubmenu` = ExpandCollapse supported and the item has children or
      ExpandCollapseState is not `LeafNode`.
    - K3: `enabled` = not `MF_GRAYED`/`MF_DISABLED` (`GetMenuState`); `hasSubmenu` = `MF_POPUP`.
@@ -154,8 +167,9 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
      `ElementNotActionable`; `hasSubmenu` → `ElementNotActionable` ("submenus are not supported"). Every error
      path dismisses first.
      - K1: UIA Invoke on the `MenuItem`.
-     - K3: left-click the centre of `GetMenuItemRect(NULL, hmenu, index)` through the input pipeline, with the
-       hit-test re-verify that the point maps to the `#32768` window.
+     - K3: left-click the centre of `GetMenuItemRect(NULL, hmenu, rawPosition)` through the input pipeline, with
+       the hit-test re-verify that the point maps to the `#32768` window. A NULL window handle is MEASURED to
+       work for a tray `#32768` menu (M17: `ok=True`, four real rects).
      - If the menu window is gone before the selection is sent → `ElementDisappearedDuringAction`.
      - Success returns `{ menuKind: "menu", items, selected: "<cleaned text>" }`; the menu is gone afterwards
        (verified; if it is still present, `dismissed: false` and a `warning`).
@@ -165,7 +179,10 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
 8. **Cleanup** (in a `finally`), on every path including errors:
    - One last scan for new K1/K3 windows of the foreground process, so a menu that appeared after the poll
      ended is not left behind (F2). If any is up, send Escape through the input pipeline and verify it is
-     gone → `dismissed: true|false`.
+     gone → `dismissed: true|false`. The keystroke's expected target is the **current foreground root**
+     (`GetForegroundRoot()` read just before sending), not the menu window: `KeyChord` re-verifies the
+     foreground against its target (`Win32SyntheticInput.cs:43`), and for K1 the foreground is the menu's hidden
+     owner (M6).
    - Handle the overflow as §1.3 says → `overflowRestored`.
    - **Cleanup never replaces the primary result or error (F3).** If the Escape itself is refused (the lease
      lapsed, the session locked), the call still returns its primary outcome, with `dismissed: false` and a
@@ -179,7 +196,8 @@ Blocked in `--read-only-mode` (`ToolResponse.GuardWrite`).
    is transient layout disclosure that the tool undoes (§1.2), which both reviewers accepted as read-only.
    `desktop_open_tray(includeHidden = true)` leaves it open by design and says so.
 3. **Deny-list**: §2 step 6. A password manager's tray **menu** is refused before anything is read.
-4. **Redaction of tooltips**: `desktop_list_tray_icons` passes each `name` through the same name-redaction
+4. **Redaction of tooltips**: every tooltip the tools return — `desktop_list_tray_icons`' `name`,
+   `desktop_tray_action`'s `matchedIcon`, and candidate names in an `AmbiguousMatch` message — passes through the same name-redaction
    path a snapshot uses (`ElementContent` + `RedactionRules`), evaluated against the element's **real owner,
    explorer**. Consequence, documented in the tool description and `docs/agent-contract.md`: a rule scoped to
    a password manager's process does **not** hide that manager's tray tooltip, because UIA gives no owner for
@@ -240,7 +258,7 @@ hidden one (F10). The visible path is covered through system icons (the Clock is
 |---|---|
 | headless (CI) | menu-kind classification from window facts; label cleaning (`&`, tab accelerators, separators); icon/item matching (equality, then substring, then ambiguity); overflow-restore decision; deny-list decision |
 | `Desktop` | list contains the fixture icon as `hidden` with its exact tooltip; overflow restored from both start states (closed and open); `desktop_open_tray` handles work and the overflow handle goes stale once closed; `left_click` reaches the fixture (its log) |
-| `Desktop` + `SyntheticInput` | `right_click` lists the expected items for K1 and K3; selecting an item lands in the fixture log and the menu is gone; K2 returns a window handle; errors: no match, ambiguous (two fixture icons sharing a prefix), disabled item, submenu item |
+| `Desktop` + `SyntheticInput` | `right_click` on a **visible** icon (the fixture promoted to the visible tray, Q7) as well as a hidden one; `right_click` lists the expected items for K1 and K3; selecting an item lands in the fixture log and the menu is gone; K2 returns a window handle; errors: no match, ambiguous (two fixture icons sharing a prefix), disabled item, submenu item |
 
 **Mutation checks** (each must turn at least one test red): remove the K3 Win32 path; skip the overflow restore;
 accept the first of an ambiguous match; report `selected` without sending the selection.
@@ -254,6 +272,7 @@ accept the first of an ambiguous match; report `selected` without sending the se
 | Q3 | Auto-hidden taskbar behaviour | §5 expected error | plan |
 | Q4 | Does a `TrackPopupMenu` fixture menu classify as K3 the way ZoomIt's does? | the fixture must exercise the real K3 path, not a look-alike | plan, fixture task |
 | Q5 | Does a new tray icon land in the overflow on Windows 11? | which path the fixture exercises (F10) | plan, fixture task |
+| Q7 | Can a test promote the fixture icon to the visible tray (e.g. `HKCU\Control Panel\NotifyIconSettings\<id>\IsPromoted`), and restore it? | the visible right-click test (panel r1, 5.1). If it cannot, the gap is recorded under Stand-downs as UNVERIFIED-ACCEPTED, not hidden | plan, fixture task |
 | Q6 | Is the right-click result's process the foreground process for every kind, including the fixture's? | §2 step 5's candidate rule (F6) | plan, measured on K1/K2/K3 fixtures |
 
 ## Stand-downs
