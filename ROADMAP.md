@@ -329,7 +329,7 @@ stamped** — v1.0.0 ships with no known defects.
 | 5 | terminal tab ordinal discovery | SP2 | ✅ shipped as the new `desktop_list_terminal_tabs` |
 | 6 | JSON-shape tripwires | SP0 | ✅ merged (`015f23c`) |
 | 7 | redact descriptor `Name` for `IsPassword` | SP2 | ✅ RETIRED as invalid; the real guarantee is now pinned |
-| 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ✅ shipped — merged `ca70770` (`--no-ff`) on 2026-08-22. `desktop_screenshot`'s window and element scopes render the target's OWN pixels via `PrintWindow` instead of photographing a screen rectangle; full-desktop and the OCR path still scrape, deliberately. ⚠ Its capstone was **operator-stopped at round 3, NOT green** — never cite it as capstone-green. Filed debt: items **17**, **18**, **19** |
+| 8 | occlusion-aware capture (`PrintWindow`) | SP4 | ✅ shipped — merged `ca70770` (`--no-ff`) on 2026-08-22. `desktop_screenshot`'s window and element scopes render the target's OWN pixels via `PrintWindow` instead of photographing a screen rectangle; full-desktop and the OCR path still scrape, deliberately. ⚠ Its capstone was **operator-stopped at round 3, NOT green** — never cite it as capstone-green. Filed debt: items **17**, **18**, **19** (`### 17.`–`### 19.` under **Notes**, below) |
 | 9 | per-field redaction | SP3 | ✅ shipped — merged `ef17ed9` (`--no-ff`) |
 | 10 | delayed-render clipboard (`WM_RENDERFORMAT`) | SP4 | ⬜ not started — the estimate-blower. **DEFERRED out of v1.0.0** by the operator (2026-08-22): hardening, not a defect |
 | 11 | redaction completeness (A1 pixel-mask fail-open · A5 focused-window title · A2 stats rename · A6 token constant) | SP4 | ✅ shipped — merged `079aebd` (`--no-ff`). Capstone GREEN after 7 rounds; test audit complete. 16 accepted boundaries ledgered in `docs/coverage-debt.md` |
@@ -341,6 +341,9 @@ stamped** — v1.0.0 ships with no known defects.
 
 Also fixed en route, though never one of the ten: `value-and-find-paths-miss-desktop-level-popups`
 (deleted in `94e932a`).
+
+**Items 17 and later are not in this table.** They are too long for a row, so each is a numbered `### N.`
+section under **Notes** at the end of this file (`grep -n "^### [0-9]" ROADMAP.md`).
 
 ⚠ **Items 4, 8, 9 and 10 are HARDENING, not defects.** The "no known defects at v1.0.0" bar is therefore
 **not** gated on finishing SP3/SP4 — it is gated on emptying the backlog directory.
