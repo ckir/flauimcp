@@ -29,6 +29,12 @@ internal static class TrayWin32
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
     [DllImport("user32.dll")] public static extern nint GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern nint SendMessageW(nint hwnd, uint msg, nint w, nint l);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern nint SendMessageTimeoutW(nint hwnd, uint msg, nint w, nint l, uint flags, uint timeoutMs, out nint result);
+    public const uint SMTO_BLOCK = 0x1, SMTO_ABORTIFHUNG = 0x2;
+
+    /// <summary>SendMessage that cannot hang the caller: returns the result, or 0 when the call times out or fails.</summary>
+    public static nint SendMessageBounded(nint hwnd, uint msg, nint w, nint l, uint timeoutMs = 500)
+        => SendMessageTimeoutW(hwnd, msg, w, l, SMTO_ABORTIFHUNG | SMTO_BLOCK, timeoutMs, out var result) == 0 ? 0 : result;
     [DllImport("user32.dll")] public static extern int GetMenuItemCount(nint hMenu);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetMenuStringW(nint hMenu, uint item, StringBuilder s, int max, uint flags);
     [DllImport("user32.dll")] public static extern uint GetMenuState(nint hMenu, uint item, uint flags);

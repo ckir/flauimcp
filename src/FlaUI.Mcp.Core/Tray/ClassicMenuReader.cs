@@ -19,7 +19,7 @@ public sealed record ClassicMenuItem(int RawPosition, string Text, bool Enabled,
 public static class ClassicMenuReader
 {
     /// <summary>The HMENU behind a `#32768` window, or 0 when it has none (then it is not K3).</summary>
-    public static nint HmenuOf(nint menuHwnd) => TrayWin32.SendMessageW(menuHwnd, TrayWin32.MN_GETHMENU, 0, 0);
+    public static nint HmenuOf(nint menuHwnd) => TrayWin32.SendMessageBounded(menuHwnd, TrayWin32.MN_GETHMENU, 0, 0);
 
     public static List<RawMenuEntry> ReadRaw(nint hmenu)
     {

@@ -19,7 +19,7 @@ namespace FlaUI.Mcp.Core.Tray;
 public sealed record TrayOpenResult(
     [property: JsonPropertyName("handle")] string Handle,
     [property: JsonPropertyName("overflowHandle"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? OverflowHandle,
-    [property: JsonPropertyName("overflowLeftOpen")] bool OverflowLeftOpen);
+    [property: JsonPropertyName("overflowLeftOpen"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool OverflowLeftOpen);
 
 public sealed record TrayIconDto(
     [property: JsonPropertyName("name")] string Name,

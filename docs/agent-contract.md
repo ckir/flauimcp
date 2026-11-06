@@ -159,7 +159,7 @@ app-chosen (any app can name its icon "Docker"), so always check `matchedIcon` i
 
 | Tool | Access | Description & Key Parameters |
 |---|---|---|
-| `desktop_open_tray` | ReadOnly | Handle for the taskbar (`Shell_TrayWnd`), usable with snapshot/find/invoke. `includeHidden` also opens the hidden-icons overflow and returns `overflowHandle`, **left open** (`overflowLeftOpen`); it closes by itself when the foreground moves, after which the handle is `WindowHandleStale`. Tray handles refuse `desktop_close_window` / `desktop_window_transform` (`ElementNotActionable`). Lease-exempt. |
+| `desktop_open_tray` | ReadOnly | Handle for the taskbar (`Shell_TrayWnd`), usable with snapshot/find/invoke. `includeHidden` also opens the hidden-icons overflow and returns `overflowHandle`, **left open** (`overflowLeftOpen: true`); it closes by itself when the foreground moves, after which the handle is `WindowHandleStale`. Tray handles refuse `desktop_close_window` / `desktop_window_transform` (`ElementNotActionable`). Lease-exempt. |
 | `desktop_list_tray_icons` | ReadOnly | `{ icons: [{ name, location }], overflowRestored? }`, `location` = `visible` \| `system` \| `hidden`. `includeHidden` opens and restores the overflow. Lease-exempt. |
 | `desktop_tray_action` | Destructive | `icon` (substring), `action` = `left_click` (UIA Invoke, lease-exempt) \| `right_click` (real input, **lease required**), `menuItem?`, `timeoutMs` (default 4000). Blocked in `--read-only-mode`. |
 

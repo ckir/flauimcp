@@ -41,4 +41,14 @@ public class ClassicMenuReaderTests
     [Fact]
     public void FromRaw_treats_MF_DISABLED_as_disabled_too()
         => Assert.False(ClassicMenuReader.FromRaw(new[] { new RawMenuEntry(0, "x", TrayWin32.MF_DISABLED) }).Single().Enabled);
+
+    [Fact]
+    public void HmenuOf_returns_0_for_a_window_that_does_not_exist_and_does_not_throw()
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = ClassicMenuReader.HmenuOf((nint)0x1);
+        sw.Stop();
+        Assert.Equal((nint)0, result);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"took {sw.Elapsed}");
+    }
 }

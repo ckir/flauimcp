@@ -60,7 +60,7 @@ at most 4000 ms, then fail `Timeout` with the message "another tray operation is
 
 ### 1.1 `desktop_open_tray(includeHidden = false)` — ReadOnly, lease-exempt
 
-Returns `{ handle, overflowHandle?, overflowLeftOpen }`.
+Returns `{ handle, overflowHandle?, overflowLeftOpen? }` (overflowLeftOpen is present, as true, only with overflowHandle).
 
 - `handle`: a `wN` for `Shell_TrayWnd` (the whole taskbar, ~30 control-view elements, M15). Usable with the
   existing perception and interaction tools: `desktop_snapshot`, `desktop_find`, `desktop_invoke`,
