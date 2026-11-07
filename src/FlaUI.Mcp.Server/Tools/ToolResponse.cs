@@ -6,7 +6,10 @@
 
 using System.Text.Json;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Logging;
 using FlaUI.Mcp.Server;
+using FlaUI.Mcp.Server.Logging;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 
 namespace FlaUI.Mcp.Server.Tools;
@@ -22,11 +25,7 @@ public static class ToolResponse
     public static async Task<string> Guard(Func<Task<string>> body)
     {
         try { return await body(); }
-        catch (ToolException ex)
-        {
-            return JsonSerializer.Serialize(
-                new { error = ex.Code.ToString(), message = ex.Message, suggestedRecovery = ex.SuggestedRecovery }, Json);
-        }
+        catch (ToolException ex) { return ErrJson(ex.Code.ToString(), ex.Message, ex.SuggestedRecovery); }
         // ⚠⚠ CRITICAL FAILURES ARE NOT TOOL ERRORS, and this boundary used to say they were. An
         // OutOfMemoryException was caught here, reported to the agent as `INTERNAL` with the advice
         // "re-check arguments and retry", and the server carried on in a state where it had just failed to
@@ -43,8 +42,8 @@ public static class ToolResponse
         // construction if cancellation is ever introduced.
         catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
         {
-            return JsonSerializer.Serialize(
-                new { error = "INTERNAL", message = ex.Message, suggestedRecovery = (string?)"re-check arguments and retry" }, Json);
+            LogException(ex);
+            return ErrJson("INTERNAL", ex.Message, "re-check arguments and retry");
         }
     }
 
@@ -54,11 +53,32 @@ public static class ToolResponse
         catch (ToolException ex) { return ErrResult(ex.Code.ToString(), ex.Message, ex.SuggestedRecovery); }
         // ⚠ Same critical filter as Guard above, and for the same reason - see the comment there.
         catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
-        { return ErrResult("INTERNAL", ex.Message, "re-check arguments and retry"); }
+        {
+            LogException(ex);
+            return ErrResult("INTERNAL", ex.Message, "re-check arguments and retry");
+        }
+    }
+
+    // The error DTO. `log` is ADDITIVE (spec §5.5) and absent - not null - when there is no pointer:
+    // Json does not ignore nulls, so the two shapes are explicit. Without a pointer the bytes are exactly
+    // what they were before logging existed (ToolResponseCriticalTests pins them).
+    private static string ErrJson(string code, string message, string? recovery)
+    {
+        var pointer = ToolLog.Pointer();
+        return pointer is null
+            ? JsonSerializer.Serialize(new { error = code, message, suggestedRecovery = recovery }, Json)
+            : JsonSerializer.Serialize(new { error = code, message, suggestedRecovery = recovery, log = pointer }, Json);
     }
 
     private static CallToolResult ErrResult(string code, string message, string? recovery) => new()
-    { IsError = true, Content = new List<ContentBlock> { new TextContentBlock { Text = JsonSerializer.Serialize(new { error = code, message, suggestedRecovery = recovery }, Json) } } };
+    { IsError = true, Content = new List<ContentBlock> { new TextContentBlock { Text = ErrJson(code, message, recovery) } } };
+
+    // spec §4.5: the type and stack an INTERNAL error used to lose. A .NET stack carries frames, never
+    // argument values (spec §6.4); msg is UI text and is masked per §6.3/§6.4 by the provider.
+    private static void LogException(Exception ex) =>
+        LogEvent.Emit(ToolLog.Logger, LogLevel.Error, "tool.exception",
+            LogEvent.F("exType", ex.GetType().FullName), LogEvent.F("hresult", ex.HResult),
+            LogEvent.F("stack", ex.StackTrace), LogEvent.Ui("msg", ex.Message));
 
     public static CallToolResult Image(byte[] png, object metadata) => new()
     { IsError = false, Content = new List<ContentBlock> { ImageContentBlock.FromBytes(png, "image/png"), new TextContentBlock { Text = JsonSerializer.Serialize(metadata, Json) } } };
