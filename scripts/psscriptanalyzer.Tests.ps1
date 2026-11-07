@@ -96,6 +96,16 @@ Describe 'PSScriptAnalyzer gate' {
         )
     }
 
+    It 'has exactly the reviewed settings keys, at Error and Warning' {
+        # The exclusion pin above sees only ExcludeRules. Any other key changes what the gate checks without
+        # touching that list: IncludeRules narrows it to a whitelist, Rules reconfigures individual rules, and
+        # CustomRulePath or IncludeDefaultRules swap the rule set. Dropping Error from Severity silences
+        # every Error rule while the Warning-level probe stays loud. Each of these is a reviewed edit here.
+        $data = Import-PowerShellDataFile $script:Settings
+        @($data.Keys | Sort-Object) | Should -Be @('ExcludeRules', 'Severity')
+        @($data.Severity | Sort-Object) | Should -Be @('Error', 'Warning')
+    }
+
     It 'suppresses rules inline only at the reviewed sites, each on a function param() block' {
         # A function-level suppression also covers a FUTURE second hit of the same rule in that function, so
         # the sites are pinned. On anything other than a function's param() block the attribute is either a
@@ -127,16 +137,20 @@ Describe 'PSScriptAnalyzer gate' {
     }
 
     It 'sentinel: the real settings still report a rule that is not excluded' {
-        # Proves the profile has teeth. A profile with ExcludeRules = '*', with Severity reduced to Error, or
-        # excluding this probe's rule makes the probe silent and this test red (each measured).
+        # Proves the profile has teeth, at both severities the gate claims. The first probe is a Warning
+        # rule, the second an Error rule. ExcludeRules = '*', a Severity without Warning or without Error,
+        # or a whitelist that leaves out either rule silences a probe and turns this test red.
         if (-not (Test-AnalyzerReady)) { return }
-        $probe = 'function P { param($Unused) 1 }'
-        $rules = @(Invoke-ScriptAnalyzer -ScriptDefinition $probe -Settings $script:Settings | ForEach-Object RuleName)
-        $rules | Should -Contain 'PSReviewUnusedParameter'
+        $probe = 'function P { param($Unused) 1 }; $s = ConvertTo-SecureString "x" -AsPlainText -Force; $s'
+        $hits = @(Invoke-ScriptAnalyzer -ScriptDefinition $probe -Settings $script:Settings |
+            ForEach-Object { '{0}:{1}' -f $_.Severity, $_.RuleName })
+        $hits | Should -Contain 'Warning:PSReviewUnusedParameter'
+        $hits | Should -Contain 'Error:PSAvoidUsingConvertToSecureStringWithPlainText'
     }
 
     It 'reports zero Warning- or Error-level diagnostics across repository scripts' {
-        # Severity comes from the settings file (Error and Warning), which the sentinel above guards.
+        # Severity comes from the settings file (Error and Warning), which the key pin and the sentinel
+        # above guard.
         if (-not (Test-AnalyzerReady)) { return }
         $issues = @(foreach ($f in $script:ScanList) {
             Invoke-ScriptAnalyzer -Path (Join-Path $script:Repo $f) -Settings $script:Settings |
