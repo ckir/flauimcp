@@ -19,7 +19,8 @@ measured on 2026-11-07 (PSSA 1.25.0; Pester **6.2.0**, because 6.1.0 is not inst
 16 files, 0 diagnostics, 0 parse errors; full `scripts/` suite 210 passed / 0 failed; 10 logic mutants each turned the
 intended test red (listed in Task 6, Step 4). Line numbers are against `4a87cee`.
 
-**Line endings.** `scripts/pester-pin.Tests.ps1` and `TODO.md` are CRLF; every other file touched here is LF
+**Line endings.** `scripts/pester-pin.Tests.ps1`, `TODO.md` and `CHANGELOG.md` are CRLF (CHANGELOG.md corrected during
+execution; the first draft called it LF); every other file touched here is LF
 (`scripts/release.Tests.ps1` is LF with 2 stray CRs). Edit with a tool that preserves the file's endings; do not
 re-save a whole file through a tool that normalizes them.
 
