@@ -66,4 +66,17 @@ public sealed class ActionBudget
             return (int)Math.Max(0, Math.Ceiling(secs));
         }
     }
+
+    /// <summary>Slots left for this window right now (prunes expired hits; never consumes). For the
+    /// structured log's input.decision.</summary>
+    public int Remaining(nint window, DateTime now)
+    {
+        lock (_gate)
+        {
+            if (!_hits.TryGetValue(window, out var q)) return _max;
+            var cutoff = now.AddSeconds(-_windowSeconds);
+            while (q.Count > 0 && q.Peek() <= cutoff) q.Dequeue();
+            return Math.Max(0, _max - q.Count);
+        }
+    }
 }

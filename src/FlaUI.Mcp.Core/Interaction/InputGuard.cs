@@ -6,6 +6,8 @@
 
 using System;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace FlaUI.Mcp.Core.Interaction;
 
@@ -24,19 +26,34 @@ public sealed class InputGuard
     private readonly bool _isElevated;
     private readonly bool _allowElevation;
     private readonly Func<DateTime> _clock;
+    private readonly ILogger? _log;
 
     public InputGuard(ISyntheticInput sink, IPlatformEnvironment env, ILeaseProvider leases,
         ActionBudget budget, InputAudit audit, string currentSid, bool isElevated, bool allowElevation,
-        Func<DateTime>? clock = null)
+        Func<DateTime>? clock = null, ILogger<InputGuard>? logger = null)
     {
         _sink = sink; _env = env; _leases = leases; _budget = budget; _audit = audit;
         _currentSid = currentSid; _isElevated = isElevated; _allowElevation = allowElevation;
         _clock = clock ?? (() => DateTime.UtcNow);
+        _log = logger;
     }
 
     /// <summary>Run the full pipeline; throws the mapped ToolException on any refusal. `secondary` is the
     /// second deny-list target for a drag (its drop endpoint) — both endpoints must pass the deny-list.</summary>
     private void Authorize(ActionTarget primary, string action, int payloadLength, ActionTarget? secondary = null)
+    {
+        try { AuthorizeCore(primary, action, payloadLength, secondary); }
+        catch (ToolException ex) { EmitDecision(primary, action, false, ex.Code.ToString()); throw; }
+        EmitDecision(primary, action, true, null);
+    }
+
+    // spec §5.2 input.decision (plan "Spec adjustments" 5: lease state is visible as code InputNotLeased).
+    private void EmitDecision(ActionTarget primary, string action, bool allowed, string? code) =>
+        LogEvent.Emit(_log, LogLevel.Information, "input.decision",
+            LogEvent.F("action", action), LogEvent.F("allowed", allowed), LogEvent.F("code", code),
+            LogEvent.F("budgetLeft", _budget.Remaining(primary.Root, _clock())));
+
+    private void AuthorizeCore(ActionTarget primary, string action, int payloadLength, ActionTarget? secondary = null)
     {
         if (_isElevated && !_allowElevation)
             throw new ToolException(ToolErrorCode.AccessDeniedIntegrity,

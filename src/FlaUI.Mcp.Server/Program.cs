@@ -187,7 +187,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<InputAudit>(),
         currentSid: CurrentUserSid(),
         isElevated: ElevationGuard.IsElevated(),
-        allowElevation: opts.AllowElevation);
+        allowElevation: opts.AllowElevation,
+        logger: sp.GetService<Microsoft.Extensions.Logging.ILogger<InputGuard>>());
 });
 // SP-A attention signals: flash is always available; TTS only when --autosound is on. Composite fans out.
 builder.Services.AddSingleton(_ =>
