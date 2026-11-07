@@ -52,7 +52,7 @@ Take these in order. Gate trust comes first because B2 is verified on the Deskto
 
 ### Unscheduled
 
-- [ ] **Structured logging in the flaui-mcp server**: today `Program.cs` only wires the default console logger to
+- [x] **Structured logging in the flaui-mcp server**: today `Program.cs` only wires the default console logger to *(shipped: see docs/agent-contract.md "Server log")*
   stderr, and just a few files write log output. Add structured, leveled logging (tool name, window handle,
   outcome, duration) to a file sink that an operator can read after the fact, so a failure in a live session
   can be diagnosed from the log rather than reconstructed. Keep stdout clean: it carries the MCP protocol.

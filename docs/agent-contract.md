@@ -265,6 +265,60 @@ A wait that runs out of time is **not** an error. `desktop_wait_for` returns `sa
 5. **Bound your retries.** Retry a step at most twice, each time after a wait or re-acquisition. Then stop
    and report what you saw (the error code, and what a snapshot or screenshot showed) rather than looping.
 
+## Server log
+
+The server writes a JSON Lines log of every tool call, on by default (`--no-log` turns it off). Read it to diagnose a failure after the fact.
+
+- **Location:** `%LOCALAPPDATA%\flaui-mcp\logs\flaui-mcp-<pid>-<startUtc>-<seg>.jsonl`, or `FLAUI_MCP_LOG_DIR` if set. `<startUtc>` is `yyyyMMddTHHmmssZ`; `<seg>` is the segment number, at least two digits.
+- **Reader rule:** read one process's segments in ascending **numeric** `<seg>` order (a plain name sort puts `-100` before `-99`). The newest segment can end in a torn line: skip an unparseable final line.
+- **Pointer:** a tool error JSON may carry `log: "<cid> in <path>"`. Open that file and keep the records whose `cid` matches. The field is absent when logging is off.
+- Records are one line each, at most 8 KB. An oversized record is shortened (stack frames, long strings, `msg`, then `args` replaced by `{"omitted": <bytes>}`) and carries `trunc: true`.
+
+### Record fields
+
+| Field | Meaning |
+|---|---|
+| `ts` | UTC time, `yyyy-MM-ddTHH:mm:ss.fffZ`. |
+| `lvl` | `debug`, `info`, `warning` or `error`. |
+| `pid` | Server process id. |
+| `ev` | Event name (table below). |
+| `cid` | Call id, `c-` + 8 hex digits. Shared by every record of one tool call. Absent outside a call. |
+| `tool` | Tool name, e.g. `desktop_click`. Present with `cid`. |
+| other | The event's own fields (table below). A field with no value is `null`. |
+
+### Events
+
+`*` marks UI text, which is masked in sensitive cases (see Masked values). `debug` events appear only under `--log-level=debug`; `--log-level=warning` keeps only `warning` and `error`.
+
+| Event | Level | Fields |
+|---|---|---|
+| `server.start` | info | `version`, `flags` (names only, no values), `rulesSha`, `dpiAwareness`, `dpiScale`, `session` (`console`/`rdp`), `readOnly` |
+| `server.stop` | info | `uptimeMs`, `calls`, `droppedTotal` |
+| `tool.start` | info | `args` (object, per-parameter masking below) |
+| `tool.end` | info if `outcome` is `ok`, else warning | `outcome` (`ok` or the error code), `ms`, `msg`* (errors only) |
+| `tool.exception` | error | `exType`, `hresult`, `stack`, `msg`* |
+| `window.bind` | info | `handle`, `hwnd`, `pid`, `process`, `title`* |
+| `focus.attempt` | info | `target`, `gained`; when `gained` is false also `fgHwnd`, `fgHandle`, `fgProcess` |
+| `action.blocked` | warning | `fgHwnd`, `fgHandle`, `fgProcess`, `fgTitle`* |
+| `capture.decision` | info | `scope`, `ok`, `method`, `warnings` (codes), `code` |
+| `ref.resolve` | info | `ref`, `found`, `controlType`, `automationId`*, `name`* |
+| `selector.resolve` | debug | `path` (`selector` or `find`), `automationId`*, `name`*, `controlType`, `candidates`, then `chosen` (selector) or `returned` (find) |
+| `wait.end` | debug | `kind` (`wait_for` or `wait_for_stable`), `condition`, `by`, `value`*, `ms`, `satisfied`, `code` |
+| `input.decision` | info | `action`, `allowed`, `code`, `budgetLeft` |
+| `log.dropped` | warning | `count` (records lost to a full queue; no `cid`) |
+
+`ref.resolve.found` means the ref is registered for that window. `capture.decision.warnings` includes `ScrapeFallbackTargetUnresponsive` when the circuit breaker diverted the capture. A refused input shows `code`, e.g. `InputNotLeased`.
+
+### Masked values
+
+Content is never written. Where a value would appear, the log holds `{"len": <chars>, "sha8": "<8 hex>"}` instead. The hash is keyed per process, so equal values hash equal within one server process and differ across processes.
+
+- `tool.start.args`: typed, pasted, set and clipboard text, and any parameter not known to be structural, are always masked. UI-text parameters (names, ids, selectors) are plain unless the call is sensitive.
+- UI-text fields (`*`) are masked when the call targets a denylisted or rule-matchable window, when the event's own process is one, or when a call has no window and `--redaction-rules` is loaded.
+- `msg` on `tool.exception`, and on an `INTERNAL` `tool.end`, is masked when the call carried content arguments.
+
+Never in the log: typed, pasted, set or clipboard text, captured screen text, images, tool results.
+
 ## Known Tool Limitations
 
 - Cannot drive elevated/Administrator apps (UIPI boundary blocks input).

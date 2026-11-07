@@ -100,6 +100,8 @@ Same plugin, registered with agy via `agy plugin install "{app}\plugin"` — agy
 | `--presence` | Launch flag: enable coarse human presence sensing. |
 | `--nearby-secs=<n>` | Launch flag: idle seconds before user is considered nearby. |
 | `--away-secs=<n>` | Launch flag: idle seconds before user is considered away. |
+| `--no-log` | Launch flag: turn the structured server log off. On by default. See **Server log** below. |
+| `--log-level=<level>` | Launch flag: `debug`, `info` or `warning`. Anything else ⇒ `info`. |
 | `--force-renderer-accessibility`| Target app launch flag: force Chromium to expose native accessibility trees. |
 | `unlock --minutes N` | Grant a time-bounded synthetic-input lease. |
 | `[--allow-shells]` | Pass to `unlock` to allow input to terminal/shell windows. |
@@ -136,6 +138,7 @@ Use `--config <path>` with any command to override the target config file. Use `
 | `FLAUI_MCP_REF_STRICT` | Ref-resolution mode for state-changing paths. Set `off` as a break-glass switch to force lenient resolution (disables the INV-8 identity guard) on apps whose UIA identity is too volatile for strict. | `strict` (unset = strict) |
 | `FLAUI_MCP_REF_MAXSCOPES` | Tunes the ancestor fan-out cap for scope gathering. | `512` |
 | `FLAUI_MCP_SELECTOR_MAXNODES` | Caps the number of nodes a selector walk evaluates. | `5000` |
+| `FLAUI_MCP_LOG_DIR` | Overrides the directory the server log is written to. | `%LOCALAPPDATA%\flaui-mcp\logs` |
 
 ## Grant and scope a lease
 
@@ -251,6 +254,12 @@ flaui-mcp autosound on --agent all
 
 ### Element-identity audit trace
 Mutative actions leave an audit log entry. If a selector resolves an element, the trace records its stable identity (`RuntimeId`, `AutomationId`, `ClassName`, `ControlType`, `Bounds`). It strictly omits content-bearing properties like `Name` or `Value`.
+
+### Server log
+On by default: one JSON Lines file per server process, `flaui-mcp-<pid>-<startUtc>-<seg>.jsonl`, in `%LOCALAPPDATA%\flaui-mcp\logs` (or `FLAUI_MCP_LOG_DIR`). It records every tool call, window binding, focus change, input decision and failure, so a bad session can be diagnosed afterwards. Turn it off with `--no-log`; raise detail with `--log-level=debug`. A log that cannot be opened is reported on stderr and the server starts without it. The event list is in `docs/agent-contract.md` under **Server log**.
+
+- **Retention:** a segment closes at 5 MB and each process keeps its newest 5. At start the server also deletes the files of ended processes beyond the newest 20.
+- **Privacy:** typed, pasted, set and clipboard text, captured text, images and tool results are never written. Other content is hashed (length plus 8 hex digits) with a key generated per process, so values compare equal within one run and nowhere else. UI text of sensitive windows (denylisted, or a process a redaction rule could match) is hashed too. With `--redaction-rules` loaded, UI text of calls with no target window is hashed as well.
 
 ### Auditing limitations
 - The intent overlay is not visible in headless or RDP CI test runs.
