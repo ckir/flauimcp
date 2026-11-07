@@ -142,6 +142,27 @@ function script:Get-PesterVersionsNamed {
     })
 }
 
+function script:Get-InvokePesterParameterName {
+    <#
+    .SYNOPSIS
+    The parameter names of Invoke-Pester in EXACTLY the requested Pester version. Throws if that version is
+    not installed.
+
+    .DESCRIPTION
+    Import-Module failing is NON-terminating by default. The first version of the switch gate inlined
+    `Get-Command -Module (Import-Module Pester -RequiredVersion $v -PassThru)`: with the pinned version
+    absent the import printed an error and returned $null, `-Module $null` resolved the Pester already
+    loaded to run this suite, and the gate checked the switches against THAT version and passed. MEASURED:
+    pin 6.1.0 absent, 6.2.0 present, test green. -ErrorAction Stop makes an absent pin a red test instead
+    of a silent substitution.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Version)
+
+    $module = Import-Module Pester -RequiredVersion $Version -PassThru -ErrorAction Stop
+    @((Get-Command -Module $module -Name Invoke-Pester).Parameters.Keys)
+}
+
 Describe 'Pester pin' {
 
     It 'reads a pinned version out of CI' {
@@ -222,10 +243,16 @@ Describe 'Pester pin' {
         }
     }
 
+    It 'fails, rather than substituting the loaded Pester, when the requested version is not installed' {
+        # Pins the helper's contract. 0.0.1 never existed, so it is absent on every machine; without
+        # -ErrorAction Stop this call returned the LOADED Pester's parameters instead of throwing.
+        { Get-InvokePesterParameterName -Version '0.0.1' } | Should -Throw
+    }
+
     It 'passes only switches that EXIST in the pinned version' {
         # The general form. -EnableExit was removed in Pester 6 and would have made both cockpit gates red
         # on green; enumerating the switches we actually use catches the next removal too.
-        $available = @((Get-Command -Module (Import-Module Pester -RequiredVersion $script:PinnedVersion -PassThru) -Name Invoke-Pester).Parameters.Keys)
+        $available = @(Get-InvokePesterParameterName -Version $script:PinnedVersion)
         $available | Should -Not -BeNullOrEmpty -Because 'the pinned Pester must be installed for this gate to mean anything'
 
         $used = New-Object System.Collections.Generic.HashSet[string]
