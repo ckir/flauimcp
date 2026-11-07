@@ -12,8 +12,10 @@ using System.Text.Json.Serialization;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Interaction;
+using FlaUI.Mcp.Core.Logging;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.UIA3;
+using Microsoft.Extensions.Logging;
 
 namespace FlaUI.Mcp.Core.Windows;
 
@@ -58,6 +60,7 @@ public sealed class WindowManager : IDisposable, IHwndSource
     private readonly ConcurrentDictionary<IntPtr, string> _byHwnd = new();
     private readonly ConcurrentDictionary<string, Process> _watched = new();
     private int _counter;
+    private readonly ILogger? _log;
 
     /// <summary>Raised when a window handle is invalidated (process exit, close_window, or a
     /// PruneClosedWindows sweep observing a dead HWND). Carries the windowId. Fires at most once per
@@ -66,8 +69,9 @@ public sealed class WindowManager : IDisposable, IHwndSource
     /// the invalidation path (they do NOT propagate to the invalidator).</summary>
     public event Action<string>? WindowInvalidated;
 
-    public WindowManager(AutomationDispatcher dispatcher)
+    public WindowManager(AutomationDispatcher dispatcher, ILogger<WindowManager>? logger = null)
     {
+        _log = logger;   // set FIRST: nothing below may log before it exists
         _dispatcher = dispatcher;
         // UIA objects must be created on the STA thread that uses them.
         _automation = _dispatcher.RunQueryAsync(() => new UIA3Automation()).GetAwaiter().GetResult();
@@ -282,14 +286,16 @@ public sealed class WindowManager : IDisposable, IHwndSource
         var id = $"w{Interlocked.Increment(ref _counter)}";
         _ids[id] = pid;                 // unconditional gate/identity write (mirrors the lazy mint site)
         _handles[id] = window;
+        IntPtr hwnd = IntPtr.Zero;
         try
         {
-            var hwnd = window.Properties.NativeWindowHandle.ValueOrDefault;
+            hwnd = window.Properties.NativeWindowHandle.ValueOrDefault;
             _hwnds[id] = hwnd;
             if (hwnd != IntPtr.Zero) _byHwnd[hwnd] = id;
         }
         catch { /* no hwnd */ }
         TryWatchProcessExit(id, pid);
+        EmitBind(id, hwnd, pid);
         return new WindowHandle(id);
     }
 
@@ -313,7 +319,52 @@ public sealed class WindowManager : IDisposable, IHwndSource
         _hwnds[id] = hwnd;
         _byHwnd[hwnd] = id;
         TryWatchProcessExit(id, pid);
+        EmitBind(id, hwnd, pid);
         return id;
+    }
+
+    // spec §5.2 window.bind: gives `wN` a post-mortem meaning. Win32 only (WindowTitle does not block on a
+    // hung window); the title is UI text, masked by the provider by THIS window's own process.
+    private void EmitBind(string id, IntPtr hwnd, int pid) =>
+        LogEvent.Emit(_log, LogLevel.Information, "window.bind",
+            LogEvent.F("handle", id), LogEvent.F("hwnd", hwnd.ToInt64()), LogEvent.F("pid", pid),
+            LogEvent.F("process", SafeProcessName(pid)),
+            LogEvent.Ui("title", hwnd == IntPtr.Zero ? null : WindowTitle(hwnd)));
+
+    // spec §5.2 focus.attempt. Foreground fields only when focus was NOT gained (that is the diagnostic case).
+    internal void EmitFocus(WindowHandle handle, FocusResult r)
+    {
+        if (r.ForegroundGained)
+        {
+            LogEvent.Emit(_log, LogLevel.Information, "focus.attempt", LogEvent.F("target", handle.Id), LogEvent.F("gained", true));
+            return;
+        }
+        GetWindowThreadProcessId(r.ForegroundHwnd, out uint fgPid);
+        LogEvent.Emit(_log, LogLevel.Information, "focus.attempt",
+            LogEvent.F("target", handle.Id), LogEvent.F("gained", false),
+            LogEvent.F("fgHwnd", r.ForegroundHwnd.ToInt64()),
+            LogEvent.F("fgHandle", _byHwnd.TryGetValue(r.ForegroundHwnd, out var fgId) ? fgId : null),
+            LogEvent.F("fgProcess", fgPid == 0 ? null : SafeProcessName((int)fgPid)));
+    }
+
+    // spec §5.2 action.blocked: the window that holds the foreground when an action hangs is usually the
+    // modal that blocked it. Win32 only; observed here because the dispatcher's AwaitWithTimeout is static
+    // and does not know the window.
+    internal async Task<T> ObserveBlockedAsync<T>(Task<T> work)
+    {
+        try { return await work.ConfigureAwait(false); }
+        catch (ToolException ex) when (ex.Code == ToolErrorCode.ActionBlockedPending)
+        {
+            var fg = GetForegroundWindow();
+            uint pid = 0;
+            if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out pid);
+            LogEvent.Emit(_log, LogLevel.Warning, "action.blocked",
+                LogEvent.F("fgHwnd", fg.ToInt64()),
+                LogEvent.F("fgHandle", fg != IntPtr.Zero && _byHwnd.TryGetValue(fg, out var id) ? id : null),
+                LogEvent.F("fgProcess", pid == 0 ? null : SafeProcessName((int)pid)),
+                LogEvent.Ui("fgTitle", fg == IntPtr.Zero ? null : WindowTitle(fg)));
+            throw;
+        }
     }
 
     /// <summary>B2: mint (or reuse) a wN for an arbitrary HWND on the query STA — the tray tools' path to a
@@ -608,7 +659,7 @@ public sealed class WindowManager : IDisposable, IHwndSource
         if (!_ids.TryGetValue(handle.Id, out var recordedPid))
             throw new ToolException(ToolErrorCode.WindowHandleStale,
                 $"Handle {handle.Id} is no longer valid.", "re-list windows and re-open");
-        return _dispatcher.RunActionAsync(() =>
+        var work = _dispatcher.RunActionAsync(() =>
         {
             // M2 on the WRITE path (mirrors ResolveWindow's read-path guard): reverify the HWND still
             // belongs to the recorded pid IMMEDIATELY before binding UIA and acting on it. An HWND is
@@ -629,6 +680,7 @@ public sealed class WindowManager : IDisposable, IHwndSource
             var desktop = automation.GetDesktop();
             return func(win, desktop);
         }, timeoutMs);
+        return _log is null ? work : ObserveBlockedAsync(work);
     }
 
     public Task<bool> FocusAsync(WindowHandle handle) =>
@@ -651,7 +703,9 @@ public sealed class WindowManager : IDisposable, IHwndSource
             IntPtr hwnd = IntPtr.Zero;
             try { hwnd = w.Properties.NativeWindowHandle.ValueOrDefault; } catch { }
             var fg = GetForegroundWindow();
-            return new FocusResult(hwnd != IntPtr.Zero && fg == hwnd, hwnd, fg);
+            var result = new FocusResult(hwnd != IntPtr.Zero && fg == hwnd, hwnd, fg);
+            EmitFocus(handle, result);
+            return result;
         });
 
     public Task<(WindowHandle Handle, string Title, int Pid)?> ResolveFocusedWindowAsync() =>
