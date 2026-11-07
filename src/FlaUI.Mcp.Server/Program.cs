@@ -302,7 +302,10 @@ if (fileLog is not null)
             FlaUI.Mcp.Core.Logging.LogEvent.F("calls", app.Services.GetService<ToolCallLogFilter>()?.Calls ?? 0),
             FlaUI.Mcp.Core.Logging.LogEvent.F("droppedTotal", fileLog.DroppedTotal)));
 }
-await app.RunAsync();   // disposes the host, which disposes fileLog: drains for up to 1 s (spec §7)
+await app.RunAsync();
+// The host does NOT dispose fileLog: a provider registered as an instance (AddProvider) is owned by the caller,
+// so dispose it here to drain the queue (server.stop included) for up to 1 s (spec §7).
+fileLog?.Dispose();
 return 0;
 
 static string CurrentUserSid()
