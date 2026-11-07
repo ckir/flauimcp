@@ -202,6 +202,10 @@ function Edit-InEditor {
 }
 
 function Invoke-ChangelogLlm {
+    # FALSE POSITIVE in PSScriptAnalyzer 1.25.0: the Start-Job below passes its values through
+    # param() + -ArgumentList, which is the correct pattern; the rule flags it anyway. Function-level, so a
+    # second Start-Job added here would be covered too: review it by hand.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', '', Justification = 'False positive: values reach the job via param() and -ArgumentList.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Prompt,
