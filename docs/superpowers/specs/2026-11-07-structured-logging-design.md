@@ -162,9 +162,10 @@ for an object to know a value was masked.
 ### 5.1 Size cap
 A serialised record is at most **8192 bytes**. If larger, shorten in this order until it fits, setting
 `"trunc":true`: (1) `stack`, cut to its first frames; (2) the longest raw string leaves in `args` and event
-fields, each cut with a trailing `...`; (3) `msg`, last, because it carries the failure explanation.
-Masked objects and the fixed fields (`ts`, `lvl`, `pid`, `ev`, `cid`, `tool`, `outcome`, `ms`) are never
-cut. A record never spans lines.
+fields, each cut with a trailing `...`; (3) `msg`, last, because it carries the failure explanation;
+(4) if it still does not fit, `args` is replaced by `{"omitted": <original byte length>}`. Masked objects
+inside a kept `args` and the fixed fields (`ts`, `lvl`, `pid`, `ev`, `cid`, `tool`, `outcome`, `ms`) are
+never cut. A record never spans lines.
 
 ### 5.2 Events (v1, closed set)
 
@@ -178,7 +179,7 @@ cut. A record never spans lines.
 | `tool.exception` | error | ToolResponse.Guard / GuardImage | `exType`, `hresult`, `stack`, `msg` |
 | `selector.resolve` | debug | PerceptionManager find path | `by`, `value`*, `candidates`, `culled`, `chosen` |
 | `ref.resolve` | info | where a tool turns an `eN` argument into an element | `ref`, `controlType`, `automationId`*, `name`*, `found` |
-| `action.blocked` | warning | when `ActionBlockedPending` is raised | `fgHandle`, `fgProcess`, `fgTitle`* (the foreground window at timeout, usually the modal) |
+| `action.blocked` | warning | when `ActionBlockedPending` is raised | `fgHwnd` (number, raw HWND; `0` when there is no foreground window), `fgHandle` (the `wN` string if that HWND is already bound, else null), `fgProcess` (null when unresolvable), `fgTitle`* (null when unresolvable) - the foreground window at timeout, usually the modal |
 | `focus.attempt` | info | WindowManager focus path | `target`, `gained`, `fgProcess?`, `fgHandle?` (when not gained) |
 | `input.decision` | info | InputGuard | `lease` (`valid`\|`absent`\|`expired`\|`invalid`), `budgetLeft`, `allowed`, `code?` |
 | `wait.end` | debug | WaitCoordinator | `condition`, `polls`, `ms`, `satisfied` |
@@ -228,12 +229,21 @@ omitted. Additive: existing agents ignore it. Documented in `docs/agent-contract
   PIN is at most a million guesses); keyed, the hash only tells a reader that two values in the SAME
   session's files were equal, which is the diagnostic use. Unmarked = content: classification fails
   closed.
-- Numbers and booleans are logged raw regardless of marking. Objects/arrays are walked; their string
-  leaves are content.
+- Numbers and booleans are logged raw regardless of marking.
+- **Complex parameter types** (records bound from a JSON object, e.g. `Selector`,
+  `src/FlaUI.Mcp.Core/Perception/Selector.cs:16-22`, taken by 20 tool parameters) are classified PER
+  PROPERTY with the same attributes, placed on the record's properties. The attributes therefore live in
+  Core (`FlaUI.Mcp.Core.Logging`), not Server, so Core records can carry them. For `Selector`:
+  `AutomationId` and `Name` are `[LogUiText]`; `NameMatch`, `ControlType`, `Scope` are
+  `[LogStructural]`; `IgnoreCase` is a bool. An unmarked string property is content, and any string leaf
+  of an array, a dictionary, or a JSON value not bound to a declared property is content.
 
 ### 6.2 Coverage guard
-A reflection test enumerates every `[McpServerTool]` method's `string` parameters and asserts each is
-`[LogStructural]`, `[LogUiText]`, or listed in the test's explicit "content on purpose" set. A new tool
+A reflection test enumerates every `[McpServerTool]` method's parameters and, recursively, the `string`
+properties of every complex parameter type (e.g. `Selector`), and asserts each `string` is
+`[LogStructural]`, `[LogUiText]`, or listed in the test's explicit "content on purpose" set. A string that
+lives inside a complex type is checked exactly like a top-level one; checking only top-level `string`
+parameters would skip all 20 selector parameters. A new tool
 with an unclassified string fails the build's test gate. The same test holds the reverse direction: the
 known content parameters (the typed/pasted/set text of `desktop_type`, `desktop_paste_text`,
 `desktop_set_value`, and the text of `desktop_clipboard_set`; exact parameter names fixed in the plan) must
@@ -295,7 +305,8 @@ Headless (part of the default test run):
    implements §5.3.
 3. **ArgumentClassifier** — structural raw; unmarked string → `{len, sha8}`; UI text raw vs hashed by
    sensitivity; unresolvable window → hashed; foreground-acting call with a sensitive foreground process
-   → hashed; **near-miss distractor**: a structural `textLength`-style
+   → hashed; a `Selector` argument logs `Name`/`AutomationId` raw on a non-sensitive window, hashed on a
+   sensitive one, and an unknown extra JSON property inside it as content; **near-miss distractor**: a structural `textLength`-style
    name is not treated as content by name, and a content parameter named like a structural one is still
    hashed (classification is by attribute, never by name).
 4. **Coverage guard** — §6.2.
@@ -323,15 +334,17 @@ desktop interaction beyond a deterministic failing call (e.g. an unknown window 
 
 ## 10. Out of scope (v1)
 Logging every bare `catch` (that is R13), per-element tree dumps, per-stage OCR timing, an MCP log-reading
-tool, log shipping, an `eN` ref-binding event (a snapshot mints hundreds of refs; `selector.resolve`
-already records the chosen ref's selector). Each is a new `ev` later without a format break.
+tool, log shipping, a per-SNAPSHOT ref-binding event (a snapshot mints hundreds of refs). Per-CALL
+resolution of an `eN` argument IS in v1, as `ref.resolve` (§5.2). Each is a new `ev` later without a format break.
 
 ## Stand-downs
-None so far.
+- REJECTED (panel r2, agy Q2: replace the keyed hash with plain SHA-256 because a local reader already has
+  process access): the threat is not a local reader. The log's purpose is to be handed to an agent,
+  attached to an issue, or pasted into a transcript; off the machine, an unkeyed hash of a 4-6 digit PIN
+  is reversed by enumerating at most 10^6 inputs. Tests needing determinism inject the key.
 
 ## 11. Open items resolved in the plan (against the code)
 - Exact instrumentation call sites for `selector.resolve`, `focus.attempt`, `wait.end`,
   `capture.decision`, `input.decision`.
 - How `server.start` obtains `dpiAwareness`, `dpiScale` and `session` (Win32 calls; measured).
 - The parameter-by-parameter `[LogStructural]` / `[LogUiText]` assignment for all 53 tool methods.
-- Whether the filter observes `cid` for the `log` field via the scope or an `AsyncLocal` the filter sets.
