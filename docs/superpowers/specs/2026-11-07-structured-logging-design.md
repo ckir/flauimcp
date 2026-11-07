@@ -60,13 +60,19 @@ All new server-side types live in `src/FlaUI.Mcp.Server/Logging/`.
   increments a dropped counter.
 - Consumer: one dedicated background thread serialises each record to a UTF-8 line (§5) and writes it with
   a **single** `Write` of the complete buffer (record + `\n`), then flushes.
-- File: `%LOCALAPPDATA%\flaui-mcp\logs\flaui-mcp-<pid>.jsonl`, opened `FileMode.Append`,
-  `FileAccess.Write`, `FileShare.ReadWrite | FileShare.Delete`.
-- Rolling: at **5 MB** the current file is renamed `flaui-mcp-<pid>.<n>.jsonl` (n = 1..4, oldest
-  deleted) and a fresh file opened. At most 5 files per pid.
-- Startup pruning: delete log files whose pid is positively dead (same liveness rule as
-  `ServerStateFile.PruneDead`), keeping the newest **20** dead-pid files overall. Never touch a live pid's
-  files.
+- File: `%LOCALAPPDATA%\flaui-mcp\logs\flaui-mcp-<pid>-<start>.jsonl`, where `<start>` is the process
+  start time in UTC as `yyyyMMddTHHmmssZ`. The start time is in the name because Windows reuses pids: a
+  pid-only name lets a later process append to a dead one's file and interleave two sessions. Opened
+  `FileMode.Append`, `FileAccess.Write`, `FileShare.ReadWrite | FileShare.Delete`.
+- Rolling: at **5 MB** the current file is renamed `flaui-mcp-<pid>-<start>.<n>.jsonl` (n = 1..4,
+  oldest deleted) and a fresh file opened. At most 5 files per process.
+- Serialisation is System.Text.Json with its default encoder only (never string concatenation): control
+  characters in agent-supplied strings are escaped, so a `\n` in an argument cannot forge a record.
+- Implements `ISupportExternalScope`; the `cid`, `tool` and `sensitive` values (§6.3) are read from the
+  scope at log time.
+- Startup pruning: a file belongs to a dead process when no live process has that pid AND that start
+  time (same liveness rule as `ServerStateFile.PruneDead`). Keep the newest **20** dead-process files
+  overall, delete the rest. Never touch a live process's files.
 - After any successful write following drops, emit one `log.dropped` record with the count since the last
   report.
 - Minimum level from `--log-level` (default `info`).
@@ -75,7 +81,8 @@ All new server-side types live in `src/FlaUI.Mcp.Server/Logging/`.
 Registered in `Program.cs` via `.WithRequestFilters(f => f.AddCallToolFilter(...))` on the existing
 `AddMcpServer(...)` chain. Per call:
 1. Generate `cid` = `c-` + 8 lowercase hex chars (random).
-2. `using` an `ILogger.BeginScope` carrying `cid` (and `tool`).
+2. Decide `sensitive` for the call (§6.3) and `using` an `ILogger.BeginScope` carrying `cid`, `tool` and
+   `sensitive`.
 3. Emit `tool.start` with classified `args` (§6).
 4. `await next(...)`, timing with `Stopwatch`.
 5. Read the outcome from the result: `IsError` content, or a text result whose JSON has a top-level
@@ -96,7 +103,8 @@ under `ExecutionContext.Run(captured, ...)` (null capture → run directly). Eff
 ### 4.5 Exception capture at the tool boundary
 `ToolResponse.Guard`/`GuardImage` gain an `ILogger` source (a static accessor set once at startup, null
 when logging is off — the two methods are static today and are called from 53 tool methods; threading an
-instance through every tool is out of proportion). On the generic-exception branch they log
+instance through every tool is out of proportion). The accessor has an `AsyncLocal` override that tests
+use, so parallel tests never see each other's logger through the static. On the generic-exception branch they log
 `tool.exception` with `exType`, `hresult` and `stack`. `ToolException` logs nothing extra (its code and
 message are in `tool.end`). The `OutOfMemoryException` / `OperationCanceledException` filter is unchanged.
 
@@ -135,10 +143,11 @@ A serialised record is at most **8192 bytes**. If larger, `msg` and then `stack`
 |---|---|---|---|
 | `server.start` | info | Program.cs | `version`, `flags` (array of the server flags present), `rulesSha` (or null), `dpiAwareness`, `dpiScale`, `session` (`console`\|`rdp`\|`unknown`), `readOnly` |
 | `server.stop` | info | ProcessExit / host stop | `uptimeMs`, `calls`, `droppedTotal` |
+| `window.bind` | info | WindowManager, when a `wN` handle is first minted | `handle`, `hwnd`, `pid`, `process`, `title`* |
 | `tool.start` | info | filter | `args` |
 | `tool.end` | info (ok) / warning (error) | filter | `outcome`, `ms`, `msg?` |
 | `tool.exception` | error | ToolResponse.Guard / GuardImage | `exType`, `hresult`, `stack`, `msg` |
-| `selector.resolve` | debug | PerceptionManager find path | `by`, `value`, `candidates`, `culled`, `chosen` |
+| `selector.resolve` | debug | PerceptionManager find path | `by`, `value`*, `candidates`, `culled`, `chosen` |
 | `focus.attempt` | info | WindowManager focus path | `target`, `gained`, `fgProcess?`, `fgHandle?` (when not gained) |
 | `input.decision` | info | InputGuard | `lease` (`valid`\|`absent`\|`expired`\|`invalid`), `budgetLeft`, `allowed`, `code?` |
 | `wait.end` | debug | WaitCoordinator | `condition`, `polls`, `ms`, `satisfied` |
@@ -147,6 +156,15 @@ A serialised record is at most **8192 bytes**. If larger, `msg` and then `stack`
 | `audit.clipboard` | info | ClipboardAccess | the existing audit text in `msg` |
 | `audit.paste_force` | info | InputTools.AuditForceOverwrite | the existing audit text in `msg` |
 | `log.dropped` | warning | provider | `count` |
+
+\* = a **UI-text field**. The provider hashes every starred field, and `msg`, when the scope's `sensitive`
+is true (§6.3). `window.bind` happens outside any call scope as often as inside one, so its `title` is
+classified by the bound window's own process with the §6.3 predicate. A new event that carries UI text
+must star the field; the format-pin test (§8.1) holds the starred list.
+
+`window.bind` exists because `w3` means nothing once the session is gone: it is what lets a post-mortem
+reader turn a handle in `args` back into a process and window. Element refs (`eN`) get no equivalent in v1
+(§10).
 
 The stderr output of the existing audit sites is kept as is (operators may already read it); they ALSO
 log through `ILogger`. Exact instrumentation points inside PerceptionManager / WindowManager are fixed
@@ -173,17 +191,26 @@ omitted. Additive: existing agents ignore it. Documented in `docs/agent-contract
 - **UI text** — logged raw unless sensitive (§6.3): parameters marked `[LogUiText]` — window titles,
   element names, selector `value`, find-text queries.
 - **Content** — everything else that is a string: replaced by `{"len": <chars>, "sha8": "<first 8 hex
-  of SHA-256 of UTF-8>"}`. Unmarked = content: classification fails closed.
+  of HMAC-SHA256(key, UTF-8 bytes)>"}`. `key` is 32 random bytes generated at process start and never
+  written anywhere. A plain hash would let anyone holding the log brute-force a short secret (a 4-6 digit
+  PIN is at most a million guesses); keyed, the hash only tells a reader that two values in the SAME
+  session's files were equal, which is the diagnostic use. Unmarked = content: classification fails
+  closed.
 - Numbers and booleans are logged raw regardless of marking. Objects/arrays are walked; their string
   leaves are content.
 
 ### 6.2 Coverage guard
 A reflection test enumerates every `[McpServerTool]` method's `string` parameters and asserts each is
 `[LogStructural]`, `[LogUiText]`, or listed in the test's explicit "content on purpose" set. A new tool
-with an unclassified string fails the build's test gate.
+with an unclassified string fails the build's test gate. The same test holds the reverse direction: the
+known content parameters (the typed/pasted/set text of `desktop_type`, `desktop_paste_text`,
+`desktop_set_value`, and the text of `desktop_clipboard_set`; exact parameter names fixed in the plan) must
+carry NEITHER attribute, so marking one raw to silence the guard fails the test.
 
 ### 6.3 Sensitive target window
-A call's target window is the one named by its `window` argument (resolved through `WindowManager`).
+A call's target window is the one named by its `window` argument, resolved to a process name with
+`WindowManager.TryGetAppName` (`WindowManager.cs:157-162`: pure Win32, no UIA, safe off the STA thread, so
+the filter never queues behind automation work).
 It is **sensitive** iff `PerceptionPolicy.IsDenied(processName) ||
 SensitivityClassifier.CouldMatchProcess(processName)` — the same process predicate
 `PerceptionManager.DenylistedWindowsVisibleAsync` uses (`PerceptionManager.cs:1361-1365`) plus the
@@ -249,7 +276,8 @@ desktop interaction beyond a deterministic failing call (e.g. an unknown window 
 
 ## 10. Out of scope (v1)
 Logging every bare `catch` (that is R13), per-element tree dumps, per-stage OCR timing, an MCP log-reading
-tool, log shipping. Each is a new `ev` later without a format break.
+tool, log shipping, an `eN` ref-binding event (a snapshot mints hundreds of refs; `selector.resolve`
+already records the chosen ref's selector). Each is a new `ev` later without a format break.
 
 ## 11. Open items resolved in the plan (against the code)
 - Exact instrumentation call sites for `selector.resolve`, `focus.attempt`, `wait.end`,
