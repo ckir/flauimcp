@@ -110,6 +110,9 @@ public class RedactionSurfaceInventoryTests
 
         // ---- Structured-log wiring (Task 10): the MCP tool NAME, not UI content. ----
         ["Program.<top-level>"] = "not a UIA read: ctx.Params.Name is CallToolRequestParams.Name - the MCP tool name the client asked to call (e.g. desktop_click) - passed to ToolCallLogFilter to look up that tool's parameter catalog entry. A fixed identifier from the server's own tool surface, never an element property",
+        // ---- Structured-log perception events (Task 12): UI text reaches the log only via LogEvent.Ui. ----
+        ["RefRegistry.Lookup"] = "LOG-ONLY: reads found?.Descriptor.Name, the ref's raw UIA identity name, solely to pass it to LogEvent.Ui(\"name\", ...) in the ref.resolve event; it is never returned or emitted raw, and LogEvent.Ui values are hashed by LogMasker whenever the call's target window is sensitive (PerceptionPolicy.IsDenied || SensitivityClassifier.CouldMatchProcess, spec §6.3), so an operator redaction rule that could match the window's process masks it",
+        ["PerceptionManager.EmitSelectorResolve"] = "LOG-ONLY: reads sel.Name, the CALLER'S selector query (not an element property), solely to pass it to LogEvent.Ui(\"name\", ...) in the selector.resolve event; it goes only through LogEvent.Ui, which LogMasker hashes whenever the call's target window is sensitive (PerceptionPolicy.IsDenied || SensitivityClassifier.CouldMatchProcess, spec §6.3)",
     };
 
     // Spec §7.2: never flag these — read throughout, carry no content.

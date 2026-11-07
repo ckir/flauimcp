@@ -7,7 +7,9 @@
 using System.Linq;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Logging;
 using FlaUI.Mcp.Core.Windows;
+using Microsoft.Extensions.Logging;
 
 namespace FlaUI.Mcp.Core.Perception;
 
@@ -19,6 +21,7 @@ public sealed class PerceptionManager
     private readonly RefRegistry _refs;
     private readonly SnapshotCache _cache;
     private readonly SensitivityClassifier _classifier;
+    private readonly ILogger? _log;
 
     /// <summary>The DURABLE registry. Exposed so a wait can resolve a caller's ref against it while
     /// registering its own per-poll walk into a throwaway (BuildModelAsync's resolveRefs).</summary>
@@ -51,8 +54,9 @@ public sealed class PerceptionManager
     // constructor call keeps compiling unchanged. Production/DI always supplies the real singleton
     // (Program.cs:76 AddSingleton(classifier)), so this default is exercised only by tests that don't
     // care about classification.
-    public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache, SensitivityClassifier? classifier = null)
+    public PerceptionManager(WindowManager windows, RefRegistry refs, SnapshotCache cache, SensitivityClassifier? classifier = null, ILogger<PerceptionManager>? logger = null)
     {
+        _log = logger;
         _windows = windows;
         _refs = refs;
         _cache = cache;
@@ -237,6 +241,7 @@ public sealed class PerceptionManager
                 queue.Enqueue(child);
         }
 
+        if (hits.Count != 1) EmitSelectorResolve(sel, hits.Count, null);
         if (hits.Count == 0)
             throw new ToolException(ToolErrorCode.SelectorNoMatch,
                 "selector matched no element in this window right now.",
@@ -250,8 +255,14 @@ public sealed class PerceptionManager
         var descriptor = new ElementDescriptor(h.Rid, h.Ct, h.Aid, h.RawName,
             SnapshotEngine.NearestAncestorAutomationId(h.El), System.Array.Empty<int>(), h.HasFocus);
         var mintedRef = _refs.Register(windowId, descriptor, cached: null); // descriptor-only mint (Selector, Task 4)
+        EmitSelectorResolve(sel, 1, mintedRef);
         return (h.El, mintedRef);
     }
+
+    internal void EmitSelectorResolve(Selector sel, int candidates, string? chosen) =>
+        LogEvent.Emit(_log, LogLevel.Debug, "selector.resolve",
+            LogEvent.F("path", "selector"), LogEvent.Ui("automationId", sel.AutomationId), LogEvent.Ui("name", sel.Name),
+            LogEvent.F("controlType", sel.ControlType), LogEvent.F("candidates", candidates), LogEvent.F("chosen", chosen));
 
     /// <summary>Selector counterpart to RunOnRefActionAsync: resolve sel.Scope (if set) cache-free
     /// off-STA to a descriptor, then on the SAME transient action STA re-resolve that scope descriptor
@@ -700,6 +711,9 @@ public sealed class PerceptionManager
                 matches.Add(new FindMatch(@ref, aid, name, ctEnum.ToString(),
                     new[] { b.X, b.Y, b.Width, b.Height }, offscreen, enabled, hasFocus, selected)); // name already redacted
             }
+            LogEvent.Emit(_log, LogLevel.Debug, "selector.resolve",
+                LogEvent.F("path", "find"), LogEvent.Ui("automationId", query.AutomationId), LogEvent.Ui("name", query.Name),
+                LogEvent.F("controlType", query.ControlType), LogEvent.F("candidates", total), LogEvent.F("returned", matches.Count));
             return new FindResult(matches, total, total > max);
         });
     }

@@ -6,7 +6,9 @@
 
 using System.Linq;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Logging;
 using FlaUI.Mcp.Core.Windows;
+using Microsoft.Extensions.Logging;
 
 namespace FlaUI.Mcp.Core.Perception;
 
@@ -30,7 +32,9 @@ public sealed record WaitStableResult(bool Stable, int ElapsedMs, string? Snapsh
 public sealed class WaitCoordinator
 {
     private readonly PerceptionManager _perception;
-    public WaitCoordinator(PerceptionManager perception) => _perception = perception;
+    private readonly ILogger? _log;
+    public WaitCoordinator(PerceptionManager perception, ILogger<WaitCoordinator>? logger = null)
+    { _perception = perception; _log = logger; }
 
     // Test observability. WalkCount is the TOTAL walks issued by this coordinator.
     // PollWalkCount and ConfirmationWalkCount are split out because the latch's contract is only
@@ -130,7 +134,7 @@ public sealed class WaitCoordinator
         return sub;
     }
 
-    public async Task<WaitStableResult> WaitForStableAsync(WindowHandle handle, string? by, string? value,
+    private async Task<WaitStableResult> WaitForStableCoreAsync(WindowHandle handle, string? by, string? value,
         bool includeText, int quietMs, int timeoutMs, int pollIntervalMs,
         string? scopeRef = null, bool includeOffscreen = false)
     {
@@ -241,6 +245,37 @@ public sealed class WaitCoordinator
     }
 
     public async Task<WaitForResult> WaitForAsync(WindowHandle handle, string by, string value,
+        string until, string? equals, int timeoutMs, int pollIntervalMs, bool includeOffscreen = false)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var r = await WaitForCoreAsync(handle, by, value, until, equals, timeoutMs, pollIntervalMs, includeOffscreen);
+            EmitWaitEnd("wait_for", until, by, value, r.ElapsedMs, r.Satisfied, null);
+            return r;
+        }
+        catch (ToolException ex) { EmitWaitEnd("wait_for", until, by, value, (int)sw.ElapsedMilliseconds, false, ex.Code.ToString()); throw; }
+    }
+
+    public async Task<WaitStableResult> WaitForStableAsync(WindowHandle handle, string? by, string? value,
+        bool includeText, int quietMs, int timeoutMs, int pollIntervalMs, string? scopeRef = null, bool includeOffscreen = false)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var r = await WaitForStableCoreAsync(handle, by, value, includeText, quietMs, timeoutMs, pollIntervalMs, scopeRef, includeOffscreen);
+            EmitWaitEnd("wait_for_stable", "stable", by, value, r.ElapsedMs, r.Stable, null);
+            return r;
+        }
+        catch (ToolException ex) { EmitWaitEnd("wait_for_stable", "stable", by, value, (int)sw.ElapsedMilliseconds, false, ex.Code.ToString()); throw; }
+    }
+
+    private void EmitWaitEnd(string kind, string condition, string? by, string? value, int ms, bool satisfied, string? code) =>
+        LogEvent.Emit(_log, LogLevel.Debug, "wait.end",
+            LogEvent.F("kind", kind), LogEvent.F("condition", condition), LogEvent.F("by", by), LogEvent.Ui("value", value),
+            LogEvent.F("ms", ms), LogEvent.F("satisfied", satisfied), LogEvent.F("code", code));
+
+    private async Task<WaitForResult> WaitForCoreAsync(WindowHandle handle, string by, string value,
         string until, string? equals, int timeoutMs, int pollIntervalMs, bool includeOffscreen = false)
     {
         if (until == "valueEquals" && equals is null)

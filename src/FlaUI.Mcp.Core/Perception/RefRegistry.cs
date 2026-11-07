@@ -7,6 +7,8 @@
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace FlaUI.Mcp.Core.Perception;
 
@@ -23,6 +25,8 @@ public sealed class RefRegistry
     public const int EventRefCap = 64;
 
     private readonly object _gate = new();
+    private readonly ILogger? _log;
+    public RefRegistry(ILogger<RefRegistry>? logger = null) => _log = logger;
     private readonly Dictionary<string, Dictionary<string, Entry>> _byWindow = new();
     private readonly Dictionary<string, int> _counter = new();
     private readonly Dictionary<string, int> _snapshotSeq = new();
@@ -87,16 +91,21 @@ public sealed class RefRegistry
     /// refs use — the durable layer is checked first and unchanged.</summary>
     internal Entry Lookup(string windowId, string @ref)
     {
+        Entry? found = null;
         lock (_gate)
         {
-            if (_byWindow.TryGetValue(windowId, out var map) && map.TryGetValue(@ref, out var e))
-                return e;
-            if (_eventByWindow.TryGetValue(windowId, out var eventMap) && eventMap.TryGetValue(@ref, out var ee))
-                return ee;
-            throw new ToolException(ToolErrorCode.RefNotFound,
-                $"Ref '{@ref}' is not in the current snapshot of window '{windowId}'.",
-                "re-acquire the element with desktop_find (targeted, and it registers additively without superseding your other refs), or take a fresh desktop_snapshot");
+            if (_byWindow.TryGetValue(windowId, out var map) && map.TryGetValue(@ref, out var e)) found = e;
+            else if (_eventByWindow.TryGetValue(windowId, out var eventMap) && eventMap.TryGetValue(@ref, out var ee)) found = ee;
         }
+        // spec §5.2 ref.resolve (outside the lock). `found` = the ref is registered for this window.
+        LogEvent.Emit(_log, LogLevel.Information, "ref.resolve",
+            LogEvent.F("ref", @ref), LogEvent.F("found", found is not null),
+            LogEvent.F("controlType", found?.Descriptor.ControlType.ToString()),
+            LogEvent.Ui("automationId", found?.Descriptor.AutomationId),
+            LogEvent.Ui("name", found?.Descriptor.Name));
+        return found ?? throw new ToolException(ToolErrorCode.RefNotFound,
+            $"Ref '{@ref}' is not in the current snapshot of window '{windowId}'.",
+            "re-acquire the element with desktop_find (targeted, and it registers additively without superseding your other refs), or take a fresh desktop_snapshot");
     }
 
     /// <summary>Convenience accessor returning just the descriptor for a ref (durable or event layer).</summary>

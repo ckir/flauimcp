@@ -162,7 +162,8 @@ builder.Services.AddSingleton(sp =>
     FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator.ForPerception(
         sp.GetRequiredService<FlaUI.Mcp.Core.Perception.PerceptionManager>(),
         sp.GetRequiredService<FlaUI.Mcp.Core.Perception.IWindowImageSource>(),
-        sp.GetRequiredService<FlaUI.Mcp.Core.Perception.CaptureCircuitBreaker>()));
+        sp.GetRequiredService<FlaUI.Mcp.Core.Perception.CaptureCircuitBreaker>(),
+        logger: sp.GetService<ILoggerFactory>()?.CreateLogger<FlaUI.Mcp.Core.Perception.WindowCaptureCoordinator>()));
 builder.Services.AddSingleton<ScreenshotTools>();
 builder.Services.AddSingleton<InteractionTools>();
 builder.Services.AddSingleton<ContentTools>();

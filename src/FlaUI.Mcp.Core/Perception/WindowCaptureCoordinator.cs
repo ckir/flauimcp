@@ -10,7 +10,9 @@ using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Logging;
 using FlaUI.Mcp.Core.Windows;
+using Microsoft.Extensions.Logging;
 
 namespace FlaUI.Mcp.Core.Perception;
 
@@ -61,6 +63,7 @@ public sealed class WindowCaptureCoordinator
     // on the first build. An instruction that names a field is not the same as declaring one.
     // *(AGY-AFTER panel over this plan, round 10, Literal Implementer.)*
     private readonly CaptureCircuitBreaker? _breaker;
+    private readonly ILogger? _log;
     private readonly Func<Task<bool>>? _denylistedVisible;
     private readonly Func<Task<DesktopMaskSet>>? _desktopMasks;
     private readonly Func<Rectangle, IReadOnlyList<Rectangle>, int, CaptureScope,
@@ -77,8 +80,10 @@ public sealed class WindowCaptureCoordinator
         CaptureCircuitBreaker? breaker = null,
         Func<IntPtr, bool>? isHungProbe = null,
         Func<Task<bool>>? denylistedVisible = null,
-        Func<Task<DesktopMaskSet>>? desktopMasks = null)
+        Func<Task<DesktopMaskSet>>? desktopMasks = null,
+        ILogger? logger = null)
     {
+        _log = logger;
         _denylistedVisible = denylistedVisible;
         _desktopMasks = desktopMasks;
         _walk = walk; _source = source; _opts = opts;
@@ -116,18 +121,39 @@ public sealed class WindowCaptureCoordinator
         PerceptionManager perception,
         IWindowImageSource source,
         CaptureCircuitBreaker? breaker = null,
-        CaptureRetryOptions? options = null)
+        CaptureRetryOptions? options = null,
+        ILogger? logger = null)
         => new((h, r) => perception.ResolveWindowCaptureGeometryAsync(h, r),
                source,
                options ?? CaptureRetryOptions.Default,
                breaker: breaker,
                denylistedVisible: () => perception.DenylistedWindowsVisibleAsync(),
-               desktopMasks: () => perception.AllMaskRectsAsync());
+               desktopMasks: () => perception.AllMaskRectsAsync(),
+               logger: logger);
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool IsHungAppWindow(IntPtr hWnd);
 
-    public async Task<WindowCaptureOutcome> CaptureAsync(WindowHandle handle, string? @ref,
+    public async Task<WindowCaptureOutcome> CaptureAsync(WindowHandle handle, string? @ref, CaptureScope scope, int maxWidth)
+    {
+        try
+        {
+            var o = await CaptureCoreAsync(handle, @ref, scope, maxWidth);
+            LogEvent.Emit(_log, LogLevel.Information, "capture.decision",
+                LogEvent.F("scope", scope.ToString()), LogEvent.F("ok", true), LogEvent.F("method", o.Result.CaptureMethod),
+                LogEvent.F("warnings", o.Result.CaptureWarnings.Select(w => w.Code).ToArray()), LogEvent.F("code", null));
+            return o;
+        }
+        catch (ToolException ex)
+        {
+            LogEvent.Emit(_log, LogLevel.Information, "capture.decision",
+                LogEvent.F("scope", scope.ToString()), LogEvent.F("ok", false), LogEvent.F("method", null),
+                LogEvent.F("warnings", Array.Empty<string>()), LogEvent.F("code", ex.Code.ToString()));
+            throw;
+        }
+    }
+
+    private async Task<WindowCaptureOutcome> CaptureCoreAsync(WindowHandle handle, string? @ref,
                                                          CaptureScope scope, int maxWidth)
     {
         CaptureGeometry geo = default!;
