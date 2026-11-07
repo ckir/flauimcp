@@ -55,21 +55,28 @@ logging system), an MCP tool to read the log (YAGNI: the error response names th
 All new server-side types live in `src/FlaUI.Mcp.Server/Logging/`.
 
 ### 4.1 `JsonlFileLoggerProvider` (`ILoggerProvider`)
-- Producer side: `ILogger.Log` formats nothing heavy; it enqueues a `LogRecord` onto a bounded
+- Producer side: `ILogger.Log` builds a `LogRecord` **on the calling thread**, copying `cid`, `tool` and
+  `sensitive` out of the external scope at that moment, and enqueues it onto a bounded
   `System.Threading.Channels.Channel` (capacity **4096**, `TryWrite`; never blocks). A failed `TryWrite`
-  increments a dropped counter.
+  increments a dropped counter. Scope values are never read on the writer thread: it does not share the
+  caller's `AsyncLocal` state, and by the time it dequeues, the call's scope may already be disposed.
 - Consumer: one dedicated background thread serialises each record to a UTF-8 line (§5) and writes it with
-  a **single** `Write` of the complete buffer (record + `\n`), then flushes.
-- File: `%LOCALAPPDATA%\flaui-mcp\logs\flaui-mcp-<pid>-<start>.jsonl`, where `<start>` is the process
-  start time in UTC as `yyyyMMddTHHmmssZ`. The start time is in the name because Windows reuses pids: a
-  pid-only name lets a later process append to a dead one's file and interleave two sessions. Opened
-  `FileMode.Append`, `FileAccess.Write`, `FileShare.ReadWrite | FileShare.Delete`.
-- Rolling: at **5 MB** the current file is renamed `flaui-mcp-<pid>-<start>.<n>.jsonl` (n = 1..4,
-  oldest deleted) and a fresh file opened. At most 5 files per process.
+  a **single** `Write` of the complete buffer (record + `\n`). It flushes when the channel is empty after
+  a write (once per burst, not once per record).
+- File: `%LOCALAPPDATA%\flaui-mcp\logs\flaui-mcp-<pid>-<start>-<seg>.jsonl`, where `<start>` is the
+  process start time in UTC as `yyyyMMddTHHmmssZ` and `<seg>` a two-digit segment number from `01`. The
+  start time is in the name because Windows reuses pids: a pid-only name lets a later process append to a
+  dead one's file and interleave two sessions. Opened `FileMode.Append`, `FileAccess.Write`,
+  `FileShare.ReadWrite | FileShare.Delete`.
+- Rolling: at **5 MB** the writer closes segment N and opens segment N+1. **No file is ever renamed**:
+  renaming fails with a sharing violation while any reader holds the file without `FileShare.Delete`, and
+  agents tail these files. After opening a new segment, the writer deletes this process's segments older
+  than the newest 5; a delete that fails (file held open) is skipped and retried at the next roll.
 - Serialisation is System.Text.Json with its default encoder only (never string concatenation): control
   characters in agent-supplied strings are escaped, so a `\n` in an argument cannot forge a record.
-- Implements `ISupportExternalScope`; the `cid`, `tool` and `sensitive` values (§6.3) are read from the
-  scope at log time.
+- Implements `ISupportExternalScope`, which is how it sees the `cid`, `tool` and `sensitive` values the
+  filter puts in scope (§4.2, §6.3).
+- Exposes `CurrentFilePath` (the active segment's absolute path), read by §4.5.
 - Startup pruning: a file belongs to a dead process when no live process has that pid AND that start
   time (same liveness rule as `ServerStateFile.PruneDead`). Keep the newest **20** dead-process files
   overall, delete the rest. Never touch a live process's files.
@@ -100,6 +107,13 @@ Turns the `JsonElement` argument dictionary into the logged `args` object (§6).
 under `ExecutionContext.Run(captured, ...)` (null capture → run directly). Effect: logger scopes and any
 `AsyncLocal` set by the caller are visible inside UIA work. No other behaviour changes.
 
+Only the **query** STA needs this. ACTION work already runs on a new `Thread` per action
+(`AutomationDispatcher.RunActionAsync`, thread `uia-action-sta`), and `Thread.Start` flows the
+starting thread's `ExecutionContext`. When an action times out (`AwaitWithTimeout`,
+`AutomationDispatcher.cs:105-119`) its thread is abandoned but keeps running; any line it logs later still
+carries the original call's `cid`. That is the correct attribution (the line describes that call's
+action), and a reader sees it as a line timestamped after that call's `tool.end`.
+
 ### 4.5 Exception capture at the tool boundary
 `ToolResponse.Guard`/`GuardImage` gain an `ILogger` source (a static accessor set once at startup, null
 when logging is off — the two methods are static today and are called from 53 tool methods; threading an
@@ -107,6 +121,13 @@ instance through every tool is out of proportion). The accessor has an `AsyncLoc
 use, so parallel tests never see each other's logger through the static. On the generic-exception branch they log
 `tool.exception` with `exType`, `hresult` and `stack`. `ToolException` logs nothing extra (its code and
 message are in `tool.end`). The `OutOfMemoryException` / `OperationCanceledException` filter is unchanged.
+
+The `log` error field (§5.5) needs the current `cid` and file path, which `ILogger` does not expose. The
+same static accessor therefore holds a `Func<string?> LogPointer` that returns
+`"<cid> in <CurrentFilePath>"`, or null when the provider is off or no `cid` is in scope; the filter
+publishes the call's `cid` in an `AsyncLocal` alongside the logger scope so `LogPointer` can read it. The
+error DTO omits `log` when the pointer is null (never `"log": null`; `ToolResponse.Json` at
+`ToolResponse.cs:18` does not ignore nulls, so the omission is explicit in the DTO).
 
 ### 4.6 Core instrumentation
 `src/FlaUI.Mcp.Core` takes a dependency on `Microsoft.Extensions.Logging.Abstractions`. Instrumented
@@ -129,13 +150,21 @@ compatible, renaming or removing one is a breaking change.
 | `args` | object | `tool.start` | classified arguments, §6 |
 | `outcome` | string | `tool.end` | `ok`, a `ToolErrorCode` name, or `INTERNAL` |
 | `ms` | number | `tool.end`, `wait.end` | elapsed milliseconds |
-| `msg` | string | optional | human/agent-readable text, UI-text-masked per §6.3 |
+| `msg` | text | optional | human/agent-readable text, UI-text-masked per §6.3 |
 | `trunc` | bool | when true | the record was cut to the 8 KB cap |
 | event fields | various | per event | §5.2 |
 
+**Masked values.** Any value the classification rules (§6) hide is written as the object
+`{"len": <chars>, "sha8": "<8 hex>"}`. Type `text` above means "a JSON string, or that masked object" -
+the same rule for `msg`, every starred event field (§5.2), and every string leaf in `args`. A reader tests
+for an object to know a value was masked.
+
 ### 5.1 Size cap
-A serialised record is at most **8192 bytes**. If larger, `msg` and then `stack` are shortened and
-`"trunc":true` is set. A record never spans lines.
+A serialised record is at most **8192 bytes**. If larger, shorten in this order until it fits, setting
+`"trunc":true`: (1) `stack`, cut to its first frames; (2) the longest raw string leaves in `args` and event
+fields, each cut with a trailing `...`; (3) `msg`, last, because it carries the failure explanation.
+Masked objects and the fixed fields (`ts`, `lvl`, `pid`, `ev`, `cid`, `tool`, `outcome`, `ms`) are never
+cut. A record never spans lines.
 
 ### 5.2 Events (v1, closed set)
 
@@ -148,13 +177,12 @@ A serialised record is at most **8192 bytes**. If larger, `msg` and then `stack`
 | `tool.end` | info (ok) / warning (error) | filter | `outcome`, `ms`, `msg?` |
 | `tool.exception` | error | ToolResponse.Guard / GuardImage | `exType`, `hresult`, `stack`, `msg` |
 | `selector.resolve` | debug | PerceptionManager find path | `by`, `value`*, `candidates`, `culled`, `chosen` |
+| `ref.resolve` | info | where a tool turns an `eN` argument into an element | `ref`, `controlType`, `automationId`*, `name`*, `found` |
+| `action.blocked` | warning | when `ActionBlockedPending` is raised | `fgHandle`, `fgProcess`, `fgTitle`* (the foreground window at timeout, usually the modal) |
 | `focus.attempt` | info | WindowManager focus path | `target`, `gained`, `fgProcess?`, `fgHandle?` (when not gained) |
 | `input.decision` | info | InputGuard | `lease` (`valid`\|`absent`\|`expired`\|`invalid`), `budgetLeft`, `allowed`, `code?` |
 | `wait.end` | debug | WaitCoordinator | `condition`, `polls`, `ms`, `satisfied` |
 | `capture.decision` | info | WindowCaptureCoordinator | `method`, `breaker` (`closed`\|`open`), `refused?` |
-| `audit.input` | info | InputAudit | the existing audit text in `msg` |
-| `audit.clipboard` | info | ClipboardAccess | the existing audit text in `msg` |
-| `audit.paste_force` | info | InputTools.AuditForceOverwrite | the existing audit text in `msg` |
 | `log.dropped` | warning | provider | `count` |
 
 \* = a **UI-text field**. The provider hashes every starred field, and `msg`, when the scope's `sensitive`
@@ -163,16 +191,20 @@ classified by the bound window's own process with the §6.3 predicate. A new eve
 must star the field; the format-pin test (§8.1) holds the starred list.
 
 `window.bind` exists because `w3` means nothing once the session is gone: it is what lets a post-mortem
-reader turn a handle in `args` back into a process and window. Element refs (`eN`) get no equivalent in v1
-(§10).
+reader turn a handle in `args` back into a process and window. `ref.resolve` does the same for an `eN`
+argument, once per call that uses one (never per snapshot, which mints hundreds of refs).
+`action.blocked` names the window that took the foreground when an action hung, which is usually the modal
+that blocked it; Win32 only (`GetForegroundWindow`), no UIA.
 
-The stderr output of the existing audit sites is kept as is (operators may already read it); they ALSO
-log through `ILogger`. Exact instrumentation points inside PerceptionManager / WindowManager are fixed
-in the plan against the code.
+The existing stderr audit sites (`InputAudit`, `ClipboardAccess.cs:47`, `InputTools.cs:327`) are left
+unchanged and are NOT mirrored into the log: the filter already records every one of those tool calls
+with its outcome, and a second event per call adds a schema without adding a fact. Exact instrumentation
+points inside PerceptionManager / WindowManager / the ref-resolving paths are fixed in the plan against
+the code.
 
 ### 5.3 Reader rule
-A reader skips a **final** line that does not parse (the process may have died mid-write). Every other
-line parses. Files of one pid in order: `.4`, `.3`, `.2`, `.1`, then the un-numbered current file.
+A reader skips a **final** line of the **newest** segment that does not parse (the process may have died
+mid-write). Every other line parses. One process's segments are read in ascending `<seg>` order.
 
 ### 5.4 Flags
 `--no-log` disables the file provider entirely. `--log-level=debug|info|warning` (garbage → `info`).
@@ -218,13 +250,19 @@ operator's rules. When the target is sensitive, **or** a `window` argument is pr
 resolved, every UI-text value of that call — in `args`, `msg`, and internal events in the call's scope — is
 hashed like content. Window-level, deliberately coarse (fails toward masking).
 
-Calls with **no** `window` argument (e.g. `desktop_open_window` by title, `desktop_find_text` across the
-desktop) have no target to classify. Their UI text is logged raw when no `--redaction-rules` file is loaded
+Calls with **no** `window` argument split in two:
+- **Foreground-acting** calls - an input tool that acts on the current foreground window when `window` is
+  omitted (e.g. `desktop_key`, `InputTools.cs:335-339`; the full list is fixed in the plan from the tool
+  descriptions). The target IS the foreground window: the filter resolves it with `GetForegroundWindow` +
+  `GetWindowThreadProcessId` (Win32, off the STA thread) and applies the predicate above. No foreground
+  window, or one that cannot be resolved, counts as sensitive.
+- **Targetless** calls (e.g. `desktop_open_window` by title, `desktop_find_text` across the desktop)
+  have no target to classify. Their UI text is logged raw when no `--redaction-rules` file is loaded
 and hashed when one is: an operator who wrote rules has said some UI text is sensitive, and without a
 target we cannot tell which. Rationale for raw by default: the main no-window failure is
 `WindowNotFound`/`AmbiguousMatch` on a title, and hashing it removes the one fact that explains it.
 Exception: an `AmbiguousMatch` message lists the candidate windows' titles (`WindowManager.cs:589-590`)
-and could name a denylisted window. On a call with no `window` argument, a `tool.end` with outcome
+and could name a denylisted window. On a targetless call, a `tool.end` with outcome
 `AmbiguousMatch` therefore omits `msg` entirely. The agent already received the candidate list in the
 tool response; the log keeps the outcome code, which is what identifies the failure.
 
@@ -234,22 +272,30 @@ tool response; the log keeps the outcome code, which is what identifies the fail
 |---|---|
 | Log dir/file cannot be created at startup | one stderr line + `ServerStateFile.TryLogStartupError`; the server **starts** with the file provider off |
 | Write error while running (disk full, AV lock) | caught on the writer thread, counted; reopen attempted at most every 30 s; tool calls unaffected |
+| Roll fails (next segment cannot be created) | keep appending to the current segment past 5 MB and retry the roll at the next write; never stop writing over a roll |
+| Old segment cannot be deleted (held open by a reader) | skipped, retried at the next roll; never blocks writing |
 | Channel full | record dropped and counted; `log.dropped` later; never blocks a call |
 | Exception in filter/classifier code | swallowed; the tool's result is returned unchanged |
 | Process killed mid-write | at most the final line is torn (single-buffer writes); reader rule §5.3 |
-| Clean shutdown | writer drains for up to 1 s, then `server.stop` |
+| Clean shutdown | `server.stop` is ENQUEUED first, then the channel is completed and the writer drains for up to 1 s (so `server.stop` is the last record written, not a record left behind) |
 | stdout | the provider never writes to stdout |
-| Disk use | 5 MB × 5 per live pid; dead-pid files capped at the newest 20 |
+| Disk use | 5 MB × 5 segments per live process; dead-process files capped at the newest 20 |
 
 ## 8. Testing
 
 Headless (part of the default test run):
-1. **Format pin** — golden records per `ev`; fixed field names; 8 KB cap with `trunc`.
-2. **Provider** — rolling at the cap and file count; pruning keeps live pids; write failure does not throw;
-   full channel counts drops and returns immediately; torn final line handled by a reader helper that
+1. **Format pin** — golden records per `ev`; fixed field names; the starred UI-text field list; masked
+   values are the `{len, sha8}` object; 8 KB cap with `trunc`, truncation order §5.1 (`msg` survives a
+   record whose `stack` alone exceeds the cap).
+2. **Provider** — rolling to a new segment at the cap with no rename, keeping 5 segments; a segment held
+   open by a reader does not stop rolling or writing; pruning keeps live processes; write failure does not
+   throw; full channel counts drops and returns immediately; scope values captured on the producer thread
+   (a record logged inside a scope that is disposed before the writer dequeues still carries its `cid`);
+   `server.stop` is the last record after shutdown; torn final line handled by a reader helper that
    implements §5.3.
 3. **ArgumentClassifier** — structural raw; unmarked string → `{len, sha8}`; UI text raw vs hashed by
-   sensitivity; unresolvable window → hashed; **near-miss distractor**: a structural `textLength`-style
+   sensitivity; unresolvable window → hashed; foreground-acting call with a sensitive foreground process
+   → hashed; **near-miss distractor**: a structural `textLength`-style
    name is not treated as content by name, and a content parameter named like a structural one is still
    hashed (classification is by attribute, never by name).
 4. **Coverage guard** — §6.2.
@@ -259,7 +305,8 @@ Headless (part of the default test run):
 6. **STA correlation** — a log line written inside `StaThreadContext.RunAsync` carries the caller's `cid`;
    mutant (no `ExecutionContext` capture) turns it red.
 7. **Guard** — `INTERNAL` writes `tool.exception` with `exType` + `stack` and the error JSON carries `log`;
-   `ToolException` writes no stack; `OutOfMemoryException` still propagates.
+   `ToolException` writes no stack; `OutOfMemoryException` still propagates; with no pointer the error
+   JSON has NO `log` key (not `"log": null`).
 8. **Server process** — real exe over stdio (harness of
    `test/FlaUI.Mcp.Tests/Server/StdioProtocolCleanlinessTests.cs`), one failing call: stdout lines are all
    JSON-RPC; the log has `server.start`, `tool.start`, `tool.end` with one shared `cid`; the error's `log`
@@ -278,6 +325,9 @@ desktop interaction beyond a deterministic failing call (e.g. an unknown window 
 Logging every bare `catch` (that is R13), per-element tree dumps, per-stage OCR timing, an MCP log-reading
 tool, log shipping, an `eN` ref-binding event (a snapshot mints hundreds of refs; `selector.resolve`
 already records the chosen ref's selector). Each is a new `ev` later without a format break.
+
+## Stand-downs
+None so far.
 
 ## 11. Open items resolved in the plan (against the code)
 - Exact instrumentation call sites for `selector.resolve`, `focus.attempt`, `wait.end`,
