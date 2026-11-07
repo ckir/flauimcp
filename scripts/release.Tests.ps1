@@ -1605,6 +1605,26 @@ Describe '-NoPush contract' {
                       $n.Extent.Text -match 'push' }, $true)
         $branch | Should -Not -BeNullOrEmpty -Because 'the confirmation wording must branch on $NoPush'
     }
+
+    It 'interpolates $finalStep into the final confirmation' {
+        # PowerShell reads "$finalStep?" as a variable NAMED 'finalStep?', which is never set, so the prompt
+        # printed "bump versions,  [y/N]": it said nothing about pushing, which is the one thing the branch
+        # above exists to state. Found by PSScriptAnalyzer (PSUseDeclaredVarsMoreThanAssignments). The fix
+        # is "${finalStep}?". Pin the variable the string actually expands, read from the AST.
+        $prompt = $script:RelAst.Find({
+            param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
+                      $n.Extent.Text -match 'Read-Host' -and
+                      $n.Extent.Text -match 'Cut release' }, $true)
+        $prompt | Should -Not -BeNullOrEmpty
+        $text = @($prompt.CommandElements |
+            Where-Object { $_ -is [System.Management.Automation.Language.ExpandableStringExpressionAst] })
+        $text.Count | Should -Be 1 -Because 'the prompt is one interpolated string'
+        $vars = @($text[0].NestedExpressions |
+            Where-Object { $_ -is [System.Management.Automation.Language.VariableExpressionAst] } |
+            ForEach-Object { $_.VariablePath.UserPath })
+        $vars | Should -Contain 'finalStep' -Because 'the prompt must say what the last step will do'
+        $vars | Should -Not -Contain 'finalStep?' -Because '"$finalStep?" expands a variable that does not exist'
+    }
 }
 
 Describe 'Get-RepoBuildLockHolder' {

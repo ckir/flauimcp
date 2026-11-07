@@ -707,7 +707,7 @@ try {
         # The prompt must describe what will ACTUALLY happen: under -NoPush the old wording promised a
         # push that is not coming, and an operator approves what the prompt says, not what the flags say.
         $finalStep = if ($NoPush) { 'commit and tag LOCALLY (no push)' } else { 'commit, tag, and push to origin' }
-        $ans = Read-Host "Cut release v$($next.Version) — write CHANGELOG, bump versions, $finalStep? [y/N]"
+        $ans = Read-Host "Cut release v$($next.Version) — write CHANGELOG, bump versions, ${finalStep}? [y/N]"
         if ($ans -notmatch '^[Yy]') { Write-Host "Aborted — nothing written or committed."; exit 0 }
     }
 
