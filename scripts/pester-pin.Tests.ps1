@@ -278,15 +278,6 @@ Describe 'Pester pin' {
         }
     }
 
-    It 'PSScriptAnalyzer reports zero Error-level diagnostics across repository scripts if installed' {
-        if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
-            return
-        }
-        $scripts = Get-ChildItem -Path $script:Repo -Recurse -Filter *.ps1
-        foreach ($ps in $scripts) {
-            $issues = @(Invoke-ScriptAnalyzer -Path $ps.FullName -Severity Error)
-            $issueMsg = if ($issues) { ($issues | ForEach-Object { "$($_.Line): $($_.Message)" }) -join '; ' } else { '' }
-            $issues.Count | Should -Be 0 -Because "Script $($ps.FullName) has PSScriptAnalyzer Error issues: $issueMsg"
-        }
-    }
+    # The PSScriptAnalyzer gate (Error AND Warning, curated profile, pinned version) lives in
+    # scripts/psscriptanalyzer.Tests.ps1. It replaced the Error-only check that used to sit here.
 }

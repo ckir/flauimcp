@@ -52,6 +52,13 @@ new-tool NAME:
 pester:
     Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = 'scripts/'; $c.Run.Exit = $true; Invoke-Pester -Configuration $c
 
+# Runs inside `just pester` too; this is the fast path for scripts only. A justfile-only recipe: the cockpit's
+# [E] gate already runs this file as part of scripts/.
+#
+# The PSScriptAnalyzer gate alone (Warning and Error, curated profile, pinned analyzer).
+lint-scripts:
+    Import-Module Pester -RequiredVersion 6.1.0; $c = New-PesterConfiguration; $c.Run.Path = 'scripts/psscriptanalyzer.Tests.ps1'; $c.Run.Exit = $true; Invoke-Pester -Configuration $c
+
 # Build, headless tests, and the PowerShell suite. The cockpit's [G] Dev gate.
 gate: build test pester
 
