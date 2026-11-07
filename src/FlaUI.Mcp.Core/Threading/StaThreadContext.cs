@@ -30,10 +30,19 @@ public sealed class StaThreadContext : IDisposable
     public Task<T> RunAsync<T>(Func<T> func)
     {
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Capture the CALLER's ExecutionContext and run the work inside it, so AsyncLocal state the caller
+        // set (the structured log's correlation scope) is visible on this STA. BlockingCollection does not
+        // flow it: the thread only ever sees the context it was STARTED with. Null when flow is suppressed.
+        var captured = ExecutionContext.Capture();
         _queue.Add(() =>
         {
-            try { tcs.SetResult(func()); }
-            catch (Exception ex) { tcs.SetException(ex); }
+            void Work()
+            {
+                try { tcs.SetResult(func()); }
+                catch (Exception ex) { tcs.SetException(ex); }
+            }
+            if (captured is null) Work();
+            else ExecutionContext.Run(captured, static s => ((Action)s!)(), (Action)Work);
         });
         return tcs.Task;
     }
