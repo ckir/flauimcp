@@ -86,6 +86,11 @@ FlaUI.Mcp tools follow one regular pattern:
    error even when every test passes — a gate that is red on green. Where a non-zero exit code is needed
    (the cockpit's `E` and `G` gates), set `Run.Exit` on a configuration object rather than using `-CI`:
    `-CI` also enables `TestResult`, which drops a `testResults.xml` into the working tree.
+   The same suite lints every tracked script with PSScriptAnalyzer at Warning and Error, under the profile in
+   `PSScriptAnalyzerSettings.psd1`; `just lint-scripts` runs only that part. Install the analyzer version that
+   `.github/workflows/ci.yml` pins: without it the lint tests are skipped locally (the skip message prints the
+   install command) and fail in CI. To silence a finding, fix it; an exclusion or a suppression is a reviewed edit
+   to `scripts/psscriptanalyzer.Tests.ps1` too.
 2. **Fill the stub.** A tool is a method on a `[McpServerToolType] public sealed class XxxTools` in
    `src/FlaUI.Mcp.Server/Tools/`, annotated `[McpServerTool(ReadOnly = true | Destructive = true),
    Description("…")]`. The MCP SDK **auto-discovers** it — no registration to edit.

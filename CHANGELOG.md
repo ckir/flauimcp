@@ -5,6 +5,19 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release cut confirmation now states its final step.** `"... bump versions, $finalStep? [y/N]"` expanded a
+  variable named `finalStep?`, so the prompt read `bump versions,  [y/N]` and never said whether the release would
+  push. Found by PSScriptAnalyzer; pinned by a test on the prompt's AST.
+
+### Changed
+
+- **Scripts are gated on PSScriptAnalyzer Warnings, not only Errors.** Zero diagnostics across every tracked `.ps1`,
+  under a committed profile (`PSScriptAnalyzerSettings.psd1`) whose five exclusions each carry a rationale. The
+  analyzer version is pinned in CI, a missing analyzer fails CI instead of passing, and a sentinel proves the profile
+  still reports. `just lint-scripts` runs the gate alone.
+
 ## [1.1.0] - 2026-11-06
 
 ### Added

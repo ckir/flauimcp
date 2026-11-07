@@ -20,12 +20,12 @@ Take these in order. Gate trust comes first because B2 is verified on the Deskto
    table now says so, and row 8's citation points there.
 3. [x] **Agent Best Practices Guide**: `docs/agent-contract.md` now has a **Retry and recovery** section (per error
    code, plus rules), checked against the code.
-4. [ ] **B2 — `desktop_open_tray`**: system-tray pseudo-window. Own spec → plan → implementation cycle.
-   **v1.1.0 is cut once this lands** (no v1.0.2).
-5. [ ] **B4 — `desktop_list_terminal_processes`**: identify Windows Terminal tabs by hosted process, without
-   switching tabs.
-6. [ ] **CI Script Analyzer Warnings** *(partly done)*: CI already fails on **Error**-level `PSScriptAnalyzer`
-   diagnostics (`scripts/pester-pin.Tests.ps1`). Remaining: surface **Warning**-level diagnostics without failing.
+4. [x] **B2 — `desktop_open_tray`** *(shipped in v1.1.0)*: system tray as a driveable surface (three tools).
+5. [x] **B4 — `desktop_list_terminal_processes`** *(closed by ruling 2026-11-06, YAGNI)*: the measured facts and the
+   reopen condition are in ROADMAP.md (B4).
+6. [x] **CI Script Analyzer Warnings**: every tracked `.ps1` is gated at zero PSScriptAnalyzer diagnostics (Warning
+   and Error) under `PSScriptAnalyzerSettings.psd1`, with the analyzer version pinned in CI
+   (`scripts/psscriptanalyzer.Tests.ps1`, `just lint-scripts`).
 
 ---
 
