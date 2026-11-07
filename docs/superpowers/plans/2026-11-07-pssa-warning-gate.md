@@ -705,5 +705,13 @@ Found while measuring and NOT in this plan's scope (logged in `.clavity/local-an
 `pester-pin.Tests.ps1:228` test passes VACUOUSLY when the pinned Pester is absent (non-terminating `Import-Module`
 error, then `Get-Command -Module $null` checks whichever Pester is loaded; measured with 6.1.0 absent).
 
+## Stand-downs
+
+AGY-AFTER panel round 1 (agy, 6 seats, 2026-11-07): PANEL VERDICT CLEAN, no findings. Two nits it discarded:
+- DISCARDED-BELOW-FLOOR: `$script:InCi = [bool]$env:CI` treats `CI=false` as CI. Unreachable as a false PASS because of
+  `if ($script:InCi) { throw "fail closed in CI: $why" }` in `Test-AnalyzerReady`: the misread only turns a local skip
+  into a failure (fail-closed), never a failure into a pass.
+- DISCARDED-BELOW-FLOOR: mixed line endings; already covered by the "Line endings" note at the top of this plan.
+
 Unmeasured: the suite under Pester 6.1.0 (Task 0 Step 3 and Task 6 Step 6 measure it); the analyzer on the CI image
 (Task 8).
