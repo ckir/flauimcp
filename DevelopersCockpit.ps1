@@ -74,7 +74,9 @@ function Write-C([string]$Text = '', [string]$Color = 'Gray') {
 # ---------------------------------------------------------------------------
 # Delegation helper — surface a delegated command's failure without killing the menu
 # ---------------------------------------------------------------------------
-function Invoke-Cmd([string]$Cmd) {
+function Invoke-Cmd {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '', Justification = 'Runs only hardcoded delegation strings from the $Actions table, never operator input.')]
+    param([string]$Cmd)
     # $Cmd is always a hardcoded literal from the $Actions table (or a handler's own literal),
     # never operator free-text, so Invoke-Expression here runs OUR delegation strings.
     #
@@ -112,6 +114,8 @@ function Confirm-Owner([string[]]$Commands) {
 # Banner — display-only, best-effort (a missing source shows '?' / '(none)', never aborts)
 # ---------------------------------------------------------------------------
 function Get-CsprojVersion {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'Display-only banner: an unreadable csproj shows ?, never aborts.')]
+    param()
     try {
         $c = Get-Content -Raw -ErrorAction Stop -- 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj'
         if ($c -match '<Version>([^<]+)</Version>') { return $Matches[1] }
@@ -274,6 +278,8 @@ $script:HealthProbes = @(
 )
 
 function Invoke-HealthCheck {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '', Justification = 'Runs only the hardcoded probe strings in $script:HealthProbes, never operator input.')]
+    param()
     # Probes are read-only, so running them under -WhatIf would be harmless -- but "nothing executes"
     # has to hold without exceptions, or the operator is left having to remember which parts of a dry
     # run were secretly live. List what would be probed instead.
@@ -308,7 +314,7 @@ function Invoke-HealthCheck {
 # ---------------------------------------------------------------------------
 # Render + main loop
 # ---------------------------------------------------------------------------
-function Render-Menu {
+function Show-Menu {
     if ($script:Interactive) { Clear-Host }
     Write-Host ''
     Write-C ('DEVELOPERS COCKPIT — flaui-mcp   [{0}]' -f (Get-Banner)) 'Cyan'
@@ -328,7 +334,7 @@ function Render-Menu {
 
 $script:Quit = $false
 while (-not $script:Quit) {
-    Render-Menu
+    Show-Menu
     $key = (Read-Host 'select').Trim().ToUpperInvariant()
     if ([string]::IsNullOrEmpty($key)) { continue }
     $row = $script:Actions | Where-Object { $_.Key -eq $key } | Select-Object -First 1
