@@ -101,6 +101,12 @@ public class RedactionSurfaceInventoryTests
         ["CheckRedactionRulesCommand.PrintResults"] = "not a UIA read: r.Name is the rule's configured name from the operator's own file",
         ["FindTools.DesktopFind"] = "reads FindMatch.Name, ALREADY redacted at construction in PerceptionManager.FindAsync - a DTO re-read, not a live element read",
         ["SnapshotTools.DesktopSnapshotDiff"] = "reads DiffDescriptor.Name, ALREADY redacted at construction by SnapshotDiff.ShownName - a DTO re-read, not a live element read",
+
+        // ---- Structured-log argument classification (Task 6): reflection and JSON-key reads, no UIA element. ----
+        ["ToolParameterCatalog.FromTypes"] = "not a UIA read: p.Name is ParameterInfo.Name and m.Name is MethodInfo.Name of an [McpServerTool] method, read once at catalog build to key the tool/parameter table; compile-time tool metadata, never element content",
+        ["ToolParameterCatalog.Describe"] = "not a UIA read: prop.Name is PropertyInfo.Name of a tool-argument record (e.g. Selector.AutomationId), read by reflection to key the per-property class table; a C# identifier, never element content",
+        ["ArgumentClassifier.Complex"] = "not a UIA read: prop.Name is JsonProperty.Name, the JSON KEY of a caller-supplied tool argument object, used only to look up that property's class and to name the key in the logged args; the VALUE is classified and masked by Walk",
+        ["ArgumentClassifier.Walk"] = "not a UIA read: prop.Name is JsonProperty.Name, the JSON KEY of a nested caller-supplied argument object, copied as the key of the logged object; the VALUE is always classified Content and hashed",
     };
 
     // Spec §7.2: never flag these — read throughout, carry no content.

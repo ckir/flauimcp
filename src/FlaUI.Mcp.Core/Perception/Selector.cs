@@ -6,6 +6,7 @@
 
 // src/FlaUI.Mcp.Core/Perception/Selector.cs
 using FlaUI.Mcp.Core.Errors;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Core.Perception;
 
@@ -14,11 +15,11 @@ namespace FlaUI.Mcp.Core.Perception;
 /// TRUE (ergonomic); set false to disambiguate a genuine Submit/submit collision. Scope is an eN ref that
 /// narrows the search to that element's subtree (resolved under existing ref rules first).</summary>
 public sealed record Selector(
-    string? AutomationId = null,
-    string? Name = null,
-    string NameMatch = "eq",
-    string? ControlType = null,
-    string? Scope = null,
+    [property: LogUiText] string? AutomationId = null,
+    [property: LogUiText] string? Name = null,
+    [property: LogStructural] string NameMatch = "eq",
+    [property: LogStructural] string? ControlType = null,
+    [property: LogStructural] string? Scope = null,
     bool IgnoreCase = true)
 {
     /// <summary>Fail-closed at the tool layer BEFORE any UIA walk: a selector with no material field
