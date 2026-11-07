@@ -276,6 +276,14 @@ and could name a denylisted window. On a targetless call, a `tool.end` with outc
 `AmbiguousMatch` therefore omits `msg` entirely. The agent already received the candidate list in the
 tool response; the log keeps the outcome code, which is what identifies the failure.
 
+### 6.4 Messages the server did not write
+Every `ToolException` message is server-authored, and none on a content tool quotes the content (the two
+on `desktop_type`/`desktop_paste_text`, `InputTools.cs:166-167` and `:270-271`, quote only the length
+limit). An unexpected exception's message is NOT server-authored (FlaUI, COM, the runtime) and cannot be
+audited. So on any call that has at least one content argument (§6.1), the `msg` of `tool.exception` and
+of a `tool.end` with outcome `INTERNAL` is masked, whatever the window's sensitivity. `exType`, `hresult`
+and `stack` stay raw: a .NET stack trace carries frames, never argument values.
+
 ## 7. Failure behaviour
 
 | Failure | Behaviour |
