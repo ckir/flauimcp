@@ -13,6 +13,7 @@ using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Watch;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -36,7 +37,7 @@ public sealed class WakeTools
         "may stay behind a screen-reader gate even when woken — use desktop_find_text for that. ReadOnly + " +
         "lease-exempt. Caps: 32 wakes/session (TooManyWatches).")]
     public Task<string> DesktopWakeAccessibility(
-        [Description("Window handle, e.g. w1.")] string window)
+        [LogStructural, Description("Window handle, e.g. w1.")] string window)
         => ToolResponse.Guard(async () =>
         {
             // Idempotent reuse: already awake -> return the held wake id.
@@ -66,7 +67,7 @@ public sealed class WakeTools
         "re-collapses the window's tree to opaque lazily once it goes idle (not necessarily immediately). " +
         "Idempotent: an unknown/already-released wakeId returns ok:true.")]
     public Task<string> DesktopReleaseAccessibility(
-        [Description("The wakeId from desktop_wake_accessibility, e.g. k1.")] string wakeId)
+        [LogStructural, Description("The wakeId from desktop_wake_accessibility, e.g. k1.")] string wakeId)
         => ToolResponse.Guard(async () =>
         {
             await _wake.ReleaseAsync(wakeId);

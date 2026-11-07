@@ -11,6 +11,7 @@ using FlaUI.Mcp.Core.Perception.Geometry;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -32,9 +33,9 @@ public sealed class ScreenshotTools
 
     [McpServerTool(ReadOnly = true), Description("Capture a window, an element (window+ref), or the full virtual desktop as a PNG. Returns a native image block + JSON metadata {bounds,dpiScale,scaleApplied,redactions,maskEscalations,escalated,unmaskedProcesses,captureMethod,captureWarnings}. captureMethod: 'printWindow' = the window's OWN pixels (occlusion irrelevant); 'screenScrape' = the screen (overlaps are IN the image). Window/element falls back to screenScrape if the target is unresponsive or moving, so CHECK it, never assume it; a fallback re-walks the WHOLE desktop for masks and costs SECONDS. Full-desktop is always screenScrape. printWindow pixels are NOT clickable (the window may be occluded or off-screen): act via desktop_snapshot + desktop_click ref. An occluded Chromium window can suspend rendering: printWindow then returns its last painted frame, possibly very old; re-capturing will not wake it - desktop_focus_window first if freshness matters. Redacted elements (OS password fields or an operator rule) are masked at capture time, full-desktop included. If a redacted element cannot report usable bounds its mask comes from an ancestor: maskEscalations counts those ELEMENTS (not levels climbed); escalated lists their {automationId,controlType}, naming the control with a broken provider. If no ancestor works either, the capture is REFUSED with RedactionUnmaskable rather than returning an all-black image - retry once the UI settles. unmaskedProcesses lists processes whose windows contributed NO masks; on a screenScrape fallback it, maskEscalations and escalated cover the WHOLE DESKTOP and may name processes with no pixels here - empty still means fully redacted. captureWarnings is ALWAYS present (empty when fine); entries are {code,recourse}.")]
     public Task<CallToolResult> DesktopScreenshot(
-        [Description("Window handle, e.g. w1. Omit (and omit ref) for the full virtual desktop.")] string? window = null,
-        [Description("Element ref to capture (requires window).")] string? @ref = null,
-        [Description("Only 'inline' is implemented (default). 'file' returns NotImplemented.")] string output = "inline",
+        [LogStructural, Description("Window handle, e.g. w1. Omit (and omit ref) for the full virtual desktop.")] string? window = null,
+        [LogStructural, Description("Element ref to capture (requires window).")] string? @ref = null,
+        [LogStructural, Description("Only 'inline' is implemented (default). 'file' returns NotImplemented.")] string output = "inline",
         [Description("Downscale so width <= maxWidth (default 1600; 0 disables, but a hard 1920 ceiling always applies).")] int maxWidth = 1600)
         => ToolResponse.GuardImage(async () =>
         {
@@ -154,8 +155,8 @@ public sealed class ScreenshotTools
 
     [McpServerTool(ReadOnly = true), Description("Get an element's absolute physical-pixel screen bounds {x,y,w,h} (signed, multi-monitor safe), its monitor dpiScale (informational), and isOffscreen (UIA scrolled/virtualized-out, NOT occlusion).")]
     public Task<string> DesktopGetBounds(
-        [Description("Window handle, e.g. w1.")] string window,
-        [Description("Element ref from a snapshot, e.g. e23.")] string @ref)
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Element ref from a snapshot, e.g. e23.")] string @ref)
         => ToolResponse.Guard(async () =>
         {
             var r = await _perception.RunOnRefAsync(new WindowHandle(window), @ref, el =>

@@ -13,6 +13,7 @@ using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -54,9 +55,9 @@ public sealed class InputTools
 
     [McpServerTool(Destructive = true), Description("Position the text caret in an element via UIA TextPattern (NO OS input — synthesizes no keystrokes). ref = the text element to act on; offset = UIA character offset for the caret. Routes through the deny-list (TargetDenied for credential/secure windows; interlocked shells need the 'shells' lease cap) but needs NO input lease. PatternUnsupported if the element exposes no TextPattern. Offsets are UIA character units (may differ from raw UTF-16 for emoji/non-BMP text). Blocked in --read-only-mode.")]
     public Task<string> DesktopSetCaret(
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("UIA character offset for the caret.")] int offset,
-        [Description("Text element ref to act on, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [LogStructural, Description("Text element ref to act on, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
         [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
@@ -104,10 +105,10 @@ public sealed class InputTools
 
     [McpServerTool(Destructive = true), Description("Select a text range in an element via UIA TextPattern (NO OS input). ref = the text element; start = UIA character start offset; length = character count. Same deny-list gate as desktop_set_caret; NO input lease required. PatternUnsupported if no TextPattern; InvalidArguments for negative start/length. Offsets are UIA character units (may differ from raw UTF-16 for emoji/non-BMP text). Blocked in --read-only-mode.")]
     public Task<string> DesktopSelectTextRange(
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("UIA character start offset.")] int start,
         [Description("Character count to select.")] int length,
-        [Description("Text element ref to act on, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [LogStructural, Description("Text element ref to act on, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
         [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
@@ -153,9 +154,9 @@ public sealed class InputTools
 
     [McpServerTool(Destructive = true), Description("Type text into the focused element via real synthetic keyboard input (SendInput). ref = the element to focus first. Up to 4096 UTF-16 units per call (InvalidArguments over cap). Focuses the element, then re-verifies the OS foreground is still that window immediately before sending; ABORTs (ElementDisappearedDuringAction) if focus was stolen. By default keystrokes are PACED (interKeyDelayMs=15) so slow/async consumers (e.g. the Win11 Notepad autocomplete pipeline) don't drop or garble fast input; when paced the foreground is re-verified before EACH key, so a mid-type focus-steal still aborts (leaving the partial text already typed). Pass interKeyDelayMs=0 for a single atomic blast (fastest; may garble on reactive editors). By default (verify=true) the element is read back after typing and the result carries a `verify` object; on a mismatch it advises desktop_set_value (UIA ValuePattern) — the reliable path for reactive/RichEdit editors (the new Notepad). verify NEVER throws and NEVER converts a successful type into a failure. Requires an active input lease (`flaui-mcp unlock`); InputNotLeased / InputDesktopUnavailable / InputBudgetExceeded / TargetDenied / SinkInterlocked otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopType(
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("Text to type (<=4096 UTF-16 units).")] string text,
-        [Description("Element ref to focus and type into, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [LogStructural, Description("Element ref to focus and type into, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
         [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
         [Description("Delay in ms BETWEEN keystrokes (default 15). Paces synthetic typing so slow/async editors keep up; the foreground is re-verified before each key (abort-on-steal preserved). 0 = one atomic blast (fastest, may garble reactive editors). Negative -> InvalidArguments.")] int interKeyDelayMs = 15,
@@ -254,9 +255,9 @@ public sealed class InputTools
 
     [McpServerTool(Destructive = true), Description("Paste text into the focused element via an atomic clipboard-backed Ctrl+V — the reliable path for reactive editors (new Win11 Notepad, Chromium contenteditable) that garble desktop_type keystrokes. ref = the element to focus. Up to 1,000,000 UTF-16 units. ALL input gates (lease/deny-list/budget/session) are checked BEFORE the clipboard is touched. By default (verify=true) the element is read back and a soft `verify` object is returned; the prior clipboard is restored ONLY when the paste is confirmed to have landed (else `clipboardRestored:\"abandoned\"`, leaving your text on the clipboard — expect this in reactive editors that transform pasted text, and whenever verify=false). A NON-text clipboard (image/files) is refused (ClipboardHoldsNonText) unless forceOverwriteClipboard=true. Mixed text+rich clipboards restore as plain text (`clipboardRestored:\"text-degraded\"`). Requires an active input lease; InputNotLeased/TargetDenied/etc. otherwise. Blocked in --read-only-mode.")]
     public Task<string> DesktopPasteText(
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("Text to paste (<=1,000,000 UTF-16 units).")] string text,
-        [Description("Element ref to focus and paste into, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [LogStructural, Description("Element ref to focus and paste into, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
         [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
         [Description("Read the element back and report whether the paste landed (default true). Soft — never throws. ALSO gates clipboard restore: with verify=false the prior clipboard is not restored (clipboardRestored:\"abandoned\").")] bool verify = true,
@@ -333,10 +334,11 @@ public sealed class InputTools
     }
 
     [McpServerTool(Destructive = true), Description("Send one keyboard chord via real synthetic input. chord grammar: `+`-delimited, zero-or-more modifiers Ctrl|Alt|Shift|Win + one key (letter/digit; Enter Tab Esc Backspace Delete Home End PageUp PageDown Up Down Left Right Space; F1-F24). e.g. \"Ctrl+S\", \"Enter\". Omit ref/window to target the current FOREGROUND window; pass BOTH ref AND window to focus a specific element first. Unknown token -> InvalidArguments. Requires an active input lease (`flaui-mcp unlock`); same deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
+    [LogForegroundTarget]
     public Task<string> DesktopKey(
-        [Description("Chord, e.g. \"Ctrl+S\" or \"Enter\".")] string chord,
-        [Description("Optional element ref to focus first; omit to target the current foreground window. At most one of ref | selector.")] string? @ref = null,
-        [Description("Window handle (REQUIRED only when ref or selector is given), e.g. w1.")] string? window = null,
+        [LogStructural, Description("Chord, e.g. \"Ctrl+S\" or \"Enter\".")] string chord,
+        [LogStructural, Description("Optional element ref to focus first; omit to target the current foreground window. At most one of ref | selector.")] string? @ref = null,
+        [LogStructural, Description("Window handle (REQUIRED only when ref or selector is given), e.g. w1.")] string? window = null,
         [Description("Optional selector to focus first; omit to target the current foreground window. At most one of ref | selector. " + SelectorGating.SelectorDesc)] Selector? selector = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
@@ -412,12 +414,12 @@ public sealed class InputTools
 
     [McpServerTool(Destructive = true), Description("Synthetic mouse click at an element's clickable point (ref path). button=left|right|middle, count=1|2, modifiers=optional array of Ctrl|Alt|Shift|Win held for the duration of the click (e.g. [\"Ctrl\"] for additive-select, [\"Shift\"] for range-select). Re-hit-tests that the point still maps to the target window immediately before sending. For a TRAY icon's right-click menu use desktop_tray_action instead: the menu appears as an untitled window this tool cannot open. Requires an active input lease (`flaui-mcp unlock`); same deny-list/session gates as desktop_type. Blocked in --read-only-mode.")]
     public Task<string> DesktopClick(
-        [Description("Window handle, e.g. w1.")] string window,
-        [Description("Element ref to click, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Element ref to click, e.g. e23. Exactly one of ref | selector.")] string? @ref = null,
         [Description(SelectorGating.SelectorDesc)] Selector? selector = null,
-        [Description("left|right|middle (default left).")] string button = "left",
+        [LogStructural, Description("left|right|middle (default left).")] string button = "left",
         [Description("1 or 2 (default 1).")] int count = 1,
-        [Description("Optional modifier keys to hold during the click: any of Ctrl|Alt|Shift|Win (case-insensitive), e.g. [\"Ctrl\"]. Omit for a plain click.")] string[]? modifiers = null,
+        [LogStructural, Description("Optional modifier keys to hold during the click: any of Ctrl|Alt|Shift|Win (case-insensitive), e.g. [\"Ctrl\"]. Omit for a plain click.")] string[]? modifiers = null,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {
@@ -463,10 +465,10 @@ public sealed class InputTools
 
     [McpServerTool(Destructive = true), Description("Synthetic mouse click at a window-relative point. xPct/yPct in [0,1] relative to the target window's bounding rect (the same fractional space desktop_screenshot/desktop_get_bounds publish). The point is hit-tested + deny-listed in the immediate pre-send instant; an unidentifiable point is refused (TargetDenied). button=left|right|middle, count=1|2. Blocked in --read-only-mode. Requires an active input lease (`flaui-mcp unlock`).")]
     public Task<string> DesktopClickAt(
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("X fraction 0..1 of the window width.")] double xPct,
         [Description("Y fraction 0..1 of the window height.")] double yPct,
-        [Description("left|right|middle (default left).")] string button = "left",
+        [LogStructural, Description("left|right|middle (default left).")] string button = "left",
         [Description("1 or 2 (default 1).")] int count = 1,
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
@@ -481,14 +483,14 @@ public sealed class InputTools
 
     [McpServerTool(Destructive = true), Description("Synthetic mouse drag between two window-relative points (§5 pct space). BOTH endpoints are hit-tested + deny-listed; the END point is re-hit-tested immediately before the mouse-up. button=left|right|middle. endWindow (optional) — resolve the END point's fractions in ANOTHER window's [0,1] space for a cross-window drag; omit for a same-window drag. Each endpoint's fractions are [0,1] within its own window. Blocked in --read-only-mode. Requires an active input lease (`flaui-mcp unlock`).")]
     public Task<string> DesktopDrag(
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("Start X fraction 0..1.")] double startXPct,
         [Description("Start Y fraction 0..1.")] double startYPct,
         [Description("End X fraction 0..1.")] double endXPct,
         [Description("End Y fraction 0..1.")] double endYPct,
-        [Description("left|right|middle (default left).")] string button = "left",
+        [LogStructural, Description("left|right|middle (default left).")] string button = "left",
         [Description("Block timeout ms (default 4000).")] int timeoutMs = DefaultTimeoutMs,
-        [Description("Optional window handle to resolve the END point's fractions in (defaults to window for a same-window drag; set to another window's handle for a cross-window drag).")] string? endWindow = null)
+        [LogStructural, Description("Optional window handle to resolve the END point's fractions in (defaults to window for a same-window drag; set to another window's handle for a cross-window drag).")] string? endWindow = null)
         => ToolResponse.GuardWrite(_options, async () =>
         {
             var (sx, sy) = await ResolveWindowPctAsync(window, startXPct, startYPct, timeoutMs);

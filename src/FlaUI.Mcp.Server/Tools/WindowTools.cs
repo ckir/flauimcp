@@ -10,6 +10,7 @@ using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Interaction;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -44,8 +45,8 @@ public sealed class WindowTools
     // rather than renamed — rename would break the shipped v0.1.x tool name.
     [McpServerTool(ReadOnly = true), Description("Open a window by pid or title and return its handle (e.g. w1).")]
     public Task<string> DesktopOpenWindow(
-        [Description("Selector kind: \"pid\" or \"title\".")] string by,
-        [Description("The pid (as text) or the exact window title.")] string value)
+        [LogStructural, Description("Selector kind: \"pid\" or \"title\".")] string by,
+        [LogUiText, Description("The pid (as text) or the exact window title.")] string value)
         => ToolResponse.Guard(async () =>
         {
             var handle = by switch
@@ -63,7 +64,7 @@ public sealed class WindowTools
 
     [McpServerTool(Destructive = true), Description("Launch an app and return a handle to its main window. Blocked in --read-only-mode. NO input lease required.")]
     public Task<string> DesktopLaunchApp(
-        [Description("Executable path.")] string path,
+        [LogStructural, Description("Executable path.")] string path,
         [Description("Optional arguments.")] string? args = null,
         [Description("Max ms to wait for a titled window.")] int timeoutMs = 10000)
         => ToolResponse.GuardWrite(_options, async () =>
@@ -73,7 +74,7 @@ public sealed class WindowTools
         });
 
     [McpServerTool(Destructive = true), Description("Bring a window to the foreground. Blocked in --read-only-mode. NO input lease required.")]
-    public Task<string> DesktopFocusWindow([Description("Window handle, e.g. w1.")] string window)
+    public Task<string> DesktopFocusWindow([LogStructural, Description("Window handle, e.g. w1.")] string window)
         => ToolResponse.GuardWrite(_options, async () =>
         {
             var fr = await _windows.FocusWithWhyNotAsync(new WindowHandle(window));
@@ -101,6 +102,6 @@ public sealed class WindowTools
     }
 
     [McpServerTool(Destructive = true), Description("Close a window and free its handle. Blocked in --read-only-mode. NO input lease required.")]
-    public Task<string> DesktopCloseWindow([Description("Window handle, e.g. w1.")] string window)
+    public Task<string> DesktopCloseWindow([LogStructural, Description("Window handle, e.g. w1.")] string window)
         => ToolResponse.GuardWrite(_options, async () => { await _windows.CloseAsync(new WindowHandle(window)); return ToolResponse.Ok(new { ok = true }); });
 }

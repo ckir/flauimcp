@@ -9,6 +9,7 @@ using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -28,8 +29,8 @@ public sealed class SnapshotTools
         "target them by the e-ref or automationId. " +
         "If the window is an opaque Chromium/Electron app, the result includes wakeable:true — call desktop_wake_accessibility then re-snapshot to see its contents.")]
     public Task<string> DesktopSnapshot(
-        [Description("Window handle, e.g. w1.")] string window,
-        [Description("Optional ref to root the snapshot at (from a prior snapshot of this window).")] string? root = null,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Optional ref to root the snapshot at (from a prior snapshot of this window).")] string? root = null,
         [Description("Max tree depth (default 40).")] int maxDepth = 40,
         [Description("Prune non-interactive container/decoration noise (default true).")] bool interactiveOnly = true,
         [Description("Append AutomationId/HelpText to each line (default false).")] bool fullProperties = false,
@@ -50,9 +51,9 @@ public sealed class SnapshotTools
 
     [McpServerTool(ReadOnly = true), Description("Diff a window's CURRENT tree against an explicit baseline snapshotId. Returns added/removed/changed (Name/Enabled/Focused/Selected) keyed by composite identity (ControlType+AutomationId+RuntimeId, else +Name). Result refs belong to the new currentSnapshotId. Optional scope=<a live ref, typically from the baseline> diffs ONLY that element's subtree (cheap: re-walks just the subtree, slices the baseline in-memory). Note: anonymous virtualized recycled rows (empty AutomationId+Name, recycled RuntimeId) can collide - diff such content by value/text instead.")]
     public Task<string> DesktopSnapshotDiff(
-        [Description("Window handle, e.g. w1.")] string window,
-        [Description("REQUIRED baseline snapshotId to diff against, e.g. w1:2.")] string baselineSnapshotId,
-        [Description("Optional live ref to diff only its subtree.")] string? scope = null)
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("REQUIRED baseline snapshotId to diff against, e.g. w1:2.")] string baselineSnapshotId,
+        [LogStructural, Description("Optional live ref to diff only its subtree.")] string? scope = null)
         => ToolResponse.Guard(async () =>
         {
             var d = await _perception.DiffAsync(new WindowHandle(window), baselineSnapshotId, scope);
@@ -67,10 +68,10 @@ public sealed class SnapshotTools
 
     [McpServerTool(ReadOnly = true), Description("Poll a window until a selector condition holds. by=automationId|name|controlType, value=target, until=exists|enabled|gone|valueEquals (equals required for valueEquals; reads ValuePattern→Name→LegacyIAccessible). Timeout returns {satisfied:false}, NOT an error. Success returns the matched ref + a fresh snapshotId; polls are transient (no ref growth). On an exists/enabled timeout where the element resolves but sits outside the window rect, adds unsatisfiedBecause=\"outsideWindowBounds\" + elementBounds/windowBounds (each [x, y, width, height]) so geometry is not mistaken for timing. until=gone means gone from the WALK, and splits two cases: an element UIA reports offscreen satisfies instantly; one merely laid out past the window edge does NOT. includeOffscreen:true makes gone STRICTER — offscreen elements stay in the walk, so it waits for real removal. valueEquals never applied the window-edge cull, so it reaches past-the-edge elements either way. BUDGET: every poll is a full tree walk (seconds on a big window) and the budget is checked only BETWEEN polls, so elapsedMs overshoots timeoutMs by whole walks and a short budget becomes a single-shot check. gone pays one extra confirmation walk before reporting success; an exists/enabled timeout pays one more for the diagnostic.")]
     public Task<string> DesktopWaitFor(
-        [Description("Window handle, e.g. w1.")] string window,
-        [Description("automationId|name|controlType.")] string by,
-        [Description("Match target for 'by'.")] string value,
-        [Description("exists|enabled|gone|valueEquals (default exists).")] string until = "exists",
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("automationId|name|controlType.")] string by,
+        [LogUiText, Description("Match target for 'by'.")] string value,
+        [LogStructural, Description("exists|enabled|gone|valueEquals (default exists).")] string until = "exists",
         [Description("Required iff until=valueEquals.")] string? equals = null,
         [Description("Total wait budget ms (default 5000).")] int timeoutMs = 5000,
         [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500,
@@ -87,14 +88,14 @@ public sealed class SnapshotTools
 
     [McpServerTool(ReadOnly = true), Description("Poll until a window subtree stops structurally changing. Optional scope via by+value (default whole window), OR via scopeRef (a ref from a prior snapshot of this window) — mutually exclusive with by/value. scopeRef roots the POLL walk only: the returned snapshotId is still the WHOLE window, not the scoped subtree. includeText folds Name into the signature (wait on a status-text settle; do NOT use on a window with a live clock/counter). includeOffscreen reaches off-screen elements in the poll walk (default false, matching desktop_snapshot). stable:true means the subtree WAS quiet for the required consecutive polls — the returned snapshot is taken AFTERWARDS, so it is not a frozen view of what was actually measured. Timeout returns {stable:false}. TRAP: a stable:true call ends by taking that whole-window snapshot, which SUPERSEDES this window's refs — so your scopeRef is DEAD afterwards and reusing it returns REF_NOT_FOUND. To keep acting on that element, re-acquire it with desktop_find (targeted, and it adds refs without superseding) rather than by taking another desktop_snapshot. A timeout does NOT supersede refs, so scopeRef survives stable:false.")]
     public Task<string> DesktopWaitForStable(
-        [Description("Window handle, e.g. w1.")] string window,
-        [Description("Optional scope kind: automationId|name|controlType.")] string? by = null,
-        [Description("Optional scope value (with 'by').")] string? value = null,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Optional scope kind: automationId|name|controlType.")] string? by = null,
+        [LogUiText, Description("Optional scope value (with 'by').")] string? value = null,
         [Description("Fold Name into the signature (default false).")] bool includeText = false,
         [Description("Quiet window ms (default 500).")] int quietMs = 500,
         [Description("Total budget ms (default 5000).")] int timeoutMs = 5000,
         [Description("Poll interval ms (default 500).")] int pollIntervalMs = 500,
-        [Description("Optional ref to scope stability to (from a prior snapshot of this window). Cheaper than by+value: the poll walk is rooted here, not at the window. Mutually exclusive with by/value. Scopes the WAIT only - the returned snapshotId is still the whole window.")] string? scopeRef = null,
+        [LogStructural, Description("Optional ref to scope stability to (from a prior snapshot of this window). Cheaper than by+value: the poll walk is rooted here, not at the window. Mutually exclusive with by/value. Scopes the WAIT only - the returned snapshotId is still the whole window.")] string? scopeRef = null,
         [Description("Include off-screen elements and elements laid out past the window edge (default false, matching desktop_snapshot).")] bool includeOffscreen = false)
         => ToolResponse.Guard(async () =>
         {
@@ -104,8 +105,8 @@ public sealed class SnapshotTools
 
     [McpServerTool(ReadOnly = true), Description("Cheap orientation: control counts (total/interactive/offscreen/osPasswordCount/redactedCount) + a per-ControlType histogram, without the tree text. redactedCount is ALL redacted nodes (OS password fields AND operator rules); osPasswordCount is the OS-flagged subset only - they are different numbers. Supply exactly one of window (fresh full walk — a fuller view than a pruned desktop_snapshot) or snapshotId (a prior cached snapshot, tallied as-snapshotted).")]
     public Task<string> DesktopSnapshotStats(
-        [Description("Window handle. Provide this OR snapshotId.")] string? window = null,
-        [Description("A prior snapshotId, e.g. w1:4. Provide this OR window.")] string? snapshotId = null)
+        [LogStructural, Description("Window handle. Provide this OR snapshotId.")] string? window = null,
+        [LogStructural, Description("A prior snapshotId, e.g. w1:4. Provide this OR window.")] string? snapshotId = null)
         => ToolResponse.Guard(async () =>
         {
             if (string.IsNullOrEmpty(window) == string.IsNullOrEmpty(snapshotId))

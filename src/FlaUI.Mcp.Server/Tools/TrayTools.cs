@@ -9,6 +9,7 @@ using FlaUI.Mcp.Core.Errors;
 using FlaUI.Mcp.Core.Threading;
 using FlaUI.Mcp.Core.Tray;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -34,9 +35,9 @@ public sealed class TrayTools
 
     [McpServerTool(Destructive = true), Description("Act on a tray icon by tooltip substring (case-insensitive; 0 matches SelectorNoMatch, >1 AmbiguousMatch listing the names; hidden icons are found too). ALWAYS check matchedIcon in the reply: a tooltip is app-chosen and any app can imitate another's. action=left_click: UIA Invoke on the icon (NO input lease required); returns { matchedIcon, overflowRestored? }. action=right_click: real right-click, REQUIRES an active input lease (`flaui-mcp unlock`); reads what appears and returns menuKind:\"menu\" with items [{ text, enabled, hasSubmenu }] (classic Win32 and UIA menus alike) or menuKind:\"window\" with a handle when the app opened its own window instead (OneDrive-style; nothing is selected then). Pass menuItem to select an item: exact text first, then substring; disabled items and submenus are refused (ElementNotActionable); selected + dismissed are returned. Without menuItem the menu is listed and dismissed with Escape. A menu of a credential-store process is refused (TargetDenied) before it is read. Blocked in --read-only-mode.")]
     public Task<string> DesktopTrayAction(
-        [Description("Tooltip substring of the icon, e.g. \"Docker\".")] string icon,
-        [Description("left_click | right_click")] string action,
-        [Description("right_click only: text of the menu item to select (exact, then substring). Omit to list the menu.")] string? menuItem = null,
+        [LogUiText, Description("Tooltip substring of the icon, e.g. \"Docker\".")] string icon,
+        [LogStructural, Description("left_click | right_click")] string action,
+        [LogUiText, Description("right_click only: text of the menu item to select (exact, then substring). Omit to list the menu.")] string? menuItem = null,
         [Description("Max ms to wait for the menu (default 4000, capped at 60000).")] int timeoutMs = DefaultTimeoutMs)
         => ToolResponse.GuardWrite(_options, async () =>
         {

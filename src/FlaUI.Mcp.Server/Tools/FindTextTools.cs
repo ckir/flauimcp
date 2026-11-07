@@ -15,6 +15,7 @@ using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Vision;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -53,10 +54,10 @@ public sealed class FindTextTools
         "text+bounds (or the screenshot) before desktop_click_at. all defaults true (return every occurrence so " +
         "you pick the right one). ReadOnly + lease-exempt. OcrUnavailable if no OCR language pack is installed.")]
     public Task<string> DesktopFindText(
-        [Description("Text to find (fuzzy by default).")] string query,
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogUiText, Description("Text to find (fuzzy by default).")] string query,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("Optional window-relative region fractions [xPct,yPct,wPct,hPct] in [0,1].")] double[]? region = null,
-        [Description("'fuzzy' (default) or 'exact'.")] string matchMode = "fuzzy",
+        [LogStructural, Description("'fuzzy' (default) or 'exact'.")] string matchMode = "fuzzy",
         [Description("Return all matches (default true) or only the best.")] bool all = true)
         => ToolResponse.Guard(async () =>
         {
@@ -125,8 +126,8 @@ public sealed class FindTextTools
         "{text,bounds,center,xPct,yPct,confidence}}. OCR is heavy, so polling is throttled to >= 750ms between " +
         "passes; pick a timeout accordingly. ReadOnly + lease-exempt. OcrUnavailable if no OCR language pack.")]
     public Task<string> DesktopWaitForText(
-        [Description("Text to wait for (fuzzy).")] string query,
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogUiText, Description("Text to wait for (fuzzy).")] string query,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("Optional window-relative region fractions [xPct,yPct,wPct,hPct] in [0,1].")] double[]? region = null,
         [Description("Total wait budget ms (default 10000).")] int timeoutMs = 10000)
         => ToolResponse.Guard(async () =>
@@ -202,7 +203,7 @@ public sealed class FindTextTools
 
     [McpServerTool(ReadOnly = true), Description("Block until a window gains the OS foreground (the human clicks it), the window is closed, or timeout. Flashes the window first. Lease-EXEMPT (no synthetic input). timeoutMs is server-capped to 45s — on a \"timeout\" result, CALL THIS TOOL AGAIN to keep waiting (do NOT yield the chat turn). Returns { foregroundGained, reason: \"gained\"|\"timeout\"|\"window-destroyed\", currentForeground }. Use after a targetNotForeground result to let the human bring your target forward.")]
     public Task<string> DesktopWaitForForeground(
-        [Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
         [Description("Max ms to block (server-capped to 45000).")] int timeoutMs = 45000)
         => ToolResponse.Guard(async () =>
         {

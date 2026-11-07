@@ -11,6 +11,7 @@ using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Watch;
 using FlaUI.Mcp.Server.Watch;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -46,9 +47,9 @@ public sealed class WatchTools
         "(correlate by timing). Caps: 5 watches/window, 20/session (TooManyWatches).")]
     public Task<string> DesktopWatch(
         McpServer server,
-        [Description("Window handle, e.g. w1.")] string window,
-        [Description("Event kinds: window_opened, window_closed, focus_changed, structure_changed.")] string[] events,
-        [Description("Optional live ref to scope structure_changed to a subtree.")] string? scope = null,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
+        [LogStructural, Description("Event kinds: window_opened, window_closed, focus_changed, structure_changed.")] string[] events,
+        [LogStructural, Description("Optional live ref to scope structure_changed to a subtree.")] string? scope = null,
         [Description("Registration timeout in ms (default 4000).")] int timeoutMs = 4000)
         => ToolResponse.Guard(async () =>
         {
@@ -75,7 +76,7 @@ public sealed class WatchTools
         "returns ok:true (your intent - no more events - is satisfied).")]
     public Task<string> DesktopUnwatch(
         McpServer server,
-        [Description("The subscriptionId from desktop_watch, e.g. s1.")] string subscriptionId)
+        [LogStructural, Description("The subscriptionId from desktop_watch, e.g. s1.")] string subscriptionId)
         => ToolResponse.Guard(async () =>
         {
             _sink.SetServer(server);
@@ -109,7 +110,7 @@ public sealed class WatchTools
         "durable ref. Do NOT also rely on push in a host that surfaces it (you'd see each event twice).")]
     public Task<string> DesktopDrainEvents(
         McpServer server,
-        [Description("The subscriptionId from desktop_watch, e.g. s1.")] string subscriptionId,
+        [LogStructural, Description("The subscriptionId from desktop_watch, e.g. s1.")] string subscriptionId,
         [Description("Max events to return this call (default: all buffered).")] int? max = null)
         => ToolResponse.Guard(() =>
         {

@@ -8,6 +8,7 @@ using System.ComponentModel;
 using FlaUI.Mcp.Core.Perception;
 using FlaUI.Mcp.Core.Windows;
 using ModelContextProtocol.Server;
+using FlaUI.Mcp.Core.Logging;
 
 namespace FlaUI.Mcp.Server.Tools;
 
@@ -29,14 +30,14 @@ public sealed class FindTools
         "token. Find them by controlType/automationId instead: they keep real bounds and a working ref, so " +
         "you can still act on them.")]
     public Task<string> DesktopFind(
-        [Description("Window handle, e.g. w1.")] string window,
-        [Description("Exact UIA AutomationId to match.")] string? automationId = null,
-        [Description("Name to match (see nameMatch).")] string? name = null,
-        [Description("eq (exact) or contains (substring). Default eq.")] string nameMatch = "eq",
-        [Description("UIA ControlType name, e.g. Button, Edit, ListItem.")] string? controlType = null,
+        [LogStructural, Description("Window handle, e.g. w1.")] string window,
+        [LogUiText, Description("Exact UIA AutomationId to match.")] string? automationId = null,
+        [LogUiText, Description("Name to match (see nameMatch).")] string? name = null,
+        [LogStructural, Description("eq (exact) or contains (substring). Default eq.")] string nameMatch = "eq",
+        [LogStructural, Description("UIA ControlType name, e.g. Button, Edit, ListItem.")] string? controlType = null,
         [Description("Only return enabled elements (default false).")] bool enabledOnly = false,
         [Description("Max matches returned (default 20).")] int max = 20,
-        [Description("Optional live ref to search within (its subtree only).")] string? scope = null,
+        [LogStructural, Description("Optional live ref to search within (its subtree only).")] string? scope = null,
         [Description("Case-insensitive name match (eq and contains). Default false (exact/ordinal). The Phase-10 selector defaults this true; set it here to preview selector matching.")] bool ignoreCase = false)
         => ToolResponse.Guard(async () =>
         {
