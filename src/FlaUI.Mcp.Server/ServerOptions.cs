@@ -6,6 +6,7 @@
 
 using System.Globalization;
 using System.Linq;
+using Microsoft.Extensions.Logging;
 
 namespace FlaUI.Mcp.Server;
 
@@ -14,7 +15,7 @@ namespace FlaUI.Mcp.Server;
 /// v0.10.1: Overlay/OverlayMs drive the opt-in intent overlay (off by default → zero cost).
 /// New params carry defaults so existing `new ServerOptions(ReadOnly:…, AllowElevation:…)` call
 /// sites (tests) compile unchanged.</summary>
-public sealed record ServerOptions(bool ReadOnly, bool AllowElevation, bool Overlay = false, int OverlayMs = 500, bool Autosound = false, bool Presence = false, int NearbySecs = 60, int AwaySecs = 300, string? RedactionRules = null, bool CaptureAuditSignal = false)
+public sealed record ServerOptions(bool ReadOnly, bool AllowElevation, bool Overlay = false, int OverlayMs = 500, bool Autosound = false, bool Presence = false, int NearbySecs = 60, int AwaySecs = 300, string? RedactionRules = null, bool CaptureAuditSignal = false, bool NoLog = false, LogLevel LogLevel = LogLevel.Information)
 {
     public static ServerOptions FromArgs(string[] args) =>
         new(ReadOnly: args.Contains("--read-only-mode"),
@@ -26,7 +27,21 @@ public sealed record ServerOptions(bool ReadOnly, bool AllowElevation, bool Over
             NearbySecs: ParseIntArg(args, "--nearby-secs=", 60),
             AwaySecs: ParseIntArg(args, "--away-secs=", 300),
             RedactionRules: OptionValue(args, "--redaction-rules"),
-            CaptureAuditSignal: args.Contains("--capture-audit-signal"));
+            CaptureAuditSignal: args.Contains("--capture-audit-signal"),
+            NoLog: args.Contains("--no-log"),
+            LogLevel: ParseLogLevel(args));
+
+    // "--log-level=debug|info|warning". Absent or garbage -> Information (spec §5.4).
+    private static LogLevel ParseLogLevel(string[] args)
+    {
+        var arg = args.FirstOrDefault(a => a.StartsWith("--log-level=", System.StringComparison.Ordinal));
+        return arg?["--log-level=".Length..] switch
+        {
+            "debug" => LogLevel.Debug,
+            "warning" => LogLevel.Warning,
+            _ => LogLevel.Information,
+        };
+    }
 
     // "--overlay-ms=N": clamp to >= 0 (a negative would throw in Task.Delay; garbage -> default-then-clamp).
     // Absent -> 500 (the record default), preserved here so FromArgs stays the single source of the value.

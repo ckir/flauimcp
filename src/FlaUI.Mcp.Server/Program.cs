@@ -10,10 +10,12 @@ using FlaUI.Mcp.Core.Windows;
 using FlaUI.Mcp.Server;
 using System.Security.Principal;
 using FlaUI.Mcp.Server.Install;
+using FlaUI.Mcp.Server.Logging;
 using FlaUI.Mcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 
 // Installer verbs run and exit; anything else (including no args) runs the MCP stdio host.
 if (CliRouter.IsInstallerVerb(args))
@@ -90,6 +92,25 @@ FlaUI.Mcp.Server.Install.ServerStateFile.Write(stateDir, self.Id, self.StartTime
 AppDomain.CurrentDomain.ProcessExit += (_, _) =>
     FlaUI.Mcp.Server.Install.ServerStateFile.Delete(stateDir, self.Id);
 
+// Structured log (docs/superpowers/specs/2026-11-07-structured-logging-design.md). ON by default; --no-log
+// turns it off. A log that cannot be opened is reported and the server starts without it (spec §7).
+var hasher = new ContentHasher();
+bool IsSensitiveProcess(string? p) =>
+    FlaUI.Mcp.Core.Perception.PerceptionPolicy.IsDenied(p) || classifier.CouldMatchProcess(p);
+JsonlFileLoggerProvider? fileLog = null;
+if (!startupOptions.NoLog)
+{
+    var logOptions = new JsonlLogOptions(JsonlLogOptions.DefaultDirectory(), self.Id,
+        self.StartTime.ToUniversalTime(), startupOptions.LogLevel);
+    JsonlFileLoggerProvider.PruneDead(logOptions.Directory, keepDeadFiles: 20, logOptions.IsAlive);
+    fileLog = JsonlFileLoggerProvider.TryCreate(logOptions, new LogMasker(hasher, IsSensitiveProcess), out var logError);
+    if (logError is not null)
+    {
+        Console.Error.WriteLine(logError);
+        FlaUI.Mcp.Server.Install.ServerStateFile.TryLogStartupError(logError);
+    }
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 // MCP stdio: stdout is the JSON-RPC channel — a single framework log line on stdout corrupts the
@@ -97,6 +118,12 @@ var builder = Host.CreateApplicationBuilder(args);
 // ALL host/framework logs to stderr. (InputAudit/ElevationGuard already write their output to stderr.)
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+// The file provider needs Debug events, so the global floor is Trace; the console keeps its old Information
+// floor, and our own structured events reach stderr only at Warning+ (plan "Spec adjustments" 4).
+builder.Logging.SetMinimumLevel(LogLevel.Trace);
+builder.Logging.AddFilter<ConsoleLoggerProvider>(null, LogLevel.Information);
+builder.Logging.AddFilter<ConsoleLoggerProvider>("FlaUI.Mcp", LogLevel.Warning);
+if (fileLog is not null) builder.Logging.AddProvider(fileLog);
 
 builder.Services.AddSingleton(startupOptions);
 builder.Services.AddSingleton(classifier);
@@ -189,6 +216,17 @@ builder.Services.AddSingleton(sp => new FlaUI.Mcp.Core.Tray.TrayManager(
     sp.GetRequiredService<FlaUI.Mcp.Core.Perception.SensitivityClassifier>()));
 builder.Services.AddSingleton<TrayTools>();
 
+// --- structured log: tool-call filter (only when the file log is on) ---
+if (fileLog is not null)
+{
+    builder.Services.AddSingleton(hasher);
+    builder.Services.AddSingleton(_ => ToolParameterCatalog.FromAssembly(typeof(ToolResponse).Assembly));
+    builder.Services.AddSingleton<ICallSensitivity, CallSensitivity>();
+    builder.Services.AddSingleton(sp => new ToolCallLogFilter(
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger("FlaUI.Mcp.Server.ToolCalls"),
+        sp.GetRequiredService<ToolParameterCatalog>(), sp.GetRequiredService<ICallSensitivity>(), hasher));
+}
+
 // --- Phase 8 desktop_watch (UIA event streaming over stdio; push+drain) ---
 builder.Services.AddSingleton(_ =>
     System.Threading.Channels.Channel.CreateBounded<FlaUI.Mcp.Core.Watch.EventEnvelope>(
@@ -234,9 +272,35 @@ builder.Services
     // this file. See McpServerConfiguration.
     .AddMcpServer(FlaUI.Mcp.Server.Install.McpServerConfiguration.Apply)
     .WithStdioServerTransport()
-    .WithToolsFromAssembly();
+    .WithToolsFromAssembly()
+    .WithRequestFilters(f => f.AddCallToolFilter(next => async (ctx, ct) =>
+        ctx.Services?.GetService<ToolCallLogFilter>() is { } log
+            ? await log.RunAsync(ctx.Params?.Name ?? "", ctx.Params?.Arguments, () => next(ctx, ct))
+            : await next(ctx, ct)));
 
-await builder.Build().RunAsync();
+var app = builder.Build();
+if (fileLog is not null)
+{
+    var loggers = app.Services.GetRequiredService<ILoggerFactory>();
+    var serverLog = loggers.CreateLogger("FlaUI.Mcp.Server");
+    ToolLog.Configure(loggers.CreateLogger("FlaUI.Mcp.Server.Tools"),
+        () => LogContext.Current is { } s && fileLog.CurrentFilePath is { } path ? $"{s.Cid} in {path}" : null);
+    FlaUI.Mcp.Core.Logging.LogEvent.Emit(serverLog, LogLevel.Information, "server.start",
+        FlaUI.Mcp.Core.Logging.LogEvent.F("version", typeof(ServerOptions).Assembly.GetName().Version?.ToString()),
+        FlaUI.Mcp.Core.Logging.LogEvent.F("flags", HostFacts.FlagNames(args)),
+        FlaUI.Mcp.Core.Logging.LogEvent.F("rulesSha", rulesSha),
+        FlaUI.Mcp.Core.Logging.LogEvent.F("dpiAwareness", HostFacts.DpiAwareness()),
+        FlaUI.Mcp.Core.Logging.LogEvent.F("dpiScale", HostFacts.DpiScale()),
+        FlaUI.Mcp.Core.Logging.LogEvent.F("session", HostFacts.Session()),
+        FlaUI.Mcp.Core.Logging.LogEvent.F("readOnly", startupOptions.ReadOnly));
+    var started = System.Diagnostics.Stopwatch.StartNew();
+    app.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(() =>
+        FlaUI.Mcp.Core.Logging.LogEvent.Emit(serverLog, LogLevel.Information, "server.stop",
+            FlaUI.Mcp.Core.Logging.LogEvent.F("uptimeMs", started.ElapsedMilliseconds),
+            FlaUI.Mcp.Core.Logging.LogEvent.F("calls", app.Services.GetService<ToolCallLogFilter>()?.Calls ?? 0),
+            FlaUI.Mcp.Core.Logging.LogEvent.F("droppedTotal", fileLog.DroppedTotal)));
+}
+await app.RunAsync();   // disposes the host, which disposes fileLog: drains for up to 1 s (spec §7)
 return 0;
 
 static string CurrentUserSid()
