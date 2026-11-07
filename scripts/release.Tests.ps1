@@ -690,7 +690,7 @@ Describe 'Invoke-Gate' {
         '<Project><PropertyGroup><Version>0.1.0</Version></PropertyGroup></Project>' | Set-Content (Join-Path $GateSandbox 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj')
         '#define AppVersion "0.1.0"' | Set-Content (Join-Path $GateSandbox 'installer/flaui-mcp.iss')
         '{"version": "0.1.0"}' | Set-Content (Join-Path $GateSandbox 'plugins/flaui-mcp/.claude-plugin/plugin.json')
-        $script:Pass = { param($Root) $global:LASTEXITCODE = 0; 'ok' }
+        $script:Pass = { param($Root) $null = $Root; $global:LASTEXITCODE = 0; 'ok' }
     }
     AfterEach { if (Test-Path $script:GateSandbox) { Remove-Item -Recurse -Force $script:GateSandbox } }
 
@@ -704,7 +704,7 @@ Describe 'Invoke-Gate' {
     }
 
     It 'fails overall when the build check fails' {
-        $fail = { param($Root) $global:LASTEXITCODE = 1; 'error: something broke' }
+        $fail = { param($Root) $null = $Root; $global:LASTEXITCODE = 1; 'error: something broke' }
         $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $fail -TestCheck $Pass -PluginDriftCheck $Pass
         $result.Passed | Should -BeFalse
         ($result.Checks | Where-Object Name -eq 'Build').Passed | Should -BeFalse
@@ -718,19 +718,19 @@ Describe 'Invoke-Gate' {
     }
 
     It 'treats a nonzero warning count as a build failure even when exit code is 0' {
-        $warnBuild = { param($Root) $global:LASTEXITCODE = 0; "Build succeeded.`n    2 Warning(s)`n    0 Error(s)" }
+        $warnBuild = { param($Root) $null = $Root; $global:LASTEXITCODE = 0; "Build succeeded.`n    2 Warning(s)`n    0 Error(s)" }
         $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $warnBuild -TestCheck $Pass -PluginDriftCheck $Pass
         ($result.Checks | Where-Object Name -eq 'Build').Passed | Should -BeFalse
     }
 
     It 'passes the build check on a real 0-warning summary line' {
-        $cleanBuild = { param($Root) $global:LASTEXITCODE = 0; "Build succeeded.`n    0 Warning(s)`n    0 Error(s)" }
+        $cleanBuild = { param($Root) $null = $Root; $global:LASTEXITCODE = 0; "Build succeeded.`n    0 Warning(s)`n    0 Error(s)" }
         $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $cleanBuild -TestCheck $Pass -PluginDriftCheck $Pass
         ($result.Checks | Where-Object Name -eq 'Build').Passed | Should -BeTrue
     }
 
     It 'fails overall when the plugin-drift check fails' {
-        $fail = { param($Root) $global:LASTEXITCODE = 1; 'drift detected' }
+        $fail = { param($Root) $null = $Root; $global:LASTEXITCODE = 1; 'drift detected' }
         $result = Invoke-Gate -RepoRoot $GateSandbox -BuildCheck $Pass -TestCheck $Pass -PluginDriftCheck $fail
         $result.Passed | Should -BeFalse
         ($result.Checks | Where-Object Name -eq 'PluginDrift').Passed | Should -BeFalse
@@ -1672,7 +1672,7 @@ Describe 'Invoke-Gate build-lock preflight' {
         '<Project><PropertyGroup><Version>0.1.0</Version></PropertyGroup></Project>' | Set-Content (Join-Path $GateBox 'src/FlaUI.Mcp.Server/FlaUI.Mcp.Server.csproj')
         '#define AppVersion "0.1.0"' | Set-Content (Join-Path $GateBox 'installer/flaui-mcp.iss')
         '{"version": "0.1.0"}' | Set-Content (Join-Path $GateBox 'plugins/flaui-mcp/.claude-plugin/plugin.json')
-        $script:Ok = { param($Root) $global:LASTEXITCODE = 0; 'ok' }
+        $script:Ok = { param($Root) $null = $Root; $global:LASTEXITCODE = 0; 'ok' }
         $script:NoHolders = { @() }
     }
     AfterEach { if (Test-Path $script:GateBox) { Remove-Item -Recurse -Force $script:GateBox } }
@@ -1689,7 +1689,7 @@ Describe 'Invoke-Gate build-lock preflight' {
         # measures a STALE artifact - which reads as a genuine defect. Both happened for real on 2026-09-09.
         $held = [pscustomobject]@{ Id = 15940; Path = (Join-Path $GateBox 'src/FlaUI.Mcp.Server/bin/Release/flaui-mcp.exe') }
         $script:BuildRan = $false
-        $spy = { param($Root) $script:BuildRan = $true; $global:LASTEXITCODE = 0; 'ok' }
+        $spy = { param($Root) $null = $Root; $script:BuildRan = $true; $global:LASTEXITCODE = 0; 'ok' }
         $r = Invoke-Gate -RepoRoot $GateBox -BuildCheck $spy -TestCheck $Ok -PluginDriftCheck $Ok -BuildLockQuery { $held }
         $r.Passed | Should -BeFalse
         ($r.Checks | Where-Object Name -eq 'BuildLock').Passed | Should -BeFalse
