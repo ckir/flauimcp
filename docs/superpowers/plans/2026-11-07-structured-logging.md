@@ -1039,7 +1039,7 @@ public sealed record JsonlLogOptions(string Directory, int Pid, DateTime Process
 /// thread owns the file. Never writes to stdout.</summary>
 public sealed class JsonlFileLoggerProvider : ILoggerProvider, ISupportExternalScope
 {
-    private static readonly Regex FileName = new(@"^flaui-mcp-(?<pid>\d+)-(?<start>\d{8}T\d{6}Z)-(?<seg>\d{2})\.jsonl$");
+    private static readonly Regex FileName = new(@"^flaui-mcp-(?<pid>\d+)-(?<start>\d{8}T\d{6}Z)-(?<seg>\d{2,})\.jsonl$");   // two digits minimum; a long run passes 99
 
     private readonly JsonlLogOptions _o;
     private readonly LogMasker _masker;
@@ -1167,7 +1167,7 @@ public sealed class JsonlFileLoggerProvider : ILoggerProvider, ISupportExternalS
         for (int s = _segment - _o.KeepSegments; s >= 1; s--)
         {
             var old = SegmentPath(s);
-            if (!File.Exists(old)) break;
+            if (!File.Exists(old)) continue;   // a gap (deleted earlier) must not stop retrying an older held-open one
             try { File.Delete(old); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _ = ex; } // held open: retry next roll
         }
     }
@@ -3112,7 +3112,7 @@ public sealed class ServerLogProcessTests : IDisposable
 **Files:** `docs/agent-contract.md` (LF), `docs/operator-manual.md` (CRLF), `CHANGELOG.md` (CRLF), `TODO.md` (CRLF).
 
 - [ ] **Step 1: `docs/agent-contract.md`** — add a `## Server log` section immediately before `## Known Tool Limitations` (line 268). Content (write it fully; terse, agent-facing):
-  - Location: `%LOCALAPPDATA%\flaui-mcp\logs\flaui-mcp-<pid>-<startUtc yyyyMMddTHHmmssZ>-<seg>.jsonl` (or `FLAUI_MCP_LOG_DIR`); read segments in ascending `<seg>` order; skip a final torn line of the newest segment.
+  - Location: `%LOCALAPPDATA%\flaui-mcp\logs\flaui-mcp-<pid>-<startUtc yyyyMMddTHHmmssZ>-<seg>.jsonl` (or `FLAUI_MCP_LOG_DIR`); read segments in ascending NUMERIC `<seg>` order (at least two digits; past 99 a plain name sort puts `-100` before `-99`); skip a final torn line of the newest segment.
   - Every tool error JSON may carry `log: "<cid> in <path>"`: open that file and filter by `cid`.
   - The record table (spec §5 field table) and the event table (spec §5.2 with the plan's adjusted field sets), and the masked-value object `{len, sha8}` (equal values within one session hash equal).
   - What is never in the log: typed/pasted/set/clipboard text, captured screen text, images, tool results.
@@ -3135,6 +3135,9 @@ public sealed class ServerLogProcessTests : IDisposable
 
 ## Stand-downs
 None.
+
+## Review ledger
+- Panel r1 (agy, FINDINGS-2): Roll retention loop `break` on a gap -> `continue`; segment regex `\d{2}` -> `\d{2,}`. Driver addition while verifying: numeric (not ordinal) segment order past 99, documented in Task 15. agy's "compiles cleanly" is a reading claim, not a build: the first build of each task is the real check.
 
 ## Self-review (done while writing)
 
