@@ -48,6 +48,8 @@ Take these in order. Gate trust comes first because B2 is verified on the Deskto
 
 - [ ] **DEF-3 Selector Pin (A3 Debt)**: not a small test — the direct pin needs a visible fixture element literally
   named `[REDACTED]`, which risks the layout-coupled fixture guards. The production path is already in place.
+- [ ] **Server-log emit call sites (A6 Debt)**: a Desktop test that drives `FocusWithWhyNotAsync`, a selector
+  resolve and a blocked action with a capturing logger, so that deleting an emit call site turns a test red.
 - [ ] **Render Full Content Verification (A5 Debt)**: Explore stable, environment-agnostic assertions for `PW_RENDERFULLCONTENT` (flag 2) non-client chrome capture.
 
 ### Unscheduled

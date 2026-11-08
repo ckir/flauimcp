@@ -64,6 +64,19 @@ call_site_clips_the_yardstick` pins that exactly one caller opts into clipping, 
 inheriting the wrong yardstick but says nothing about this one's behaviour.
 **Owner:** raise at the item-8 AGY-TEST-AUDIT. Captured 2026-08-21 during item 8 Task 12.
 
+### A6 — the server log's production emit call sites are not exercised
+**Gap:** the logging tests reach `focus.attempt`, `selector.resolve` and `action.blocked` only through the
+internal emit helpers (`WindowManager.EmitFocus`, `PerceptionManager.EmitSelectorResolve`,
+`WindowManager.ObserveBlockedAsync`). No test drives the real path: `FocusWithWhyNotAsync`
+(`WindowManager.cs:707`), the selector and find resolvers (`PerceptionManager.cs:244`, `:258`) or
+`RunOnWindowActionAsync`. Deleting any one of those call sites leaves the whole suite green. MEASURED:
+no test in `test/FlaUI.Mcp.Tests/Logging` calls those methods with a capturing logger.
+**Why deferred:** each path needs a real UIA window, so the test belongs in the Desktop suite, not headless.
+**Mitigating, but NOT a substitute:** the helpers' field sets and masking are pinned
+(`WindowManagerLoggingTests`, `PerceptionLoggingTests`), and `LogFormatPinTests` pins the event set and
+the UI-text fields by source sweep. So a removed call site loses events, but cannot leak unmasked text.
+**Owner:** deferred at the structured-logging AGY-TEST-AUDIT (2026-11-08, gap 2).
+
 The 2026-08-18 audit of `sp3-per-field-redaction` found two verified gaps and the owner scoped both to
 **close now**; neither was deferred. See the accepted boundaries below for what was ruled out of scope
 rather than deferred.

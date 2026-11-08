@@ -34,7 +34,13 @@ public class BreakerConcurrencyProbe
     [Fact]
     public async Task Concurrent_requests_inside_the_timeout_budget_are_NOT_bounded()
     {
-        const int TimeoutMs = 200;
+        // ⚠ THE BUDGET MUST DWARF THE LAUNCH LOOP. This was 200 ms, and under full-suite load the loop below
+        // (nominally 5 x 20 ms) MEASURED 536-645 ms: `Task.Delay(20)` stretched to 60-300 ms, the first
+        // acquisition timed out and TRIPPED the breaker, and every later request was correctly diverted -
+        // "only 1 of 5". That is the breaker working, not the defect this test pins; the premise "all arrive
+        // inside one budget" had silently failed. Failed 6 of 12 runs under synthetic CPU load at 200 ms.
+        // *(2026-11-08 triage of the flake.)*
+        const int TimeoutMs = 3000;
         // ⚠ Pre-grow the pool. Each request BLOCKS a thread inside CaptureWindow, so without this the
         // pool starves and later requests are simply never scheduled - which would look exactly like the
         // breaker diverting them.
@@ -46,7 +52,7 @@ public class BreakerConcurrencyProbe
         var src = new FakeWindowImageSource(_ =>
         {
             Interlocked.Increment(ref acquireCalls);
-            gate.Wait(5000);     // simulate a hung target: blocks well past the timeout
+            gate.Wait(10_000);   // simulate a hung target: blocks well past the timeout
             return null;
         });
 
@@ -68,15 +74,17 @@ public class BreakerConcurrencyProbe
         // Fire FIVE overlapping requests, staggered inside the timeout budget - the exact scenario the
         // guard exists for: they arrive before any timeout has been recorded.
         var tasks = new List<Task>();
+        var loop = System.Diagnostics.Stopwatch.StartNew();
         for (int i = 0; i < 5; i++)
         {
             // ⚠ Task.Run: CaptureWindow is SYNCHRONOUS and blocks, and CaptureAsync's first await
             // completes synchronously, so calling it inline blocks this loop and creates NO overlap.
             tasks.Add(Task.Run(() => c.CaptureAsync(new WindowHandle("w1"), null, CaptureScope.Window, 0)));
-            await Task.Delay(20);        // 5 x 20ms = 100ms, all within the 200ms budget
+            await Task.Delay(20);        // nominally 5 x 20ms = 100ms, far inside the budget
         }
 
         var inflight = Volatile.Read(ref acquireCalls);
+        var loopMs = loop.ElapsedMilliseconds;
 
         // ⚠ RELEASE FIRST, THEN AWAIT. This read `await Task.WhenAll(tasks); gate.Set();` -- and since
         // every request is blocked INSIDE the gate, WhenAll could not complete until the gate's own 5000ms
@@ -84,6 +92,11 @@ public class BreakerConcurrencyProbe
         // exactly 5s before this change. *(AGY-CAPSTONE round 2, finding 4.)*
         gate.Set();
         await Task.WhenAll(tasks);
+
+        // The PREMISE, checked rather than assumed: a failure here is scheduler starvation, not the breaker.
+        Assert.True(loopMs < TimeoutMs / 2,
+            $"the launch loop took {loopMs} ms against a {TimeoutMs} ms budget, so later requests may have " +
+            "arrived after a timeout tripped the breaker - the machine is too loaded for this probe to measure");
 
         // MEASURED 5 of 5 - every overlapping request starts its own acquisition.
         //
