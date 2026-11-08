@@ -113,6 +113,31 @@ public sealed class JsonlFileLoggerProviderTests : IDisposable
     }
 
     [Fact]
+    public void Log_dropped_record_carries_the_dropped_count()
+    {
+        // Code (JsonlFileLoggerProvider.WriterLoop): count = drops SINCE THE LAST REPORT (_dropped - _droppedReported),
+        // not DroppedTotal. With every drop made while paused, the first report carries all of them.
+        long droppedBeforeResume;
+        using (var p = Create(capacity: 1))
+        {
+            p.PauseWriterForTest();
+            var log = p.CreateLogger("x");
+            for (int i = 0; i < 50; i++) LogEvent.Emit(log, LogLevel.Information, "e");
+            droppedBeforeResume = p.DroppedTotal;
+            Assert.True(droppedBeforeResume >= 40);
+            p.ResumeWriterForTest();
+            p.FlushForTest();
+            LogEvent.Emit(log, LogLevel.Information, "after");   // channel is empty: accepted, not dropped
+        }
+        var counts = Lines().Select(l => JsonDocument.Parse(l).RootElement)
+            .Where(e => e.GetProperty("ev").GetString() == "log.dropped")
+            .Select(e => e.GetProperty("count").GetInt64()).ToArray();
+        Assert.NotEmpty(counts);
+        Assert.Equal(droppedBeforeResume, counts[0]);
+        Assert.Equal(droppedBeforeResume, counts.Sum());
+    }
+
+    [Fact]
     public void Prunes_dead_process_files_keeping_the_newest_twenty_and_never_a_live_one()
     {
         Directory.CreateDirectory(_dir);
