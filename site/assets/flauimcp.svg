@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#040b17"/>
+      <stop offset="100%" stop-color="#020713"/>
+    </linearGradient>
+
+    <!-- Cyan Neon Border Gradient -->
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00cfff"/>
+      <stop offset="50%" stop-color="#00eaff"/>
+      <stop offset="100%" stop-color="#0088ff"/>
+    </linearGradient>
+
+    <!-- Shield Orange Gradient -->
+    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff6b2b"/>
+      <stop offset="50%" stop-color="#ff4b18"/>
+      <stop offset="100%" stop-color="#d62500"/>
+    </linearGradient>
+
+    <!-- Shield Inner Fill Gradient -->
+    <linearGradient id="shieldFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff4b18" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#ff4b18" stop-opacity="0.04"/>
+    </linearGradient>
+
+    <!-- Window Title Bar Gradient -->
+    <linearGradient id="titleBarGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0e1d38"/>
+      <stop offset="100%" stop-color="#081326"/>
+    </linearGradient>
+
+    <!-- Glow Filter -->
+    <filter id="neonGlowCyan" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <filter id="neonGlowOrange" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10" result="blur" />
+      <feColorMatrix type="matrix" values="1 0 0 0 1   0 0.3 0 0 0.3   0 0.1 0 0 0.1  0 0 0 0.8 0" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Base Window Drop Glow -->
+  <rect x="44" y="44" width="424" height="424" rx="36" fill="none" stroke="#00cfff" stroke-width="12" opacity="0.2" filter="url(#neonGlowCyan)"/>
+
+  <!-- Main App Window Frame -->
+  <rect x="44" y="44" width="424" height="424" rx="36" fill="url(#bgGrad)" stroke="url(#cyanGrad)" stroke-width="5"/>
+
+  <!-- Title Bar -->
+  <path d="M 44 80 Q 44 44 80 44 L 432 44 Q 468 44 468 80 L 468 116 L 44 116 Z" fill="url(#titleBarGrad)"/>
+  <line x1="44" y1="116" x2="468" y2="116" stroke="#00cfff" stroke-width="2" opacity="0.6"/>
+
+  <!-- Window Control Dots -->
+  <circle cx="82" cy="80" r="7" fill="#ff5f56"/>
+  <circle cx="106" cy="80" r="7" fill="#ffbd2e"/>
+  <circle cx="130" cy="80" r="7" fill="#27c93f"/>
+
+  <!-- Window Title / Monospace Label -->
+  <text x="156" y="85" fill="#88a0c8" font-family="ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace" font-size="14" font-weight="600" letter-spacing="1">flaui-mcp.exe :: UIA3</text>
+
+  <!-- Supervised Status Indicator Pill (Top Right) -->
+  <g transform="translate(352, 68)">
+    <rect x="0" y="0" width="94" height="24" rx="12" fill="#ff4b18" fill-opacity="0.2" stroke="#ff4b18" stroke-width="1.5"/>
+    <circle cx="12" cy="12" r="4" fill="#ff4b18"/>
+    <text x="24" y="16" fill="#ff8a5c" font-family="system-ui, -apple-system, sans-serif" font-size="10.5" font-weight="700" letter-spacing="0.8">SUPERVISED</text>
+  </g>
+
+  <!-- Sub-Window UI Grid & UIA Bounding Boxes (Simulating Desktop Tree) -->
+  <g opacity="0.2" stroke="#00cfff" stroke-width="1.5" stroke-dasharray="3 3">
+    <!-- Grid lines -->
+    <line x1="74" y1="146" x2="438" y2="146" />
+    <line x1="74" y1="416" x2="438" y2="416" />
+    <line x1="74" y1="146" x2="74" y2="416" />
+    <line x1="438" y1="146" x2="438" y2="416" />
+  </g>
+
+  <!-- Simulated UIA3 Target Box (Cyan Corner Brackets) -->
+  <g stroke="#00cfff" stroke-width="3" fill="none" opacity="0.85">
+    <!-- Top-Left Bracket -->
+    <path d="M 120 190 L 120 165 L 145 165"/>
+    <!-- Top-Right Bracket -->
+    <path d="M 367 165 L 392 165 L 392 190"/>
+    <!-- Bottom-Left Bracket -->
+    <path d="M 120 380 L 120 405 L 145 405"/>
+    <!-- Bottom-Right Bracket -->
+    <path d="M 367 405 L 392 405 L 392 380"/>
+  </g>
+
+  <!-- UIA Element Coordinate Label -->
+  <text x="125" y="156" fill="#00eaff" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="11" font-weight="700" letter-spacing="0.5" opacity="0.9">UIA3: [120, 165, 392, 405]</text>
+
+  <!-- Centered Glowing Safety Shield (Supervisor Guardrail) -->
+  <!-- Shield Outer Glow -->
+  <path d="M 256 168
+           C 318 168 344 196 344 246
+           C 344 322 284 366 256 384
+           C 228 366 168 322 168 246
+           C 168 196 194 168 256 168 Z"
+        fill="url(#shieldFill)"
+        stroke="#ff4b18"
+        stroke-width="12"
+        opacity="0.3"
+        filter="url(#neonGlowOrange)"/>
+
+  <!-- Shield Main Outline & Gradient Fill -->
+  <path d="M 256 172
+           C 314 172 338 198 338 244
+           C 338 316 282 358 256 376
+           C 230 358 174 316 174 244
+           C 174 198 198 172 256 172 Z"
+        fill="url(#shieldFill)"
+        stroke="url(#orangeGrad)"
+        stroke-width="7"/>
+
+  <!-- Inner Shield Circuit / Accent -->
+  <path d="M 256 196
+           L 316 226
+           L 316 254
+           C 316 302 278 334 256 348
+           C 234 334 196 302 196 254
+           L 196 226 Z"
+        fill="none"
+        stroke="#ff7a18"
+        stroke-width="2.5"
+        stroke-dasharray="6 3"
+        opacity="0.65"/>
+
+  <!-- Center Security Lock (Signifying Supervised Zero-Trust Lease) -->
+  <!-- Lock Shackle -->
+  <path d="M 234 250 L 234 235 C 234 223 244 213 256 213 C 268 213 278 223 278 235 L 278 250"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="6"
+        stroke-linecap="round"/>
+
+  <!-- Lock Body -->
+  <rect x="224" y="250" width="64" height="48" rx="10" fill="#ffffff" filter="drop-shadow(0 2px 8px rgba(255, 75, 24, 0.6))"/>
+
+  <!-- Keyhole -->
+  <circle cx="256" cy="270" r="5" fill="#ff4b18"/>
+  <polygon points="253,270 259,270 261,283 251,283" fill="#ff4b18"/>
+
+  <!-- Sleek Terminal Cursor Accent (Bottom Left Area) -->
+  <g transform="translate(80, 432)">
+    <!-- Terminal Prompt Symbol -->
+    <path d="M 6 4 L 14 10 L 6 16" fill="none" stroke="#00cfff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Terminal Command snippet -->
+    <text x="24" y="13" fill="#00eaff" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="13" font-weight="600">lease: granted</text>
+    <!-- Blinking / Glowing Solid Terminal Cursor -->
+    <rect x="156" y="2" width="10" height="15" fill="#ff4b18" rx="2" filter="url(#neonGlowOrange)"/>
+  </g>
+</svg>
