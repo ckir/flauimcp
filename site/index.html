@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>FlaUI.Mcp — Supervised Windows Automation for AI Agents</title>
+  <meta name="description" content="Model Context Protocol server connecting AI drivers (Claude Code, Antigravity) to native Windows UI Automation behind strict operator safety guardrails.">
+  <link rel="canonical" href="https://ckir.github.io/flauimcp/">
+
+  <!-- Open Graph / Social Sharing -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ckir.github.io/flauimcp/">
+  <meta property="og:title" content="FlaUI.Mcp — Supervised Windows Automation for AI Agents">
+  <meta property="og:description" content="Model Context Protocol server connecting AI drivers (Claude Code, Antigravity) to native Windows UI Automation behind strict operator safety guardrails.">
+  <meta property="og:image" content="./assets/og.jpg">
+
+  <!-- Favicon & Brand Icons -->
+  <link rel="icon" type="image/x-icon" href="./assets/favicon.ico">
+  <link rel="icon" type="image/svg+xml" href="./assets/flauimcp.svg">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="./style.css">
+
+  <!-- Interactive Demo & Clipboard Utility -->
+  <script src="./script.js" defer></script>
+</head>
+<body>
+
+  <!-- ==========================================================================
+       Navigation Bar
+       ========================================================================== -->
+  <nav class="site-nav" aria-label="Main Navigation">
+    <div class="nav-wrap">
+      <a class="nav-brand" href="./" aria-label="FlaUI.Mcp Home">
+        <img src="./assets/flauimcp.svg" width="30" height="30" alt="FlaUI.Mcp">
+        <span>FlaUI.Mcp</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#demo">Demo</a></li>
+        <li><a href="#safety">Safety</a></li>
+        <li><a href="#how-it-works">How It Works</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#docs">Docs</a></li>
+      </ul>
+      <a class="cta nav-cta" href="#install">Download Setup</a>
+    </div>
+  </nav>
+
+  <!-- ==========================================================================
+       Hero Section
+       ========================================================================== -->
+  <header class="hero">
+    <div class="wrap">
+      <img class="banner" src="./assets/banner.webp" width="1376" height="768" alt="FlaUI.Mcp glowing cyber-neon bridge connecting an AI agent terminal to Windows Desktop UI automation" fetchpriority="high">
+      <h1>FlaUI.Mcp</h1>
+      <p class="subline">Supervised Windows Automation for AI Agents</p>
+      <p style="max-width: 46rem; margin: 0 auto 2rem; color: var(--text);">
+        FlaUI.Mcp connects AI drivers like Claude Code and Antigravity to native Windows UI Automation 3 (UIA3). It translates high-level MCP requests into deterministic accessibility tree queries, pattern interactions, and OS actuation behind strict operator safety guardrails and zero-leak privacy shields.
+      </p>
+
+      <div class="stages-container">
+        <ol class="stages" aria-label="Supervised Safety Pipeline">
+          <li class="desktop">
+            <div class="stage-header">
+              <span class="stage">1. Discover</span>
+              <span class="stage-num">01</span>
+            </div>
+            <span class="role">desktop_find_element</span>
+            <code>UIA3 Tree Search</code>
+          </li>
+          <li class="agent">
+            <div class="stage-header">
+              <span class="stage">2. Redact</span>
+              <span class="stage-num">02</span>
+            </div>
+            <span class="role">Zero-Leak Shield</span>
+            <code>Password Censoring</code>
+          </li>
+          <li class="warning">
+            <div class="stage-header">
+              <span class="stage">3. Authorize</span>
+              <span class="stage-num">03</span>
+            </div>
+            <span class="role">Timed Lease</span>
+            <code>Input Lock Gate</code>
+          </li>
+          <li class="desktop">
+            <div class="stage-header">
+              <span class="stage">4. Actuate</span>
+              <span class="stage-num">04</span>
+            </div>
+            <span class="role">desktop_click / type</span>
+            <code>Pattern Actuation</code>
+          </li>
+          <li class="success">
+            <div class="stage-header">
+              <span class="stage">5. Audit</span>
+              <span class="stage-num">05</span>
+            </div>
+            <span class="role">Session Ledger</span>
+            <code>Tamper-Evident Log</code>
+          </li>
+        </ol>
+      </div>
+
+      <div class="hero-actions">
+        <a class="cta" href="#install">Download Installer (.exe)</a>
+        <a class="cta-secondary" href="https://github.com/ckir/flauimcp/blob/master/docs/architecture-and-safety.md" target="_blank" rel="noopener noreferrer">Read Safety Model</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- ==========================================================================
+         Interactive Demo Section
+         ========================================================================== -->
+    <section id="demo" aria-label="Supervised Desktop Control Demo">
+      <div class="wrap">
+        <h2>Supervised Desktop Control Demo</h2>
+        <p class="subline">Experience how FlaUI.Mcp mediates between non-deterministic AI agent tool calls and native Windows desktop controls with real-time redaction shields and lease validation.</p>
+
+        <div class="demo-window">
+          <div class="demo-header">
+            <span class="demo-dot red" aria-hidden="true"></span>
+            <span class="demo-dot yellow" aria-hidden="true"></span>
+            <span class="demo-dot green" aria-hidden="true"></span>
+            <span class="demo-title" id="demo-title-status">FlaUI.Mcp — Supervised Dual-Pane Session [Active Lease: 4m 12s]</span>
+          </div>
+
+          <div class="demo-grid">
+            <!-- Left Pane: AI Agent Driver Stream -->
+            <div class="demo-pane driver-pane">
+              <span class="pane-title">AI Agent Driver (Claude / Antigravity via MCP)</span>
+              <div class="log-stream" id="agent-stream" aria-live="polite">
+                <div class="log-line active" id="demo-step-1">
+                  <span class="log-comment">// Step 1: Discover target window in UIA3 tree</span>
+                  <span>&gt; <span class="log-tool">desktop_find_element</span>({ <span class="log-key">"name"</span>: <span class="log-str">"Enterprise Admin Console"</span>, <span class="log-key">"role"</span>: <span class="log-str">"Window"</span> })</span>
+                  <span>&lt; <span class="log-str">"Found AutomationId='AdminWin' PID=10482 Rect=[120,80,680,480]"</span> <span class="log-badge ok">FOUND</span></span>
+                </div>
+                <div class="log-line" id="demo-step-2">
+                  <span class="log-comment">// Step 2: Zero-leak shield censors password</span>
+                  <span>&gt; <span class="log-tool">desktop_read_text</span>({ <span class="log-key">"automation_id"</span>: <span class="log-str">"txt_password"</span> })</span>
+                  <span>&lt; <span class="log-str">"&lt;REDACTED: IsPassword=True&gt;"</span> <span class="log-badge redact">CENSORED</span></span>
+                </div>
+                <div class="log-line" id="demo-step-3">
+                  <span class="log-comment">// Step 3: Check operator input lease authorization</span>
+                  <span>&gt; <span class="log-tool">desktop_check_lease</span>()</span>
+                  <span>&lt; <span class="log-str">"Status=GRANTED, Remaining=04m:12s, Mode=Interactive"</span> <span class="log-badge lease">AUTHORIZED</span></span>
+                </div>
+                <div class="log-line" id="demo-step-4">
+                  <span class="log-comment">// Step 4: Supervised actuation on target button</span>
+                  <span>&gt; <span class="log-tool">desktop_click</span>({ <span class="log-key">"automation_id"</span>: <span class="log-str">"btn_submit"</span>, <span class="log-key">"x"</span>: <span class="log-num">512</span>, <span class="log-key">"y"</span>: <span class="log-num">448</span> })</span>
+                  <span>&lt; <span class="log-str">"Invoked Button.ClickPattern with synthetic cursor verification"</span> <span class="log-badge ok">ACTUATED</span></span>
+                </div>
+              </div>
+              <div class="demo-controls">
+                <button class="demo-btn primary" id="btn-demo-next">Next Step ▶</button>
+                <button class="demo-btn" id="btn-demo-autoplay">Auto-Play ⟳</button>
+                <button class="demo-btn secondary" id="btn-demo-reset">Reset ↺</button>
+              </div>
+            </div>
+
+            <!-- Right Pane: Simulated Windows Desktop Automation Target -->
+            <div class="demo-pane peer-pane">
+              <span class="pane-title">Windows OS Desktop Automation (FlaUI Target)</span>
+              <div class="mock-win" id="mock-win">
+                <div class="mock-title-bar">
+                  <span style="display:flex;align-items:center;gap:0.45rem;">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M0 2.25L6.5 1.3v6.2H0V2.25zm0 6.15h6.5v6.2L0 13.65V8.4zm7.5-7.2L16 0v7.5H7.5V1.2zm8.5 7.2v7.5L7.5 14.7V8.4H16z"/></svg>
+                    Enterprise Admin Console — [PID: 10482]
+                  </span>
+                  <div class="mock-win-controls" aria-hidden="true">
+                    <span class="mock-win-btn"></span>
+                    <span class="mock-win-btn"></span>
+                    <span class="mock-win-btn"></span>
+                  </div>
+                </div>
+                <div class="mock-body">
+                  <div class="mock-field" id="mock-field-user">
+                    <label class="mock-label" for="mock-input-user">Operator Username</label>
+                    <input class="mock-input" id="mock-input-user" type="text" value="admin@corp.internal" readonly>
+                  </div>
+                  <div class="mock-field" id="mock-field-pass">
+                    <label class="mock-label" for="mock-input-pass">Credential / Secret</label>
+                    <div class="mock-input redacted-field" id="mock-input-pass">
+                      <span>🛡️ [REDACTED: Password field censored]</span>
+                      <span class="badge badge-danger">SAFEGUARD</span>
+                    </div>
+                  </div>
+                  <div class="mock-row" style="margin-top:auto; justify-content:space-between; align-items:flex-end;">
+                    <button class="mock-btn targeted-elem" id="mock-btn-submit" type="button">
+                      <span class="target-tag">TARGETED: btn_submit</span>
+                      Authorize &amp; Deploy
+                    </button>
+                    <div class="sim-cursor" id="sim-cursor" aria-hidden="true"></div>
+                  </div>
+                </div>
+              </div>
+              <p class="fine" style="margin-top:0.85rem; text-align:center;">
+                🛡️ <strong>Safety Engine:</strong> Passwords censored across tree reads, OCR, and screenshot pixels.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         Architecture & Safety Philosophy Section
+         ========================================================================== -->
+    <section id="safety" aria-label="Architecture and Safety Philosophy">
+      <div class="wrap">
+        <h2>Architecture &amp; Safety Philosophy</h2>
+        <p class="subline">AI agents are probabilistic engines. Operating system actuation requires zero-trust guardrails.</p>
+
+        <div class="warning-box" role="alert">
+          <h3 class="warning-title">
+            <svg class="warning-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+            OS Actuation Danger Notice
+          </h3>
+          <p>
+            ⚠️ <strong>Software with real OS actuation power.</strong> Synthetic input is locked by default. There is no sandbox. FlaUI.Mcp executes real Windows Win32 / UIA3 actions on your interactive desktop session. Read the full <a href="https://github.com/ckir/flauimcp/blob/master/docs/architecture-and-safety.md" target="_blank" rel="noopener noreferrer">danger model</a> before installing.
+          </p>
+        </div>
+
+        <ul class="cards">
+          <li class="card agent">
+            <span class="badge badge-agent">PRIVACY SHIELD</span>
+            <h3>Zero-Leak Redaction</h3>
+            <p>Password fields are masked automatically across accessibility tree reads, text extractions, element diffs, and screenshot pixels. Operators can also define custom regex redaction patterns for proprietary keys and sensitive tokens.</p>
+          </li>
+          <li class="card warning">
+            <span class="badge badge-warning">DEFAULT LOCKED</span>
+            <h3>Zero-Trust Synthetic Input Leases</h3>
+            <p>The server starts strictly in read-only perception mode. Synthetic mouse clicks, mouse drags, and keyboard typing are locked until an operator explicitly grants a timed lease (e.g. <code>10m</code>) via CLI or hotkey.</p>
+          </li>
+          <li class="card success">
+            <span class="badge badge-success">AUDIT TRAIL</span>
+            <h3>Supervised Non-Determinism</h3>
+            <p>Complete tamper-evident audit logging (<code>logs/session.log</code>) captures every agent command, automation ID lookup, click coordinate, and lease grant for enterprise accountability and post-incident analysis.</p>
+          </li>
+          <li class="card desktop">
+            <span class="badge badge-desktop">UIA3 PRECISION</span>
+            <h3>Native UIA3 Precision</h3>
+            <p>Directly queries Windows UI Automation 3 element handles and automation IDs rather than brittle pixel guessing with vision models. Enjoy reliable bounding rectangle calculations and invoke patterns across modern and legacy apps.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         How It Works Section
+         ========================================================================== -->
+    <section id="how-it-works" aria-label="How FlaUI.Mcp Works">
+      <div class="wrap">
+        <h2>How It Works</h2>
+        <p class="subline">An authoritative, strongly-typed bridge between LLM agent drivers and the native Windows desktop.</p>
+
+        <ul class="cards">
+          <li class="card desktop">
+            <span class="badge badge-desktop">PROTOCOL BRIDGE</span>
+            <h3>Standard MCP Stdio Bridge</h3>
+            <p>FlaUI.Mcp acts as an RPC bridge between standard Model Context Protocol (MCP) stdio streams and the native Windows UI Automation API. AI clients send standard JSON-RPC tool invocations that execute directly against local Win32 runtime targets.</p>
+          </li>
+          <li class="card agent">
+            <span class="badge badge-agent">SCHEMA RESOLUTION</span>
+            <h3>Element Targeting Schema</h3>
+            <p>The schema handles top-level windows, nested child controls, buttons, edit inputs, combo boxes, menus, and custom controls. Elements are queried via AutomationId, Name, ClassName, or control type with deterministic handle caching.</p>
+          </li>
+          <li class="card warning">
+            <span class="badge badge-warning">LEASE VERIFICATION</span>
+            <h3>Input Lease Security</h3>
+            <p>Before any synthetic OS event is dispatched to the system message queue, FlaUI.Mcp checks the active tokenized input lease. If the lease is expired or missing, actuation is safely rejected while read-only perception remains active.</p>
+          </li>
+          <li class="card success">
+            <span class="badge badge-success">SUPERVISED RUNTIME</span>
+            <h3>Tamper-Evident Ledger</h3>
+            <p>Every perception read, redaction mask, lease verification, and actuation invoke is timestamped and written to an append-only session ledger, giving operators full visibility into agent actions on the interactive desktop.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         Installation & Quickstart Section
+         ========================================================================== -->
+    <section id="install" aria-label="Installation and Operator Quickstart">
+      <div class="wrap">
+        <h2>Installation &amp; Operator Quickstart</h2>
+        <p class="subline">Get up and running with FlaUI.Mcp in less than two minutes with automated CLI registration.</p>
+
+        <div class="quickstart-steps">
+          <ol style="padding-left:1.5rem; margin:0 0 1rem; color:var(--text); line-height:1.7;">
+            <li>Download <a href="https://github.com/ckir/flauimcp/releases/latest" target="_blank" rel="noopener noreferrer"><strong>flaui-mcp-setup.exe</strong></a> from the latest official GitHub release.</li>
+            <li>Run the installer. Windows SmartScreen may note that it is unsigned — select <strong>More info → Run anyway</strong>. The installer automatically registers FlaUI.Mcp with Claude Code and Antigravity CLIs.</li>
+            <li>Restart your AI agent terminal to reload the tool catalog, or manage operations with the commands below.</li>
+          </ol>
+
+          <ul class="commands">
+            <li>
+              <div class="cmd-info">
+                <span class="cmd-step">Silent Setup</span>
+                <code>flaui-mcp-setup.exe --silent</code>
+                <small>Perform an unattended installation and auto-register with Claude Code and Antigravity CLIs.</small>
+              </div>
+              <div class="copy-wrapper">
+                <button class="copy-btn" data-clipboard="flaui-mcp-setup.exe --silent" aria-label="Copy silent installer command">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/></svg>
+                  <span>Copy</span>
+                </button>
+                <span class="copy-tooltip">Copied!</span>
+              </div>
+            </li>
+
+            <li>
+              <div class="cmd-info">
+                <span class="cmd-step">Claude Code Registration</span>
+                <code>claude mcp add flauimcp -- flaui-mcp.exe</code>
+                <small>Manually register the FlaUI.Mcp server binary with your local Claude Code tool environment.</small>
+              </div>
+              <div class="copy-wrapper">
+                <button class="copy-btn" data-clipboard="claude mcp add flauimcp -- flaui-mcp.exe" aria-label="Copy Claude Code registration command">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/></svg>
+                  <span>Copy</span>
+                </button>
+                <span class="copy-tooltip">Copied!</span>
+              </div>
+            </li>
+
+            <li>
+              <div class="cmd-info">
+                <span class="cmd-step">Grant Synthetic Lease</span>
+                <code>flaui-mcp lease grant --duration 10m</code>
+                <small>Unlock synthetic OS mouse clicks and keyboard typing for 10 minutes before auto-locking.</small>
+              </div>
+              <div class="copy-wrapper">
+                <button class="copy-btn" data-clipboard="flaui-mcp lease grant --duration 10m" aria-label="Copy grant lease command">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/></svg>
+                  <span>Copy</span>
+                </button>
+                <span class="copy-tooltip">Copied!</span>
+              </div>
+            </li>
+
+            <li>
+              <div class="cmd-info">
+                <span class="cmd-step">Check Server Status</span>
+                <code>flaui-mcp status</code>
+                <small>Verify server health, active lease duration, and target desktop session details.</small>
+              </div>
+              <div class="copy-wrapper">
+                <button class="copy-btn" data-clipboard="flaui-mcp status" aria-label="Copy status command">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/></svg>
+                  <span>Copy</span>
+                </button>
+                <span class="copy-tooltip">Copied!</span>
+              </div>
+            </li>
+
+            <li>
+              <div class="cmd-info">
+                <span class="cmd-step">Revoke Synthetic Lease</span>
+                <code>flaui-mcp lease revoke</code>
+                <small>Immediately revoke active input lease, returning FlaUI.Mcp to strict read-only lock.</small>
+              </div>
+              <div class="copy-wrapper">
+                <button class="copy-btn" data-clipboard="flaui-mcp lease revoke" aria-label="Copy revoke lease command">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6zM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/></svg>
+                  <span>Copy</span>
+                </button>
+                <span class="copy-tooltip">Copied!</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         Documentation Hub Section
+         ========================================================================== -->
+    <section id="docs" aria-label="Documentation and Specifications">
+      <div class="wrap">
+        <h2>Documentation &amp; Specifications</h2>
+        <p class="subline">Comprehensive technical specifications, architectural safety guides, and tool catalog contracts.</p>
+
+        <div class="doc-grid">
+          <a class="doc-card" href="https://github.com/ckir/flauimcp/blob/master/docs/operator-manual.md" target="_blank" rel="noopener noreferrer">
+            <div>
+              <h3>
+                <span>Operator Manual</span>
+                <span class="arrow" aria-hidden="true">&rarr;</span>
+              </h3>
+              <p>Silent one-liner setup, CLI commands, lease lifecycle management, read-only mode, and session audit logs.</p>
+            </div>
+          </a>
+
+          <a class="doc-card" href="https://github.com/ckir/flauimcp/blob/master/docs/agent-contract.md" target="_blank" rel="noopener noreferrer">
+            <div>
+              <h3>
+                <span>Agent Contract</span>
+                <span class="arrow" aria-hidden="true">&rarr;</span>
+              </h3>
+              <p>Complete <code>desktop_*</code> MCP tool catalog, element targeting schemas, parameters, and boundary conditions.</p>
+            </div>
+          </a>
+
+          <a class="doc-card" href="https://github.com/ckir/flauimcp/blob/master/docs/architecture-and-safety.md" target="_blank" rel="noopener noreferrer">
+            <div>
+              <h3>
+                <span>Architecture &amp; Safety</span>
+                <span class="arrow" aria-hidden="true">&rarr;</span>
+              </h3>
+              <p>Zero-trust danger model, password censoring, synthetic lease gates, and perception safety rationale.</p>
+            </div>
+          </a>
+
+          <a class="doc-card" href="https://github.com/ckir/flauimcp/blob/master/docs/building.md" target="_blank" rel="noopener noreferrer">
+            <div>
+              <h3>
+                <span>Building from Source</span>
+                <span class="arrow" aria-hidden="true">&rarr;</span>
+              </h3>
+              <p>Prerequisites, .NET 10 compilation, local test loop, Win32 mock applications, and binary packaging.</p>
+            </div>
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ==========================================================================
+       Site Footer
+       ========================================================================== -->
+  <footer>
+    <div class="wrap">
+      <div class="footer-grid">
+        <div class="footer-col" style="flex: 1 1 18rem;">
+          <a class="footer-brand" href="./">
+            <img src="./assets/flauimcp.svg" width="28" height="28" alt="FlaUI.Mcp Logo">
+            <span>FlaUI.Mcp</span>
+          </a>
+          <p class="fine">
+            Supervised Windows Desktop Automation for AI Agents via Model Context Protocol.
+          </p>
+          <p class="fine">
+            &copy; 2026 Costas Kirgoussios. Released under <a href="https://github.com/ckir/flauimcp/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">PolyForm Noncommercial 1.0.0</a>.
+          </p>
+        </div>
+
+        <div class="footer-col" style="flex: 1 1 18rem;">
+          <span class="tag">Platform Requirements</span>
+          <p class="fine" style="margin-top: 0.5rem;">
+            Windows 10/11 x64 (Build 19041+)<br>
+            Interactive desktop session required<br>
+            Self-contained binary — No .NET runtime required
+          </p>
+          <div class="platform-badge">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M0 2.25L6.5 1.3v6.2H0V2.25zm0 6.15h6.5v6.2L0 13.65V8.4zm7.5-7.2L16 0v7.5H7.5V1.2zm8.5 7.2v7.5L7.5 14.7V8.4H16z"/></svg>
+            <span>Native Windows UIA3 Engine</span>
+          </div>
+        </div>
+
+        <div class="footer-col" style="flex: 1 1 12rem;">
+          <span class="tag">Project Links</span>
+          <ul class="footer-links" style="flex-direction: column; gap: 0.5rem;">
+            <li><a href="https://github.com/ckir/flauimcp" target="_blank" rel="noopener noreferrer">GitHub Repository</a></li>
+            <li><a href="https://github.com/ckir/flauimcp/releases" target="_blank" rel="noopener noreferrer">Releases &amp; Downloads</a></li>
+            <li><a href="https://github.com/ckir/flauimcp/issues" target="_blank" rel="noopener noreferrer">Issue Tracker</a></li>
+            <li><a href="https://github.com/ckir/flauimcp/blob/master/docs/operator-manual.md" target="_blank" rel="noopener noreferrer">Operator Manual</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
