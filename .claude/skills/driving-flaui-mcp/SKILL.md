@@ -449,4 +449,5 @@ Enter/OK (don't execute). Prefer disposable apps (Calculator, Run dialog) for de
   only after the session moved console -> RDP: `foregroundGained:false` with `currentForeground:{handle:"0"}`
   (handle 0 = NOTHING owns foreground), and `wait_for_foreground` then timed out at 20s while `qwinsta` showed
   the move. *(CONFOUNDED: session change and input recency moved together; not isolated.)*
+- **A covered element's `GetClickablePoint` can fall OUTSIDE its own window, and `foregroundGained:true` does not cure it.** Measured: x=1059 for a window whose right edge was 1008, so the click hit another window. Raise the target topmost, re-read the point only AFTER that, confirm the root window under the point is the target, then click that exact point. *(1 measurement, 2026-11-05)*
 <!-- AUTOTRAIN:GROWTH:END -->
