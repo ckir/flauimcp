@@ -5,12 +5,15 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-10
+
 ### Added
 
 - **Structured server log for post-mortem diagnosis.** A JSONL log of every tool call and the decisions behind it
   (window binding, focus, refs, selectors, capture, input), on by default and off with `--no-log`. A tool error
   carries `log: "<cid> in <path>"` to find its records. No user content is written to disk: typed, pasted and
   clipboard text, captured text and images never appear, and sensitive UI text is hashed.
+
 ### Fixed
 
 - **The release cut confirmation now states its final step.** `"... bump versions, $finalStep? [y/N]"` expanded a

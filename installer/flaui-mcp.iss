@@ -1,7 +1,7 @@
 ; Inno Setup script for FlaUI.Mcp. Build with: ISCC.exe installer\flaui-mcp.iss
 ; Expects the published single-file exe at: publish\flaui-mcp.exe (see release CI / Task 11).
 #define AppName "FlaUI.Mcp"
-#define AppVersion "1.1.0"
+#define AppVersion "1.2.0"
 #define ExeName "flaui-mcp.exe"
 
 [Setup]
